@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  backend:
+    build: ./backend
+    container_name: usermanager-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend/data:/app/data
+    environment:
+      - DATABASE_URL=sqlite:////app/data/usermanager.db
+    ports:
+      - "8000:8000"
+      - "1812:1812/udp"
+      - "1813:1813/udp"
+
+  frontend:
+    build: ./frontend
+    container_name: usermanager-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"

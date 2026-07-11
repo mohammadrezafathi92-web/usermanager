@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import QRCode from "qrcode";
-import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, ShieldCheck, Lock, Save, KeyRound } from "lucide-react";
+import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, ShieldCheck, Lock, Save, KeyRound, Power } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
@@ -251,6 +251,17 @@ export default function UserDetail() {
     load();
   };
 
+  const toggleConnEnabled = async (c) => {
+    const next = !c.enabled;
+    if (!next && !confirm("این اتصال غیرفعال شود؟ کاربر دیگر نمی‌تواند با این سرویس وصل شود.")) return;
+    try {
+      await updateConnection(user.id, c.id, { enabled: next });
+      load();
+    } catch (err) {
+      setError(err?.response?.data?.detail || "خطا در تغییر وضعیت اتصال");
+    }
+  };
+
   return (
     <Layout>
       <button onClick={() => navigate("/users")} className="flex items-center gap-1 text-sm text-gray-400 hover:text-gray-600 mb-4">
@@ -360,6 +371,13 @@ export default function UserDetail() {
                     <ShieldCheck size={14} />
                   </button>
                 )}
+                <button
+                  className="btn-secondary"
+                  title={c.enabled ? "غیرفعال کردن اتصال" : "فعال کردن اتصال"}
+                  onClick={() => toggleConnEnabled(c)}
+                >
+                  <Power size={14} className={c.enabled ? "text-emerald-600" : "text-gray-400"} />
+                </button>
                 <button className="btn-danger" onClick={() => removeConnection(c.id)}>
                   <Trash2 size={14} />
                 </button>

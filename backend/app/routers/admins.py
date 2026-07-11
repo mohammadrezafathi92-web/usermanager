@@ -11,7 +11,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..deps import require_superadmin
 from ..security import hash_password
-from ..permissions import PERMISSION_CHOICES, parse_permissions, format_permissions
+from ..permissions import PERMISSION_CHOICES, parse_permissions, format_permissions, effective_permissions
 
 router = APIRouter(prefix="/api/admins", tags=["admins"], dependencies=[Depends(require_superadmin)])
 
@@ -29,13 +29,89 @@ def _out(db: Session, admin: models.AdminUser) -> schemas.AdminOut:
         id=admin.id,
         username=admin.username,
         is_superadmin=admin.is_superadmin,
-        permissions=sorted(parse_permissions(admin.permissions)),
+        # Effective permissions (from the group if assigned, else the
+        # admin's own checkboxes) - what actually governs their access.
+        permissions=sorted(effective_permissions(admin)),
         login_slug=admin.login_slug,
         balance=admin.balance or 0,
         telegram_id=admin.telegram_id,
         created_at=admin.created_at,
         users_count=users_count,
+        group_id=admin.group_id,
+        group_name=admin.group.name if admin.group else None,
     )
+
+
+def _group_out(db: Session, group: models.AdminPermissionGroup) -> schemas.AdminGroupOut:
+    admins_count = db.query(models.AdminUser).filter(models.AdminUser.group_id == group.id).count()
+    return schemas.AdminGroupOut(
+        id=group.id,
+        name=group.name,
+        permissions=sorted(parse_permissions(group.permissions)),
+        admins_count=admins_count,
+    )
+
+
+# ---------- Permission groups ----------
+# Registered before the "" (list admins) route below on purpose, but since
+# the path prefix differs ("/groups" vs plain "") there's no collision -
+# kept together here so groups management sits right next to admin CRUD.
+@router.get("/groups", response_model=list[schemas.AdminGroupOut])
+def list_groups(db: Session = Depends(get_db)):
+    groups = db.query(models.AdminPermissionGroup).order_by(models.AdminPermissionGroup.id).all()
+    return [_group_out(db, g) for g in groups]
+
+
+@router.post("/groups", response_model=schemas.AdminGroupOut)
+def create_group(payload: schemas.AdminGroupCreate, db: Session = Depends(get_db)):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "نام گروه نمی‌تواند خالی باشد")
+    if db.query(models.AdminPermissionGroup).filter(models.AdminPermissionGroup.name == name).first():
+        raise HTTPException(400, "گروهی با این نام قبلا ساخته شده است")
+    group = models.AdminPermissionGroup(name=name, permissions=_validate_permissions(payload.permissions))
+    db.add(group)
+    db.commit()
+    db.refresh(group)
+    return _group_out(db, group)
+
+
+@router.put("/groups/{group_id}", response_model=schemas.AdminGroupOut)
+def update_group(group_id: int, payload: schemas.AdminGroupUpdate, db: Session = Depends(get_db)):
+    group = db.get(models.AdminPermissionGroup, group_id)
+    if not group:
+        raise HTTPException(404, "گروه پیدا نشد")
+    if payload.name is not None:
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(400, "نام گروه نمی‌تواند خالی باشد")
+        clash = db.query(models.AdminPermissionGroup).filter(
+            models.AdminPermissionGroup.name == name, models.AdminPermissionGroup.id != group.id
+        ).first()
+        if clash:
+            raise HTTPException(400, "گروهی با این نام قبلا ساخته شده است")
+        group.name = name
+    if payload.permissions is not None:
+        group.permissions = _validate_permissions(payload.permissions)
+    db.commit()
+    db.refresh(group)
+    return _group_out(db, group)
+
+
+@router.delete("/groups/{group_id}")
+def delete_group(group_id: int, db: Session = Depends(get_db)):
+    group = db.get(models.AdminPermissionGroup, group_id)
+    if not group:
+        raise HTTPException(404, "گروه پیدا نشد")
+    # Admins in this group aren't deleted - just detached, so they fall
+    # back to their own individual `permissions` checkboxes (which are
+    # preserved even while a group is assigned, so nothing is lost here).
+    db.query(models.AdminUser).filter(models.AdminUser.group_id == group.id).update(
+        {"group_id": None}, synchronize_session=False
+    )
+    db.delete(group)
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("", response_model=list[schemas.AdminOut])
@@ -64,6 +140,9 @@ def create_admin(payload: schemas.AdminCreate, db: Session = Depends(get_db)):
         models.AdminUser.telegram_id == payload.telegram_id
     ).first():
         raise HTTPException(400, "این آیدی تلگرام قبلا برای ادمین دیگری ثبت شده است")
+    group_id = payload.group_id or None
+    if group_id and not db.get(models.AdminPermissionGroup, group_id):
+        raise HTTPException(400, "گروه انتخاب‌شده پیدا نشد")
 
     admin = models.AdminUser(
         username=payload.username,
@@ -72,6 +151,7 @@ def create_admin(payload: schemas.AdminCreate, db: Session = Depends(get_db)):
         permissions=_validate_permissions(payload.permissions),
         login_slug=slug,
         telegram_id=payload.telegram_id,
+        group_id=group_id,
     )
     db.add(admin)
     db.commit()
@@ -116,6 +196,11 @@ def update_admin(admin_id: int, payload: schemas.AdminUpdate, db: Session = Depe
         admin.telegram_id = tg_id
     if payload.balance is not None:
         admin.balance = payload.balance
+    if payload.group_id is not None:
+        group_id = payload.group_id or None
+        if group_id and not db.get(models.AdminPermissionGroup, group_id):
+            raise HTTPException(400, "گروه انتخاب‌شده پیدا نشد")
+        admin.group_id = group_id
 
     db.commit()
     db.refresh(admin)

@@ -88,6 +88,32 @@ class AdminUser(Base):
     # this admin has no bot access of their own.
     telegram_id = Column(BigInteger, unique=True, nullable=True)
 
+    # Optional link to a reusable AdminPermissionGroup (see below). When
+    # set, this admin's effective permissions come from the GROUP instead
+    # of the `permissions` column above (see permissions.effective_permissions)
+    # - lets a superadmin define e.g. "پشتیبان"/"فروش" templates once and
+    # apply/edit them for many admins at once, instead of re-checking the
+    # same boxes per admin. NULL (the default, and what every admin created
+    # before this feature existed still has) keeps the old per-admin
+    # `permissions` behavior exactly as it was.
+    group_id = Column(Integer, ForeignKey("admin_permission_groups.id", ondelete="SET NULL"), nullable=True)
+    group = relationship("AdminPermissionGroup")
+
+
+class AdminPermissionGroup(Base):
+    """A reusable, named set of permissions (see app/permissions.py) that
+    can be assigned to several AdminUsers at once via AdminUser.group_id -
+    edit the group once and every admin in it picks up the change,
+    instead of re-checking the same boxes on each admin individually."""
+
+    __tablename__ = "admin_permission_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(128), unique=True, nullable=False)
+    # Same comma-separated PERMISSION_CHOICES format as AdminUser.permissions
+    permissions = Column(Text, nullable=True, default="")
+    created_at = Column(DateTime, default=now)
+
 
 class ApiKey(Base):
     """API keys used by external systems (e.g. a Telegram sales bot) to
@@ -207,7 +233,16 @@ class User(Base):
     # recognize a returning customer on /start without them re-entering a
     # username. Null until the customer either registers via the bot or an
     # admin links an existing account to a chat id manually.
-    telegram_id = Column(BigInteger, nullable=True, unique=True, index=True)
+    # NOT unique on purpose - one Telegram account can be linked to several
+    # User rows (a customer who bought more than once, ending up with
+    # multiple separate accounts) - the bot shows an account picker when a
+    # telegram_id resolves to more than one User (see routers/bot.py's
+    # list_users_by_telegram and telegram_bot/handlers/customer.py's
+    # _resolve_account). A pre-existing production DB will still have the
+    # old UNIQUE index physically on disk until it's dropped once with a
+    # migration (see fix_telegram_id_unique.py) - this column definition
+    # alone does not retroactively change an already-created SQLite table.
+    telegram_id = Column(BigInteger, nullable=True, index=True)
 
     # Which admin "owns" (manages) this customer - set once, at creation
     # time, from the creating admin's own id (a superadmin can pick a

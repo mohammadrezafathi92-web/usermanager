@@ -262,7 +262,30 @@ class MikrotikClient:
         except Exception as exc:
             raise MikrotikError(f"خواندن کاربران User Manager ناموفق بود: {exc}") from exc
 
+    def read_um_profiles(self) -> list[dict]:
+        """Reads /user-manager/profile - the profile DEFINITIONS themselves
+        (name, starts-when, validity), as opposed to read_um_user_profiles()
+        which reads the per-user ASSIGNMENTS. Needed because a user-profile
+        assignment's own end-time is only computed by RouterOS once the
+        profile has actually started (see read_um_user_profiles' docstring);
+        for a profile with starts-when=first-auth that hasn't happened yet,
+        this is the only place the intended validity duration is visible."""
+        try:
+            return list(self._api.path("user-manager", "profile"))
+        except Exception as exc:
+            raise MikrotikError(f"خواندن پروفایل‌های User Manager ناموفق بود: {exc}") from exc
+
     def read_um_user_profiles(self) -> list[dict]:
+        """Reads /user-manager/user-profile - the assignment linking a user
+        to a profile. Its end-time is a datetime RouterOS computes once the
+        profile has actually started: immediately if the profile's
+        starts-when=assigned, but only after the user's first successful
+        authentication if starts-when=first-auth - before that first auth,
+        end-time comes back empty/unknown even though the assignment's
+        state is already "running" (ready to be used). See
+        import_usermanager_accounts() in user_ops.py for how this is
+        combined with read_um_profiles() to still capture an
+        expire-days-after-first-use value for that case."""
         try:
             return list(self._api.path("user-manager", "user-profile"))
         except Exception as exc:

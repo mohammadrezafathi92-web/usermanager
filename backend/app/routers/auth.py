@@ -7,7 +7,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..security import verify_password, create_access_token, hash_password
 from ..deps import get_current_admin
-from ..permissions import parse_permissions
+from ..permissions import effective_permissions
 
 
 class ChangePasswordRequest(BaseModel):
@@ -32,7 +32,7 @@ def me(admin: models.AdminUser = Depends(get_current_admin)):
     return {
         "username": admin.username,
         "is_superadmin": admin.is_superadmin,
-        "permissions": sorted(parse_permissions(admin.permissions)),
+        "permissions": sorted(effective_permissions(admin)),
     }
 
 

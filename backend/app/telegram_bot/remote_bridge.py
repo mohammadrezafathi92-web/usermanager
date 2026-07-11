@@ -146,6 +146,14 @@ class RemoteBridge:
         except ApiError:
             return None
 
+    async def list_users_by_telegram(self, telegram_id: int) -> list[dict]:
+        from .panel_bridge import ApiError
+
+        try:
+            return await self._call("GET", f"/users/by-telegram/{telegram_id}/all")
+        except ApiError:
+            return []
+
     async def get_admin_by_telegram(self, telegram_id: int) -> Optional[dict]:
         from .panel_bridge import ApiError
 

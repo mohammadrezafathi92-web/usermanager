@@ -365,99 +365,95 @@ export default function Users() {
     <Layout>
       <Topbar title="کاربران" subtitle={`${total} کاربر ثبت‌شده`} />
 
-      <div className="card !p-4 mb-4">
-        <div className="flex items-center justify-between gap-4 flex-wrap">
-          <div className="flex items-center gap-2.5 flex-wrap">
-            <div className="relative">
-              <Search className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
-              <input
-                className="input pr-9 w-56"
-                placeholder="جستجوی کاربر..."
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-              />
-            </div>
-
-            <div className="w-px h-6 bg-gray-100 hidden sm:block" />
-
-            <div className="flex items-center gap-2 flex-wrap">
-              <select
-                className="input w-auto min-w-[8rem] cursor-pointer"
-                value={statusFilter}
-                onChange={(e) => {
-                  setStatusFilter(e.target.value);
-                  setPage(1);
-                }}
-              >
-                {STATUS_FILTER_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-
-              <div className="flex items-center gap-1">
-                <select
-                  className="input w-auto min-w-[7.5rem] cursor-pointer"
-                  value={sortBy}
-                  onChange={(e) => {
-                    setSortBy(e.target.value);
-                    setPage(1);
-                  }}
-                  title="مرتب‌سازی بر اساس"
-                >
-                  {SORT_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  className="btn-secondary !px-2.5"
-                  title={sortDir === "asc" ? "صعودی" : "نزولی"}
-                  onClick={() => {
-                    toggleSortDir();
-                    setPage(1);
-                  }}
-                >
-                  <ArrowUpDown size={16} />
-                </button>
-              </div>
-
-              {isSuperadmin && (
-                <select
-                  className="input w-auto min-w-[8rem] cursor-pointer"
-                  value={ownerAdminFilter}
-                  onChange={(e) => {
-                    setOwnerAdminFilter(e.target.value);
-                    setPage(1);
-                  }}
-                  title="فیلتر بر اساس ادمین"
-                >
-                  <option value="">همه ادمین‌ها</option>
-                  {admins.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.username}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-
-            {onlineOnly && (
-              <span className="badge bg-emerald-50 text-emerald-600 inline-flex items-center gap-1">
-                فقط آنلاین‌ها
-                <button type="button" className="hover:text-emerald-800" onClick={clearFilters}>
-                  <X size={12} />
-                </button>
-              </span>
-            )}
+      <div className="card !p-4 mb-4 space-y-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="relative">
+            <Search className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
+            <input
+              className="input pr-9 !w-full sm:!w-56"
+              placeholder="جستجوی کاربر..."
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+            />
           </div>
 
-          <div className="flex items-center gap-2">
+          <select
+            className="input !w-auto min-w-[7.5rem] cursor-pointer"
+            value={statusFilter}
+            onChange={(e) => {
+              setStatusFilter(e.target.value);
+              setPage(1);
+            }}
+          >
+            {STATUS_FILTER_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+
+          <div className="flex items-center gap-1">
+            <select
+              className="input !w-auto min-w-[7rem] cursor-pointer"
+              value={sortBy}
+              onChange={(e) => {
+                setSortBy(e.target.value);
+                setPage(1);
+              }}
+              title="مرتب‌سازی بر اساس"
+            >
+              {SORT_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="btn-secondary !px-2.5"
+              title={sortDir === "asc" ? "صعودی" : "نزولی"}
+              onClick={() => {
+                toggleSortDir();
+                setPage(1);
+              }}
+            >
+              <ArrowUpDown size={16} />
+            </button>
+          </div>
+
+          {isSuperadmin && (
+            <select
+              className="input !w-auto min-w-[7.5rem] cursor-pointer"
+              value={ownerAdminFilter}
+              onChange={(e) => {
+                setOwnerAdminFilter(e.target.value);
+                setPage(1);
+              }}
+              title="فیلتر بر اساس ادمین"
+            >
+              <option value="">همه ادمین‌ها</option>
+              {admins.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.username}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {onlineOnly && (
+            <span className="badge bg-emerald-50 text-emerald-600 inline-flex items-center gap-1">
+              فقط آنلاین‌ها
+              <button type="button" className="hover:text-emerald-800" onClick={clearFilters}>
+                <X size={12} />
+              </button>
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-2 flex-wrap pt-3 border-t border-gray-100">
+          <div>
             {selected.size > 0 && (
-              <div className="flex items-center gap-2 pl-2.5 ml-0.5 border-l border-gray-100">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-xs font-medium text-brand-700 bg-brand-50 rounded-full px-2.5 py-1">
                   {selected.size} انتخاب شده
                 </span>
@@ -472,6 +468,8 @@ export default function Users() {
                 </button>
               </div>
             )}
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
             <button className="btn-secondary" onClick={onExport} disabled={exporting}>
               <FileDown size={16} /> {exporting ? "..." : "اکسپورت اکسل"}
             </button>

@@ -80,6 +80,21 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
         )
     online_users_now = online_users_q.distinct().count()
 
+    # Rough live-speed gauge: sum of usage deltas recorded in the last 60
+    # seconds, divided by 60 -> average bytes/sec. Reuses the same UsageLog
+    # rows poll_all() already writes every POLL_INTERVAL_SECONDS (30s by
+    # default), so this needs no new polling/sampling of its own.
+    speed_since = dt.datetime.utcnow() - dt.timedelta(seconds=60)
+    speed_q = db.query(func.coalesce(func.sum(models.UsageLog.delta_bytes), 0)).filter(
+        models.UsageLog.created_at >= speed_since
+    )
+    if not admin.is_superadmin:
+        speed_q = speed_q.join(models.User, models.User.id == models.UsageLog.user_id).filter(
+            models.User.owner_admin_id == admin.id
+        )
+    bytes_last_minute = speed_q.scalar() or 0
+    avg_speed_bps = bytes_last_minute / 60
+
     return schemas.DashboardStats(
         total_users=total_users,
         active_users=counts_by_status.get(models.UserStatus.active, 0),
@@ -92,4 +107,5 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
         total_quota_bytes=total_quota_bytes,
         usage_last_24h=[{"bucket": k, "bytes": v} for k, v in buckets.items()],
         admin_balance=None if admin.is_superadmin else (admin.balance or 0),
+        avg_speed_bps=avg_speed_bps,
     )

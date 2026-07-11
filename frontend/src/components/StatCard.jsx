@@ -18,7 +18,7 @@ export default function StatCard({ icon: Icon, label, value, tone = "brand", onC
         <Icon size={22} />
       </div>
       <div>
-        <div className="text-2xl font-bold text-gray-800">{value}</div>
+        <div className="text-2xl font-bold text-gray-800 dark:text-gray-100">{value}</div>
         <div className="text-sm text-gray-400">{label}</div>
       </div>
     </Comp>

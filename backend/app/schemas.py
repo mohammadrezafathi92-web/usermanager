@@ -366,6 +366,13 @@ class DashboardStats(BaseModel):
     # credit they have left to spend on packages. Null for superadmins
     # (unlimited/exempt from this charge - see _charge_admin_for_package).
     admin_balance: Optional[int] = None
+    # Live-ish throughput: sum of UsageLog.delta_bytes recorded in the last
+    # 60 seconds (across all connections in scope), divided by 60. Since
+    # poll_all runs every POLL_INTERVAL_SECONDS (default 30s - see
+    # config.py), this is effectively "average bytes/sec seen over the last
+    # 1-2 poll cycles" - a rough live speed gauge, not a precise real-time
+    # metric.
+    avg_speed_bps: float = 0
 
 
 # ---------- API keys (for the external/bot integration) ----------
@@ -695,6 +702,9 @@ class AdminCreate(BaseModel):
     permissions: List[str] = []  # subset of permissions.PERMISSION_CHOICES keys
     login_slug: Optional[str] = None
     telegram_id: Optional[int] = None
+    # If set, this admin's effective permissions come from the group
+    # instead of the `permissions` list above (see permissions.effective_permissions).
+    group_id: Optional[int] = None
 
 
 class AdminUpdate(BaseModel):
@@ -707,6 +717,10 @@ class AdminUpdate(BaseModel):
     # Numeric Telegram id letting this admin manage their own group's users
     # directly from the bot - see telegram_bot/admin_scope.py.
     telegram_id: Optional[int] = None
+    # Assign/unassign a permission group. Sending 0 clears it (falls back
+    # to the individual `permissions` checkboxes) - same 0-means-clear
+    # convention used elsewhere in this schema/router.
+    group_id: Optional[int] = None
 
 
 class AdminOut(BaseModel):
@@ -719,6 +733,25 @@ class AdminOut(BaseModel):
     telegram_id: Optional[int] = None
     created_at: dt.datetime
     users_count: int = 0
+    group_id: Optional[int] = None
+    group_name: Optional[str] = None
+
+
+class AdminGroupCreate(BaseModel):
+    name: str
+    permissions: List[str] = []
+
+
+class AdminGroupUpdate(BaseModel):
+    name: Optional[str] = None
+    permissions: Optional[List[str]] = None
+
+
+class AdminGroupOut(BaseModel):
+    id: int
+    name: str
+    permissions: List[str] = []
+    admins_count: int = 0
 
 
 # ---------- Bulk messaging ----------

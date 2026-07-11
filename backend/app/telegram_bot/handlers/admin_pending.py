@@ -27,12 +27,14 @@ router.callback_query.filter(lambda c: config.is_admin(c.from_user.id))
 
 def _pending_summary(p: dict) -> str:
     who = f"@{p['telegram_username']}" if p.get("telegram_username") else p.get("telegram_name") or str(p["telegram_id"])
-    kind_txt = {"new": "خرید جدید", "renew": "تمدید", "topup": "افزایش اعتبار"}.get(p["kind"], p["kind"])
+    kind_txt = {"new": "خرید جدید", "renew": "تمدید", "topup": "افزایش اعتبار", "link": "اتصال حساب قبلی"}.get(p["kind"], p["kind"])
     lines = [
         f"#{p['id']} — {kind_txt}",
         f"مشتری: {who} (<code>{p['telegram_id']}</code>)",
     ]
-    if p["kind"] == "topup":
+    if p["kind"] == "link":
+        lines.append(f"می‌خواهد به حساب «{p['target_username']}» وصل شود.")
+    elif p["kind"] == "topup":
         lines.append(f"مبلغ: {p['price']:,} تومان")
         lines.append(f"حساب مقصد: {p['target_username']}")
     else:
@@ -104,12 +106,13 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
     if callback_data.action == "reject":
         storage.set_status(pending["id"], "rejected")
         await _finish("❌ رد شد.")
+        reject_msg = (
+            "متاسفانه درخواست اتصال حساب شما تایید نشد. اگر واقعا صاحب آن حساب هستید، برای پیگیری با پشتیبانی در تماس باشید."
+            if pending["kind"] == "link"
+            else "متاسفانه پرداخت شما تایید نشد. برای پیگیری با پشتیبانی در تماس باشید."
+        )
         try:
-            await bot.send_message(
-                pending["telegram_id"],
-                "متاسفانه پرداخت شما تایید نشد. برای پیگیری با پشتیبانی در تماس باشید.",
-                reply_markup=home_kb(),
-            )
+            await bot.send_message(pending["telegram_id"], reject_msg, reply_markup=home_kb())
         except Exception:
             pass
         await call.answer("رد شد")
@@ -177,6 +180,7 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
             else:
                 user = await api.create_user(
                     username=pending["target_username"],
+                    full_name=pending.get("telegram_name") or pending.get("telegram_username"),
                     quota_gb=pending["quota_gb"],
                     expire_days=pending["duration_days"],
                     telegram_id=pending["telegram_id"],
@@ -188,6 +192,13 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
         elif pending["kind"] == "renew":
             await api.renew(pending["target_username"], add_gb=pending["quota_gb"], add_days=pending["duration_days"])
             customer_msg = f"✅ پرداخت شما تایید شد و حساب «{pending['target_username']}» تمدید شد."
+        elif pending["kind"] == "link":
+            # Security-gated version of the old instant customer.py
+            # link_telegram call - only actually links once an admin has
+            # visually confirmed this Telegram person really owns the
+            # target account, since a username alone proves nothing.
+            await api.link_telegram(pending["target_username"], pending["telegram_id"])
+            customer_msg = f"✅ درخواست شما تایید شد. حساب «{pending['target_username']}» به شما وصل شد."
         else:  # topup
             user = await api.add_balance(pending["target_username"], pending["price"])
             customer_msg = (

@@ -473,19 +473,12 @@ def update_user(
         elif data["owner_admin_id"] is not None and not db.get(models.AdminUser, data["owner_admin_id"]):
             raise HTTPException(400, "ادمین مقصد پیدا نشد")
 
-    if data.get("telegram_id") is not None:
-        # Same uniqueness rule the bot's own "وصل کردن حساب قبلی" flow
-        # enforces (routers/bot.py link_telegram) - without this check here
-        # too, an admin manually linking a telegram id already used by
-        # another user would hit the DB's raw UNIQUE constraint and get an
-        # opaque 500 instead of a clear Persian error.
-        existing = (
-            db.query(models.User)
-            .filter(models.User.telegram_id == data["telegram_id"], models.User.id != user.id)
-            .first()
-        )
-        if existing:
-            raise HTTPException(400, f"این آیدی تلگرام قبلا به کاربر «{existing.username}» وصل شده است")
+    # NOTE: telegram_id is intentionally allowed on more than one User - a
+    # single Telegram account can have several separate panel accounts (a
+    # customer who bought more than once ended up with more than one
+    # username). The bot shows an account picker in that case - see
+    # routers/bot.py's list_users_by_telegram and telegram_bot's
+    # _resolve_account.
 
     if data.get("expire_at") is not None:
         # A fixed expiry date was explicitly set - it takes precedence over

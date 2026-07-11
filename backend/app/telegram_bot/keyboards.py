@@ -14,6 +14,7 @@ from .callbacks import (
     ApprovalCB,
     ConnectionCB,
     PurchaseCB,
+    SwitchAccountCB,
 )
 
 PAGE_SIZE = 8
@@ -52,6 +53,7 @@ def main_menu_kb(scope: dict | None) -> InlineKeyboardMarkup:
         kb.button(text="💰 افزایش اعتبار", callback_data=MenuCB(action="cust_topup"))
         kb.button(text="📚 آموزش", callback_data=MenuCB(action="cust_tutorials"))
         kb.button(text="🔗 وصل کردن حساب قبلی", callback_data=MenuCB(action="cust_link"))
+        kb.button(text="🆔 آیدی عددی من", callback_data=MenuCB(action="cust_myid"))
         kb.adjust(1)
     return kb.as_markup()
 
@@ -329,6 +331,24 @@ def standalone_usage_text(connections: list[dict]) -> str:
     if len(groups) > 1:
         lines.append(f"\n<b>جمع کل:</b> {fmt_bytes(grand_total)}")
     return "\n".join(lines)
+
+
+def account_picker_kb(users: list[dict]) -> InlineKeyboardMarkup:
+    """Shown when a customer's telegram id resolves to more than one panel
+    account (see telegram_bot/handlers/customer.py's _resolve_account) -
+    lets them pick which one they mean before continuing whatever action
+    (viewing "اکانت من", renewing, topping up, ...) triggered the lookup."""
+    kb = InlineKeyboardBuilder()
+    for u in users:
+        label = u.get("full_name") or u["username"]
+        balance = u.get("balance") or 0
+        kb.button(
+            text=f"👤 {label} ({u['username']}) — {balance:,} تومان",
+            callback_data=SwitchAccountCB(username=u["username"]),
+        )
+    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))
+    kb.adjust(1)
+    return kb.as_markup()
 
 
 def approval_kb(request_id: int) -> InlineKeyboardMarkup:

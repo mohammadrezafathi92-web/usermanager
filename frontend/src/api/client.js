@@ -158,3 +158,8 @@ export const fetchPermissionChoices = () => client.get("/admins/permission-choic
 export const createAdmin = (data) => client.post("/admins", data);
 export const updateAdmin = (id, data) => client.put(`/admins/${id}`, data);
 export const deleteAdmin = (id) => client.delete(`/admins/${id}`);
+
+export const fetchAdminGroups = () => client.get("/admins/groups");
+export const createAdminGroup = (data) => client.post("/admins/groups", data);
+export const updateAdminGroup = (id, data) => client.put(`/admins/groups/${id}`, data);
+export const deleteAdminGroup = (id) => client.delete(`/admins/groups/${id}`);

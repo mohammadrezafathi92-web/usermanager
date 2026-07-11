@@ -73,3 +73,12 @@ class PurchaseCB(CallbackData, prefix="purc"):
     # customer's purchase list is re-sorted (e.g. a new purchase lands)
     # between opening "اکانت من" and tapping this button.
     key: str
+
+
+class SwitchAccountCB(CallbackData, prefix="swacc"):
+    # Picked from the account-picker shown when a telegram_id resolves to
+    # more than one panel User (see telegram_bot/handlers/customer.py's
+    # _resolve_account) - `username` (last field, see module docstring)
+    # becomes that chat's "active_username" in FSM state until /start or
+    # another ambiguous action re-opens the picker.
+    username: str

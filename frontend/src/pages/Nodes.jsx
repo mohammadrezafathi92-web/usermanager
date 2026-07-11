@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Plus, Trash2, Pencil, Wifi, Globe, PlugZap, CheckCircle2, XCircle } from "lucide-react";
+import { Plus, Trash2, Pencil, Wifi, Globe, PlugZap, CheckCircle2, XCircle, Power } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
@@ -64,6 +64,7 @@ export default function Nodes() {
   const [umImportResult, setUmImportResult] = useState(null);
   const [xuiImportStatus, setXuiImportStatus] = useState("");
   const [xuiImportResult, setXuiImportResult] = useState(null);
+  const [togglingId, setTogglingId] = useState(null);
 
   const load = () => fetchNodes().then((res) => setNodes(res.data));
   useEffect(() => {
@@ -186,6 +187,24 @@ export default function Nodes() {
     }
   };
 
+  const onToggleEnabled = async (node) => {
+    const next = !node.enabled;
+    if (!next && !confirm(`سرور «${node.name}» غیرفعال بشه؟ دیگه پول (poll) نمی‌شه، وضعیت آنلاین/مصرفش به‌روز نمی‌مونه و از لیست سرورهای در دسترس ربات حذف می‌شه (کانکشن‌های موجودش پاک نمی‌شن).`)) {
+      return;
+    }
+    setTogglingId(node.id);
+    // Optimistic update so the toggle feels instant; reconciled by load() below.
+    setNodes((ns) => ns.map((n) => (n.id === node.id ? { ...n, enabled: next } : n)));
+    try {
+      await updateNode(node.id, { enabled: next });
+    } catch (err) {
+      alert(err?.response?.data?.detail || "خطا در تغییر وضعیت سرور");
+      setNodes((ns) => ns.map((n) => (n.id === node.id ? { ...n, enabled: node.enabled } : n)));
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
   const onTest = async (id) => {
     setTestResult((r) => ({ ...r, [id]: "loading" }));
     try {
@@ -208,23 +227,40 @@ export default function Nodes() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {nodes.map((n) => (
-          <div key={n.id} className="card">
+          <div key={n.id} className={`card ${!n.enabled ? "opacity-60" : ""}`}>
             <div className="flex items-start justify-between mb-3">
               <div className="flex items-center gap-2">
                 <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${n.type === "mikrotik" ? "bg-indigo-50 text-indigo-600" : "bg-purple-50 text-purple-600"}`}>
                   {n.type === "mikrotik" ? <Wifi size={18} /> : <Globe size={18} />}
                 </div>
                 <div>
-                  <div className="font-medium text-gray-800">{n.name}</div>
+                  <div className="font-medium text-gray-800 flex items-center gap-2">
+                    {n.name}
+                    <span className={`badge ${n.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                      {n.enabled ? "فعال" : "غیرفعال"}
+                    </span>
+                  </div>
                   <div className="text-xs text-gray-400">{n.type === "mikrotik" ? "میکروتیک (WireGuard/OpenVPN/L2TP/IKEv2)" : "V2Ray / Xray"}</div>
                 </div>
               </div>
+              <button
+                type="button"
+                title={n.enabled ? "غیرفعال کردن سرور" : "فعال کردن سرور"}
+                disabled={togglingId === n.id}
+                onClick={() => onToggleEnabled(n)}
+                className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors disabled:opacity-50 ${
+                  n.enabled ? "bg-emerald-50 text-emerald-600 hover:bg-emerald-100" : "bg-gray-100 text-gray-400 hover:bg-gray-200"
+                }`}
+              >
+                <Power size={16} />
+              </button>
             </div>
 
             <div className="text-xs text-gray-500 space-y-1 mb-3">
               <div>آدرس: {n.type === "mikrotik" ? `${n.mt_host}:${n.mt_use_ssl ? n.mt_api_ssl_port : n.mt_port}${n.mt_use_ssl ? " (SSL)" : ""}` : (n.xr_panel_mode === "3xui" ? `${n.xr_panel_base_url} (پنل 3X-UI)` : n.xr_ssh_host)}</div>
               <div>آخرین اتصال موفق: {formatDateTime(n.last_seen)}</div>
               {n.last_error && <div className="text-red-500">خطا: {n.last_error}</div>}
+              {!n.enabled && <div className="text-amber-600">این سرور غیرفعاله - پول نمی‌شه و برای اتصال جدید در دسترس نیست.</div>}
             </div>
 
             <div className="flex items-center gap-2">

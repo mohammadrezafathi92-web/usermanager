@@ -28,3 +28,15 @@ def parse_permissions(raw: str | None) -> set[str]:
 
 def format_permissions(perms: set[str] | list[str]) -> str:
     return ",".join(p for p in perms if p in PERMISSION_CHOICES)
+
+
+def effective_permissions(admin) -> set[str]:
+    """The permission set that actually applies to this admin - their
+    linked AdminPermissionGroup's permissions if they're in one
+    (AdminUser.group_id), otherwise their own `permissions` column, exactly
+    like before groups existed. Centralized here so deps.py/auth.py/
+    routers/admins.py all agree on the same rule instead of each reading
+    `admin.permissions` directly (which would silently ignore a group)."""
+    if getattr(admin, "group", None) is not None:
+        return parse_permissions(admin.group.permissions)
+    return parse_permissions(admin.permissions)

@@ -1,15 +1,48 @@
 import React, { useEffect, useState } from "react";
-import { Plus, Pencil, Trash2, ShieldCheck, Users as UsersIcon, Link2, Wallet, Send } from "lucide-react";
+import { Plus, Pencil, Trash2, ShieldCheck, Users as UsersIcon, Link2, Wallet, Send, Wand2, Eye, EyeOff, UsersRound } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
-import { fetchAdmins, fetchPermissionChoices, createAdmin, updateAdmin, deleteAdmin } from "../api/client.js";
+import {
+  fetchAdmins,
+  fetchPermissionChoices,
+  createAdmin,
+  updateAdmin,
+  deleteAdmin,
+  fetchAdminGroups,
+  createAdminGroup,
+  updateAdminGroup,
+  deleteAdminGroup,
+} from "../api/client.js";
 
 function formatToman(n) {
   return new Intl.NumberFormat("fa-IR").format(n || 0);
 }
 
-const emptyForm = { username: "", password: "", permissions: [], login_slug: "", balance: "", telegram_id: "" };
+// یوزرنیم/پسورد رندوم برای دکمه‌های "تولید خودکار" - فقط حروف/عدد لاتین تا
+// همه‌جا (لاگین پنل، URL اختصاصی و غیره) بدون مشکل کاراکترهای فارسی کار کنه.
+function randomToken(length, alphabet) {
+  let out = "";
+  for (let i = 0; i < length; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return out;
+}
+function generateUsername() {
+  return "admin" + randomToken(5, "abcdefghijkmnpqrstuvwxyz23456789");
+}
+function generatePassword() {
+  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const lower = "abcdefghijkmnpqrstuvwxyz";
+  const digits = "23456789";
+  const symbols = "!@#$%";
+  const all = upper + lower + digits + symbols;
+  // حداقل یکی از هر دسته، بقیه رندوم - تا همیشه یه پسورد "قوی" تولید بشه
+  const required = [randomToken(1, upper), randomToken(1, lower), randomToken(1, digits), randomToken(1, symbols)];
+  const rest = randomToken(8, all).split("");
+  return [...required, ...rest].sort(() => Math.random() - 0.5).join("");
+}
+
+const emptyForm = { username: "", password: "", permissions: [], login_slug: "", balance: "", telegram_id: "", group_id: "" };
+const emptyGroupForm = { name: "", permissions: [] };
 
 export default function Admins() {
   const [items, setItems] = useState([]);
@@ -19,10 +52,20 @@ export default function Admins() {
   const [form, setForm] = useState(emptyForm);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+
+  const [groups, setGroups] = useState([]);
+  const [groupOpen, setGroupOpen] = useState(false);
+  const [editingGroupId, setEditingGroupId] = useState(null);
+  const [groupForm, setGroupForm] = useState(emptyGroupForm);
+  const [groupError, setGroupError] = useState("");
+  const [groupSaving, setGroupSaving] = useState(false);
 
   const load = () => fetchAdmins().then((res) => setItems(res.data));
+  const loadGroups = () => fetchAdminGroups().then((res) => setGroups(res.data));
   useEffect(() => {
     load();
+    loadGroups();
     fetchPermissionChoices().then((res) => setChoices(res.data));
   }, []);
 
@@ -38,6 +81,7 @@ export default function Admins() {
     setEditingId(null);
     setForm(emptyForm);
     setError("");
+    setShowPassword(false);
     setOpen(true);
   };
 
@@ -50,6 +94,7 @@ export default function Admins() {
       login_slug: admin.login_slug || "",
       balance: admin.balance || 0,
       telegram_id: admin.telegram_id || "",
+      group_id: admin.group_id || "",
     });
     setError("");
     setOpen(true);
@@ -66,6 +111,7 @@ export default function Admins() {
           login_slug: form.login_slug || null,
           balance: form.balance === "" ? null : Number(form.balance),
           telegram_id: form.telegram_id === "" ? null : Number(form.telegram_id),
+          group_id: form.group_id === "" ? 0 : Number(form.group_id),
         };
         if (form.password) payload.password = form.password;
         await updateAdmin(editingId, payload);
@@ -76,6 +122,7 @@ export default function Admins() {
           permissions: form.permissions,
           login_slug: form.login_slug || null,
           telegram_id: form.telegram_id === "" ? null : Number(form.telegram_id),
+          group_id: form.group_id === "" ? null : Number(form.group_id),
         });
       }
       setOpen(false);
@@ -93,9 +140,91 @@ export default function Admins() {
     load();
   };
 
+  // ---------- Permission groups ----------
+  const toggleGroupPerm = (key) =>
+    setGroupForm((f) => ({
+      ...f,
+      permissions: f.permissions.includes(key) ? f.permissions.filter((p) => p !== key) : [...f.permissions, key],
+    }));
+
+  const openGroupCreate = () => {
+    setEditingGroupId(null);
+    setGroupForm(emptyGroupForm);
+    setGroupError("");
+    setGroupOpen(true);
+  };
+
+  const openGroupEdit = (g) => {
+    setEditingGroupId(g.id);
+    setGroupForm({ name: g.name, permissions: g.permissions || [] });
+    setGroupError("");
+    setGroupOpen(true);
+  };
+
+  const submitGroup = async (e) => {
+    e.preventDefault();
+    setGroupSaving(true);
+    setGroupError("");
+    try {
+      if (editingGroupId) {
+        await updateAdminGroup(editingGroupId, groupForm);
+      } else {
+        await createAdminGroup(groupForm);
+      }
+      setGroupOpen(false);
+      loadGroups();
+      load();
+    } catch (err) {
+      setGroupError(err?.response?.data?.detail || "خطا در ذخیره گروه");
+    } finally {
+      setGroupSaving(false);
+    }
+  };
+
+  const onDeleteGroup = async (g) => {
+    if (!confirm(`گروه «${g.name}» حذف شود؟ ادمین‌های این گروه حذف نمی‌شوند، فقط بدون گروه می‌مانند.`)) return;
+    await deleteAdminGroup(g.id);
+    loadGroups();
+    load();
+  };
+
   return (
     <Layout>
       <Topbar title="مدیریت ادمین‌ها" subtitle="ادمین‌های فرعی با دسترسی محدود و گروه کاربران مخصوص خودشان" />
+
+      <div className="card mb-6">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2 font-medium text-gray-700">
+            <UsersRound size={16} className="text-violet-500" /> گروه‌های دسترسی
+          </div>
+          <button type="button" className="btn-secondary" onClick={openGroupCreate}>
+            <Plus size={14} /> گروه جدید
+          </button>
+        </div>
+        {groups.length === 0 ? (
+          <div className="text-sm text-gray-400">
+            هنوز گروهی نساخته‌اید. با گروه می‌توانید یک بار دسترسی‌ها را تعریف کنید و به چند ادمین بدهید - با ویرایش گروه، دسترسی همه آن‌ها یک‌جا تغییر می‌کند.
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {groups.map((g) => (
+              <div key={g.id} className="flex items-center gap-2 bg-gray-50 rounded-xl px-3 py-2 text-sm">
+                <span className="font-medium text-gray-700">{g.name}</span>
+                <span className="text-xs text-gray-400">
+                  ({g.permissions?.length ? g.permissions.map((p) => choices[p] || p).join("، ") : "فقط کاربران"})
+                </span>
+                <span className="text-xs text-gray-400">· {g.admins_count} ادمین</span>
+                <button title="ویرایش گروه" onClick={() => openGroupEdit(g)} className="text-gray-400 hover:text-brand-600">
+                  <Pencil size={14} />
+                </button>
+                <button title="حذف گروه" onClick={() => onDeleteGroup(g)} className="text-gray-400 hover:text-red-600">
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       <div className="flex justify-end mb-4">
         <button className="btn-primary" onClick={openCreate}>
@@ -131,7 +260,17 @@ export default function Admins() {
                   )}
                 </td>
                 <td className="px-4 py-3 text-xs text-gray-500">
-                  {a.is_superadmin ? "همه چیز" : a.permissions?.length ? a.permissions.map((p) => choices[p] || p).join("، ") : "فقط کاربران"}
+                  {a.is_superadmin ? (
+                    "همه چیز"
+                  ) : a.group_name ? (
+                    <span className="badge bg-violet-50 text-violet-600 flex items-center gap-1 w-fit">
+                      <UsersRound size={12} /> گروه: {a.group_name}
+                    </span>
+                  ) : a.permissions?.length ? (
+                    a.permissions.map((p) => choices[p] || p).join("، ")
+                  ) : (
+                    "فقط کاربران"
+                  )}
                 </td>
                 <td className="px-4 py-3 text-gray-600">
                   <span className="flex items-center gap-1">
@@ -193,24 +332,71 @@ export default function Admins() {
           {!editingId && (
             <div>
               <label className="block text-sm text-gray-600 mb-1">نام کاربری *</label>
-              <input className="input" required value={form.username} onChange={(e) => set("username", e.target.value)} />
+              <div className="flex gap-2">
+                <input className="input flex-1" required dir="ltr" value={form.username} onChange={(e) => set("username", e.target.value)} />
+                <button
+                  type="button"
+                  className="btn-secondary shrink-0"
+                  title="تولید خودکار یوزرنیم"
+                  onClick={() => set("username", generateUsername())}
+                >
+                  <Wand2 size={16} />
+                </button>
+              </div>
             </div>
           )}
           <div>
             <label className="block text-sm text-gray-600 mb-1">
               {editingId ? "رمز عبور جدید (اختیاری)" : "رمز عبور *"}
             </label>
-            <input
-              type="password"
-              className="input"
-              required={!editingId}
-              placeholder={editingId ? "خالی = بدون تغییر" : ""}
-              value={form.password}
-              onChange={(e) => set("password", e.target.value)}
-            />
+            <div className="flex gap-2">
+              <input
+                type={showPassword ? "text" : "password"}
+                className="input flex-1"
+                dir="ltr"
+                required={!editingId}
+                placeholder={editingId ? "خالی = بدون تغییر" : ""}
+                value={form.password}
+                onChange={(e) => set("password", e.target.value)}
+              />
+              <button
+                type="button"
+                className="btn-secondary shrink-0"
+                title={showPassword ? "پنهان کردن رمز" : "نمایش رمز"}
+                onClick={() => setShowPassword((s) => !s)}
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+              <button
+                type="button"
+                className="btn-secondary shrink-0"
+                title="تولید خودکار رمز عبور قوی"
+                onClick={() => {
+                  set("password", generatePassword());
+                  setShowPassword(true);
+                }}
+              >
+                <Wand2 size={16} />
+              </button>
+            </div>
           </div>
 
           <div>
+            <label className="block text-sm text-gray-600 mb-1">گروه دسترسی (اختیاری)</label>
+            <select className="input" value={form.group_id} onChange={(e) => set("group_id", e.target.value)}>
+              <option value="">بدون گروه (دسترسی دستی از چک‌باکس‌های پایین)</option>
+              {groups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+            </select>
+            <div className="text-xs text-gray-400 mt-1">
+              اگه گروه انتخاب بشه، دسترسی این ادمین از خود گروه می‌آید و چک‌باکس‌های پایین نادیده گرفته می‌شوند.
+            </div>
+          </div>
+
+          <div className={form.group_id ? "opacity-40 pointer-events-none" : ""}>
             <label className="block text-sm text-gray-600 mb-2">دسترسی‌ها (مدیریت کاربران همیشه فعال است)</label>
             <div className="space-y-1.5">
               {Object.entries(choices).map(([key, label]) => (
@@ -275,6 +461,41 @@ export default function Admins() {
             </button>
             <button type="submit" disabled={saving} className="btn-primary">
               {saving ? "در حال ذخیره..." : "ذخیره ادمین"}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={groupOpen} onClose={() => setGroupOpen(false)} title={editingGroupId ? "ویرایش گروه" : "گروه جدید"} width="max-w-md">
+        <form onSubmit={submitGroup} className="space-y-4">
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">نام گروه *</label>
+            <input
+              className="input"
+              required
+              value={groupForm.name}
+              onChange={(e) => setGroupForm((f) => ({ ...f, name: e.target.value }))}
+              placeholder="مثلا: پشتیبان، فروش"
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-2">دسترسی‌ها (مدیریت کاربران همیشه فعال است)</label>
+            <div className="space-y-1.5">
+              {Object.entries(choices).map(([key, label]) => (
+                <label key={key} className="flex items-center gap-2 text-sm text-gray-600">
+                  <input type="checkbox" checked={groupForm.permissions.includes(key)} onChange={() => toggleGroupPerm(key)} />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </div>
+          {groupError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{groupError}</div>}
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" className="btn-secondary" onClick={() => setGroupOpen(false)}>
+              انصراف
+            </button>
+            <button type="submit" disabled={groupSaving} className="btn-primary">
+              {groupSaving ? "در حال ذخیره..." : "ذخیره گروه"}
             </button>
           </div>
         </form>

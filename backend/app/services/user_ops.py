@@ -42,8 +42,12 @@ def create_user_record(
 ) -> models.User:
     if db.query(models.User).filter(models.User.username == username).first():
         raise HTTPException(400, "این نام کاربری قبلا ثبت شده است")
-    if telegram_id and db.query(models.User).filter(models.User.telegram_id == telegram_id).first():
-        raise HTTPException(400, "این حساب تلگرام قبلا به یک کاربر دیگر وصل شده است")
+    # NOTE: telegram_id is intentionally NOT required to be unique - a
+    # single Telegram account can be linked to several panel accounts (a
+    # customer who bought more than once under different usernames). See
+    # routers/bot.py's list_users_by_telegram + the bot's account-picker
+    # (telegram_bot/handlers/customer.py's _resolve_account) for how the
+    # bot lets the customer choose which one they mean.
     expire_at = None
     if expire_days:
         expire_at = dt.datetime.utcnow() + dt.timedelta(days=expire_days)
@@ -621,6 +625,39 @@ def _parse_mikrotik_datetime(value) -> Optional[dt.datetime]:
         return None
 
 
+_MT_DURATION_TOKEN_RE = re.compile(r"(\d+)([wdhms])")
+_MT_DURATION_CLOCK_SUFFIX_RE = re.compile(r"(\d{1,2}):(\d{2}):(\d{2})$")
+_MT_DURATION_UNIT_SECONDS = {"w": 7 * 86400, "d": 86400, "h": 3600, "m": 60, "s": 1}
+
+
+def _parse_mikrotik_duration_days(value) -> Optional[int]:
+    """Parses RouterOS 'time' values (a Profile's 'validity' field) into
+    whole days, rounded UP so an imported user never ends up with less than
+    what was actually configured (e.g. a sub-day validity becomes 1 day,
+    not 0). Confirmed against a live router that RouterOS prints these as
+    compact tokens like '4w2d', '1h', '1d', '30m' (NOT a fixed 'w/d' +
+    'HH:MM:SS' layout) - but a trailing clock-style 'HH:MM:SS' suffix (seen
+    on some other RouterOS 'time' fields, e.g. '4w2d03:00:00') is also
+    handled just in case. Returns None for missing/'unlimited'/unparseable/
+    zero values."""
+    if not value or not isinstance(value, str):
+        return None
+    value = value.strip().lower()
+    if value in ("unlimited", ""):
+        return None
+    total_seconds = 0
+    clock = _MT_DURATION_CLOCK_SUFFIX_RE.search(value)
+    if clock:
+        h, m, s = (int(g) for g in clock.groups())
+        total_seconds += h * 3600 + m * 60 + s
+        value = value[: clock.start()]
+    for amount, unit in _MT_DURATION_TOKEN_RE.findall(value):
+        total_seconds += int(amount) * _MT_DURATION_UNIT_SECONDS[unit]
+    if total_seconds <= 0:
+        return None
+    return max(1, -(-total_seconds // 86400))  # ceil to whole days
+
+
 def _parse_shared_users(value) -> int:
     """RouterOS User Manager's 'shared-users' is an integer or the literal
     string 'unlimited'. The panel represents unlimited as 0."""
@@ -677,11 +714,29 @@ def import_usermanager_accounts(db: Session, node: models.Node) -> dict:
         with MikrotikClient.for_node(node) as mt:
             um_users = mt.read_um_users()
             user_profiles = mt.read_um_user_profiles()
+            profiles = mt.read_um_profiles()
             profile_limitations = mt.read_um_profile_limitations()
             limitations = mt.read_um_limitations()
             usage_by_id = mt.read_um_usage([u.get(".id") for u in um_users if u.get(".id")])
     except MikrotikError as exc:
         raise HTTPException(400, str(exc))
+
+    # profile -> validity duration in days, ONLY for profiles configured as
+    # "starts-when: first-auth" (RouterOS: validity counts from the user's
+    # first successful login, not from when the profile was assigned). Used
+    # below as a fallback for accounts whose user-profile assignment has no
+    # end-time yet because that first login hasn't happened - see
+    # MikrotikClient.read_um_user_profiles' docstring for why that happens.
+    profile_first_use_days: dict[str, int] = {}
+    for p in profiles:
+        name = p.get("name")
+        if not name:
+            continue
+        if (p.get("starts-when") or "").strip().lower() != "first-auth":
+            continue
+        days = _parse_mikrotik_duration_days(p.get("validity"))
+        if days:
+            profile_first_use_days[str(name)] = days
 
     # RouterOS sometimes returns these name/reference fields as ints (e.g. a
     # limitation literally named "100") instead of strings - normalize both
@@ -708,18 +763,34 @@ def import_usermanager_accounts(db: Session, node: models.Node) -> dict:
         if transfer:
             profile_quota_bytes[profile] = profile_quota_bytes.get(profile, 0) + transfer
 
-    # user -> quota / expiry, from their currently active/running profile(s)
-    # NOTE: RouterOS actually returns state as "running-active" (hyphenated),
-    # not "running active" as MikroTik's own docs page shows it - confirmed
-    # against a live router. Match any state starting with "running" (covers
-    # "running-active" and any other "running-*" variant) rather than an
-    # exact string, so this doesn't silently break again if a different
-    # RouterOS version phrases it slightly differently.
+    # user -> quota / expiry, from every profile assignment that hasn't
+    # already been fully consumed. NOTE: on a live router this has been seen
+    # returning "running", "running-active" (hyphenated, unlike MikroTik's
+    # own docs page which shows "running active" with a space), AND
+    # "waiting" (a profile that's assigned but not yet started - e.g. a
+    # starts-when=first-auth profile before the user's first login, where
+    # end-time also literally comes back as the string "not-yet-running").
+    # RouterOS's own state vocabulary clearly isn't fully documented/stable
+    # across versions, so instead of allow-listing "running"-ish strings
+    # (which silently excluded "waiting" accounts entirely - they got NO
+    # quota and NO expiry at all, not even the first-use fallback below),
+    # only deny-list "used" (an expired/superseded assignment that should
+    # never contribute quota or expiry for a still-current account).
+    #
+    # Fallback for accounts on a starts-when=first-auth profile whose
+    # end-time isn't known yet (see profile_first_use_days above): the
+    # user hasn't ever logged in, so we can't compute an absolute expire_at,
+    # but we CAN carry over the profile's validity as
+    # User.expire_days_after_first_use - the panel's RADIUS server already
+    # activates that into a real expire_at on this user's actual first
+    # successful login (see services/radius_server.py), exactly mirroring
+    # what RouterOS itself would have done.
     user_quota: dict[str, int] = {}
     user_expiry: dict[str, dt.datetime] = {}
+    user_expiry_days_after_first_use: dict[str, int] = {}
     for up in user_profiles:
         state = (up.get("state") or "").strip().lower()
-        if not state.startswith("running"):
+        if state == "used":
             continue
         username = up.get("user")
         profile = up.get("profile")
@@ -730,6 +801,8 @@ def import_usermanager_accounts(db: Session, node: models.Node) -> dict:
         end_time = _parse_mikrotik_datetime(up.get("end-time"))
         if end_time and (username not in user_expiry or end_time > user_expiry[username]):
             user_expiry[username] = end_time
+        elif not end_time and str(profile) in profile_first_use_days:
+            user_expiry_days_after_first_use[username] = profile_first_use_days[str(profile)]
 
     # user -> true lifetime bytes used, from RouterOS's own per-user monitor
     # counter (keyed by the user's ".id", so join through um_users below).
@@ -775,6 +848,11 @@ def import_usermanager_accounts(db: Session, node: models.Node) -> dict:
                 total_quota_bytes=user_quota.get(name, 0),
                 used_bytes=user_used.get(name, 0),
                 expire_at=user_expiry.get(name),
+                # Only meaningful when expire_at above is None - i.e. this
+                # account's profile counts validity from first login and
+                # that hasn't happened yet, so RouterOS had no absolute
+                # end-time to give us (see profile_first_use_days above).
+                expire_days_after_first_use=None if user_expiry.get(name) else user_expiry_days_after_first_use.get(name),
             )
             db.add(user)
             db.flush()

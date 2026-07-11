@@ -172,12 +172,20 @@ def get_admin_by_telegram(tg_id: int, db: Session = Depends(get_db)):
 
 @router.get("/telegram-user-ids", response_model=list[int])
 def telegram_user_ids(db: Session = Depends(get_db)):
-    """Every telegram id currently linked to a panel account - used by the
-    admin bot's "📢 پیام همگانی" broadcast and the daily quota/expiry
-    reminder job. panel_bridge.py (in-process) queries this directly
-    instead of calling itself over HTTP; remote_bridge.py (remote bot) uses
-    this endpoint."""
-    rows = db.query(models.User.telegram_id).filter(models.User.telegram_id.isnot(None)).all()
+    """Every DISTINCT telegram id currently linked to a panel account - used
+    by the admin bot's "📢 پیام همگانی" broadcast, which sends one generic
+    message per chat id (as opposed to the daily quota/expiry reminder job,
+    which queries per-User and is fine seeing the same telegram_id more than
+    once - see services/notify.py). .distinct() matters now that a single
+    telegram id can be linked to more than one User (see User.telegram_id in
+    models.py) - without it, a customer with 2 linked accounts would get the
+    same broadcast message twice."""
+    rows = (
+        db.query(models.User.telegram_id)
+        .filter(models.User.telegram_id.isnot(None))
+        .distinct()
+        .all()
+    )
     return [r[0] for r in rows]
 
 
@@ -235,10 +243,36 @@ def list_users(
 
 @router.get("/users/by-telegram/{telegram_id}", response_model=schemas.BotUserResponse)
 def get_user_by_telegram(telegram_id: int, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.telegram_id == telegram_id).first()
+    """Single-account lookup - kept for callers that only ever cared about
+    "the" account for this telegram id (e.g. the daily notify job, the
+    /start greeting). Now that telegram_id can point at more than one User,
+    this returns the most-recently-linked one; anything customer-facing
+    that needs to let the person pick among several should use
+    list_users_by_telegram below instead."""
+    user = (
+        db.query(models.User)
+        .filter(models.User.telegram_id == telegram_id)
+        .order_by(models.User.id.desc())
+        .first()
+    )
     if not user:
         raise HTTPException(404, "کاربری با این حساب تلگرام پیدا نشد")
     return _user_response(user)
+
+
+@router.get("/users/by-telegram/{telegram_id}/all", response_model=list[schemas.BotUserResponse])
+def list_users_by_telegram(telegram_id: int, db: Session = Depends(get_db)):
+    """Every account linked to this telegram id (could be 0, 1, or several -
+    see the big comment on User.telegram_id in models.py). The bot uses
+    this to decide whether to act directly (0 or 1 result) or show an
+    account picker (2+ results) - see telegram_bot's _resolve_account."""
+    users = (
+        db.query(models.User)
+        .filter(models.User.telegram_id == telegram_id)
+        .order_by(models.User.id.desc())
+        .all()
+    )
+    return [_user_response(u) for u in users]
 
 
 @router.get("/users/{username}", response_model=schemas.BotUserResponse)
@@ -248,16 +282,14 @@ def get_user(username: str, db: Session = Depends(get_db), owner_admin_id: Optio
 
 @router.post("/users/{username}/link-telegram", response_model=schemas.BotUserResponse)
 def link_telegram(username: str, payload: schemas.BotLinkTelegramRequest, db: Session = Depends(get_db)):
+    # telegram_id is intentionally NOT required to be unique across users -
+    # one Telegram account can be linked to several panel accounts (a
+    # customer who bought more than once under different usernames). The
+    # bot's "🔗 وصل کردن حساب قبلی" flow (telegram_bot/handlers/customer.py)
+    # just adds this account to that telegram id's list; when there's more
+    # than one, the bot shows an account picker (see list_users_by_telegram
+    # below + telegram_bot's _resolve_account).
     user = _get_user_or_404(db, username)
-    existing = db.query(models.User).filter(models.User.telegram_id == payload.telegram_id).first()
-    if existing and existing.id != user.id:
-        # Naming the already-linked account here (rather than a generic
-        # "already linked to someone else") is what makes this
-        # self-diagnosable - the common cause is a stray auto-created
-        # "tg<id>" account from an earlier bot purchase/topup attempt
-        # holding this telegram id, which an admin can then find and clear
-        # from the user's edit page in the web panel.
-        raise HTTPException(400, f"این حساب تلگرام قبلا به کاربر «{existing.username}» وصل شده است")
     user.telegram_id = payload.telegram_id
     db.commit()
     db.refresh(user)

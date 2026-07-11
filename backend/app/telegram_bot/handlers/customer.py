@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from ..panel_bridge import api, ApiError
-from ..callbacks import MenuCB, PackageCB, NodeCB, ProtocolCB, TopupAmountCB, PayCB, ConnectionCB, PurchaseCB
+from ..callbacks import MenuCB, PackageCB, NodeCB, ProtocolCB, TopupAmountCB, PayCB, ConnectionCB, PurchaseCB, SwitchAccountCB
 from ..config import config
 from ..admin_scope import resolve_admin_scope
 from ..keyboards import (
@@ -23,6 +23,7 @@ from ..keyboards import (
     purchases_kb,
     usage_per_service_text,
     standalone_usage_text,
+    account_picker_kb,
 )
 from ..states import CustomerLinkStates, CustomerPurchaseStates, CustomerTopupStates
 from ..utils import fmt_bytes, fmt_date, STATUS_LABELS
@@ -53,6 +54,86 @@ def _account_text(user: dict) -> str:
         lines.append(f"\n<b>خریدهای شما ({len(user['connections'])} سرویس):</b> روی هرکدوم از دکمه‌های پایین بزنید 👇")
         lines.append(usage_per_service_text(user["connections"]))
     return "\n".join(lines)
+
+
+async def _clear_state_keep_account(state: FSMContext) -> None:
+    """state.clear() wipes ALL FSM data, including which account a customer
+    with several linked accounts (see User.telegram_id in models.py) had
+    already picked this session - re-save that one key right after so
+    jumping between main-menu buttons doesn't re-open the account picker on
+    every single tap."""
+    data = await state.get_data()
+    active = data.get("active_username")
+    await state.clear()
+    if active:
+        await state.update_data(active_username=active)
+
+
+async def _resolve_account(target, state: FSMContext, tg_id: int, action: str):
+    """Central "which account does this customer mean" lookup, used
+    everywhere a customer-facing handler needs to act on `the` account
+    (view it, renew it, top it up, ...). A telegram id can now be linked to
+    more than one panel account (bought more than once under different
+    usernames - see User.telegram_id) so this isn't always a single answer.
+
+    Returns:
+      - a user dict - either the only account linked, or one of several
+        where the customer already picked this session (state's
+        "active_username")
+      - None - this telegram id has no linked account at all; caller shows
+        its own usual "هنوز حسابی ندارید" message
+      - the string "ambiguous" - 2+ accounts linked, none picked yet; an
+        account-picker keyboard has ALREADY been shown (tagged with
+        `action` so cb_switch_account below knows what to resume once one
+        is picked) - caller should just `return` with no further messaging
+
+    `target` is the Message or CallbackQuery that triggered the lookup,
+    only used to know how to render the "ambiguous" picker."""
+    try:
+        accounts = await api.list_users_by_telegram(tg_id)
+    except ApiError:
+        accounts = []
+    if not accounts:
+        return None
+    if len(accounts) == 1:
+        return accounts[0]
+    data = await state.get_data()
+    active = data.get("active_username")
+    if active:
+        match = next((a for a in accounts if a["username"] == active), None)
+        if match:
+            return match
+    await state.update_data(pending_menu_action=action)
+    text = "شما چند حساب دارید - کدام‌یک را می‌خواهید؟"
+    kb = account_picker_kb(accounts)
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(text, reply_markup=kb)
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=kb)
+    return "ambiguous"
+
+
+async def _resolve_account_silent(state: FSMContext, tg_id: int):
+    """Same account resolution as _resolve_account, but never interrupts
+    with a picker - used where the account is a nice-to-have (prefilling
+    "pay from balance"/target_username while picking a NEW purchase)
+    instead of the whole point of the action, so an undecided multi-account
+    customer just doesn't get that convenience instead of having their
+    purchase flow hijacked by an unrelated picker."""
+    try:
+        accounts = await api.list_users_by_telegram(tg_id)
+    except ApiError:
+        return None
+    if not accounts:
+        return None
+    if len(accounts) == 1:
+        return accounts[0]
+    data = await state.get_data()
+    active = data.get("active_username")
+    if active:
+        return next((a for a in accounts if a["username"] == active), None)
+    return None
 
 
 async def send_package_extras(bot: Bot, chat_id: int, pkg: dict) -> None:
@@ -92,11 +173,9 @@ async def send_package_extras(bot: Bot, chat_id: int, pkg: dict) -> None:
 @router.message(Command("account"))
 async def cmd_account(message: Message, state: FSMContext, bot: Bot) -> None:
     """Slash-command shortcut for "👤 اکانت من"."""
-    await state.clear()
-    try:
-        user = await api.get_user_by_telegram(message.from_user.id)
-    except ApiError as exc:
-        await message.answer(f"خطا: {exc}")
+    await _clear_state_keep_account(state)
+    user = await _resolve_account(message, state, message.from_user.id, "cust_account")
+    if user == "ambiguous":
         return
     if not user:
         scope = await resolve_admin_scope(message.from_user.id)
@@ -137,11 +216,9 @@ async def cmd_buy(message: Message, state: FSMContext) -> None:
 @router.message(Command("topup"))
 async def cmd_topup(message: Message, state: FSMContext) -> None:
     """Slash-command shortcut for "💰 افزایش اعتبار"."""
-    await state.clear()
-    try:
-        account = await api.get_user_by_telegram(message.from_user.id)
-    except ApiError as exc:
-        await message.answer(f"خطا: {exc}")
+    await _clear_state_keep_account(state)
+    account = await _resolve_account(message, state, message.from_user.id, "cust_topup")
+    if account == "ambiguous":
         return
     if not account:
         await message.answer("ابتدا باید یک حساب داشته باشید یا حساب قبلی را وصل کنید.")
@@ -166,11 +243,9 @@ async def cmd_topup(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(MenuCB.filter(F.action == "cust_account"))
 async def cb_account(call: CallbackQuery, state: FSMContext, bot: Bot) -> None:
-    await state.clear()
-    try:
-        user = await api.get_user_by_telegram(call.from_user.id)
-    except ApiError as exc:
-        await call.answer(f"خطا: {exc}", show_alert=True)
+    await _clear_state_keep_account(state)
+    user = await _resolve_account(call, state, call.from_user.id, "cust_account")
+    if user == "ambiguous":
         return
     if not user:
         scope = await resolve_admin_scope(call.from_user.id)
@@ -188,15 +263,13 @@ async def cb_account(call: CallbackQuery, state: FSMContext, bot: Bot) -> None:
 
 
 @router.callback_query(MenuCB.filter(F.action == "cust_usage"))
-async def cb_usage(call: CallbackQuery, bot: Bot) -> None:
+async def cb_usage(call: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     """Dedicated top-level "📊 مصرف سرویس‌ها" button - shows the same
     per-service usage breakdown as the section under "اکانت من"
     (usage_per_service_text), but as its own standalone view reachable in
     one tap instead of having to open the account view first."""
-    try:
-        user = await api.get_user_by_telegram(call.from_user.id)
-    except ApiError as exc:
-        await call.answer(f"خطا: {exc}", show_alert=True)
+    user = await _resolve_account(call, state, call.from_user.id, "cust_usage")
+    if user == "ambiguous":
         return
     if not user:
         await call.message.edit_text("هنوز حسابی برای شما ثبت نشده.", reply_markup=home_kb())
@@ -207,15 +280,13 @@ async def cb_usage(call: CallbackQuery, bot: Bot) -> None:
 
 
 @router.callback_query(PurchaseCB.filter())
-async def cb_view_purchase(call: CallbackQuery, callback_data: PurchaseCB, bot: Bot) -> None:
+async def cb_view_purchase(call: CallbackQuery, callback_data: PurchaseCB, state: FSMContext, bot: Bot) -> None:
     """Fires when a customer taps one multi-service purchase button under
     "👤 اکانت من" - opens a submenu listing just that purchase's services
     (single-service purchases skip this entirely - purchases_kb wires their
     button straight to ConnectionCB, same as before this feature existed)."""
-    try:
-        user = await api.get_user_by_telegram(call.from_user.id)
-    except ApiError as exc:
-        await call.answer(f"خطا: {exc}", show_alert=True)
+    user = await _resolve_account(call, state, call.from_user.id, "cust_account")
+    if user == "ambiguous":
         return
     if not user:
         await call.answer("حساب شما پیدا نشد", show_alert=True)
@@ -237,15 +308,13 @@ async def cb_view_purchase(call: CallbackQuery, callback_data: PurchaseCB, bot: 
 
 
 @router.callback_query(ConnectionCB.filter())
-async def cb_view_connection(call: CallbackQuery, callback_data: ConnectionCB, bot: Bot) -> None:
+async def cb_view_connection(call: CallbackQuery, callback_data: ConnectionCB, state: FSMContext, bot: Bot) -> None:
     """Fires when a customer taps one specific service button under "👤
     اکانت من" - sends just that service's config/link/QR, instead of the
     old behavior of dumping every service automatically the moment the
     account view opened."""
-    try:
-        user = await api.get_user_by_telegram(call.from_user.id)
-    except ApiError as exc:
-        await call.answer(f"خطا: {exc}", show_alert=True)
+    user = await _resolve_account(call, state, call.from_user.id, "cust_account")
+    if user == "ambiguous":
         return
     if not user:
         await call.answer("حساب شما پیدا نشد", show_alert=True)
@@ -258,6 +327,43 @@ async def cb_view_connection(call: CallbackQuery, callback_data: ConnectionCB, b
     await send_connection(bot, call.from_user.id, conn)
 
 
+@router.callback_query(SwitchAccountCB.filter())
+async def cb_switch_account(call: CallbackQuery, callback_data: SwitchAccountCB, state: FSMContext, bot: Bot) -> None:
+    """Fires when a customer with several linked accounts (see
+    User.telegram_id) taps one in the account-picker shown by
+    _resolve_account. Remembers the choice for the rest of this session
+    (state's "active_username") and resumes whichever view originally
+    triggered the picker (state's "pending_menu_action", set by
+    _resolve_account right before showing it)."""
+    await state.update_data(active_username=callback_data.username)
+    data = await state.get_data()
+    action = data.get("pending_menu_action") or "cust_account"
+    if action == "cust_usage":
+        await cb_usage(call, state, bot)
+    elif action == "cust_renew":
+        await cb_renew(call, state)
+    elif action == "cust_topup":
+        await cb_topup_start(call, state)
+    else:
+        await cb_account(call, state, bot)
+
+
+# --------------------------------------------------------------- numeric id
+@router.callback_query(MenuCB.filter(F.action == "cust_myid"))
+async def cb_myid(call: CallbackQuery) -> None:
+    """Shows the customer their own numeric Telegram id so they can copy it
+    and send it to an admin - used when an admin wants to manually link an
+    account from the panel's user-edit form (see UserDetail.jsx's "آیدی
+    عددی تلگرام" field) but the customer hasn't purchased/linked through the
+    bot yet, so there's no other way for the admin to get this number."""
+    text = (
+        f"🆔 آیدی عددی تلگرام شما:\n\n<code>{call.from_user.id}</code>\n\n"
+        "روی عدد بزنید تا کپی شود، و آن را برای ادمین ارسال کنید."
+    )
+    await call.message.edit_text(text, reply_markup=home_kb())
+    await call.answer()
+
+
 # --------------------------------------------------------------- link existing
 @router.callback_query(MenuCB.filter(F.action == "cust_link"))
 async def cb_link_start(call: CallbackQuery, state: FSMContext) -> None:
@@ -268,19 +374,48 @@ async def cb_link_start(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(CustomerLinkStates.waiting_username)
 async def link_username(message: Message, state: FSMContext, bot: Bot) -> None:
+    """Security note: this does NOT link immediately - a username alone
+    proves nothing (anyone could type someone else's username and read
+    their balance/services). It just files a request an admin has to
+    approve/reject (see admin_pending.py's cb_approval "link" branch),
+    exactly like a purchase receipt does - reuses the same pending_purchases
+    table/approval flow, just with a dummy zero-price "package"."""
     username = (message.text or "").strip()
     try:
-        await api.get_user(username)
-        user = await api.link_telegram(username, message.from_user.id)
+        target_user = await api.get_user(username)
     except ApiError as exc:
         await message.answer(f"خطا: {exc}\nدوباره امتحان کنید یا انصراف بدهید:", reply_markup=cancel_kb())
         return
     await state.clear()
-    await message.answer("✅ حساب شما وصل شد:\n\n" + _account_text(user), reply_markup=home_kb())
-    if user["connections"]:
-        await send_connections(bot, message.from_user.id, user["connections"])
+
+    request_id = storage.create_pending(
+        telegram_id=message.from_user.id,
+        telegram_username=message.from_user.username,
+        telegram_name=message.from_user.full_name,
+        kind="link",
+        package={"id": 0, "name": "اتصال حساب قبلی", "quota_gb": 0, "duration_days": None, "price": 0},
+        target_username=username,
+    )
+    await message.answer(
+        "✅ درخواست اتصال حساب شما برای ادمین ارسال شد. بعد از تایید ادمین، به این حساب دسترسی خواهید داشت.",
+        reply_markup=home_kb(),
+    )
+
+    from .admin_pending import _pending_summary  # local import avoids a circular import at module load
+    from ..keyboards import approval_kb
+
+    who = f"@{message.from_user.username}" if message.from_user.username else (message.from_user.full_name or str(message.from_user.id))
+    caption = (
+        "🔗 درخواست اتصال حساب قبلی\n\n"
+        + _pending_summary(storage.get_pending(request_id))
+        + f"\n\nحساب مقصد: «{username}»"
+        + (f" ({target_user.get('full_name')})" if target_user.get("full_name") else "")
+        + f"\nموجودی فعلی آن حساب: {target_user.get('balance', 0):,} تومان"
+        + f"\n\n⚠️ فقط اگر مطمئنید {who} واقعا صاحب این حساب است تایید کنید."
+    )
+    for admin_id in config.approval_targets():
         try:
-            await bot.send_message(message.from_user.id, "🏠 منو:", reply_markup=home_kb())
+            await bot.send_message(admin_id, caption, reply_markup=approval_kb(request_id))
         except Exception:
             pass
 
@@ -309,10 +444,8 @@ async def cb_buy(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(MenuCB.filter(F.action == "cust_renew"))
 async def cb_renew(call: CallbackQuery, state: FSMContext) -> None:
-    try:
-        account = await api.get_user_by_telegram(call.from_user.id)
-    except ApiError as exc:
-        await call.answer(f"خطا: {exc}", show_alert=True)
+    account = await _resolve_account(call, state, call.from_user.id, "cust_renew")
+    if account == "ambiguous":
         return
     if not account:
         await call.answer("ابتدا باید یک حساب داشته باشید یا حساب قبلی را وصل کنید.", show_alert=True)
@@ -334,11 +467,7 @@ async def _ask_for_receipt(call: CallbackQuery, state: FSMContext) -> None:
     # If the customer already has a linked account with enough balance,
     # offer an instant "pay from balance" option alongside the usual
     # card-to-card receipt flow (see pay_with_balance below).
-    account = None
-    try:
-        account = await api.get_user_by_telegram(call.from_user.id)
-    except ApiError:
-        account = None
+    account = await _resolve_account_silent(state, call.from_user.id)
     can_pay_from_balance = bool(account and price and (account.get("balance") or 0) >= price)
     if account:
         await state.update_data(target_username=account["username"])
@@ -576,10 +705,8 @@ async def _ask_for_topup_receipt(target, state: FSMContext, amount: int) -> None
 
 @router.callback_query(MenuCB.filter(F.action == "cust_topup"))
 async def cb_topup_start(call: CallbackQuery, state: FSMContext) -> None:
-    try:
-        account = await api.get_user_by_telegram(call.from_user.id)
-    except ApiError as exc:
-        await call.answer(f"خطا: {exc}", show_alert=True)
+    account = await _resolve_account(call, state, call.from_user.id, "cust_topup")
+    if account == "ambiguous":
         return
     if not account:
         await call.answer("ابتدا باید یک حساب داشته باشید یا حساب قبلی را وصل کنید.", show_alert=True)

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from .database import get_db
 from .security import decode_access_token
-from .permissions import parse_permissions
+from .permissions import effective_permissions
 from . import models
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
@@ -45,7 +45,7 @@ def require_permission(perm: str):
     their stored `permissions` value."""
 
     def _checker(admin: models.AdminUser = Depends(get_current_admin)) -> models.AdminUser:
-        if admin.is_superadmin or perm in parse_permissions(admin.permissions):
+        if admin.is_superadmin or perm in effective_permissions(admin):
             return admin
         raise HTTPException(status.HTTP_403_FORBIDDEN, "شما به این بخش دسترسی ندارید")
 

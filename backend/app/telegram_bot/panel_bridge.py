@@ -193,6 +193,11 @@ class PanelBridge:
         except ApiError:
             return None
 
+    async def list_users_by_telegram(self, telegram_id: int) -> list[dict]:
+        """Every account linked to this telegram id - see the account-picker
+        logic in telegram_bot/handlers/customer.py's _resolve_account."""
+        return _dump(await _call(bot_router.list_users_by_telegram, telegram_id)) or []
+
     async def get_admin_by_telegram(self, telegram_id: int) -> Optional[dict]:
         """Used by the built-in bot to recognize a linked group-admin (see
         telegram_bot/admin_scope.py) - None if this Telegram id isn't

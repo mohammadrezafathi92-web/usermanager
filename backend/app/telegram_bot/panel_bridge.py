@@ -171,6 +171,7 @@ class PanelBridge:
         connections: Optional[list[dict]] = None,
         owner_admin_id: Optional[int] = None,
         package_name: Optional[str] = None,
+        package_id: Optional[int] = None,
     ) -> dict:
         payload = schemas.BotCreateUserRequest(
             username=username,
@@ -181,6 +182,7 @@ class PanelBridge:
             connections=[schemas.BotCreateConnectionSpec(**c) for c in (connections or [])],
             owner_admin_id=owner_admin_id,
             package_name=package_name,
+            package_id=package_id,
         )
         return _dump(await _call(bot_router.create_user, payload))
 
@@ -231,9 +233,9 @@ class PanelBridge:
 
     async def renew(
         self, username: str, add_gb: float = 0, add_days: int = 0, reset_usage: bool = False,
-        owner_admin_id: Optional[int] = None,
+        owner_admin_id: Optional[int] = None, package_id: Optional[int] = None,
     ) -> dict:
-        payload = schemas.BotRenewRequest(add_gb=add_gb, add_days=add_days, reset_usage=reset_usage)
+        payload = schemas.BotRenewRequest(add_gb=add_gb, add_days=add_days, reset_usage=reset_usage, package_id=package_id)
         return _dump(await _call(bot_router.renew, username, payload, owner_admin_id=owner_admin_id))
 
     async def reset_usage(self, username: str, owner_admin_id: Optional[int] = None) -> dict:

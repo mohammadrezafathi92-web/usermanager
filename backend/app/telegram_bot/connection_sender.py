@@ -49,10 +49,11 @@ TYPE_LABELS = {
     "openvpn": "🛡 OpenVPN",
     "l2tp": "🌐 L2TP/IPsec",
     "ikev2": "🛰 IKEv2/IPsec",
+    "sstp": "🔐 SSTP",
     "xray": "⚡ V2Ray/Xray",
 }
 
-DEFAULT_PORTS = {"l2tp": 1701, "ikev2": 500}
+DEFAULT_PORTS = {"l2tp": 1701, "ikev2": 500, "sstp": 443}
 
 
 def _qr_bytes(data: str) -> bytes:
@@ -88,7 +89,7 @@ async def send_connection(bot: Bot, chat_id: int, conn: dict) -> None:
             _log_send_failure(exc, f"send wireguard connection {conn.get('id')} to {chat_id}")
         return
 
-    if ctype in ("openvpn", "l2tp", "ikev2"):
+    if ctype in ("openvpn", "l2tp", "ikev2", "sstp"):
         port = conn.get("port") or DEFAULT_PORTS.get(ctype)
         lines = [f"{label} — {status}", ""]
         lines.append(f"سرور: <code>{conn.get('server') or '-'}</code>")

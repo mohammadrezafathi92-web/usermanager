@@ -1,6 +1,7 @@
 import React from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { useAuth } from "./context/AuthContext.jsx";
+import { useLanguage } from "./context/LanguageContext.jsx";
 import Login from "./pages/Login.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import Users from "./pages/Users.jsx";
@@ -13,8 +14,9 @@ import Admins from "./pages/Admins.jsx";
 
 function Protected({ children }) {
   const { token, loading } = useAuth();
+  const { t } = useLanguage();
   if (loading) {
-    return <div className="min-h-screen flex items-center justify-center text-gray-400">در حال بارگذاری...</div>;
+    return <div className="min-h-screen flex items-center justify-center text-gray-400">{t("common.loading")}</div>;
   }
   if (!token) return <Navigate to="/login" replace />;
   return children;
@@ -22,8 +24,9 @@ function Protected({ children }) {
 
 function SuperadminOnly({ children }) {
   const { token, loading, isSuperadmin } = useAuth();
+  const { t } = useLanguage();
   if (loading) {
-    return <div className="min-h-screen flex items-center justify-center text-gray-400">در حال بارگذاری...</div>;
+    return <div className="min-h-screen flex items-center justify-center text-gray-400">{t("common.loading")}</div>;
   }
   if (!token) return <Navigate to="/login" replace />;
   if (!isSuperadmin) return <Navigate to="/" replace />;
@@ -32,8 +35,9 @@ function SuperadminOnly({ children }) {
 
 function PermRoute({ perm, children }) {
   const { token, loading, can } = useAuth();
+  const { t } = useLanguage();
   if (loading) {
-    return <div className="min-h-screen flex items-center justify-center text-gray-400">در حال بارگذاری...</div>;
+    return <div className="min-h-screen flex items-center justify-center text-gray-400">{t("common.loading")}</div>;
   }
   if (!token) return <Navigate to="/login" replace />;
   if (!can(perm)) return <Navigate to="/" replace />;

@@ -97,7 +97,7 @@ def list_packages(db: Session = Depends(get_db)):
     return (
         db.query(models.Package)
         .options(joinedload(models.Package.connections), joinedload(models.Package.files))
-        .filter(models.Package.enabled == True)  # noqa: E712
+        .filter(models.Package.bot_enabled == True)  # noqa: E712
         .order_by(models.Package.sort_order, models.Package.id)
         .all()
     )
@@ -194,6 +194,7 @@ def create_user(payload: schemas.BotCreateUserRequest, db: Session = Depends(get
     user = user_ops.create_user_record(
         db, payload.username, payload.full_name, payload.quota_gb, payload.expire_days,
         telegram_id=payload.telegram_id, owner_admin_id=payload.owner_admin_id,
+        package_id=payload.package_id,
     )
     # Every connection in this one request is one purchase - share a single
     # batch (see models.Connection.purchase_batch) so the bot's "اکانت من"
@@ -318,7 +319,7 @@ def renew(
     owner_admin_id: Optional[int] = None,
 ):
     user = _get_user_or_404(db, username, owner_admin_id)
-    user_ops.renew_user(db, user, payload.add_gb, payload.add_days, payload.reset_usage)
+    user_ops.renew_user(db, user, payload.add_gb, payload.add_days, payload.reset_usage, package_id=payload.package_id)
     return _user_response(user)
 
 

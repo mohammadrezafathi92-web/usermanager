@@ -49,6 +49,11 @@ def _charge_admin_for_package(db: Session, admin: models.AdminUser, package: mod
     if the balance can't cover it."""
     if admin.is_superadmin or units <= 0:
         return
+    if admin.billing_mode == "usage":
+        # این ادمین بابت هر پکیج پول کم نمی‌شود - اعتبارش به‌صورت حجمی
+        # (volume_balance_gb) و لحظه‌ای در quota_manager.py's _apply_delta
+        # کسر می‌شود، نه یکجا در لحظه ساخت کاربر.
+        return
     unit_price = package.cooperation_price if package.cooperation_price is not None else (package.price or 0)
     cost = unit_price * units
     if cost <= 0:
@@ -69,6 +74,8 @@ def _refund_admin_for_package(db: Session, admin: models.AdminUser, package: mod
     safety cap before reaching the requested count) - see bulk_create_users
     below."""
     if admin.is_superadmin or units <= 0:
+        return
+    if admin.billing_mode == "usage":
         return
     unit_price = package.cooperation_price if package.cooperation_price is not None else (package.price or 0)
     amount = unit_price * units
@@ -102,6 +109,7 @@ def _build_user_query(
     status: Optional[models.UserStatus] = None,
     online_only: bool = False,
     owner_admin_id: Optional[int] = None,
+    package_id: Optional[int] = None,
 ):
     """Shared filter-building for list_users and export_users below, so the
     Excel export always matches exactly what's on screen for the same
@@ -118,6 +126,8 @@ def _build_user_query(
         query = query.filter(or_(models.User.username.ilike(like), models.User.full_name.ilike(like)))
     if status:
         query = query.filter(models.User.status == status)
+    if package_id:
+        query = query.filter(models.User.package_id == package_id)
     if online_only:
         # Users with at least one currently-open RADIUS session (openvpn/
         # l2tp) OR at least one xray connection the node last reported as
@@ -145,6 +155,7 @@ def list_users(
     sort_by: str = "id",
     sort_dir: str = "desc",
     owner_admin_id: Optional[int] = None,
+    package_id: Optional[int] = None,
 ):
     """Paginated + server-side-searched/filtered/sorted so the panel stays
     responsive with a large number of users (the old version loaded every
@@ -157,7 +168,7 @@ def list_users(
     page = max(page, 1)
     page_size = min(max(page_size, 1), 200)
 
-    query = _build_user_query(db, admin, search, status, online_only, owner_admin_id)
+    query = _build_user_query(db, admin, search, status, online_only, owner_admin_id, package_id)
     total = query.with_entities(func.count(models.User.id)).scalar()
 
     sort_col = _SORT_COLUMNS.get(sort_by, models.User.id)
@@ -213,6 +224,26 @@ def list_users(
         items.append(item)
 
     return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/ids", response_model=list[int])
+def list_user_ids(
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+    search: Optional[str] = None,
+    status: Optional[models.UserStatus] = None,
+    online_only: bool = False,
+    owner_admin_id: Optional[int] = None,
+    package_id: Optional[int] = None,
+):
+    """Returns EVERY user id matching these filters, ignoring pagination -
+    powers the "انتخاب همه با این فیلتر" button in Users.jsx so a group
+    action (e.g. disable/renew/change volume for a package) can target every
+    matching user across all pages, not just the 50 currently on screen.
+    Registered BEFORE GET /{user_id} below for the same reason as /export.
+    Capped at 5000 ids per call as a sanity limit for one bulk action."""
+    query = _build_user_query(db, admin, search, status, online_only, owner_admin_id, package_id)
+    return [uid for (uid,) in query.with_entities(models.User.id).limit(5000).all()]
 
 
 @router.post("/bulk", response_model=schemas.BulkCreateUsersResult)
@@ -277,6 +308,12 @@ def bulk_update_users(
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
 ):
+    package = None
+    if payload.package_id:
+        package = db.get(models.Package, payload.package_id)
+        if not package:
+            raise HTTPException(400, "پکیج پیدا نشد")
+
     return user_ops.bulk_update_users(
         db,
         user_ids=payload.user_ids,
@@ -285,6 +322,7 @@ def bulk_update_users(
         reset_usage=payload.reset_usage,
         status=payload.status,
         max_concurrent_sessions=payload.max_concurrent_sessions,
+        package=package,
         owner_admin_id=None if admin.is_superadmin else admin.id,
     )
 
@@ -340,6 +378,7 @@ def create_user(
         )
         data["expire_days_after_first_use"] = None
         data["max_concurrent_sessions"] = package.max_concurrent_sessions
+        data["package_id"] = package.id
 
     user = models.User(**data)
     db.add(user)
@@ -362,9 +401,10 @@ def export_users(
     status: Optional[models.UserStatus] = None,
     online_only: bool = False,
     owner_admin_id: Optional[int] = None,
+    package_id: Optional[int] = None,
 ):
     """Exports the same set of users list_users would show for these exact
-    filters (search/status/online/group) as a formatted .xlsx file -
+    filters (search/status/online/group/package) as a formatted .xlsx file -
     "اکسپورت گروهی" in Users.jsx. Registered BEFORE GET /{user_id} below so
     the literal path "/export" is matched first (otherwise Starlette would
     try to parse "export" as an int user_id and 422)."""
@@ -372,7 +412,7 @@ def export_users(
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
 
-    query = _build_user_query(db, admin, search, status, online_only, owner_admin_id)
+    query = _build_user_query(db, admin, search, status, online_only, owner_admin_id, package_id)
     users = (
         query.options(joinedload(models.User.owner_admin))
         .order_by(models.User.id.desc())
@@ -442,7 +482,7 @@ def get_user(user_id: int, db: Session = Depends(get_db), admin: models.AdminUse
         )
         for c in out.connections:
             c.active_session_count = counts.get(c.id, 0)
-            if c.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2):
+            if c.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp):
                 # PPP connections have no "online" DB column of their own
                 # (that column only means anything for xray) - their live
                 # state is whether a RADIUS session is currently open.
@@ -575,6 +615,17 @@ def add_ikev2_connection(
     return user_ops.provision_ikev2(db, user, node, payload.max_concurrent_sessions)
 
 
+@router.post("/{user_id}/connections/sstp", response_model=schemas.ConnectionOut)
+def add_sstp_connection(
+    user_id: int,
+    payload: schemas.ConnectionCreateSstp,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+):
+    user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
+    return user_ops.provision_sstp(db, user, node, payload.max_concurrent_sessions)
+
+
 @router.post("/{user_id}/connections/xray", response_model=schemas.ConnectionOut)
 def add_xray_connection(
     user_id: int,
@@ -609,7 +660,7 @@ def update_connection(
     out.active_session_count = db.query(models.RadiusActiveSession).filter(
         models.RadiusActiveSession.connection_id == conn.id
     ).count()
-    if conn.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2):
+    if conn.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp):
         out.online = out.active_session_count > 0
     return out
 

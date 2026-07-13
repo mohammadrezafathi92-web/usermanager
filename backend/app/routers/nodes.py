@@ -1,3 +1,5 @@
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -8,6 +10,17 @@ from ..deps import get_current_admin, require_permission
 from ..services.mikrotik_client import MikrotikClient, MikrotikError
 from ..services.xray_client import XrayError, client_for_node
 from ..services import user_ops
+from ..services.keys import generate_password
+
+
+def _resolve_panel_host(payload_host: Optional[str]) -> str:
+    panel_host = (payload_host or settings.panel_public_host or "").strip()
+    if not panel_host:
+        raise HTTPException(
+            400,
+            "آدرس (IP) این سرور یوزر منیجر که میکروتیک باید بهش وصل شود را وارد کنید",
+        )
+    return panel_host
 
 # Router-level dependency is just "logged in" - listing/reading nodes is
 # available to every admin regardless of permissions (a restricted admin
@@ -135,6 +148,126 @@ def push_radius_config(node_id: int, payload: schemas.RadiusPushRequest, db: Ses
         raise HTTPException(400, str(exc))
 
     return {"ok": True, "message": "تنظیمات RADIUS با موفقیت روی میکروتیک اعمال شد"}
+
+
+@router.post("/{node_id}/push-sstp-config", response_model=schemas.ProtocolPushResult)
+def push_sstp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), _perm=_manage):
+    """One-click SSTP setup: registers the panel as a /radius client
+    (service=ppp, same as push-radius-config) if not already done, creates+
+    self-signs a server certificate if none exists yet, and enables the
+    SSTP server with authentication=mschap2. Does NOT touch IP pools or PPP
+    profiles - same minimal-touch scope as push-radius-config."""
+    node = db.get(models.Node, node_id)
+    if not node:
+        raise HTTPException(404, "نود پیدا نشد")
+    if node.type != models.NodeType.mikrotik:
+        raise HTTPException(400, "این عملیات فقط برای نود میکروتیک است")
+    if not node.mt_radius_secret:
+        raise HTTPException(400, "ابتدا مقدار RADIUS Secret این نود را وارد و ذخیره کنید")
+
+    panel_host = _resolve_panel_host(payload.panel_host)
+    port = node.mt_sstp_port or 443
+
+    try:
+        with MikrotikClient.for_node(node) as mt:
+            mt.push_radius_config(
+                panel_host=panel_host,
+                secret=node.mt_radius_secret,
+                auth_port=settings.radius_auth_port,
+                acct_port=settings.radius_acct_port,
+                service="ppp",
+            )
+            cert = mt.push_sstp_config(port=port)
+    except MikrotikError as exc:
+        raise HTTPException(400, str(exc))
+
+    node.mt_sstp_certificate = cert
+    db.commit()
+    return {"ok": True, "message": f"SSTP روی پورت {port} با گواهی «{cert}» فعال شد"}
+
+
+@router.post("/{node_id}/push-l2tp-config", response_model=schemas.ProtocolPushResult)
+def push_l2tp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), _perm=_manage):
+    """One-click L2TP/IPsec setup: registers the panel as a /radius client
+    (service=ppp) and enables the L2TP server with use-ipsec + a shared
+    pre-shared key. Generates and saves a random IPsec secret onto this
+    node if one isn't already set (mt_l2tp_ipsec_secret), so repeat pushes
+    are idempotent and the same key can be shown to clients afterwards."""
+    node = db.get(models.Node, node_id)
+    if not node:
+        raise HTTPException(404, "نود پیدا نشد")
+    if node.type != models.NodeType.mikrotik:
+        raise HTTPException(400, "این عملیات فقط برای نود میکروتیک است")
+    if not node.mt_radius_secret:
+        raise HTTPException(400, "ابتدا مقدار RADIUS Secret این نود را وارد و ذخیره کنید")
+
+    panel_host = _resolve_panel_host(payload.panel_host)
+    if not node.mt_l2tp_ipsec_secret:
+        node.mt_l2tp_ipsec_secret = generate_password(20)
+        db.commit()
+
+    try:
+        with MikrotikClient.for_node(node) as mt:
+            mt.push_radius_config(
+                panel_host=panel_host,
+                secret=node.mt_radius_secret,
+                auth_port=settings.radius_auth_port,
+                acct_port=settings.radius_acct_port,
+                service="ppp",
+            )
+            mt.push_l2tp_config(ipsec_secret=node.mt_l2tp_ipsec_secret)
+    except MikrotikError as exc:
+        raise HTTPException(400, str(exc))
+
+    return {"ok": True, "message": f"L2TP/IPsec فعال شد. کلید IPsec: {node.mt_l2tp_ipsec_secret}"}
+
+
+@router.post("/{node_id}/push-ikev2-config", response_model=schemas.ProtocolPushResult)
+def push_ikev2_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), _perm=_manage):
+    """One-click IKEv2 setup: registers the panel as a /radius client for
+    BOTH service=ppp (per-user login) and service=ipsec (IKEv2's own
+    RADIUS/EAP relay), then sets up an /ip/ipsec peer+identity pinned to
+    exchange-mode=ike2 with a pre-shared key (auto-generated and saved onto
+    this node's mt_ikev2_psk if not already set) and enables the L2TP
+    server's IPsec layer. NOTE: this configures the IPsec layer differently
+    from push-l2tp-config (explicit ike2 peer vs. the server's own
+    ipsec-secret shortcut) - pushing both on the same router may conflict;
+    pick one PSK-based protocol per router unless you know what you're
+    combining."""
+    node = db.get(models.Node, node_id)
+    if not node:
+        raise HTTPException(404, "نود پیدا نشد")
+    if node.type != models.NodeType.mikrotik:
+        raise HTTPException(400, "این عملیات فقط برای نود میکروتیک است")
+    if not node.mt_radius_secret:
+        raise HTTPException(400, "ابتدا مقدار RADIUS Secret این نود را وارد و ذخیره کنید")
+
+    panel_host = _resolve_panel_host(payload.panel_host)
+    if not node.mt_ikev2_psk:
+        node.mt_ikev2_psk = generate_password(20)
+        db.commit()
+
+    try:
+        with MikrotikClient.for_node(node) as mt:
+            mt.push_radius_config(
+                panel_host=panel_host,
+                secret=node.mt_radius_secret,
+                auth_port=settings.radius_auth_port,
+                acct_port=settings.radius_acct_port,
+                service="ppp",
+            )
+            mt.push_radius_config(
+                panel_host=panel_host,
+                secret=node.mt_radius_secret,
+                auth_port=settings.radius_auth_port,
+                acct_port=settings.radius_acct_port,
+                service="ipsec",
+            )
+            mt.push_ikev2_config(psk=node.mt_ikev2_psk)
+    except MikrotikError as exc:
+        raise HTTPException(400, str(exc))
+
+    return {"ok": True, "message": f"IKEv2 فعال شد. کلید PSK: {node.mt_ikev2_psk}"}
 
 
 @router.post("/{node_id}/import-ppp-users", response_model=schemas.PppImportResult)

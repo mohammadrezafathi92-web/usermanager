@@ -23,6 +23,7 @@ from .link_builder import (
     build_openvpn_config,
     build_l2tp_info,
     build_ikev2_info,
+    build_sstp_info,
 )
 
 def gb_to_bytes(gb: float) -> int:
@@ -39,6 +40,7 @@ def create_user_record(
     notes: Optional[str] = None,
     telegram_id: Optional[int] = None,
     owner_admin_id: Optional[int] = None,
+    package_id: Optional[int] = None,
 ) -> models.User:
     if db.query(models.User).filter(models.User.username == username).first():
         raise HTTPException(400, "این نام کاربری قبلا ثبت شده است")
@@ -59,6 +61,13 @@ def create_user_record(
         expire_at=expire_at,
         telegram_id=telegram_id,
         owner_admin_id=owner_admin_id,
+        # This was missing entirely before - every user created through the
+        # bot's purchase flow (routers/bot.py's create_user, i.e. almost all
+        # real customers) ended up with package_id=NULL forever, silently
+        # breaking the panel's "filter/select users by package" feature for
+        # them even though it worked fine for users created from the web
+        # panel's own create-user form (routers/users.py).
+        package_id=package_id,
     )
     db.add(user)
     db.commit()
@@ -72,6 +81,7 @@ def renew_user(
     add_gb: float = 0,
     add_days: int = 0,
     reset_usage: bool = False,
+    package_id: Optional[int] = None,
 ) -> models.User:
     if add_gb:
         user.total_quota_bytes = (user.total_quota_bytes or 0) + gb_to_bytes(add_gb)
@@ -82,6 +92,12 @@ def renew_user(
         user.used_bytes = 0
     if user.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
         user.status = models.UserStatus.active
+    # Same package_id gap as create_user_record above - a bot renewal from a
+    # package purchase (or an admin re-tagging an existing user with a
+    # package via routers/bot.py) should keep package_id in sync too, not
+    # just at first creation.
+    if package_id is not None:
+        user.package_id = package_id
     db.commit()
     db.refresh(user)
     return user
@@ -168,6 +184,7 @@ def bulk_create_users(
             )
             user.max_concurrent_sessions = package.max_concurrent_sessions
             user.owner_admin_id = owner_admin_id
+            user.package_id = package.id
             db.commit()
             db.refresh(user)
             result = provision_package_connections(db, user, package)
@@ -212,12 +229,21 @@ def bulk_update_users(
     reset_usage: bool = False,
     status: Optional[models.UserStatus] = None,
     max_concurrent_sessions: Optional[int] = None,
+    package: Optional[models.Package] = None,
     owner_admin_id: Optional[int] = None,
 ) -> dict:
     """Applies the same renewal/status/limit change to every user in
     user_ids. Silently skips ids that don't exist - and, when
     owner_admin_id is given (non-superadmin caller), ids belonging to a
-    different admin's group too."""
+    different admin's group too.
+
+    If `package` is given, it takes priority over add_gb/add_days: each
+    user's quota/expiry/concurrent-session-cap is overwritten outright from
+    the package (same values a fresh "ساخت با پکیج" would set) and their
+    package_id is stamped to match, so this doubles as a group "renew with
+    package" and as a way to (re)tag existing users with a package for
+    future package-based filtering/selection. Does not touch the package's
+    own connections/services - only the user's quota/expiry/cap fields."""
     updated = 0
     for uid in user_ids:
         user = db.get(models.User, uid)
@@ -225,13 +251,26 @@ def bulk_update_users(
             continue
         if owner_admin_id is not None and user.owner_admin_id != owner_admin_id:
             continue
-        if add_gb or add_days or reset_usage:
+        if package is not None:
+            user.total_quota_bytes = gb_to_bytes(package.quota_gb) if package.quota_gb else 0
+            user.expire_at = (
+                dt.datetime.utcnow() + dt.timedelta(days=package.duration_days) if package.duration_days else None
+            )
+            user.expire_days_after_first_use = None
+            user.max_concurrent_sessions = package.max_concurrent_sessions
+            user.package_id = package.id
+            if reset_usage:
+                user.used_bytes = 0
+            if user.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
+                user.status = models.UserStatus.active
+        elif add_gb or add_days or reset_usage:
             renew_user(db, user, add_gb=add_gb, add_days=add_days, reset_usage=reset_usage)
         if status is not None:
             user.status = status
-        if max_concurrent_sessions is not None:
+        if max_concurrent_sessions is not None and package is None:
             # combined cap across all of the user's connections together -
-            # see models.User.max_concurrent_sessions
+            # see models.User.max_concurrent_sessions (skipped when a
+            # package was applied above - its own cap already won)
             user.max_concurrent_sessions = max_concurrent_sessions
         updated += 1
     db.commit()
@@ -333,6 +372,7 @@ def _provision_ppp(
         "ovpn": models.ConnectionType.openvpn,
         "l2tp": models.ConnectionType.l2tp,
         "ikev2": models.ConnectionType.ikev2,
+        "sstp": models.ConnectionType.sstp,
     }[service]
     conn = models.Connection(
         user_id=user.id,
@@ -381,6 +421,17 @@ def provision_ikev2(
     package_name: Optional[str] = None,
 ) -> models.Connection:
     return _provision_ppp(db, user, node, "ikev2", max_concurrent_sessions, purchase_batch, package_name)
+
+
+def provision_sstp(
+    db: Session,
+    user: models.User,
+    node: models.Node,
+    max_concurrent_sessions: Optional[int] = 1,
+    purchase_batch: Optional[str] = None,
+    package_name: Optional[str] = None,
+) -> models.Connection:
+    return _provision_ppp(db, user, node, "sstp", max_concurrent_sessions, purchase_batch, package_name)
 
 
 # ---------------------------------------------------------------------- xray
@@ -469,6 +520,8 @@ def provision_connection(
         return provision_l2tp(db, user, node, max_concurrent_sessions, purchase_batch, package_name)
     if protocol == models.ConnectionType.ikev2:
         return provision_ikev2(db, user, node, max_concurrent_sessions, purchase_batch, package_name)
+    if protocol == models.ConnectionType.sstp:
+        return provision_sstp(db, user, node, max_concurrent_sessions, purchase_batch, package_name)
     if protocol == models.ConnectionType.xray:
         return provision_xray(db, user, node, flow, purchase_batch, package_name)
     raise HTTPException(400, "پروتکل نامعتبر است")
@@ -486,7 +539,7 @@ def deprovision_connection(connection: models.Connection):
                 match = next((p for p in peers if p.get("comment") == connection.wg_peer_name), None)
                 if match:
                     mt.remove_peer(match[".id"])
-        elif connection.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2):
+        elif connection.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp):
             # Authenticated via RADIUS against this panel's own database -
             # there is no remote PPP secret to remove, deleting the DB row
             # (done by the caller) is all that's needed.
@@ -508,6 +561,7 @@ def delete_connection(db: Session, connection: models.Connection):
 _PPP_SERVICE_TO_CONN_TYPE = {
     "ovpn": models.ConnectionType.openvpn,
     "l2tp": models.ConnectionType.l2tp,
+    "sstp": models.ConnectionType.sstp,
 }
 
 
@@ -524,7 +578,7 @@ def import_ppp_secrets(db: Session, node: models.Node) -> dict:
     username that already exists as a panel connection is skipped rather
     than overwritten.
 
-    Only 'ovpn' and 'l2tp' service secrets are imported (the only PPP
+    Only 'ovpn', 'l2tp' and 'sstp' service secrets are imported (the only PPP
     services this panel understands); other services (pppoe, pptp, async,
     ...) are reported as skipped. Secrets with no password (e.g. already
     RADIUS-only) are skipped too since there's nothing to copy."""
@@ -1039,6 +1093,14 @@ def get_connection_share(connection: models.Connection) -> dict:
             "kind": "ikev2", "link": None, "config_text": text,
             "server": node.mt_endpoint_host, "port": None,
             "username": connection.ppp_username, "password": connection.ppp_password, "psk": node.mt_ikev2_psk,
+        }
+
+    if connection.type == models.ConnectionType.sstp:
+        text = build_sstp_info(connection, node)
+        return {
+            "kind": "sstp", "link": None, "config_text": text,
+            "server": node.mt_endpoint_host, "port": node.mt_sstp_port or 443,
+            "username": connection.ppp_username, "password": connection.ppp_password, "psk": None,
         }
 
     # xray

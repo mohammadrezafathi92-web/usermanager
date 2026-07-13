@@ -37,8 +37,14 @@ class Settings(BaseSettings):
     # reachable from the router.
     panel_public_host: str = os.environ.get("PANEL_PUBLIC_HOST", "")
 
-    # CORS
-    cors_origins: list[str] = ["*"]
+    # CORS - comma-separated list of allowed origins, e.g.
+    # "http://155.117.5.24,https://panel.example.com". Defaults to "*"
+    # (allow any origin) for backward compatibility with existing
+    # deployments; main.py logs a loud startup warning when this default is
+    # still in effect, same pattern as the SECRET_KEY/admin-password checks.
+    cors_origins: list[str] = [
+        o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()
+    ]
 
     # Standalone bot mode: set when this container is a bot-only instance
     # deployed on a SECOND server (see services/remote_deploy.py) instead

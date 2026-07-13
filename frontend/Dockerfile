@@ -1,8 +1,9 @@
 FROM node:20-alpine AS build
 WORKDIR /app
-COPY package.json ./
-RUN npm install
-COPY . .
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY index.html vite.config.js tailwind.config.js postcss.config.js ./
+COPY src ./src
 RUN npm run build
 
 FROM nginx:alpine

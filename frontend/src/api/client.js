@@ -50,6 +50,20 @@ export const fetchUsers = (page = 1, pageSize = 50, search = "", extra = {}) =>
       sort_by: extra.sortBy || undefined,
       sort_dir: extra.sortDir || undefined,
       owner_admin_id: extra.ownerAdminId || undefined,
+      package_id: extra.packageId || undefined,
+    },
+  });
+// Every user id matching the given filters, ignoring pagination - used by
+// the "انتخاب همه با این فیلتر" button so a bulk action (e.g. disable/renew
+// by package) can target every matching user, not just the current page.
+export const fetchUserIds = (search = "", extra = {}) =>
+  client.get("/users/ids", {
+    params: {
+      search: search || undefined,
+      status: extra.status || undefined,
+      online_only: extra.onlineOnly || undefined,
+      owner_admin_id: extra.ownerAdminId || undefined,
+      package_id: extra.packageId || undefined,
     },
   });
 export const exportUsers = (search = "", extra = {}) =>
@@ -60,6 +74,7 @@ export const exportUsers = (search = "", extra = {}) =>
       status: extra.status || undefined,
       online_only: extra.onlineOnly || undefined,
       owner_admin_id: extra.ownerAdminId || undefined,
+      package_id: extra.packageId || undefined,
     },
   });
 export const fetchUser = (id) => client.get(`/users/${id}`);
@@ -81,6 +96,8 @@ export const addL2tpConnection = (userId, nodeId, maxConcurrentSessions = 1) =>
   client.post(`/users/${userId}/connections/l2tp`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });
 export const addIkev2Connection = (userId, nodeId, maxConcurrentSessions = 1) =>
   client.post(`/users/${userId}/connections/ikev2`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });
+export const addSstpConnection = (userId, nodeId, maxConcurrentSessions = 1) =>
+  client.post(`/users/${userId}/connections/sstp`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });
 export const addXrayConnection = (userId, nodeId, flow = "") =>
   client.post(`/users/${userId}/connections/xray`, { node_id: nodeId, flow });
 export const deleteConnection = (userId, connectionId) =>
@@ -98,6 +115,12 @@ export const pushRadiusConfig = (id, panelHost, interimUpdate) =>
     panel_host: panelHost || null,
     interim_update: interimUpdate || "00:05:00",
   });
+export const pushSstpConfig = (id, panelHost) =>
+  client.post(`/nodes/${id}/push-sstp-config`, { panel_host: panelHost || null });
+export const pushL2tpConfig = (id, panelHost) =>
+  client.post(`/nodes/${id}/push-l2tp-config`, { panel_host: panelHost || null });
+export const pushIkev2Config = (id, panelHost) =>
+  client.post(`/nodes/${id}/push-ikev2-config`, { panel_host: panelHost || null });
 export const importPppUsers = (id) => client.post(`/nodes/${id}/import-ppp-users`);
 export const importUserManagerUsers = (id) => client.post(`/nodes/${id}/import-usermanager-users`);
 export const import3xuiClients = (id) => client.post(`/nodes/${id}/import-3xui-clients`);
@@ -133,6 +156,9 @@ export const deleteTutorialMedia = (id, mediaId) => client.delete(`/tutorials/${
 
 export const fetchPanelSettings = () => client.get("/settings");
 export const updatePanelSettings = (data) => client.put("/settings", data);
+export const resolveHaFailover = () => client.post("/ha/resolve");
+export const changePanelPort = (sshPassword, newPort) =>
+  client.post("/settings/change-port", { ssh_password: sshPassword, new_port: newPort });
 
 export const fetchTelegramBotSettings = () => client.get("/telegram-bot");
 export const updateTelegramBotSettings = (data) => client.put("/telegram-bot", data);
@@ -163,3 +189,11 @@ export const fetchAdminGroups = () => client.get("/admins/groups");
 export const createAdminGroup = (data) => client.post("/admins/groups", data);
 export const updateAdminGroup = (id, data) => client.put(`/admins/groups/${id}`, data);
 export const deleteAdminGroup = (id) => client.delete(`/admins/groups/${id}`);
+
+export const topupAdminBalance = (id, data) => client.post(`/admins/${id}/topup`, data);
+export const fetchAdminBalanceLogs = (id) => client.get(`/admins/${id}/balance-logs`);
+
+export const topupAdminVolume = (id, data) => client.post(`/admins/${id}/volume-topup`, data);
+export const fetchAdminVolumeLogs = (id) => client.get(`/admins/${id}/volume-logs`);
+
+export const fetchAdminLoginLogs = (params) => client.get("/admins/login-logs", { params });

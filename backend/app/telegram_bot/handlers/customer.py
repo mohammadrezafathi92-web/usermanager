@@ -550,7 +550,7 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
                     )
                     new_connections.append(conn)
         if add_gb or add_days:
-            await api.renew(target_username, add_gb=add_gb, add_days=add_days)
+            await api.renew(target_username, add_gb=add_gb, add_days=add_days, package_id=pkg.get("id"))
         user = await api.get_user(target_username)
     except ApiError as exc:
         # Provisioning failed after the debit already went through - refund

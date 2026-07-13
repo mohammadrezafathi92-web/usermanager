@@ -33,6 +33,7 @@ class ConnectionType(str, enum.Enum):
     openvpn = "openvpn"  # hosted on a MikroTik node (PPP secret)
     l2tp = "l2tp"  # hosted on a MikroTik node (PPP secret)
     ikev2 = "ikev2"  # hosted on a MikroTik node (PPP secret via RADIUS, same as l2tp)
+    sstp = "sstp"  # hosted on a MikroTik node (PPP secret via RADIUS, same as l2tp/ikev2)
     xray = "xray"  # vless/vmess/trojan hosted on an Xray node
 
 
@@ -99,6 +100,26 @@ class AdminUser(Base):
     group_id = Column(Integer, ForeignKey("admin_permission_groups.id", ondelete="SET NULL"), nullable=True)
     group = relationship("AdminPermissionGroup")
 
+    # ---------- Usage-based billing (مورد ۶) ----------
+    # "flat" (default, existing behavior) = this admin is charged a flat
+    # price (Package.cooperation_price or price) out of `balance` above,
+    # at the moment they create a package-based user - see
+    # routers/users.py's _charge_admin_for_package.
+    # "usage" = this admin is NOT charged anything at package-creation
+    # time. Instead they're given a GB volume pool (volume_balance_gb
+    # below) that depletes in near-real-time as their own users actually
+    # consume traffic - see services/quota_manager.py's _apply_delta,
+    # which is the single choke point every protocol's usage (WireGuard/
+    # Xray polling, OpenVPN/L2TP/IKEv2 RADIUS accounting) already flows
+    # through.
+    billing_mode = Column(String(16), nullable=False, default="flat")
+    # Remaining GB credit for "usage" mode admins - meaningless/ignored
+    # for "flat" mode admins and superadmins. Can go negative (over-usage
+    # isn't blocked mid-session, same philosophy as the money balance not
+    # retroactively disabling already-provisioned users) - a superadmin
+    # tops it up the same way as money, just in GB instead of tomans.
+    volume_balance_gb = Column(Float, nullable=True, default=0)
+
 
 class AdminPermissionGroup(Base):
     """A reusable, named set of permissions (see app/permissions.py) that
@@ -113,6 +134,89 @@ class AdminPermissionGroup(Base):
     # Same comma-separated PERMISSION_CHOICES format as AdminUser.permissions
     permissions = Column(Text, nullable=True, default="")
     created_at = Column(DateTime, default=now)
+
+
+class AdminBalanceLog(Base):
+    """Audit trail for every manual change to an AdminUser's wholesale
+    credit balance (see AdminUser.balance) - both the initial "اعتبار پایه"
+    given at reseller creation and every later "افزایش/کاهش اعتبار" a
+    superadmin performs from the ادمین‌ها page. Deliberately does NOT log
+    automatic per-purchase deductions (_charge_admin_for_package in
+    routers/users.py) - those are already visible via the user/purchase
+    history itself; this table is specifically the superadmin-facing audit
+    log of manual top-ups, per the "لاگ افزایش اعتبار" requirement."""
+
+    __tablename__ = "admin_balance_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=False, index=True)
+    # Signed delta applied to the balance - positive for a top-up, negative
+    # for a manual correction/deduction. Never zero (the router rejects
+    # zero-amount requests since they'd be a no-op log entry).
+    amount = Column(BigInteger, nullable=False)
+    # Snapshot of the resulting balance right after this change, so the
+    # log reads correctly even if later entries are added/edited.
+    balance_after = Column(BigInteger, nullable=False)
+    note = Column(String(255), nullable=True)
+    # Which superadmin performed this - NULL for the automatic "اعتبار
+    # پایه" entry created at admin creation time (no separate "actor" then,
+    # the creating superadmin is already implied by require_superadmin on
+    # the create endpoint, but not modeled as a distinct actor here to
+    # keep that first entry simple).
+    created_by_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=now, index=True)
+
+    admin = relationship("AdminUser", foreign_keys=[admin_id])
+    created_by = relationship("AdminUser", foreign_keys=[created_by_id])
+
+
+class AdminVolumeLog(Base):
+    """Audit trail for manual changes to a "usage" billing_mode AdminUser's
+    GB volume pool (AdminUser.volume_balance_gb) - the volume equivalent of
+    AdminBalanceLog above. Deliberately does NOT log the automatic
+    near-real-time depletion done by quota_manager.py's _apply_delta (that
+    would be one row per poll cycle); only manual top-ups/corrections made
+    by a superadmin from the ادمین‌ها page."""
+
+    __tablename__ = "admin_volume_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=False, index=True)
+    # Signed delta in GB - positive for a top-up, negative for a manual
+    # correction/deduction. Never zero.
+    amount_gb = Column(Float, nullable=False)
+    # Snapshot of the resulting volume_balance_gb right after this change.
+    balance_after_gb = Column(Float, nullable=False)
+    note = Column(String(255), nullable=True)
+    created_by_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=now, index=True)
+
+    admin = relationship("AdminUser", foreign_keys=[admin_id])
+    created_by = relationship("AdminUser", foreign_keys=[created_by_id])
+
+
+class AdminLoginLog(Base):
+    """Every admin panel login ATTEMPT (both successful and failed), for
+    the superadmin's IP-based login report (routers/auth.py's /login
+    writes one row per attempt). Deliberately includes the superadmin's
+    OWN logins too - per the explicit requirement that the main admin
+    should see themselves in this log as well, not just sub-admins."""
+
+    __tablename__ = "admin_login_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # NULL when the typed username didn't match any admin at all (e.g. a
+    # brute-force attempt with a made-up username) - still logged with the
+    # raw attempted_username/ip so that noise is visible too, just without
+    # a resolvable admin_id.
+    admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True, index=True)
+    attempted_username = Column(String(64), nullable=True)
+    ip_address = Column(String(64), nullable=True, index=True)
+    user_agent = Column(String(255), nullable=True)
+    success = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=now, index=True)
+
+    admin = relationship("AdminUser")
 
 
 class ApiKey(Base):
@@ -179,6 +283,15 @@ class Node(Base):
     # are informational only, just so the panel can print correct
     # instructions to the client.
     mt_ikev2_psk = Column(String(255), nullable=True)  # pre-shared key, informational only, shown to the client
+
+    # --- MikroTik SSTP (authenticated via RADIUS, same PPP-secret pattern as
+    # L2TP/IKEv2 above). SSTP wraps PPP inside an HTTPS-like TLS tunnel (like
+    # OpenVPN, it needs a server certificate, not a PSK) - the certificate
+    # itself is configured directly on the router by the admin; these fields
+    # are informational only, just so the panel can print correct
+    # instructions to the client.
+    mt_sstp_port = Column(Integer, nullable=True, default=443)
+    mt_sstp_certificate = Column(String(128), nullable=True)  # informational only, shown in the generated config
 
     # --- Xray connection method ---
     # "ssh" (default, edits config.json over SSH + restarts the service) or
@@ -255,6 +368,17 @@ class User(Base):
     # it belonged to a since-deleted admin.
     owner_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True, index=True)
 
+    # Which package this user was last created/renewed with, if any - set
+    # automatically whenever a user is built from a package (single or bulk
+    # create) or bulk-renewed by picking a package (see routers/users.py's
+    # bulk_update_users + services/user_ops.py). NULL for users made
+    # manually with no package, or legacy users predating this column.
+    # Exists purely so the panel can filter/select users "by package" for
+    # group actions (e.g. "disable everyone on the 20GB package") - it is
+    # NOT re-validated against the package's current settings, so editing a
+    # package later does not retroactively change users already on it.
+    package_id = Column(Integer, ForeignKey("packages.id"), nullable=True, index=True)
+
     total_quota_bytes = Column(BigInteger, default=0)  # 0 == unlimited
     used_bytes = Column(BigInteger, default=0)
 
@@ -299,6 +423,7 @@ class User(Base):
         "Connection", back_populates="user", cascade="all, delete-orphan"
     )
     owner_admin = relationship("AdminUser")
+    package = relationship("Package")
 
     @property
     def remaining_bytes(self):
@@ -449,7 +574,16 @@ class Package(Base):
     # Never applies to a superadmin, who is never charged for anything.
     cooperation_price = Column(BigInteger, nullable=True)
     description = Column(Text, nullable=True)
+    # `enabled` controls visibility in the WEB PANEL only (create-user /
+    # renew-quick-action package dropdowns - see frontend Users.jsx's
+    # `.filter(p => p.enabled)`). `bot_enabled` is the same idea but for the
+    # Telegram sales bot's package picker (routers/bot.py's list_packages)
+    # - split into two independent flags because an admin may want a
+    # package sold only through one channel (e.g. a "manual/negotiated"
+    # package an admin assigns from the panel but that shouldn't show up
+    # as a self-serve bot purchase option, or vice versa).
     enabled = Column(Boolean, default=True)
+    bot_enabled = Column(Boolean, default=True)
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime, default=now)
 
@@ -530,6 +664,53 @@ class PanelSettings(Base):
     # "افزایش اعتبار" (top up credit) flow, e.g. "50000,100000,200000". The
     # customer can also always type a custom amount instead.
     topup_presets = Column(Text, nullable=True, default="")
+
+    # ---------------------------------------------------------------------
+    # HA / near-real-time replication به سرور دوم (مورد ۱۰). Off by default
+    # (ha_enabled=False) - purely additive, zero behavior change unless the
+    # admin explicitly turns it on. See services/backup.py's
+    # create_snapshot_bytes/ha_pull_and_apply/ha_healthcheck and main.py's
+    # ha_tick()/_promote_to_active() for the actual sync/failover logic;
+    # routers/panel_settings.py's ha_router exposes the peer-facing
+    # snapshot endpoint (X-API-Key auth, same header the external bot API
+    # uses) plus the manual /resolve action below.
+    ha_enabled = Column(Boolean, default=False)
+    ha_mode = Column(String(20), nullable=True, default="standby")  # "primary" or "standby" - role THIS server plays
+    ha_peer_url = Column(String(255), nullable=True)  # e.g. http://1.2.3.4:8000 - base URL of the OTHER server
+    # An API key MINTED ON THE PEER (its own Settings > کلیدهای API page),
+    # pasted here so THIS server can authenticate itself to the peer's
+    # /api/ha/snapshot - never auto-generated/exchanged, always a manual
+    # copy-paste step by the admin, same trust model as the external bot API.
+    ha_peer_api_key = Column(String(128), nullable=True)
+    # Split-brain guard: flips True once a standby auto-promotes itself
+    # after losing contact with the peer. Once True, ha_tick() stops
+    # pulling/overwriting this server's data from the peer entirely - even
+    # if ha_mode is still nominally "standby" - until an admin manually
+    # calls /api/ha/resolve after checking both servers by hand.
+    ha_standby_active = Column(Boolean, default=False)
+    ha_promoted_at = Column(DateTime, nullable=True)
+    ha_last_sync_at = Column(DateTime, nullable=True)
+    ha_last_health_ok_at = Column(DateTime, nullable=True)
+    ha_last_error = Column(Text, nullable=True)
+
+    # ---------------------------------------------------------------------
+    # Configurable panel web port (مورد via Settings). The panel serves its
+    # UI through the `frontend` container's nginx (see frontend/nginx.conf,
+    # docker-compose.yml's "80:80" port mapping) - changing the HOST side of
+    # that mapping means editing docker-compose.yml and re-running
+    # `docker compose up -d` on the actual server, which this container has
+    # no filesystem access to do directly. Same SSH-automation pattern as
+    # the remote-bot deploy feature (services/remote_deploy.py) - just
+    # aimed at THIS server instead of a second one. The SSH password is
+    # never stored (see routers/panel_settings.py's change_panel_port) -
+    # only host/port/username/project-dir are persisted here.
+    panel_web_port = Column(Integer, nullable=True, default=80)  # last known/applied host-side port
+    panel_ssh_host = Column(String(255), nullable=True)
+    panel_ssh_port = Column(Integer, nullable=True, default=22)
+    panel_ssh_username = Column(String(100), nullable=True, default="root")
+    panel_project_dir = Column(String(255), nullable=True, default="/root/usermanager")
+    panel_port_status = Column(Text, nullable=True)  # last change attempt's result, shown in the UI
+    panel_port_changed_at = Column(DateTime, nullable=True)
 
 
 class BotSettings(Base):

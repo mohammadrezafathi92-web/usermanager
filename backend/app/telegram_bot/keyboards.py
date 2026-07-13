@@ -24,6 +24,7 @@ PROTOCOL_LABELS = {
     "openvpn": "🛡 OpenVPN",
     "l2tp": "🌐 L2TP/IPsec",
     "ikev2": "🛰 IKEv2/IPsec",
+    "sstp": "🔐 SSTP",
     "xray": "⚡ V2Ray/Xray",
 }
 
@@ -49,6 +50,7 @@ def main_menu_kb(scope: dict | None) -> InlineKeyboardMarkup:
     else:
         kb.button(text="👤 اکانت من", callback_data=MenuCB(action="cust_account"))
         kb.button(text="📊 مصرف سرویس‌ها", callback_data=MenuCB(action="cust_usage"))
+        kb.button(text="🔄 تمدید سرویس", callback_data=MenuCB(action="cust_renew"))
         kb.button(text="🛒 خرید اکانت جدید", callback_data=MenuCB(action="cust_buy"))
         kb.button(text="💰 افزایش اعتبار", callback_data=MenuCB(action="cust_topup"))
         kb.button(text="📚 آموزش", callback_data=MenuCB(action="cust_tutorials"))
@@ -126,7 +128,7 @@ def nodes_kb(nodes: list[dict]) -> InlineKeyboardMarkup:
 
 def protocols_kb(node_type: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    protocols = ["xray"] if node_type == "xray" else ["wireguard", "openvpn", "l2tp", "ikev2"]
+    protocols = ["xray"] if node_type == "xray" else ["wireguard", "openvpn", "l2tp", "ikev2", "sstp"]
     for p in protocols:
         kb.button(text=PROTOCOL_LABELS.get(p, p), callback_data=ProtocolCB(protocol=p))
     kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))

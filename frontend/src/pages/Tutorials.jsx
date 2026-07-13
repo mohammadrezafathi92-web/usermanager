@@ -11,6 +11,7 @@ import {
   uploadTutorialMedia,
   deleteTutorialMedia,
 } from "../api/client.js";
+import { useLanguage } from "../context/LanguageContext.jsx";
 
 const emptyForm = { title: "", text: "", enabled: true, sort_order: 0 };
 
@@ -22,6 +23,7 @@ function formatFileSize(bytes) {
 }
 
 export default function Tutorials() {
+  const { t } = useLanguage();
   const [items, setItems] = useState([]);
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -46,10 +48,10 @@ export default function Tutorials() {
     setOpen(true);
   };
 
-  const openEdit = (t) => {
-    setEditingId(t.id);
-    setForm({ title: t.title, text: t.text || "", enabled: t.enabled, sort_order: t.sort_order });
-    setEditingMedia(t.media || []);
+  const openEdit = (tut) => {
+    setEditingId(tut.id);
+    setForm({ title: tut.title, text: tut.text || "", enabled: tut.enabled, sort_order: tut.sort_order });
+    setEditingMedia(tut.media || []);
     setError("");
     setOpen(true);
   };
@@ -64,7 +66,7 @@ export default function Tutorials() {
       const res = await uploadTutorialMedia(editingId, file);
       setEditingMedia((media) => [...media, res.data]);
     } catch (err) {
-      setError(err?.response?.data?.detail || "خطا در آپلود فایل");
+      setError(err?.response?.data?.detail || t("tutorials.uploadError"));
     } finally {
       setUploading(false);
     }
@@ -89,30 +91,30 @@ export default function Tutorials() {
       setOpen(false);
       load();
     } catch (err) {
-      setError(err?.response?.data?.detail || "خطا در ذخیره آموزش");
+      setError(err?.response?.data?.detail || t("tutorials.saveError"));
     } finally {
       setSaving(false);
     }
   };
 
   const onDelete = async (id) => {
-    if (!confirm("این آموزش حذف شود؟")) return;
+    if (!confirm(t("tutorials.deleteConfirm"))) return;
     await deleteTutorial(id);
     load();
   };
 
-  const onToggle = async (t) => {
-    await updateTutorial(t.id, { enabled: !t.enabled });
+  const onToggle = async (tut) => {
+    await updateTutorial(tut.id, { enabled: !tut.enabled });
     load();
   };
 
   return (
     <Layout>
-      <Topbar title="آموزش‌ها" subtitle="راهنماهای نصب/اتصال که در ربات به مشتری‌ها نشان داده می‌شود" />
+      <Topbar title={t("tutorials.title")} subtitle={t("tutorials.subtitle")} />
 
       <div className="flex justify-end mb-4">
         <button className="btn-primary" onClick={openCreate}>
-          <Plus size={16} /> آموزش جدید
+          <Plus size={16} /> {t("tutorials.newTutorial")}
         </button>
       </div>
 
@@ -120,36 +122,36 @@ export default function Tutorials() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-gray-500 text-xs">
             <tr>
-              <th className="text-right font-medium px-4 py-3">عنوان</th>
-              <th className="text-right font-medium px-4 py-3">فایل‌های همراه</th>
-              <th className="text-right font-medium px-4 py-3">ترتیب</th>
-              <th className="text-right font-medium px-4 py-3">وضعیت</th>
-              <th className="text-right font-medium px-4 py-3">عملیات</th>
+              <th className="text-right font-medium px-4 py-3">{t("tutorials.colTitle")}</th>
+              <th className="text-right font-medium px-4 py-3">{t("tutorials.colMedia")}</th>
+              <th className="text-right font-medium px-4 py-3">{t("tutorials.colOrder")}</th>
+              <th className="text-right font-medium px-4 py-3">{t("tutorials.colStatus")}</th>
+              <th className="text-right font-medium px-4 py-3">{t("tutorials.colActions")}</th>
             </tr>
           </thead>
           <tbody>
-            {items.map((t) => (
-              <tr key={t.id} className="border-t border-gray-50 hover:bg-gray-50/60">
+            {items.map((item) => (
+              <tr key={item.id} className="border-t border-gray-50 hover:bg-gray-50/60">
                 <td className="px-4 py-3">
-                  <div className="font-medium text-gray-800">{t.title}</div>
-                  {t.text && <div className="text-xs text-gray-400 truncate max-w-md">{t.text}</div>}
+                  <div className="font-medium text-gray-800">{item.title}</div>
+                  {item.text && <div className="text-xs text-gray-400 truncate max-w-md">{item.text}</div>}
                 </td>
-                <td className="px-4 py-3 text-gray-500">{t.media?.length || 0} فایل</td>
-                <td className="px-4 py-3 text-gray-500">{t.sort_order}</td>
+                <td className="px-4 py-3 text-gray-500">{t("tutorials.fileCount", { count: item.media?.length || 0 })}</td>
+                <td className="px-4 py-3 text-gray-500">{item.sort_order}</td>
                 <td className="px-4 py-3">
-                  <span className={`badge ${t.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
-                    {t.enabled ? "فعال" : "غیرفعال"}
+                  <span className={`badge ${item.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                    {item.enabled ? t("status.active") : t("status.disabled")}
                   </span>
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2">
-                    <button title={t.enabled ? "غیرفعال کردن" : "فعال کردن"} onClick={() => onToggle(t)} className="text-gray-400 hover:text-brand-600">
+                    <button title={item.enabled ? t("tutorials.disable") : t("tutorials.enable")} onClick={() => onToggle(item)} className="text-gray-400 hover:text-brand-600">
                       <Power size={16} />
                     </button>
-                    <button title="ویرایش" onClick={() => openEdit(t)} className="text-gray-400 hover:text-brand-600">
+                    <button title={t("tutorials.editTitle")} onClick={() => openEdit(item)} className="text-gray-400 hover:text-brand-600">
                       <Pencil size={16} />
                     </button>
-                    <button title="حذف" onClick={() => onDelete(t.id)} className="text-gray-400 hover:text-red-600">
+                    <button title={t("tutorials.deleteTitle")} onClick={() => onDelete(item.id)} className="text-gray-400 hover:text-red-600">
                       <Trash2 size={16} />
                     </button>
                   </div>
@@ -160,7 +162,7 @@ export default function Tutorials() {
               <tr>
                 <td colSpan={5} className="text-center text-gray-400 py-10">
                   <GraduationCap size={28} className="mx-auto mb-2 text-gray-300" />
-                  هنوز آموزشی ساخته نشده است
+                  {t("tutorials.empty")}
                 </td>
               </tr>
             )}
@@ -168,42 +170,42 @@ export default function Tutorials() {
         </table>
       </div>
 
-      <Modal open={open} onClose={() => setOpen(false)} title={editingId ? "ویرایش آموزش" : "آموزش جدید"} width="max-w-2xl">
+      <Modal open={open} onClose={() => setOpen(false)} title={editingId ? t("tutorials.editModal") : t("tutorials.newModal")} width="max-w-2xl">
         <form onSubmit={submit} className="space-y-4">
           <div>
-            <label className="block text-sm text-gray-600 mb-1">عنوان *</label>
-            <input className="input" required placeholder="مثلا: نصب WireGuard روی اندروید" value={form.title} onChange={(e) => set("title", e.target.value)} />
+            <label className="block text-sm text-gray-600 mb-1">{t("tutorials.fieldTitle")}</label>
+            <input className="input" required placeholder={t("tutorials.fieldTitlePlaceholder")} value={form.title} onChange={(e) => set("title", e.target.value)} />
           </div>
           <div>
-            <label className="block text-sm text-gray-600 mb-1">متن آموزش</label>
+            <label className="block text-sm text-gray-600 mb-1">{t("tutorials.fieldText")}</label>
             <textarea className="input" rows={5} value={form.text} onChange={(e) => set("text", e.target.value)} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm text-gray-600 mb-1">ترتیب نمایش</label>
+              <label className="block text-sm text-gray-600 mb-1">{t("tutorials.fieldOrder")}</label>
               <input type="number" className="input" value={form.sort_order} onChange={(e) => set("sort_order", Number(e.target.value))} />
             </div>
             <label className="flex items-center gap-2 mt-6 text-sm text-gray-600">
               <input type="checkbox" checked={form.enabled} onChange={(e) => set("enabled", e.target.checked)} />
-              فعال (در ربات نمایش داده شود)
+              {t("tutorials.fieldEnabled")}
             </label>
           </div>
 
           <div className="border-t border-gray-100 pt-3">
             <div className="flex items-center justify-between mb-2">
-              <div className="text-sm font-medium text-gray-700">عکس‌ها و ویدیوهای همراه</div>
+              <div className="text-sm font-medium text-gray-700">{t("tutorials.mediaHeading")}</div>
               {editingId ? (
                 <label className="btn-secondary cursor-pointer">
-                  <ImagePlus size={14} /> {uploading ? "در حال آپلود..." : "افزودن عکس/ویدیو"}
+                  <ImagePlus size={14} /> {uploading ? t("tutorials.uploading") : t("tutorials.addMedia")}
                   <input type="file" accept="image/*,video/*" className="hidden" onChange={onUploadMedia} disabled={uploading} />
                 </label>
               ) : null}
             </div>
             {!editingId && (
-              <div className="text-xs text-gray-400">برای افزودن عکس/ویدیو، ابتدا آموزش را ذخیره کنید و دوباره ویرایش را باز کنید.</div>
+              <div className="text-xs text-gray-400">{t("tutorials.saveFirst")}</div>
             )}
             {editingId && editingMedia.length === 0 && (
-              <div className="text-xs text-gray-400">هنوز فایلی اضافه نشده.</div>
+              <div className="text-xs text-gray-400">{t("tutorials.noMedia")}</div>
             )}
             {editingMedia.map((m) => (
               <div key={m.id} className="flex items-center justify-between gap-2 py-1.5 px-2 rounded-lg bg-gray-50 mb-1.5 text-sm">
@@ -226,10 +228,10 @@ export default function Tutorials() {
           {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setOpen(false)}>
-              انصراف
+              {t("common.cancel")}
             </button>
             <button type="submit" disabled={saving} className="btn-primary">
-              {saving ? "در حال ذخیره..." : "ذخیره آموزش"}
+              {saving ? t("common.saving") : t("tutorials.saveTutorial")}
             </button>
           </div>
         </form>

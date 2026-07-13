@@ -12,6 +12,7 @@ import {
   uploadPackageFile,
   deletePackageFile,
 } from "../api/client.js";
+import { useLanguage } from "../context/LanguageContext.jsx";
 
 const emptyForm = {
   name: "",
@@ -21,6 +22,7 @@ const emptyForm = {
   cooperation_price: "",
   description: "",
   enabled: true,
+  bot_enabled: true,
   sort_order: 0,
   max_concurrent_sessions: "",
   custom_message: "",
@@ -36,13 +38,14 @@ function formatFileSize(bytes) {
 
 const emptyConn = { node_id: "", protocol: "xray", flow: "" };
 
-const PROTOCOL_LABELS = { wireguard: "WireGuard", openvpn: "OpenVPN", l2tp: "L2TP", ikev2: "IKEv2", xray: "V2Ray/Xray" };
+const PROTOCOL_LABELS = { wireguard: "WireGuard", openvpn: "OpenVPN", l2tp: "L2TP", ikev2: "IKEv2", sstp: "SSTP", xray: "V2Ray/Xray" };
 
 function formatToman(n) {
   return new Intl.NumberFormat("fa-IR").format(n || 0);
 }
 
 export default function Packages() {
+  const { t } = useLanguage();
   const [items, setItems] = useState([]);
   const [nodes, setNodes] = useState([]);
   const [open, setOpen] = useState(false);
@@ -105,7 +108,7 @@ export default function Packages() {
       const res = await uploadPackageFile(editingId, file);
       setEditingFiles((files) => [...files, res.data]);
     } catch (err) {
-      setError(err?.response?.data?.detail || "خطا در آپلود فایل");
+      setError(err?.response?.data?.detail || t("packages.uploadError"));
     } finally {
       setUploading(false);
     }
@@ -136,14 +139,14 @@ export default function Packages() {
       setOpen(false);
       load();
     } catch (err) {
-      setError(err?.response?.data?.detail || "خطا در ذخیره پکیج");
+      setError(err?.response?.data?.detail || t("packages.saveError"));
     } finally {
       setSaving(false);
     }
   };
 
   const onDelete = async (id) => {
-    if (!confirm("این پکیج حذف شود؟ (روی کاربرهایی که قبلا با این پکیج خریده‌اند اثری ندارد)")) return;
+    if (!confirm(t("packages.deleteConfirm"))) return;
     await deletePackage(id);
     load();
   };
@@ -155,11 +158,11 @@ export default function Packages() {
 
   return (
     <Layout>
-      <Topbar title="پکیج‌ها" subtitle="پلن‌های قابل خرید که ربات فروش به مشتری‌ها نشان می‌دهد" />
+      <Topbar title={t("packages.title")} subtitle={t("packages.subtitle")} />
 
       <div className="flex justify-end mb-4">
         <button className="btn-primary" onClick={openCreate}>
-          <Plus size={16} /> پکیج جدید
+          <Plus size={16} /> {t("packages.newPackage")}
         </button>
       </div>
 
@@ -167,12 +170,12 @@ export default function Packages() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-gray-500 text-xs">
             <tr>
-              <th className="text-right font-medium px-4 py-3">نام</th>
-              <th className="text-right font-medium px-4 py-3">حجم</th>
-              <th className="text-right font-medium px-4 py-3">مدت</th>
-              <th className="text-right font-medium px-4 py-3">قیمت (تومان)</th>
-              <th className="text-right font-medium px-4 py-3">وضعیت</th>
-              <th className="text-right font-medium px-4 py-3">عملیات</th>
+              <th className="text-right font-medium px-4 py-3">{t("packages.colName")}</th>
+              <th className="text-right font-medium px-4 py-3">{t("packages.colQuota")}</th>
+              <th className="text-right font-medium px-4 py-3">{t("packages.colDuration")}</th>
+              <th className="text-right font-medium px-4 py-3">{t("packages.colPrice")}</th>
+              <th className="text-right font-medium px-4 py-3">{t("packages.colStatus")}</th>
+              <th className="text-right font-medium px-4 py-3">{t("packages.colActions")}</th>
             </tr>
           </thead>
           <tbody>
@@ -183,33 +186,38 @@ export default function Packages() {
                   {p.description && <div className="text-xs text-gray-400">{p.description}</div>}
                   {p.connections?.length > 0 && (
                     <div className="text-xs text-brand-600 flex items-center gap-1 mt-1">
-                      <Server size={12} /> {p.connections.length} سرویس همراه پکیج
-                      {p.max_concurrent_sessions ? ` — حداکثر ${p.max_concurrent_sessions} اتصال همزمان` : ""}
+                      <Server size={12} /> {t("packages.bundledServices", { count: p.connections.length })}
+                      {p.max_concurrent_sessions ? t("packages.maxConcurrent", { count: p.max_concurrent_sessions }) : ""}
                     </div>
                   )}
                 </td>
-                <td className="px-4 py-3 text-gray-600">{p.quota_gb ? `${p.quota_gb} GB` : "نامحدود"}</td>
-                <td className="px-4 py-3 text-gray-600">{p.duration_days ? `${p.duration_days} روز` : "بدون انقضا"}</td>
+                <td className="px-4 py-3 text-gray-600">{p.quota_gb ? `${p.quota_gb} GB` : t("packages.unlimited")}</td>
+                <td className="px-4 py-3 text-gray-600">{p.duration_days ? t("packages.days", { count: p.duration_days }) : t("packages.noExpiry")}</td>
                 <td className="px-4 py-3 text-gray-600" dir="ltr">
                   {formatToman(p.price)}
                   {p.cooperation_price != null && (
-                    <div className="text-xs text-gray-400">همکاری: {formatToman(p.cooperation_price)}</div>
+                    <div className="text-xs text-gray-400">{t("packages.cooperationLabel", { price: formatToman(p.cooperation_price) })}</div>
                   )}
                 </td>
                 <td className="px-4 py-3">
-                  <span className={`badge ${p.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
-                    {p.enabled ? "فعال" : "غیرفعال"}
-                  </span>
+                  <div className="flex flex-col gap-1 items-start">
+                    <span className={`badge ${p.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                      {t("packages.webPanel")}: {p.enabled ? t("status.active") : t("status.disabled")}
+                    </span>
+                    <span className={`badge ${p.bot_enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                      {t("packages.bot")}: {p.bot_enabled ? t("status.active") : t("status.disabled")}
+                    </span>
+                  </div>
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2">
-                    <button title={p.enabled ? "غیرفعال کردن" : "فعال کردن"} onClick={() => onToggle(p)} className="text-gray-400 hover:text-brand-600">
+                    <button title={p.enabled ? t("packages.disable") : t("packages.enable")} onClick={() => onToggle(p)} className="text-gray-400 hover:text-brand-600">
                       <Power size={16} />
                     </button>
-                    <button title="ویرایش" onClick={() => openEdit(p)} className="text-gray-400 hover:text-brand-600">
+                    <button title={t("packages.editTitle")} onClick={() => openEdit(p)} className="text-gray-400 hover:text-brand-600">
                       <Pencil size={16} />
                     </button>
-                    <button title="حذف" onClick={() => onDelete(p.id)} className="text-gray-400 hover:text-red-600">
+                    <button title={t("packages.deleteTitle")} onClick={() => onDelete(p.id)} className="text-gray-400 hover:text-red-600">
                       <Trash2 size={16} />
                     </button>
                   </div>
@@ -220,7 +228,7 @@ export default function Packages() {
               <tr>
                 <td colSpan={6} className="text-center text-gray-400 py-10">
                   <PackageIcon size={28} className="mx-auto mb-2 text-gray-300" />
-                  هنوز پکیجی ساخته نشده است
+                  {t("packages.empty")}
                 </td>
               </tr>
             )}
@@ -228,90 +236,95 @@ export default function Packages() {
         </table>
       </div>
 
-      <Modal open={open} onClose={() => setOpen(false)} title={editingId ? "ویرایش پکیج" : "پکیج جدید"} width="max-w-2xl">
+      <Modal open={open} onClose={() => setOpen(false)} title={editingId ? t("packages.editModal") : t("packages.newModal")} width="max-w-2xl">
         <form onSubmit={submit} className="space-y-4">
           <div>
-            <label className="block text-sm text-gray-600 mb-1">نام پکیج *</label>
-            <input className="input" required placeholder="مثلا: طلایی ۲۰ گیگ ماهانه" value={form.name} onChange={(e) => set("name", e.target.value)} />
+            <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldName")}</label>
+            <input className="input" required placeholder={t("packages.fieldNamePlaceholder")} value={form.name} onChange={(e) => set("name", e.target.value)} />
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div>
-              <label className="block text-sm text-gray-600 mb-1">حجم (GB)</label>
+              <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldQuota")}</label>
               <input type="number" step="0.1" min="0" className="input" value={form.quota_gb} onChange={(e) => set("quota_gb", Number(e.target.value))} />
-              <div className="text-xs text-gray-400 mt-1">۰ = نامحدود</div>
+              <div className="text-xs text-gray-400 mt-1">{t("packages.quotaHint")}</div>
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">مدت (روز)</label>
+              <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldDuration")}</label>
               <input type="number" min="0" className="input" value={form.duration_days ?? ""} onChange={(e) => set("duration_days", e.target.value ? Number(e.target.value) : null)} />
-              <div className="text-xs text-gray-400 mt-1">خالی = بدون انقضا</div>
+              <div className="text-xs text-gray-400 mt-1">{t("packages.durationHint")}</div>
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">قیمت (تومان)</label>
+              <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldPrice")}</label>
               <input type="number" min="0" className="input" value={form.price} onChange={(e) => set("price", Number(e.target.value))} />
             </div>
           </div>
 
           <div>
-            <label className="block text-sm text-gray-600 mb-1">قیمت همکاری / عمده‌فروشی (تومان)</label>
+            <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldCooperationPrice")}</label>
             <input
               type="number"
               min="0"
               className="input"
-              placeholder="خالی = مثل قیمت عادی بالا"
+              placeholder={t("packages.cooperationPricePlaceholder")}
               value={form.cooperation_price}
               onChange={(e) => set("cooperation_price", e.target.value)}
             />
             <div className="text-xs text-gray-400 mt-1">
-              وقتی یک ادمین فرعی (نه ادمین اصلی) از این پکیج برای ساخت کاربر استفاده کند، این مبلغ (نه قیمت بالا) از اعتبار خودش کم می‌شود.
+              {t("packages.cooperationHint")}
             </div>
           </div>
           <div>
-            <label className="block text-sm text-gray-600 mb-1">توضیحات (اختیاری، به مشتری نشان داده می‌شود)</label>
+            <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldDescription")}</label>
             <textarea className="input" rows={2} value={form.description || ""} onChange={(e) => set("description", e.target.value)} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm text-gray-600 mb-1">ترتیب نمایش</label>
+              <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldOrder")}</label>
               <input type="number" className="input" value={form.sort_order} onChange={(e) => set("sort_order", Number(e.target.value))} />
             </div>
-            <label className="flex items-center gap-2 mt-6 text-sm text-gray-600">
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex items-center gap-2 text-sm text-gray-600">
               <input type="checkbox" checked={form.enabled} onChange={(e) => set("enabled", e.target.checked)} />
-              فعال (در ربات نمایش داده شود)
+              {t("packages.showInPanel")}
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-600">
+              <input type="checkbox" checked={form.bot_enabled} onChange={(e) => set("bot_enabled", e.target.checked)} />
+              {t("packages.showInBot")}
             </label>
           </div>
 
           <div>
-            <label className="block text-sm text-gray-600 mb-1">حداکثر اتصال هم‌زمان (کل پکیج)</label>
+            <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldMaxConcurrent")}</label>
             <input
               type="number"
               min="0"
               className="input"
-              placeholder="خالی = نامحدود"
+              placeholder={t("packages.maxConcurrentPlaceholder")}
               value={form.max_concurrent_sessions}
               onChange={(e) => set("max_concurrent_sessions", e.target.value)}
             />
             <div className="text-xs text-gray-400 mt-1">
-              این عدد روی مجموع همه‌ی سرویس‌های زیر اعمال می‌شود (نه هرکدام جدا) - مثلا پکیج با ۴ سرویس و عدد ۱ یعنی کاربر فقط
-              روی یکی از آن‌ها همزمان می‌تواند وصل باشد، نه هر ۴ تا با هم.
+              {t("packages.maxConcurrentHint")}
             </div>
           </div>
 
           <div className="border-t border-gray-100 pt-3">
             <div className="flex items-center justify-between mb-2">
               <div className="text-sm font-medium text-gray-700">
-                سرویس‌های همراه پکیج (اختیاری، با انتخاب این پکیج خودکار برای کاربر ساخته می‌شود)
+                {t("packages.servicesHeading")}
               </div>
               <button type="button" className="btn-secondary" onClick={addConn}>
-                <Plus size={14} /> افزودن سرویس
+                <Plus size={14} /> {t("packages.addService")}
               </button>
             </div>
             {form.connections.length === 0 && (
-              <div className="text-xs text-gray-400">هیچ سرویسی اضافه نشده - این پکیج فقط حجم/مدت/قیمت تعریف می‌کند.</div>
+              <div className="text-xs text-gray-400">{t("packages.noServices")}</div>
             )}
             {form.connections.map((c, idx) => (
               <div key={idx} className="grid grid-cols-4 gap-2 mb-2 items-center">
                 <select className="input col-span-2" value={c.node_id} onChange={(e) => updateConn(idx, "node_id", e.target.value)}>
-                  <option value="">انتخاب سرور...</option>
+                  <option value="">{t("packages.selectServer")}</option>
                   {nodes.map((n) => (
                     <option key={n.id} value={n.id}>
                       {n.name}
@@ -329,7 +342,7 @@ export default function Packages() {
                   {c.protocol === "xray" ? (
                     <input
                       className="input"
-                      placeholder="flow (اختیاری)"
+                      placeholder={t("packages.flowPlaceholder")}
                       value={c.flow}
                       onChange={(e) => updateConn(idx, "flow", e.target.value)}
                     />
@@ -346,12 +359,12 @@ export default function Packages() {
 
           <div className="border-t border-gray-100 pt-3">
             <label className="block text-sm text-gray-600 mb-1">
-              پیام دلخواه بعد از خرید (اختیاری، در ربات به مشتری فرستاده می‌شود)
+              {t("packages.customMessageHeading")}
             </label>
             <textarea
               className="input"
               rows={3}
-              placeholder="مثلا: راهنمای نصب اپلیکیشن، شماره پشتیبانی و..."
+              placeholder={t("packages.customMessagePlaceholder")}
               value={form.custom_message}
               onChange={(e) => set("custom_message", e.target.value)}
             />
@@ -360,20 +373,20 @@ export default function Packages() {
           <div className="border-t border-gray-100 pt-3">
             <div className="flex items-center justify-between mb-2">
               <div className="text-sm font-medium text-gray-700">
-                فایل‌های همراه پکیج (اختیاری، بعد از خرید در ربات فرستاده می‌شود)
+                {t("packages.filesHeading")}
               </div>
               {editingId ? (
                 <label className="btn-secondary cursor-pointer">
-                  <Paperclip size={14} /> {uploading ? "در حال آپلود..." : "افزودن فایل"}
+                  <Paperclip size={14} /> {uploading ? t("packages.uploading") : t("packages.addFile")}
                   <input type="file" className="hidden" onChange={onUploadFile} disabled={uploading} />
                 </label>
               ) : null}
             </div>
             {!editingId && (
-              <div className="text-xs text-gray-400">برای افزودن فایل، ابتدا پکیج را ذخیره کنید و دوباره ویرایش را باز کنید.</div>
+              <div className="text-xs text-gray-400">{t("packages.saveFirst")}</div>
             )}
             {editingId && editingFiles.length === 0 && (
-              <div className="text-xs text-gray-400">هنوز فایلی اضافه نشده.</div>
+              <div className="text-xs text-gray-400">{t("packages.noFiles")}</div>
             )}
             {editingFiles.map((f) => (
               <div key={f.id} className="flex items-center justify-between gap-2 py-1.5 px-2 rounded-lg bg-gray-50 mb-1.5 text-sm">
@@ -392,10 +405,10 @@ export default function Packages() {
           {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setOpen(false)}>
-              انصراف
+              {t("common.cancel")}
             </button>
             <button type="submit" disabled={saving} className="btn-primary">
-              {saving ? "در حال ذخیره..." : "ذخیره پکیج"}
+              {saving ? t("common.saving") : t("packages.savePackage")}
             </button>
           </div>
         </form>

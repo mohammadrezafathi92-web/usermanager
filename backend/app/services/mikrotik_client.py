@@ -199,6 +199,38 @@ class MikrotikClient:
     # this helper: it registers the panel as a `/radius` client on the
     # router and flips `ppp aaa` to use it, so the admin doesn't have to
     # type those two RouterOS commands by hand.
+    #
+    # `service` matters: "ppp" covers OpenVPN/L2TP/SSTP's own PPP login
+    # (username/password straight to RADIUS, incl. our MS-CHAPv2 support -
+    # see services/mschapv2.py). "ipsec" is a SEPARATE RADIUS client entry
+    # RouterOS uses only for IKEv2's EAP-over-RADIUS login (see
+    # push_ikev2_config below) - registering only "ppp" is not enough to
+    # make IKEv2 itself authenticate against this panel.
+    def _ensure_radius_client(
+        self,
+        panel_host: str,
+        secret: str,
+        auth_port: int,
+        acct_port: int,
+        service: str,
+    ) -> None:
+        path = self._api.path("radius")
+        existing = list(
+            path.select(Key(".id"), Key("address"), Key("service"))
+            .where(Key("address") == panel_host, Key("service") == service)
+        )
+        props = {
+            "service": service,
+            "address": panel_host,
+            "secret": secret,
+            "authentication-port": auth_port,
+            "accounting-port": acct_port,
+        }
+        if existing:
+            path.update(**{".id": existing[0][".id"]}, **props)
+        else:
+            path.add(**props)
+
     def push_radius_config(
         self,
         panel_host: str,
@@ -208,22 +240,8 @@ class MikrotikClient:
         service: str = "ppp",
         interim_update: str = "00:05:00",
     ) -> None:
-        path = self._api.path("radius")
         try:
-            existing = list(
-                path.select(Key(".id"), Key("address"), Key("service")).where(Key("address") == panel_host)
-            )
-            props = {
-                "service": service,
-                "address": panel_host,
-                "secret": secret,
-                "authentication-port": auth_port,
-                "accounting-port": acct_port,
-            }
-            if existing:
-                path.update(**{".id": existing[0][".id"]}, **props)
-            else:
-                path.add(**props)
+            self._ensure_radius_client(panel_host, secret, auth_port, acct_port, service)
             # /ppp/aaa is a singleton settings menu (no .id) - "set" applies
             # directly, equivalent to: /ppp aaa set use-radius=yes accounting=yes
             list(self._api(
@@ -232,6 +250,107 @@ class MikrotikClient:
             ))
         except Exception as exc:
             raise MikrotikError(f"تنظیم RADIUS روی میکروتیک ناموفق بود: {exc}") from exc
+
+    # --------------------------------------------------------- certificates
+    def ensure_self_signed_certificate(self, name: str, common_name: Optional[str] = None) -> str:
+        """Returns the name of a signed certificate suitable for SSTP's
+        server certificate, creating+self-signing one under `name` if none
+        exists yet. Idempotent - if a certificate with this name already
+        exists (e.g. from a previous push, or one the admin made by hand),
+        it's reused as-is rather than recreated."""
+        path = self._api.path("certificate")
+        existing = list(path.select(Key("name")).where(Key("name") == name))
+        if existing:
+            return name
+        try:
+            path.add(name=name, **{"common-name": common_name or name, "key-usage": "tls-server"})
+            # Self-sign it - RouterOS's /certificate sign is synchronous over
+            # the API for a locally-held private key (no external CA involved).
+            list(self._api("/certificate/sign", **{"number": name}))
+        except Exception as exc:
+            raise MikrotikError(f"ساخت گواهی برای SSTP ناموفق بود: {exc}") from exc
+        return name
+
+    # --------------------------------------------------------------- SSTP
+    # SSTP wraps PPP inside a TLS tunnel, so (unlike plain OpenVPN/L2TP
+    # username+password over RADIUS) it also needs a server certificate.
+    # This only flips the SSTP server on and points it at a certificate +
+    # RADIUS auth - it deliberately does NOT touch IP pools or PPP profiles,
+    # same minimal-touch scope as push_radius_config above.
+    def push_sstp_config(self, port: int, certificate_name: str = "usermanager-sstp") -> str:
+        cert = self.ensure_self_signed_certificate(certificate_name)
+        try:
+            list(self._api(
+                "/interface/sstp-server/server/set",
+                enabled="yes",
+                port=str(port),
+                certificate=cert,
+                authentication="mschap2",
+            ))
+        except Exception as exc:
+            raise MikrotikError(f"تنظیم SSTP روی میکروتیک ناموفق بود: {exc}") from exc
+        return cert
+
+    # --------------------------------------------------------------- L2TP
+    # Simple/classic L2TP-over-IPsec: a single shared pre-shared key secures
+    # the IPsec layer for every client, then PPP negotiates over it with
+    # RADIUS-authenticated per-user username/password (same as SSTP/OpenVPN
+    # above). This is RouterOS's built-in `use-ipsec` shortcut on the L2TP
+    # server itself - no separate /ip/ipsec peer/profile needed.
+    def push_l2tp_config(self, ipsec_secret: str) -> None:
+        try:
+            list(self._api(
+                "/interface/l2tp-server/server/set",
+                enabled="yes",
+                **{"use-ipsec": "yes", "ipsec-secret": ipsec_secret},
+            ))
+        except Exception as exc:
+            raise MikrotikError(f"تنظیم L2TP/IPsec روی میکروتیک ناموفق بود: {exc}") from exc
+
+    # -------------------------------------------------------------- IKEv2
+    # RouterOS's "IKEv2" here is the same L2TP-server PPP/RADIUS stack as
+    # push_l2tp_config, but with the IPsec layer negotiated explicitly as
+    # IKEv2 (exchange-mode=ike2) via a dedicated /ip/ipsec peer+identity
+    # instead of the server's own simplified ipsec-secret shortcut - so this
+    # should NOT be combined with push_l2tp_config's ipsec-secret on the
+    # same router (they configure the IPsec layer two different ways).
+    # Per-user login is still RADIUS/PPP (same username+password as the
+    # other protocols); the pre-shared key below only secures the IKE/IPsec
+    # tunnel itself, matching this node's mt_ikev2_psk field.
+    def push_ikev2_config(self, psk: str, peer_name: str = "usermanager-ikev2") -> None:
+        try:
+            profile_path = self._api.path("ip", "ipsec", "profile")
+            if not list(profile_path.select(Key("name")).where(Key("name") == peer_name)):
+                profile_path.add(name=peer_name, **{"dh-group": "modp2048", "enc-algorithm": "aes-256", "hash-algorithm": "sha256"})
+
+            peer_path = self._api.path("ip", "ipsec", "peer")
+            existing_peer = list(peer_path.select(Key(".id"), Key("name")).where(Key("name") == peer_name))
+            peer_props = {"name": peer_name, "address": "0.0.0.0/0", "exchange-mode": "ike2", "passive": "yes", "profile": peer_name}
+            if existing_peer:
+                peer_path.update(**{".id": existing_peer[0][".id"]}, **peer_props)
+            else:
+                peer_path.add(**peer_props)
+
+            identity_path = self._api.path("ip", "ipsec", "identity")
+            existing_identity = list(identity_path.select(Key(".id"), Key("peer")).where(Key("peer") == peer_name))
+            identity_props = {
+                "peer": peer_name,
+                "auth-method": "pre-shared-key",
+                "secret": psk,
+                "generate-policy": "port-strict",
+            }
+            if existing_identity:
+                identity_path.update(**{".id": existing_identity[0][".id"]}, **identity_props)
+            else:
+                identity_path.add(**identity_props)
+
+            # Same underlying L2TP/PPP/RADIUS server as push_l2tp_config -
+            # use-ipsec=yes here just enables the IPsec layer in general;
+            # the explicit peer above (exchange-mode=ike2) is what makes
+            # RouterOS negotiate IKEv2 instead of the default IKEv1.
+            list(self._api("/interface/l2tp-server/server/set", enabled="yes", **{"use-ipsec": "yes"}))
+        except Exception as exc:
+            raise MikrotikError(f"تنظیم IKEv2 روی میکروتیک ناموفق بود: {exc}") from exc
 
     # -------------------------------------------------------- import (read-only)
     def read_ppp_secrets(self) -> list[dict]:

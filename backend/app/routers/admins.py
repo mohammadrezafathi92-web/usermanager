@@ -39,6 +39,8 @@ def _out(db: Session, admin: models.AdminUser) -> schemas.AdminOut:
         users_count=users_count,
         group_id=admin.group_id,
         group_name=admin.group.name if admin.group else None,
+        billing_mode=admin.billing_mode or "flat",
+        volume_balance_gb=admin.volume_balance_gb,
     )
 
 
@@ -50,6 +52,63 @@ def _group_out(db: Session, group: models.AdminPermissionGroup) -> schemas.Admin
         permissions=sorted(parse_permissions(group.permissions)),
         admins_count=admins_count,
     )
+
+
+def _log_out(log: models.AdminBalanceLog) -> schemas.AdminBalanceLogOut:
+    return schemas.AdminBalanceLogOut(
+        id=log.id,
+        admin_id=log.admin_id,
+        amount=log.amount,
+        balance_after=log.balance_after,
+        note=log.note,
+        created_by_username=log.created_by.username if log.created_by else None,
+        created_at=log.created_at,
+    )
+
+
+def _volume_log_out(log: models.AdminVolumeLog) -> schemas.AdminVolumeLogOut:
+    return schemas.AdminVolumeLogOut(
+        id=log.id,
+        admin_id=log.admin_id,
+        amount_gb=log.amount_gb,
+        balance_after_gb=log.balance_after_gb,
+        note=log.note,
+        created_by_username=log.created_by.username if log.created_by else None,
+        created_at=log.created_at,
+    )
+
+
+def _apply_volume_change(db: Session, admin: models.AdminUser, amount_gb: float, note: str | None, actor_id: int | None) -> models.AdminVolumeLog:
+    """Volume-pool equivalent of _apply_balance_change below - used by both
+    the initial "حجم پایه" (at creation, when billing_mode="usage") and the
+    manual افزایش/کاهش حجم endpoint."""
+    admin.volume_balance_gb = (admin.volume_balance_gb or 0) + amount_gb
+    log = models.AdminVolumeLog(
+        admin_id=admin.id,
+        amount_gb=amount_gb,
+        balance_after_gb=admin.volume_balance_gb,
+        note=note,
+        created_by_id=actor_id,
+    )
+    db.add(log)
+    return log
+
+
+def _apply_balance_change(db: Session, admin: models.AdminUser, amount: int, note: str | None, actor_id: int | None) -> models.AdminBalanceLog:
+    """Shared by the initial "اعتبار پایه" (at creation) and the manual
+    "افزایش/کاهش اعتبار" endpoint below - always moves the balance AND
+    writes the matching audit row in the same transaction, so the two can
+    never drift apart."""
+    admin.balance = (admin.balance or 0) + amount
+    log = models.AdminBalanceLog(
+        admin_id=admin.id,
+        amount=amount,
+        balance_after=admin.balance,
+        note=note,
+        created_by_id=actor_id,
+    )
+    db.add(log)
+    return log
 
 
 # ---------- Permission groups ----------
@@ -128,7 +187,11 @@ def permission_choices():
 
 
 @router.post("", response_model=schemas.AdminOut)
-def create_admin(payload: schemas.AdminCreate, db: Session = Depends(get_db)):
+def create_admin(
+    payload: schemas.AdminCreate,
+    db: Session = Depends(get_db),
+    current: models.AdminUser = Depends(require_superadmin),
+):
     if db.query(models.AdminUser).filter(models.AdminUser.username == payload.username).first():
         raise HTTPException(400, "این نام کاربری قبلا ثبت شده است")
     if len(payload.password) < 6:
@@ -143,6 +206,7 @@ def create_admin(payload: schemas.AdminCreate, db: Session = Depends(get_db)):
     group_id = payload.group_id or None
     if group_id and not db.get(models.AdminPermissionGroup, group_id):
         raise HTTPException(400, "گروه انتخاب‌شده پیدا نشد")
+    billing_mode = payload.billing_mode if payload.billing_mode in ("flat", "usage") else "flat"
 
     admin = models.AdminUser(
         username=payload.username,
@@ -152,15 +216,28 @@ def create_admin(payload: schemas.AdminCreate, db: Session = Depends(get_db)):
         login_slug=slug,
         telegram_id=payload.telegram_id,
         group_id=group_id,
+        billing_mode=billing_mode,
     )
     db.add(admin)
+    db.flush()  # assigns admin.id, needed for the balance/volume log FKs below
+
+    if payload.initial_balance:
+        _apply_balance_change(db, admin, payload.initial_balance, "اعتبار پایه اولیه", actor_id=current.id)
+    if billing_mode == "usage" and payload.initial_volume_gb:
+        _apply_volume_change(db, admin, payload.initial_volume_gb, "حجم پایه اولیه", actor_id=current.id)
+
     db.commit()
     db.refresh(admin)
     return _out(db, admin)
 
 
 @router.put("/{admin_id}", response_model=schemas.AdminOut)
-def update_admin(admin_id: int, payload: schemas.AdminUpdate, db: Session = Depends(get_db)):
+def update_admin(
+    admin_id: int,
+    payload: schemas.AdminUpdate,
+    db: Session = Depends(get_db),
+    current: models.AdminUser = Depends(require_superadmin),
+):
     admin = db.get(models.AdminUser, admin_id)
     if not admin:
         raise HTTPException(404, "ادمین پیدا نشد")
@@ -195,16 +272,125 @@ def update_admin(admin_id: int, payload: schemas.AdminUpdate, db: Session = Depe
                 raise HTTPException(400, f"این آیدی تلگرام قبلا برای ادمین «{clash.username}» ثبت شده است")
         admin.telegram_id = tg_id
     if payload.balance is not None:
-        admin.balance = payload.balance
+        # Deprecated absolute-set path (predates the logged topup endpoint
+        # below) - kept working for API compatibility, but still recorded
+        # as a balance-log entry (delta = new - old) so no balance change
+        # can happen silently/unlogged regardless of which endpoint made it.
+        delta = payload.balance - (admin.balance or 0)
+        if delta:
+            _apply_balance_change(db, admin, delta, "ویرایش مستقیم موجودی", actor_id=current.id)
     if payload.group_id is not None:
         group_id = payload.group_id or None
         if group_id and not db.get(models.AdminPermissionGroup, group_id):
             raise HTTPException(400, "گروه انتخاب‌شده پیدا نشد")
         admin.group_id = group_id
+    if payload.billing_mode is not None:
+        if payload.billing_mode not in ("flat", "usage"):
+            raise HTTPException(400, "مدل قیمت‌گذاری نامعتبر است")
+        admin.billing_mode = payload.billing_mode
 
     db.commit()
     db.refresh(admin)
     return _out(db, admin)
+
+
+@router.post("/{admin_id}/topup", response_model=schemas.AdminOut)
+def topup_admin_balance(admin_id: int, payload: schemas.AdminTopupRequest, db: Session = Depends(get_db), current: models.AdminUser = Depends(require_superadmin)):
+    """The proper, always-logged way to change a reseller's wholesale
+    credit balance - positive amount = افزایش اعتبار, negative = manual
+    correction/deduction. Every call here creates exactly one
+    AdminBalanceLog row (see _apply_balance_change)."""
+    admin = db.get(models.AdminUser, admin_id)
+    if not admin:
+        raise HTTPException(404, "ادمین پیدا نشد")
+    if admin.is_superadmin:
+        raise HTTPException(400, "اعتبار برای ادمین اصلی معنا ندارد")
+    if not payload.amount:
+        raise HTTPException(400, "مبلغ نمی‌تواند صفر باشد")
+    _apply_balance_change(db, admin, payload.amount, (payload.note or "").strip() or None, actor_id=current.id)
+    db.commit()
+    db.refresh(admin)
+    return _out(db, admin)
+
+
+@router.get("/{admin_id}/balance-logs", response_model=list[schemas.AdminBalanceLogOut])
+def list_admin_balance_logs(admin_id: int, db: Session = Depends(get_db)):
+    admin = db.get(models.AdminUser, admin_id)
+    if not admin:
+        raise HTTPException(404, "ادمین پیدا نشد")
+    logs = (
+        db.query(models.AdminBalanceLog)
+        .filter(models.AdminBalanceLog.admin_id == admin_id)
+        .order_by(models.AdminBalanceLog.id.desc())
+        .all()
+    )
+    return [_log_out(l) for l in logs]
+
+
+@router.post("/{admin_id}/volume-topup", response_model=schemas.AdminOut)
+def topup_admin_volume(admin_id: int, payload: schemas.AdminVolumeTopupRequest, db: Session = Depends(get_db), current: models.AdminUser = Depends(require_superadmin)):
+    """Volume-pool equivalent of /topup above - only meaningful for
+    billing_mode="usage" admins, but not hard-blocked for "flat" admins
+    (a superadmin may top up the volume pool in advance of switching an
+    admin to usage mode)."""
+    admin = db.get(models.AdminUser, admin_id)
+    if not admin:
+        raise HTTPException(404, "ادمین پیدا نشد")
+    if admin.is_superadmin:
+        raise HTTPException(400, "حجم برای ادمین اصلی معنا ندارد")
+    if not payload.amount_gb:
+        raise HTTPException(400, "مقدار حجم نمی‌تواند صفر باشد")
+    _apply_volume_change(db, admin, payload.amount_gb, (payload.note or "").strip() or None, actor_id=current.id)
+    db.commit()
+    db.refresh(admin)
+    return _out(db, admin)
+
+
+@router.get("/{admin_id}/volume-logs", response_model=list[schemas.AdminVolumeLogOut])
+def list_admin_volume_logs(admin_id: int, db: Session = Depends(get_db)):
+    admin = db.get(models.AdminUser, admin_id)
+    if not admin:
+        raise HTTPException(404, "ادمین پیدا نشد")
+    logs = (
+        db.query(models.AdminVolumeLog)
+        .filter(models.AdminVolumeLog.admin_id == admin_id)
+        .order_by(models.AdminVolumeLog.id.desc())
+        .all()
+    )
+    return [_volume_log_out(l) for l in logs]
+
+
+@router.get("/login-logs", response_model=list[schemas.AdminLoginLogOut])
+def list_login_logs(
+    admin_id: int | None = None,
+    only_failed: bool = False,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+):
+    """Superadmin-only IP-based login report (مورد ۵) - every login
+    attempt against the panel, success or fail, including the superadmin's
+    own logins. `admin_id` filters to one admin; `only_failed` narrows to
+    rejected attempts (wrong password/unknown username) for spotting
+    brute-force noise."""
+    q = db.query(models.AdminLoginLog)
+    if admin_id:
+        q = q.filter(models.AdminLoginLog.admin_id == admin_id)
+    if only_failed:
+        q = q.filter(models.AdminLoginLog.success == False)  # noqa: E712
+    logs = q.order_by(models.AdminLoginLog.id.desc()).limit(min(limit, 1000)).all()
+    return [
+        schemas.AdminLoginLogOut(
+            id=l.id,
+            admin_id=l.admin_id,
+            admin_username=l.admin.username if l.admin else None,
+            attempted_username=l.attempted_username,
+            ip_address=l.ip_address,
+            user_agent=l.user_agent,
+            success=l.success,
+            created_at=l.created_at,
+        )
+        for l in logs
+    ]
 
 
 @router.delete("/{admin_id}")

@@ -1,7 +1,9 @@
 import React from "react";
 import { formatBytes } from "../utils.js";
+import { useLanguage } from "../context/LanguageContext.jsx";
 
 export default function QuotaBar({ used, total }) {
+  const { t } = useLanguage();
   const unlimited = !total;
   const pct = unlimited ? 0 : Math.min(100, Math.round((used / total) * 100));
   const color = pct > 90 ? "bg-red-500" : pct > 70 ? "bg-amber-500" : "bg-brand-600";
@@ -10,7 +12,7 @@ export default function QuotaBar({ used, total }) {
     <div className="w-full">
       <div className="flex justify-between text-xs text-gray-500 mb-1">
         <span className={unlimited ? "font-medium text-gray-700" : ""}>{formatBytes(used)}</span>
-        <span>{unlimited ? "نامحدود" : formatBytes(total)}</span>
+        <span>{unlimited ? t("userDetail.unlimited") : formatBytes(total)}</span>
       </div>
       <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
         {!unlimited && (

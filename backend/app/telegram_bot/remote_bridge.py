@@ -121,6 +121,7 @@ class RemoteBridge:
         connections: Optional[list[dict]] = None,
         owner_admin_id: Optional[int] = None,
         package_name: Optional[str] = None,
+        package_id: Optional[int] = None,
     ) -> dict:
         payload = {
             "username": username,
@@ -131,6 +132,7 @@ class RemoteBridge:
             "connections": connections or [],
             "owner_admin_id": owner_admin_id,
             "package_name": package_name,
+            "package_id": package_id,
         }
         return await self._call("POST", "/users", json=payload)
 
@@ -188,9 +190,9 @@ class RemoteBridge:
 
     async def renew(
         self, username: str, add_gb: float = 0, add_days: int = 0, reset_usage: bool = False,
-        owner_admin_id: Optional[int] = None,
+        owner_admin_id: Optional[int] = None, package_id: Optional[int] = None,
     ) -> dict:
-        payload = {"add_gb": add_gb, "add_days": add_days, "reset_usage": reset_usage}
+        payload = {"add_gb": add_gb, "add_days": add_days, "reset_usage": reset_usage, "package_id": package_id}
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         return await self._call("POST", f"/users/{username}/renew", json=payload, params=params)
 

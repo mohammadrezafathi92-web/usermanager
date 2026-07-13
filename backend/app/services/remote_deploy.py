@@ -250,3 +250,69 @@ def stop(host: str, ssh_port: int, ssh_username: str, ssh_password: str) -> str:
         return out.strip() or err.strip() or "کانتینر متوقف شد."
     finally:
         client.close()
+
+
+# ---------------------------------------------------------------------------
+# Configurable panel web port (routers/panel_settings.py's change_panel_port
+# endpoint). Unlike deploy()/stop() above (which target a SEPARATE server
+# for the interactive bot), this SSHes into THIS panel's own host to edit
+# its docker-compose.yml and recreate the frontend container - the only way
+# to change a Docker host-port mapping, since that's not something a
+# container can do to itself from the inside.
+def change_panel_port(
+    host: str,
+    ssh_port: int,
+    ssh_username: str,
+    ssh_password: str,
+    project_dir: str,
+    current_port: int,
+    new_port: int,
+) -> str:
+    """Replaces the frontend service's host-side port in docker-compose.yml
+    (only the "CURRENT:80" -> "NEW:80" mapping - the container-internal 80
+    and the backend's own 8000 port are left untouched) and recreates just
+    that one container. Only touches the exact "current_port:80" string it
+    already knows about (from PanelSettings.panel_web_port) rather than a
+    generic port regex, so it can't accidentally rewrite some unrelated
+    port mapping elsewhere in the file."""
+    project_dir = project_dir.rstrip("/")
+    client = _connect(host, ssh_port, ssh_username, ssh_password)
+    log_lines: list[str] = []
+
+    def log(line: str) -> None:
+        log_lines.append(line)
+        logger.info(line)
+
+    try:
+        compose_path = f"{project_dir}/docker-compose.yml"
+        code, out, err = _run(client, f"test -f {compose_path} && echo OK || echo MISSING")
+        if "OK" not in out:
+            raise DeployError(f"فایل docker-compose.yml در مسیر {project_dir} پیدا نشد.", "\n".join(log_lines))
+        log(f"فایل {compose_path} پیدا شد.")
+
+        old_mapping = f'"{current_port}:80"'
+        new_mapping = f'"{new_port}:80"'
+        code, out, err = _run(client, f"grep -F '{old_mapping}' {compose_path}")
+        if code != 0:
+            raise DeployError(
+                f"رشته {old_mapping} در docker-compose.yml پیدا نشد - احتمالا پورت فعلی با مقدار ذخیره‌شده در پنل ({current_port}) یکی نیست. لطفا فایل را روی سرور دستی چک کنید.",
+                "\n".join(log_lines),
+            )
+        log(f"در حال تغییر {old_mapping} به {new_mapping} ...")
+
+        code, out, err = _run(client, f"sed -i 's/{old_mapping}/{new_mapping}/' {compose_path}")
+        if code != 0:
+            raise DeployError(f"ویرایش docker-compose.yml ناموفق بود:\n{err or out}", "\n".join(log_lines))
+        log("فایل docker-compose.yml بروزرسانی شد.")
+
+        log("در حال بازسازی کانتینر frontend ...")
+        code, out, err = _run(client, f"cd {project_dir} && docker compose up -d frontend", timeout=120)
+        if code != 0:
+            raise DeployError(f"بالا آوردن کانتینر frontend با پورت جدید ناموفق بود:\n{err or out}", "\n".join(log_lines))
+        log("کانتینر frontend با پورت جدید بالا آمد.")
+        log(f"از این پس پنل روی پورت {new_port} در دسترس است.")
+
+        return "\n".join(log_lines)
+    finally:
+        client.close()
+

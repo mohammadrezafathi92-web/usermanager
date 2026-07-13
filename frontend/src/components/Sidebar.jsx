@@ -1,20 +1,22 @@
 import React, { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, Users, Server, Settings, Network, Package, GraduationCap, ShieldCheck, Sun, Moon, X } from "lucide-react";
+import { LayoutDashboard, Users, Server, Settings, Network, Package, GraduationCap, ShieldCheck, Sun, Moon, X, Languages } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
+import { useLanguage } from "../context/LanguageContext.jsx";
 
 const allLinks = [
-  { to: "/", label: "داشبورد", icon: LayoutDashboard, end: true, perm: null },
-  { to: "/users", label: "کاربران", icon: Users, perm: null },
-  { to: "/nodes", label: "سرورها (نودها)", icon: Server, perm: "manage_nodes" },
-  { to: "/packages", label: "پکیج‌ها", icon: Package, perm: "manage_packages" },
-  { to: "/tutorials", label: "آموزش‌ها", icon: GraduationCap, perm: "manage_tutorials" },
-  { to: "/settings", label: "تنظیمات", icon: Settings, perm: "manage_settings" },
-  { to: "/admins", label: "مدیریت ادمین‌ها", icon: ShieldCheck, perm: "__superadmin__" },
+  { to: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, end: true, perm: null },
+  { to: "/users", labelKey: "nav.users", icon: Users, perm: null },
+  { to: "/nodes", labelKey: "nav.nodes", icon: Server, perm: "manage_nodes" },
+  { to: "/packages", labelKey: "nav.packages", icon: Package, perm: "manage_packages" },
+  { to: "/tutorials", labelKey: "nav.tutorials", icon: GraduationCap, perm: "manage_tutorials" },
+  { to: "/settings", labelKey: "nav.settings", icon: Settings, perm: "manage_settings" },
+  { to: "/admins", labelKey: "nav.admins", icon: ShieldCheck, perm: "__superadmin__" },
 ];
 
 export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
   const { can, isSuperadmin } = useAuth();
+  const { t, toggleLanguage } = useLanguage();
   const [dark, setDark] = useState(() => {
     try {
       return localStorage.getItem("theme") === "dark";
@@ -56,16 +58,16 @@ export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
             <Network size={18} />
           </div>
           <div className="flex-1">
-            <div className="font-bold text-gray-800 dark:text-gray-100 leading-none">یوزر منیجر</div>
-            <div className="text-xs text-gray-400 mt-1">مدیریت یکپارچه اتصالات</div>
+            <div className="font-bold text-gray-800 dark:text-gray-100 leading-none">{t("nav.appName")}</div>
+            <div className="text-xs text-gray-400 mt-1">{t("nav.tagline")}</div>
           </div>
-          <button type="button" onClick={onClose} className="md:hidden text-gray-400 hover:text-gray-600 dark:hover:text-gray-200" aria-label="بستن منو">
+          <button type="button" onClick={onClose} className="md:hidden text-gray-400 hover:text-gray-600 dark:hover:text-gray-200" aria-label={t("nav.closeMenu")}>
             <X size={20} />
           </button>
         </div>
 
         <nav className="flex-1 px-3 space-y-1 mt-2 overflow-y-auto">
-          {links.map(({ to, label, icon: Icon, end }) => (
+          {links.map(({ to, labelKey, icon: Icon, end }) => (
             <NavLink
               key={to}
               to={to}
@@ -80,23 +82,31 @@ export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
               }
             >
               <Icon size={18} />
-              {label}
+              {t(labelKey)}
             </NavLink>
           ))}
         </nav>
 
-        <div className="px-3 pb-2">
+        <div className="px-3 pb-2 space-y-1">
+          <button
+            type="button"
+            onClick={toggleLanguage}
+            className="w-full flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-800 transition-colors"
+          >
+            <Languages size={18} />
+            {t("nav.language")}
+          </button>
           <button
             type="button"
             onClick={() => setDark((d) => !d)}
             className="w-full flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-800 transition-colors"
           >
             {dark ? <Sun size={18} /> : <Moon size={18} />}
-            {dark ? "حالت روشن" : "حالت تاریک"}
+            {dark ? t("nav.lightMode") : t("nav.darkMode")}
           </button>
         </div>
 
-        <div className="p-4 text-xs text-gray-300 dark:text-gray-600 text-center">نسخه ۱.۰</div>
+        <div className="p-4 text-xs text-gray-300 dark:text-gray-600 text-center">{t("nav.version")}</div>
       </aside>
     </>
   );

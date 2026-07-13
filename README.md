@@ -167,7 +167,32 @@ usermanager/
 - کاربر SSH باید دسترسی نوشتن روی فایل کانفیگ و اجرای `systemctl restart` و باینری `xray` (برای `xray api statsquery`) را داشته باشد.
 - **مهم:** فرمت خروجی `xray api statsquery` می‌تواند بین نسخه‌های مختلف Xray-core کمی فرق کند. پارسر فعلی (`backend/app/services/xray_client.py`) با فلگ `-json` نوشته شده؛ پیش از استفاده در محیط واقعی، یک‌بار روی سرور خودتان تست کنید.
 
-## نصب و اجرا (Docker - پیشنهادی)
+## نصب سریع (یک دستور - پیشنهادی برای نصب جدید)
+
+یک نصاب شبیه اسکریپت نصب پروژه‌های معروف (مثل 3x-ui) اضافه شده که Docker را (اگر نبود) نصب می‌کند، `.env` را با `SECRET_KEY` تصادفی و رمز ادمین امن می‌سازد، پروژه را بالا می‌آورد، و یک دستور مدیریتی `usermanager` (start/stop/restart/status/logs/update/uninstall) روی سرور نصب می‌کند.
+
+**از روی خود ویندوزتان (ساده‌ترین حالت - جایگزین دستورات دستی zip/scp/ssh):**
+
+```powershell
+# کنار پوشه usermanager، فایل‌های install.sh و install_from_windows.ps1 را داشته باشید
+.\install_from_windows.ps1 -ServerIp 155.117.5.24
+# برای پورت دلخواه: .\install_from_windows.ps1 -ServerIp 155.117.5.24 -Port 8080
+# برای آپدیت بعدی همین سرور با کد جدید:  .\install_from_windows.ps1 -ServerIp 155.117.5.24 -Update
+```
+
+این اسکریپت پوشه `usermanager` را (بدون `node_modules`/`.git`/`venv`/دیتا) tar می‌کند، به سرور `scp` می‌کند و `install.sh` را همان‌جا اجرا می‌کند - در یک دستور.
+
+**مستقیم روی سرور (اگر `usermanager.tar.gz` یا `install.sh` را خودتان از قبل آپلود کرده‌اید):**
+
+```bash
+sudo bash install.sh              # نصب اولیه یا آپدیت امن (idempotent)
+sudo bash install.sh --port 8080  # با پورت پنل دلخواه
+sudo bash install.sh uninstall    # حذف کامل
+```
+
+منبع سورس به ترتیب اولویت: فایل `usermanager.tar.gz` کنار `install.sh`، یا `USERMANAGER_REPO_URL` (اگر پروژه را روی گیت‌هاب/گیت‌لب خصوصی گذاشته‌اید)، یا پروژه‌ای که از قبل در مسیر نصب موجود است. بعد از نصب، هر وقت خواستید با دستور `usermanager` (بدون آرگومان) یک منوی مدیریتی ساده باز می‌شود.
+
+## نصب دستی (Docker - روش قدیمی/گام‌به‌گام)
 
 ```bash
 cd usermanager

@@ -1,12 +1,22 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Plus, Search, Trash2, RotateCcw, Network, Layers, PencilLine, ChevronRight, ChevronLeft, X, ArrowUpDown, FileDown } from "lucide-react";
+import { Plus, Search, Trash2, RotateCcw, Network, Layers, PencilLine, ChevronRight, ChevronLeft, X, ArrowUpDown, FileDown, Wand2, CheckSquare } from "lucide-react";
+
+// یوزرنیم رندوم برای دکمه "تولید خودکار" کاربر - فقط حروف/عدد لاتین (مشابه
+// همون تابع تو Admins.jsx، اینجا مستقل تعریف شده چون دو صفحه جدان).
+function randomUsername() {
+  const alphabet = "abcdefghijkmnpqrstuvwxyz23456789";
+  let out = "user";
+  for (let i = 0; i < 6; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return out;
+}
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import QuotaBar from "../components/QuotaBar.jsx";
 import {
   fetchUsers,
+  fetchUserIds,
   createUser,
   deleteUser,
   resetUsage,
@@ -18,32 +28,34 @@ import {
   fetchAdmins,
   exportUsers,
 } from "../api/client.js";
-import { STATUS_LABELS, STATUS_STYLES, formatDate, gbToBytes, downloadBlob } from "../utils.js";
+import { statusLabel, STATUS_STYLES, formatDate, gbToBytes, downloadBlob } from "../utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
+import { useLanguage } from "../context/LanguageContext.jsx";
 
 const PAGE_SIZE = 50;
 
 const emptyBulkConn = { node_id: "", protocol: "openvpn", max_concurrent_sessions: 1 };
 
 const STATUS_FILTER_OPTIONS = [
-  { value: "", label: "همه وضعیت‌ها" },
-  { value: "active", label: "فعال" },
-  { value: "disabled", label: "غیرفعال" },
-  { value: "quota_exceeded", label: "اتمام حجم" },
-  { value: "expired", label: "منقضی‌شده" },
+  { value: "", labelKey: "status.all" },
+  { value: "active", labelKey: "status.active" },
+  { value: "disabled", labelKey: "status.disabled" },
+  { value: "quota_exceeded", labelKey: "status.quota_exceeded" },
+  { value: "expired", labelKey: "status.expired" },
 ];
 
 const SORT_OPTIONS = [
-  { value: "id", label: "جدیدترین" },
-  { value: "username", label: "نام کاربری" },
-  { value: "used_bytes", label: "مصرف" },
-  { value: "total_quota_bytes", label: "حجم مجاز" },
-  { value: "expire_at", label: "تاریخ انقضا" },
-  { value: "status", label: "وضعیت" },
+  { value: "id", labelKey: "sort.id" },
+  { value: "username", labelKey: "sort.username" },
+  { value: "used_bytes", labelKey: "sort.used_bytes" },
+  { value: "total_quota_bytes", labelKey: "sort.total_quota_bytes" },
+  { value: "expire_at", labelKey: "sort.expire_at" },
+  { value: "status", labelKey: "sort.status" },
 ];
 
 export default function Users() {
   const { isSuperadmin } = useAuth();
+  const { t, language } = useLanguage();
   const [searchParams, setSearchParams] = useSearchParams();
   const [users, setUsers] = useState([]);
   const [total, setTotal] = useState(0);
@@ -58,6 +70,14 @@ export default function Users() {
   const [nodes, setNodes] = useState([]);
   const [admins, setAdmins] = useState([]);
   const [ownerAdminFilter, setOwnerAdminFilter] = useState("");
+  const [packageFilter, setPackageFilter] = useState("");
+  // Same packages the create-forms use (`packages`, enabled-only) aren't
+  // enough for filtering - a user may have been created from a package
+  // that's since been disabled, and they'd become impossible to find/select
+  // by package again. Keep a separate, unfiltered list just for the filter
+  // dropdown and the bulk-edit "اعمال پکیج" selector below.
+  const [allPackages, setAllPackages] = useState([]);
+  const [selectingAll, setSelectingAll] = useState(false);
 
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -99,6 +119,7 @@ export default function Users() {
     reset_usage: false,
     status: "",
     max_concurrent_sessions: "",
+    package_id: "",
   });
   const [bulkEditError, setBulkEditError] = useState("");
   const [exporting, setExporting] = useState(false);
@@ -112,12 +133,13 @@ export default function Users() {
         status: statusFilter,
         onlineOnly,
         ownerAdminId: ownerAdminFilter,
+        packageId: packageFilter,
       });
       const filename =
         (res.headers["content-disposition"] || "").match(/filename="?([^"]+)"?/)?.[1] || "users_export.xlsx";
       downloadBlob(filename, res.data);
     } catch (err) {
-      alert("خطا در اکسپورت خروجی اکسل");
+      alert(t("users.exportError"));
     } finally {
       setExporting(false);
     }
@@ -130,6 +152,7 @@ export default function Users() {
       sortBy,
       sortDir,
       ownerAdminId: ownerAdminFilter,
+      packageId: packageFilter,
     }).then((res) => {
       setUsers(res.data.items);
       setTotal(res.data.total);
@@ -138,11 +161,14 @@ export default function Users() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, search, statusFilter, onlineOnly, sortBy, sortDir, ownerAdminFilter]);
+  }, [page, search, statusFilter, onlineOnly, sortBy, sortDir, ownerAdminFilter, packageFilter]);
 
   useEffect(() => {
     fetchNodes().then((res) => setNodes(res.data));
-    fetchPackages().then((res) => setPackages(res.data.filter((p) => p.enabled)));
+    fetchPackages().then((res) => {
+      setPackages(res.data.filter((p) => p.enabled));
+      setAllPackages(res.data);
+    });
     if (isSuperadmin) fetchAdmins().then((res) => setAdmins(res.data));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -162,11 +188,11 @@ export default function Users() {
 
   // debounce search input -> server-side search param
   useEffect(() => {
-    const t = setTimeout(() => {
+    const debounceTimer = setTimeout(() => {
       setPage(1);
       setSearch(searchInput.trim());
     }, 350);
-    return () => clearTimeout(t);
+    return () => clearTimeout(debounceTimer);
   }, [searchInput]);
 
   // keep the URL in sync so the dashboard's "کاربران آنلاین الان"/status links
@@ -220,14 +246,14 @@ export default function Users() {
       setForm(emptyCreateForm);
       navigate(`/users/${res.data.id}`, { state: { defaultMaxSessions } });
     } catch (err) {
-      setError(err?.response?.data?.detail || "خطا در ساخت کاربر");
+      setError(err?.response?.data?.detail || t("users.createUserError"));
     } finally {
       setSaving(false);
     }
   };
 
   const onDelete = async (id) => {
-    if (!confirm("این کاربر و تمام کانکشن‌هایش حذف شود؟")) return;
+    if (!confirm(t("users.confirmDeleteUser"))) return;
     await deleteUser(id);
     load();
   };
@@ -263,9 +289,28 @@ export default function Users() {
 
   const clearSelection = () => setSelected(new Set());
 
+  // Selects every user matching the current filters (search/status/online/
+  // admin/package) across ALL pages, not just the one on screen - so a
+  // group action like "disable everyone on this package" actually covers
+  // everyone, even with more than PAGE_SIZE matches.
+  const selectAllMatching = async () => {
+    setSelectingAll(true);
+    try {
+      const res = await fetchUserIds(search, {
+        status: statusFilter,
+        onlineOnly,
+        ownerAdminId: ownerAdminFilter,
+        packageId: packageFilter,
+      });
+      setSelected(new Set(res.data));
+    } finally {
+      setSelectingAll(false);
+    }
+  };
+
   const onBulkDelete = async () => {
     if (selected.size === 0) return;
-    if (!confirm(`${selected.size} کاربر انتخاب‌شده (و تمام اتصالاتشون) حذف بشن؟ این کار قابل بازگشت نیست.`)) return;
+    if (!confirm(t("users.confirmBulkDelete", { count: selected.size }))) return;
     await bulkDeleteUsers(Array.from(selected));
     clearSelection();
     load();
@@ -323,7 +368,7 @@ export default function Users() {
       setBulkCreateResult(res.data);
       load();
     } catch (err) {
-      setBulkCreateError(err?.response?.data?.detail || "خطا در ساخت گروهی کاربران");
+      setBulkCreateError(err?.response?.data?.detail || t("users.bulkCreateError"));
     } finally {
       setSaving(false);
     }
@@ -331,7 +376,7 @@ export default function Users() {
 
   // ---------------- bulk edit ----------------
   const openBulkEdit = () => {
-    setBulkEditForm({ add_gb: "", add_days: "", reset_usage: false, status: "", max_concurrent_sessions: "" });
+    setBulkEditForm({ add_gb: "", add_days: "", reset_usage: false, status: "", max_concurrent_sessions: "", package_id: "" });
     setBulkEditError("");
     setBulkEditOpen(true);
   };
@@ -349,13 +394,14 @@ export default function Users() {
         status: bulkEditForm.status || null,
         max_concurrent_sessions:
           bulkEditForm.max_concurrent_sessions !== "" ? Number(bulkEditForm.max_concurrent_sessions) : null,
+        package_id: bulkEditForm.package_id ? Number(bulkEditForm.package_id) : null,
       };
       await bulkUpdateUsers(payload);
       setBulkEditOpen(false);
       clearSelection();
       load();
     } catch (err) {
-      setBulkEditError(err?.response?.data?.detail || "خطا در ویرایش گروهی");
+      setBulkEditError(err?.response?.data?.detail || t("users.bulkEditError"));
     } finally {
       setSaving(false);
     }
@@ -363,7 +409,7 @@ export default function Users() {
 
   return (
     <Layout>
-      <Topbar title="کاربران" subtitle={`${total} کاربر ثبت‌شده`} />
+      <Topbar title={t("users.title")} subtitle={t("users.subtitle", { count: total })} />
 
       <div className="card !p-4 mb-4 space-y-3">
         <div className="flex items-center gap-2 flex-wrap">
@@ -371,7 +417,7 @@ export default function Users() {
             <Search className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
             <input
               className="input pr-9 !w-full sm:!w-56"
-              placeholder="جستجوی کاربر..."
+              placeholder={t("users.search")}
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
             />
@@ -387,7 +433,24 @@ export default function Users() {
           >
             {STATUS_FILTER_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
-                {o.label}
+                {t(o.labelKey)}
+              </option>
+            ))}
+          </select>
+
+          <select
+            className="input !w-auto min-w-[8rem] cursor-pointer"
+            value={packageFilter}
+            onChange={(e) => {
+              setPackageFilter(e.target.value);
+              setPage(1);
+            }}
+            title={t("users.filterByPackage")}
+          >
+            <option value="">{t("users.allPackages")}</option>
+            {allPackages.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
               </option>
             ))}
           </select>
@@ -400,18 +463,18 @@ export default function Users() {
                 setSortBy(e.target.value);
                 setPage(1);
               }}
-              title="مرتب‌سازی بر اساس"
+              title={t("users.sortBy")}
             >
               {SORT_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
-                  {o.label}
+                  {t(o.labelKey)}
                 </option>
               ))}
             </select>
             <button
               type="button"
               className="btn-secondary !px-2.5"
-              title={sortDir === "asc" ? "صعودی" : "نزولی"}
+              title={sortDir === "asc" ? t("users.ascending") : t("users.descending")}
               onClick={() => {
                 toggleSortDir();
                 setPage(1);
@@ -429,9 +492,9 @@ export default function Users() {
                 setOwnerAdminFilter(e.target.value);
                 setPage(1);
               }}
-              title="فیلتر بر اساس ادمین"
+              title={t("users.filterByAdmin")}
             >
-              <option value="">همه ادمین‌ها</option>
+              <option value="">{t("users.allAdmins")}</option>
               {admins.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.username}
@@ -442,7 +505,7 @@ export default function Users() {
 
           {onlineOnly && (
             <span className="badge bg-emerald-50 text-emerald-600 inline-flex items-center gap-1">
-              فقط آنلاین‌ها
+              {t("users.onlineOnlyBadge")}
               <button type="button" className="hover:text-emerald-800" onClick={clearFilters}>
                 <X size={12} />
               </button>
@@ -451,33 +514,38 @@ export default function Users() {
         </div>
 
         <div className="flex items-center justify-between gap-2 flex-wrap pt-3 border-t border-gray-100">
-          <div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {(statusFilter || packageFilter || onlineOnly || ownerAdminFilter || search) && total > 0 && (
+              <button className="btn-secondary" onClick={selectAllMatching} disabled={selectingAll}>
+                <CheckSquare size={16} /> {selectingAll ? "..." : t("users.selectAllMatching", { count: total })}
+              </button>
+            )}
             {selected.size > 0 && (
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-xs font-medium text-brand-700 bg-brand-50 rounded-full px-2.5 py-1">
-                  {selected.size} انتخاب شده
+                  {t("users.selected", { count: selected.size })}
                 </span>
                 <button className="btn-secondary" onClick={openBulkEdit}>
-                  <PencilLine size={16} /> ویرایش گروهی
+                  <PencilLine size={16} /> {t("users.bulkEdit")}
                 </button>
                 <button className="btn-danger" onClick={onBulkDelete}>
-                  <Trash2 size={16} /> حذف گروهی
+                  <Trash2 size={16} /> {t("users.bulkDelete")}
                 </button>
                 <button className="btn-secondary" onClick={clearSelection}>
-                  لغو انتخاب
+                  {t("users.clearSelection")}
                 </button>
               </div>
             )}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <button className="btn-secondary" onClick={onExport} disabled={exporting}>
-              <FileDown size={16} /> {exporting ? "..." : "اکسپورت اکسل"}
+              <FileDown size={16} /> {exporting ? "..." : t("users.exportExcel")}
             </button>
             <button className="btn-secondary" onClick={openBulkCreate}>
-              <Layers size={16} /> ساخت گروهی
+              <Layers size={16} /> {t("users.bulkCreate")}
             </button>
             <button className="btn-primary" onClick={() => setOpen(true)}>
-              <Plus size={16} /> کاربر جدید
+              <Plus size={16} /> {t("users.newUser")}
             </button>
           </div>
         </div>
@@ -490,13 +558,13 @@ export default function Users() {
               <th className="text-right font-medium px-4 py-3 w-8">
                 <input type="checkbox" checked={allOnPageSelected} onChange={toggleAllOnPage} />
               </th>
-              <th className="text-right font-medium px-4 py-3">کاربر</th>
-              {isSuperadmin && <th className="text-right font-medium px-4 py-3">ادمین</th>}
-              <th className="text-right font-medium px-4 py-3">وضعیت</th>
-              <th className="text-right font-medium px-4 py-3 w-56">مصرف</th>
-              <th className="text-right font-medium px-4 py-3">اتصالات</th>
-              <th className="text-right font-medium px-4 py-3">انقضا</th>
-              <th className="text-right font-medium px-4 py-3">عملیات</th>
+              <th className="text-right font-medium px-4 py-3">{t("users.colUser")}</th>
+              {isSuperadmin && <th className="text-right font-medium px-4 py-3">{t("users.colAdmin")}</th>}
+              <th className="text-right font-medium px-4 py-3">{t("users.colStatus")}</th>
+              <th className="text-right font-medium px-4 py-3 w-56">{t("users.colUsage")}</th>
+              <th className="text-right font-medium px-4 py-3">{t("users.colConnections")}</th>
+              <th className="text-right font-medium px-4 py-3">{t("users.colExpiry")}</th>
+              <th className="text-right font-medium px-4 py-3">{t("users.colActions")}</th>
             </tr>
           </thead>
           <tbody>
@@ -509,7 +577,7 @@ export default function Users() {
                   <Link to={`/users/${u.id}`} className="font-medium text-gray-800 hover:text-brand-600 inline-flex items-center gap-1.5">
                     <span
                       className={`inline-block w-2 h-2 rounded-full ${u.online ? "bg-emerald-500" : "bg-gray-300"}`}
-                      title={u.online ? "آنلاین" : "آفلاین"}
+                      title={u.online ? t("users.online") : t("users.offline")}
                     />
                     {u.username}
                   </Link>
@@ -521,7 +589,7 @@ export default function Users() {
                   </td>
                 )}
                 <td className="px-4 py-3">
-                  <span className={`badge ${STATUS_STYLES[u.status]}`}>{STATUS_LABELS[u.status]}</span>
+                  <span className={`badge ${STATUS_STYLES[u.status]}`}>{statusLabel(u.status, language)}</span>
                 </td>
                 <td className="px-4 py-3">
                   <QuotaBar used={u.used_bytes} total={u.total_quota_bytes} />
@@ -533,19 +601,19 @@ export default function Users() {
                 </td>
                 <td className="px-4 py-3 text-gray-500">
                   {!u.expire_at && u.expire_days_after_first_use ? (
-                    <span className="text-amber-600" title="هنوز به این سرویس وصل نشده">
-                      از اولین اتصال ({u.expire_days_after_first_use} روز)
+                    <span className="text-amber-600" title={t("users.notConnectedYet")}>
+                      {t("users.fromFirstConnection", { days: u.expire_days_after_first_use })}
                     </span>
                   ) : (
-                    formatDate(u.expire_at)
+                    formatDate(u.expire_at, language)
                   )}
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2">
-                    <button title="ریست حجم مصرفی" onClick={() => onReset(u.id)} className="text-gray-400 hover:text-brand-600">
+                    <button title={t("users.resetUsage")} onClick={() => onReset(u.id)} className="text-gray-400 hover:text-brand-600">
                       <RotateCcw size={16} />
                     </button>
-                    <button title="حذف" onClick={() => onDelete(u.id)} className="text-gray-400 hover:text-red-600">
+                    <button title={t("common.delete")} onClick={() => onDelete(u.id)} className="text-gray-400 hover:text-red-600">
                       <Trash2 size={16} />
                     </button>
                   </div>
@@ -555,7 +623,7 @@ export default function Users() {
             {users.length === 0 && (
               <tr>
                 <td colSpan={isSuperadmin ? 8 : 7} className="text-center text-gray-400 py-10">
-                  کاربری یافت نشد
+                  {t("users.noUsers")}
                 </td>
               </tr>
             )}
@@ -564,44 +632,60 @@ export default function Users() {
 
         <div className="flex items-center justify-between px-4 py-3 border-t border-gray-50 text-sm text-gray-500">
           <div>
-            صفحه {page} از {totalPages}
+            {t("users.page", { page, total: totalPages })}
           </div>
           <div className="flex items-center gap-2">
             <button className="btn-secondary" disabled={page <= 1} onClick={() => setPage((p) => Math.max(p - 1, 1))}>
-              <ChevronRight size={14} /> قبلی
+              <ChevronRight size={14} /> {t("users.prev")}
             </button>
             <button
               className="btn-secondary"
               disabled={page >= totalPages}
               onClick={() => setPage((p) => Math.min(p + 1, totalPages))}
             >
-              بعدی <ChevronLeft size={14} />
+              {t("users.next")} <ChevronLeft size={14} />
             </button>
           </div>
         </div>
       </div>
 
       {/* Single create modal */}
-      <Modal open={open} onClose={() => setOpen(false)} title="افزودن کاربر جدید">
+      <Modal open={open} onClose={() => setOpen(false)} title={t("users.newUserModalTitle")}>
         <form onSubmit={submit} className="space-y-4">
           <div>
-            <label className="block text-sm text-gray-600 mb-1">نام کاربری *</label>
-            <input className="input" required value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
+            <label className="block text-sm text-gray-600 mb-1">{t("users.fieldUsername")}</label>
+            <div className="flex gap-2">
+              <input
+                className="input flex-1"
+                dir="ltr"
+                required
+                value={form.username}
+                onChange={(e) => setForm({ ...form, username: e.target.value })}
+              />
+              <button
+                type="button"
+                className="btn-secondary shrink-0"
+                title={t("users.autoGenUsername")}
+                onClick={() => setForm({ ...form, username: randomUsername() })}
+              >
+                <Wand2 size={16} />
+              </button>
+            </div>
           </div>
           <div>
-            <label className="block text-sm text-gray-600 mb-1">نام کامل</label>
+            <label className="block text-sm text-gray-600 mb-1">{t("users.fieldFullName")}</label>
             <input className="input" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
           </div>
 
           {isSuperadmin && (
             <div>
-              <label className="block text-sm text-gray-600 mb-1">متعلق به ادمین</label>
+              <label className="block text-sm text-gray-600 mb-1">{t("users.fieldOwnerAdmin")}</label>
               <select
                 className="input"
                 value={form.owner_admin_id}
                 onChange={(e) => setForm({ ...form, owner_admin_id: e.target.value })}
               >
-                <option value="">خودم (ادمین اصلی)</option>
+                <option value="">{t("users.myselfMainAdmin")}</option>
                 {admins.filter((a) => !a.is_superadmin).map((a) => (
                   <option key={a.id} value={a.id}>
                     {a.username}
@@ -613,7 +697,7 @@ export default function Users() {
 
           <div>
             <label className="block text-sm text-gray-600 mb-1">
-              ساخت با پکیج{isSuperadmin ? " (اختیاری)" : ""}
+              {t("users.createWithPackage")}{isSuperadmin ? t("users.optional") : ""}
             </label>
             <select
               className="input"
@@ -621,24 +705,24 @@ export default function Users() {
               value={form.package_id}
               onChange={(e) => setForm({ ...form, package_id: e.target.value })}
             >
-              {isSuperadmin && <option value="">بدون پکیج (تنظیم دستی)</option>}
+              {isSuperadmin && <option value="">{t("users.noPackageManual")}</option>}
               {packages.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.name} — {p.quota_gb ? `${p.quota_gb}GB` : "نامحدود"} / {p.duration_days ? `${p.duration_days} روز` : "بدون انقضا"}
-                  {p.connections?.length ? ` (${p.connections.length} سرویس)` : ""}
+                  {p.name} — {p.quota_gb ? `${p.quota_gb}GB` : t("users.unlimited")} / {p.duration_days ? t("users.daysUnit", { days: p.duration_days }) : t("users.noExpiry")}
+                  {p.connections?.length ? t("users.servicesCount", { count: p.connections.length }) : ""}
                 </option>
               ))}
             </select>
             {form.package_id && (
               <div className="text-xs text-gray-400 mt-1">
-                حجم، مدت اعتبار و سرویس‌های این کاربر مستقیما از روی پکیج ساخته می‌شود.
+                {t("users.packageDerivedHint")}
                 {!isSuperadmin && (() => {
                   const pkg = packages.find((p) => String(p.id) === String(form.package_id));
                   if (!pkg) return null;
                   const cost = pkg.cooperation_price != null ? pkg.cooperation_price : pkg.price;
                   return (
                     <div className="text-amber-600 mt-1">
-                      {new Intl.NumberFormat("fa-IR").format(cost || 0)} تومان از اعتبار شما کم می‌شود.
+                      {t("users.packageCostDeduction", { cost: new Intl.NumberFormat("fa-IR").format(cost || 0) })}
                     </div>
                   );
                 })()}
@@ -650,24 +734,24 @@ export default function Users() {
             <>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm text-gray-600 mb-1">حجم مجاز (گیگابایت)</label>
+                  <label className="block text-sm text-gray-600 mb-1">{t("users.fieldQuota")}</label>
                   <input
                     type="number"
                     step="0.1"
                     min="0"
                     className="input"
-                    placeholder="0 = نامحدود"
+                    placeholder={t("users.quotaPlaceholder")}
                     value={form.quota_gb}
                     onChange={(e) => setForm({ ...form, quota_gb: e.target.value })}
                   />
                 </div>
                 <div>
-                  <label className="block text-sm text-gray-600 mb-1">اتصال هم‌زمان (کل سرویس‌ها)</label>
+                  <label className="block text-sm text-gray-600 mb-1">{t("users.fieldMaxConcurrent")}</label>
                   <input
                     type="number"
                     min="0"
                     className="input"
-                    placeholder="پیش‌فرض 1"
+                    placeholder={t("users.maxConcurrentPlaceholder")}
                     value={form.max_concurrent_sessions}
                     onChange={(e) => setForm({ ...form, max_concurrent_sessions: e.target.value })}
                   />
@@ -675,16 +759,16 @@ export default function Users() {
               </div>
 
               <div>
-                <label className="block text-sm text-gray-600 mb-1">نوع انقضا</label>
+                <label className="block text-sm text-gray-600 mb-1">{t("users.fieldExpireType")}</label>
                 <select
                   className="input"
                   value={form.expire_mode}
                   onChange={(e) => setForm({ ...form, expire_mode: e.target.value })}
                 >
-                  <option value="none">بدون انقضا</option>
-                  <option value="date">تاریخ مشخص</option>
-                  <option value="days_from_now">تعداد روز از الان</option>
-                  <option value="first_use">تعداد روز از اولین اتصال</option>
+                  <option value="none">{t("users.expireNone")}</option>
+                  <option value="date">{t("users.expireDate")}</option>
+                  <option value="days_from_now">{t("users.expireDaysFromNow")}</option>
+                  <option value="first_use">{t("users.expireFirstUse")}</option>
                 </select>
 
                 {form.expire_mode === "date" && (
@@ -701,7 +785,7 @@ export default function Users() {
                     type="number"
                     min="1"
                     className="input mt-2"
-                    placeholder="مثلا 30"
+                    placeholder={t("users.daysPlaceholder")}
                     value={form.expire_days}
                     onChange={(e) => setForm({ ...form, expire_days: e.target.value })}
                   />
@@ -713,12 +797,12 @@ export default function Users() {
                       type="number"
                       min="1"
                       className="input mt-2"
-                      placeholder="مثلا 30"
+                      placeholder={t("users.daysPlaceholder")}
                       value={form.expire_days}
                       onChange={(e) => setForm({ ...form, expire_days: e.target.value })}
                     />
                     <div className="text-xs text-gray-400 mt-1">
-                      تا وقتی کاربر برای اولین بار وصل نشده انقضا فعال نمی‌شود؛ از لحظه اولین اتصال موفق، شمارش {form.expire_days || "N"} روز شروع می‌شود.
+                      {t("users.firstUseHint", { days: form.expire_days || "N" })}
                     </div>
                   </>
                 )}
@@ -727,28 +811,28 @@ export default function Users() {
           )}
 
           <div>
-            <label className="block text-sm text-gray-600 mb-1">یادداشت</label>
+            <label className="block text-sm text-gray-600 mb-1">{t("users.fieldNotes")}</label>
             <textarea className="input" rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
           </div>
 
           {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setOpen(false)}>
-              انصراف
+              {t("common.cancel")}
             </button>
             <button type="submit" disabled={saving} className="btn-primary">
-              {saving ? "در حال ساخت..." : "ساخت کاربر"}
+              {saving ? t("users.creatingUser") : t("users.createUserButton")}
             </button>
           </div>
         </form>
       </Modal>
 
       {/* Bulk create modal */}
-      <Modal open={bulkCreateOpen} onClose={() => setBulkCreateOpen(false)} title="ساخت گروهی کاربران" width="max-w-2xl">
+      <Modal open={bulkCreateOpen} onClose={() => setBulkCreateOpen(false)} title={t("users.bulkCreateModalTitle")} width="max-w-2xl">
         <form onSubmit={submitBulkCreate} className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm text-gray-600 mb-1">پیشوند نام کاربری *</label>
+              <label className="block text-sm text-gray-600 mb-1">{t("users.fieldUsernamePrefix")}</label>
               <input
                 className="input"
                 required
@@ -756,11 +840,11 @@ export default function Users() {
                 onChange={(e) => setBulkCreateForm((f) => ({ ...f, prefix: e.target.value }))}
               />
               <div className="text-xs text-gray-400 mt-1">
-                نام‌ها به‌صورت {bulkCreateForm.prefix || "user"}1, {bulkCreateForm.prefix || "user"}2, ... ساخته می‌شوند
+                {t("users.usernamePreviewHint", { prefix: bulkCreateForm.prefix || "user" })}
               </div>
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">تعداد کاربر *</label>
+              <label className="block text-sm text-gray-600 mb-1">{t("users.fieldUserCount")}</label>
               <input
                 type="number"
                 min="1"
@@ -773,7 +857,7 @@ export default function Users() {
             </div>
             <div className="col-span-2">
               <label className="block text-sm text-gray-600 mb-1">
-                ساخت با پکیج{isSuperadmin ? " (اختیاری)" : ""}
+                {t("users.createWithPackage")}{isSuperadmin ? t("users.optional") : ""}
               </label>
               <select
                 className="input"
@@ -781,17 +865,17 @@ export default function Users() {
                 value={bulkCreateForm.package_id}
                 onChange={(e) => setBulkCreateForm((f) => ({ ...f, package_id: e.target.value }))}
               >
-                {isSuperadmin && <option value="">بدون پکیج (تنظیم دستی)</option>}
+                {isSuperadmin && <option value="">{t("users.noPackageManual")}</option>}
                 {packages.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.name} — {p.quota_gb ? `${p.quota_gb}GB` : "نامحدود"} / {p.duration_days ? `${p.duration_days} روز` : "بدون انقضا"}
-                    {p.connections?.length ? ` (${p.connections.length} سرویس)` : ""}
+                    {p.name} — {p.quota_gb ? `${p.quota_gb}GB` : t("users.unlimited")} / {p.duration_days ? t("users.daysUnit", { days: p.duration_days }) : t("users.noExpiry")}
+                    {p.connections?.length ? t("users.servicesCount", { count: p.connections.length }) : ""}
                   </option>
                 ))}
               </select>
               {bulkCreateForm.package_id && (
                 <div className="text-xs text-gray-400 mt-1">
-                  حجم، مدت اعتبار و سرویس‌های هرکدام از کاربران مستقیما از روی پکیج ساخته می‌شود.
+                  {t("users.packageDerivedHintPlural")}
                   {!isSuperadmin && (() => {
                     const pkg = packages.find((p) => String(p.id) === String(bulkCreateForm.package_id));
                     if (!pkg) return null;
@@ -799,8 +883,11 @@ export default function Users() {
                     const count = Number(bulkCreateForm.count) || 0;
                     return (
                       <div className="text-amber-600 mt-1">
-                        {new Intl.NumberFormat("fa-IR").format(unitCost || 0)} تومان × {count || "?"} کاربر ={" "}
-                        {new Intl.NumberFormat("fa-IR").format((unitCost || 0) * count)} تومان از اعتبار شما کم می‌شود.
+                        {t("users.packageCostDeductionPlural", {
+                          unitCost: new Intl.NumberFormat("fa-IR").format(unitCost || 0),
+                          count: count || "?",
+                          total: new Intl.NumberFormat("fa-IR").format((unitCost || 0) * count),
+                        })}
                       </div>
                     );
                   })()}
@@ -810,24 +897,24 @@ export default function Users() {
             {isSuperadmin && !bulkCreateForm.package_id && (
               <>
                 <div>
-                  <label className="block text-sm text-gray-600 mb-1">حجم مجاز هرکدام (گیگابایت)</label>
+                  <label className="block text-sm text-gray-600 mb-1">{t("users.fieldQuotaEach")}</label>
                   <input
                     type="number"
                     step="0.1"
                     min="0"
                     className="input"
-                    placeholder="0 = نامحدود"
+                    placeholder={t("users.quotaPlaceholder")}
                     value={bulkCreateForm.quota_gb}
                     onChange={(e) => setBulkCreateForm((f) => ({ ...f, quota_gb: e.target.value }))}
                   />
                 </div>
                 <div>
-                  <label className="block text-sm text-gray-600 mb-1">اعتبار (روز)</label>
+                  <label className="block text-sm text-gray-600 mb-1">{t("users.fieldExpireDays")}</label>
                   <input
                     type="number"
                     min="0"
                     className="input"
-                    placeholder="خالی = بدون انقضا"
+                    placeholder={t("users.expireDaysPlaceholder")}
                     value={bulkCreateForm.expire_days}
                     onChange={(e) => setBulkCreateForm((f) => ({ ...f, expire_days: e.target.value }))}
                   />
@@ -835,7 +922,7 @@ export default function Users() {
               </>
             )}
             <div className="col-span-2">
-              <label className="block text-sm text-gray-600 mb-1">یادداشت (برای همه)</label>
+              <label className="block text-sm text-gray-600 mb-1">{t("users.fieldNotesAll")}</label>
               <input
                 className="input"
                 value={bulkCreateForm.notes}
@@ -847,15 +934,15 @@ export default function Users() {
           {isSuperadmin && !bulkCreateForm.package_id && (
           <div className="border-t border-gray-100 pt-3">
             <div className="flex items-center justify-between mb-2">
-              <div className="text-sm font-medium text-gray-700">اتصالات (اختیاری، برای هرکدام از کاربران ساخته می‌شود)</div>
+              <div className="text-sm font-medium text-gray-700">{t("users.connectionsOptionalHeading")}</div>
               <button type="button" className="btn-secondary" onClick={addBulkConn}>
-                <Plus size={14} /> افزودن اتصال
+                <Plus size={14} /> {t("users.addConnectionButton")}
               </button>
             </div>
             {bulkCreateForm.connections.map((c, idx) => (
               <div key={idx} className="grid grid-cols-4 gap-2 mb-2 items-center">
                 <select className="input col-span-2" value={c.node_id} onChange={(e) => updateBulkConn(idx, "node_id", e.target.value)}>
-                  <option value="">انتخاب سرور...</option>
+                  <option value="">{t("users.selectServerPlaceholder")}</option>
                   {nodes.map((n) => (
                     <option key={n.id} value={n.id}>
                       {n.name}
@@ -867,6 +954,7 @@ export default function Users() {
                   <option value="openvpn">OpenVPN</option>
                   <option value="l2tp">L2TP</option>
                   <option value="ikev2">IKEv2</option>
+                  <option value="sstp">SSTP</option>
                   <option value="xray">V2Ray/Xray</option>
                 </select>
                 <div className="flex items-center gap-1">
@@ -874,7 +962,7 @@ export default function Users() {
                     type="number"
                     min="0"
                     className="input"
-                    title="حداکثر اتصال هم‌زمان (فقط OpenVPN/L2TP/IKEv2)"
+                    title={t("users.maxConcurrentTitle")}
                     value={c.max_concurrent_sessions}
                     onChange={(e) => updateBulkConn(idx, "max_concurrent_sessions", e.target.value)}
                   />
@@ -890,7 +978,7 @@ export default function Users() {
           {bulkCreateError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{bulkCreateError}</div>}
           {bulkCreateResult && (
             <div className="text-xs text-gray-600 bg-gray-50 rounded-lg px-3 py-2">
-              {bulkCreateResult.created_count} کاربر ساخته شد، {bulkCreateResult.skipped_count} رد شد.
+              {t("users.bulkCreateResultSummary", { created: bulkCreateResult.created_count, skipped: bulkCreateResult.skipped_count })}
               {bulkCreateResult.skipped_count > 0 && (
                 <ul className="mt-1 list-disc pr-4 space-y-0.5 max-h-32 overflow-y-auto">
                   {bulkCreateResult.skipped.map((s, i) => (
@@ -905,61 +993,84 @@ export default function Users() {
 
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setBulkCreateOpen(false)}>
-              بستن
+              {t("users.close")}
             </button>
             <button type="submit" disabled={saving} className="btn-primary">
-              {saving ? "در حال ساخت..." : "ساخت گروهی"}
+              {saving ? t("users.creatingUser") : t("users.createGroupButton")}
             </button>
           </div>
         </form>
       </Modal>
 
       {/* Bulk edit modal */}
-      <Modal open={bulkEditOpen} onClose={() => setBulkEditOpen(false)} title={`ویرایش گروهی (${selected.size} کاربر)`}>
+      <Modal open={bulkEditOpen} onClose={() => setBulkEditOpen(false)} title={t("users.bulkEditModalTitle", { count: selected.size })}>
         <form onSubmit={submitBulkEdit} className="space-y-4">
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("users.renewWithPackage")}</label>
+            <select
+              className="input"
+              value={bulkEditForm.package_id}
+              onChange={(e) => setBulkEditForm((f) => ({ ...f, package_id: e.target.value }))}
+            >
+              <option value="">{t("users.noChangeUseFieldsBelow")}</option>
+              {allPackages.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} — {p.quota_gb ? `${p.quota_gb}GB` : t("users.unlimited")} / {p.duration_days ? t("users.daysUnit", { days: p.duration_days }) : t("users.noExpiry")}
+                </option>
+              ))}
+            </select>
+            {bulkEditForm.package_id && (
+              <div className="text-xs text-amber-600 mt-1">
+                {t("users.packageOverwriteWarning")}
+              </div>
+            )}
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm text-gray-600 mb-1">افزودن حجم (گیگابایت)</label>
+              <label className="block text-sm text-gray-600 mb-1">{t("users.fieldAddGb")}</label>
               <input
                 type="number"
                 step="0.1"
                 min="0"
                 className="input"
                 placeholder="0"
+                disabled={!!bulkEditForm.package_id}
                 value={bulkEditForm.add_gb}
                 onChange={(e) => setBulkEditForm((f) => ({ ...f, add_gb: e.target.value }))}
               />
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">افزودن اعتبار (روز)</label>
+              <label className="block text-sm text-gray-600 mb-1">{t("users.fieldAddDays")}</label>
               <input
                 type="number"
                 min="0"
                 className="input"
                 placeholder="0"
+                disabled={!!bulkEditForm.package_id}
                 value={bulkEditForm.add_days}
                 onChange={(e) => setBulkEditForm((f) => ({ ...f, add_days: e.target.value }))}
               />
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">وضعیت</label>
+              <label className="block text-sm text-gray-600 mb-1">{t("users.fieldStatus")}</label>
               <select
                 className="input"
                 value={bulkEditForm.status}
                 onChange={(e) => setBulkEditForm((f) => ({ ...f, status: e.target.value }))}
               >
-                <option value="">بدون تغییر</option>
-                <option value="active">فعال</option>
-                <option value="disabled">غیرفعال</option>
+                <option value="">{t("users.noChange")}</option>
+                <option value="active">{t("status.active")}</option>
+                <option value="disabled">{t("status.disabled")}</option>
               </select>
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">محدودیت اتصال هم‌زمان</label>
+              <label className="block text-sm text-gray-600 mb-1">{t("users.fieldConcurrentLimit")}</label>
               <input
                 type="number"
                 min="0"
                 className="input"
-                placeholder="بدون تغییر"
+                placeholder={t("userDetail.noChangePlaceholder")}
+                disabled={!!bulkEditForm.package_id}
                 value={bulkEditForm.max_concurrent_sessions}
                 onChange={(e) => setBulkEditForm((f) => ({ ...f, max_concurrent_sessions: e.target.value }))}
               />
@@ -972,17 +1083,17 @@ export default function Users() {
                 onChange={(e) => setBulkEditForm((f) => ({ ...f, reset_usage: e.target.checked }))}
               />
               <label htmlFor="bulk_reset_usage" className="text-sm text-gray-600">
-                ریست حجم مصرفی
+                {t("users.resetUsageCheckbox")}
               </label>
             </div>
           </div>
           {bulkEditError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{bulkEditError}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setBulkEditOpen(false)}>
-              انصراف
+              {t("common.cancel")}
             </button>
             <button type="submit" disabled={saving} className="btn-primary">
-              {saving ? "در حال ذخیره..." : "اعمال روی همه"}
+              {saving ? t("users.savingEllipsis") : t("users.applyToAll")}
             </button>
           </div>
         </form>

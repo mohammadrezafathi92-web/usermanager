@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import QRCode from "qrcode";
-import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, ShieldCheck, Lock, Save, KeyRound, Power } from "lucide-react";
+import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, ShieldCheck, Lock, Save, KeyRound, Power, ShieldEllipsis, RefreshCw } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
@@ -9,39 +9,53 @@ import QuotaBar from "../components/QuotaBar.jsx";
 import {
   fetchUser,
   updateUser,
+  bulkUpdateUsers,
   fetchNodes,
   addWireguardConnection,
   addOpenvpnConnection,
   addL2tpConnection,
   addIkev2Connection,
+  addSstpConnection,
   addXrayConnection,
   deleteConnection,
   getShareLink,
   updateConnection,
   fetchAdmins,
 } from "../api/client.js";
-import { STATUS_LABELS, STATUS_STYLES, gbToBytes, bytesToGb, formatBytes, formatDateTime, copyText, downloadTextFile } from "../utils.js";
+import { statusLabel, STATUS_STYLES, gbToBytes, bytesToGb, formatBytes, formatDateTime, copyText, downloadTextFile } from "../utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
+import { useLanguage } from "../context/LanguageContext.jsx";
 
-const TYPE_META = {
-  wireguard: { label: "WireGuard (میکروتیک)", icon: Wifi, color: "bg-indigo-50 text-indigo-600" },
-  openvpn: { label: "OpenVPN (میکروتیک)", icon: ShieldCheck, color: "bg-teal-50 text-teal-600" },
-  l2tp: { label: "L2TP/IPsec (میکروتیک)", icon: Lock, color: "bg-amber-50 text-amber-600" },
-  ikev2: { label: "IKEv2/IPsec (میکروتیک)", icon: KeyRound, color: "bg-sky-50 text-sky-600" },
-  xray: { label: "V2Ray / Xray", icon: Globe, color: "bg-purple-50 text-purple-600" },
-};
+// Built from a function (not a plain module-level constant) so the labels
+// can react to the active language via t() - see TYPE_META usage below.
+function buildTypeMeta(t) {
+  return {
+    wireguard: { label: `WireGuard (${t("userDetail.mikrotikLabel")})`, icon: Wifi, color: "bg-indigo-50 text-indigo-600" },
+    openvpn: { label: `OpenVPN (${t("userDetail.mikrotikLabel")})`, icon: ShieldCheck, color: "bg-teal-50 text-teal-600" },
+    l2tp: { label: `L2TP/IPsec (${t("userDetail.mikrotikLabel")})`, icon: Lock, color: "bg-amber-50 text-amber-600" },
+    ikev2: { label: `IKEv2/IPsec (${t("userDetail.mikrotikLabel")})`, icon: KeyRound, color: "bg-sky-50 text-sky-600" },
+    sstp: { label: `SSTP (${t("userDetail.mikrotikLabel")})`, icon: ShieldEllipsis, color: "bg-rose-50 text-rose-600" },
+    xray: { label: "V2Ray / Xray", icon: Globe, color: "bg-purple-50 text-purple-600" },
+  };
+}
 
-const FILE_EXT = { wireguard: "conf", openvpn: "txt", l2tp: "txt", ikev2: "txt" };
+const FILE_EXT = { wireguard: "conf", openvpn: "txt", l2tp: "txt", ikev2: "txt", sstp: "txt" };
 
 export default function UserDetail() {
   const { id } = useParams();
   const { isSuperadmin } = useAuth();
+  const { t, language } = useLanguage();
+  const TYPE_META = buildTypeMeta(t);
   const navigate = useNavigate();
   const location = useLocation();
   const [user, setUser] = useState(null);
   const [nodes, setNodes] = useState([]);
   const [admins, setAdmins] = useState([]);
   const [editOpen, setEditOpen] = useState(false);
+  const [renewOpen, setRenewOpen] = useState(false);
+  const [renewForm, setRenewForm] = useState({ add_gb: "", add_days: "", reset_usage: true });
+  const [renewSaving, setRenewSaving] = useState(false);
+  const [renewError, setRenewError] = useState("");
   const [addConnOpen, setAddConnOpen] = useState(false);
   const [shareData, setShareData] = useState(null);
   const [qrUrl, setQrUrl] = useState(null);
@@ -107,7 +121,7 @@ export default function UserDetail() {
   if (!user) {
     return (
       <Layout>
-        <div className="text-gray-400">در حال بارگذاری...</div>
+        <div className="text-gray-400">{t("common.loading")}</div>
       </Layout>
     );
   }
@@ -149,9 +163,48 @@ export default function UserDetail() {
       setEditOpen(false);
       load();
     } catch (err) {
-      setError(err?.response?.data?.detail || "خطا در ذخیره‌سازی");
+      setError(err?.response?.data?.detail || t("userDetail.saveError"));
     } finally {
       setSaving(false);
+    }
+  };
+
+  // پیش‌فرض‌ها را با سهمیه فعلی کاربر پر می‌کنیم (همون منطق پکیج فعلی) - ادمین
+  // می‌تواند قبل از تایید تغییرشان بدهد. تعداد روز پیش‌فرض خالی می‌ماند چون
+  // مدت زمان پلن اصلی جایی ذخیره نشده و باید توسط ادمین وارد شود.
+  const openRenew = () => {
+    setRenewForm({
+      add_gb: user.total_quota_bytes ? String(bytesToGb(user.total_quota_bytes)) : "",
+      add_days: "",
+      reset_usage: true,
+    });
+    setRenewError("");
+    setRenewOpen(true);
+  };
+
+  const submitRenew = async (e) => {
+    e.preventDefault();
+    if (!renewForm.add_gb && !renewForm.add_days) {
+      setRenewError(t("userDetail.renewMissingFields"));
+      return;
+    }
+    setRenewSaving(true);
+    setRenewError("");
+    try {
+      await bulkUpdateUsers({
+        user_ids: [user.id],
+        add_gb: renewForm.add_gb ? Number(renewForm.add_gb) : 0,
+        add_days: renewForm.add_days ? Number(renewForm.add_days) : 0,
+        reset_usage: renewForm.reset_usage,
+        status: "active",
+        max_concurrent_sessions: null,
+      });
+      setRenewOpen(false);
+      load();
+    } catch (err) {
+      setRenewError(err?.response?.data?.detail || t("userDetail.renewError"));
+    } finally {
+      setRenewSaving(false);
     }
   };
 
@@ -170,7 +223,7 @@ export default function UserDetail() {
 
   const addConnection = async (protocol) => {
     if (!connNodeId) {
-      setError("یک سرور انتخاب کنید");
+      setError(t("userDetail.selectServerRequired"));
       return;
     }
     setSaving(true);
@@ -184,6 +237,8 @@ export default function UserDetail() {
         await addL2tpConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 0);
       } else if (protocol === "ikev2") {
         await addIkev2Connection(user.id, Number(connNodeId), Number(connMaxSessions) || 0);
+      } else if (protocol === "sstp") {
+        await addSstpConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 0);
       } else {
         await addXrayConnection(user.id, Number(connNodeId), connFlow);
       }
@@ -191,14 +246,14 @@ export default function UserDetail() {
       setConnNodeId("");
       load();
     } catch (err) {
-      setError(err?.response?.data?.detail || "خطا در افزودن اتصال");
+      setError(err?.response?.data?.detail || t("userDetail.addConnError"));
     } finally {
       setSaving(false);
     }
   };
 
   const removeConnection = async (connId) => {
-    if (!confirm("این اتصال حذف شود؟")) return;
+    if (!confirm(t("userDetail.deleteConnConfirm"))) return;
     await deleteConnection(user.id, connId);
     load();
   };
@@ -240,7 +295,7 @@ export default function UserDetail() {
       setLimitConn(null);
       load();
     } catch (err) {
-      setError(err?.response?.data?.detail || "خطا در ذخیره‌سازی");
+      setError(err?.response?.data?.detail || t("userDetail.saveError"));
     } finally {
       setSaving(false);
     }
@@ -253,61 +308,65 @@ export default function UserDetail() {
 
   const toggleConnEnabled = async (c) => {
     const next = !c.enabled;
-    if (!next && !confirm("این اتصال غیرفعال شود؟ کاربر دیگر نمی‌تواند با این سرویس وصل شود.")) return;
+    if (!next && !confirm(t("userDetail.disableConnConfirm"))) return;
     try {
       await updateConnection(user.id, c.id, { enabled: next });
       load();
     } catch (err) {
-      setError(err?.response?.data?.detail || "خطا در تغییر وضعیت اتصال");
+      setError(err?.response?.data?.detail || t("userDetail.toggleConnError"));
     }
   };
 
   return (
     <Layout>
       <button onClick={() => navigate("/users")} className="flex items-center gap-1 text-sm text-gray-400 hover:text-gray-600 mb-4">
-        <ArrowRight size={14} /> بازگشت به لیست کاربران
+        <ArrowRight size={14} /> {t("userDetail.backToUsers")}
       </button>
 
-      <Topbar title={user.username} subtitle={user.full_name || "بدون نام کامل"} />
+      <Topbar title={user.username} subtitle={user.full_name || t("userDetail.noFullName")} />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
         <div className="card lg:col-span-2">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="font-bold text-gray-700">مصرف و سهمیه</h3>
-            <span className={`badge ${STATUS_STYLES[user.status]}`}>{STATUS_LABELS[user.status]}</span>
+            <h3 className="font-bold text-gray-700">{t("userDetail.usageHeading")}</h3>
+            <span className={`badge ${STATUS_STYLES[user.status]}`}>{statusLabel(user.status, language)}</span>
           </div>
           <QuotaBar used={user.used_bytes} total={user.total_quota_bytes} />
           <div className="text-xs text-gray-400 mt-2">
-            باقی‌مانده: {user.total_quota_bytes ? formatBytes(Math.max(user.total_quota_bytes - user.used_bytes, 0)) : "نامحدود"}
+            {t("userDetail.remaining", { value: user.total_quota_bytes ? formatBytes(Math.max(user.total_quota_bytes - user.used_bytes, 0)) : t("userDetail.unlimited") })}
           </div>
           <div className="text-xs text-gray-400 mt-1">
-            انقضا:{" "}
-            {user.expire_days_after_first_use
-              ? `بعد از اولین اتصال فعال می‌شود (${user.expire_days_after_first_use} روز) - هنوز متصل نشده`
-              : user.expire_at
-              ? formatDateTime(user.expire_at)
-              : "بدون انقضا"}
+            {t("userDetail.expiry", {
+              value: user.expire_days_after_first_use
+                ? t("userDetail.expiryFirstUse", { days: user.expire_days_after_first_use })
+                : user.expire_at
+                ? formatDateTime(user.expire_at, language)
+                : t("userDetail.noExpiry"),
+            })}
           </div>
           <div className="text-xs text-gray-400 mt-1">
-            موجودی اعتبار: {(user.balance || 0).toLocaleString()} تومان
+            {t("userDetail.balance", { value: (user.balance || 0).toLocaleString() })}
           </div>
           {isSuperadmin && (
             <div className="text-xs text-gray-400 mt-1">
-              ادمین مربوطه: {user.owner_admin_username || <span className="text-gray-300">بدون ادمین</span>}
+              {t("userDetail.ownerAdmin", { value: user.owner_admin_username || t("userDetail.noAdmin") })}
             </div>
           )}
         </div>
-        <div className="card flex flex-col justify-center">
+        <div className="card flex flex-col justify-center gap-2">
           <button className="btn-secondary" onClick={() => setEditOpen(true)}>
-            ویرایش سهمیه / انقضا
+            {t("userDetail.editQuota")}
+          </button>
+          <button className="btn-primary" onClick={openRenew}>
+            <RefreshCw size={14} /> {t("userDetail.quickRenew")}
           </button>
         </div>
       </div>
 
       <div className="flex items-center justify-between mb-3">
-        <h3 className="font-bold text-gray-700">اتصالات</h3>
+        <h3 className="font-bold text-gray-700">{t("userDetail.connectionsHeading")}</h3>
         <button className="btn-primary" onClick={openAddConn}>
-          <Plus size={16} /> افزودن اتصال
+          <Plus size={16} /> {t("userDetail.addConnection")}
         </button>
       </div>
 
@@ -329,51 +388,53 @@ export default function UserDetail() {
                 </div>
                 <div className="flex flex-col items-end gap-1">
                   <span className={`badge ${c.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
-                    {c.enabled ? "فعال" : "غیرفعال"}
+                    {c.enabled ? t("status.active") : t("status.disabled")}
                   </span>
                   <span className={`badge ${c.online ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-400"}`}>
                     <span className={`inline-block w-1.5 h-1.5 rounded-full ml-1 ${c.online ? "bg-emerald-500" : "bg-gray-300"}`} />
-                    {c.online ? "آنلاین" : "آفلاین"}
+                    {c.online ? t("users.online") : t("users.offline")}
                   </span>
                 </div>
               </div>
 
               <div className="text-xs text-gray-500 space-y-1 mb-3">
-                <div>مصرف این اتصال: {formatBytes(c.total_bytes)}</div>
-                {c.type === "xray" && <div className="truncate">شناسه: {c.xr_email}</div>}
-                {c.type === "wireguard" && <div>آدرس داخلی: {c.wg_client_address}</div>}
-                {(c.type === "openvpn" || c.type === "l2tp" || c.type === "ikev2") && (
+                <div>{t("userDetail.thisConnUsage", { value: formatBytes(c.total_bytes) })}</div>
+                {c.type === "xray" && <div className="truncate">{t("userDetail.identifier", { value: c.xr_email })}</div>}
+                {c.type === "wireguard" && <div>{t("userDetail.internalAddress", { value: c.wg_client_address })}</div>}
+                {(c.type === "openvpn" || c.type === "l2tp" || c.type === "ikev2" || c.type === "sstp") && (
                   <>
-                    <div>نام کاربری: {c.ppp_username}</div>
+                    <div>{t("userDetail.username", { value: c.ppp_username })}</div>
                     <div>
-                      اتصال هم‌زمان: {c.active_session_count ?? 0} /{" "}
-                      {c.max_concurrent_sessions ? c.max_concurrent_sessions : "نامحدود"}
+                      {t("userDetail.concurrentConn", {
+                        used: c.active_session_count ?? 0,
+                        max: c.max_concurrent_sessions ? c.max_concurrent_sessions : t("userDetail.unlimited"),
+                      })}
                     </div>
                     {c.banned_until && new Date(c.banned_until) > new Date() && (
                       <div className="text-red-500">
-                        بن موقت تا {formatDateTime(c.banned_until)}{" "}
+                        {t("userDetail.tempBanUntil", { value: formatDateTime(c.banned_until, language) })}{" "}
                         <button className="underline" onClick={() => unban(c)}>
-                          رفع بن
+                          {t("userDetail.unban")}
                         </button>
                       </div>
                     )}
                   </>
                 )}
-                <div>تاریخ ساخت: {formatDateTime(c.created_at)}</div>
+                <div>{t("userDetail.createdAt", { value: formatDateTime(c.created_at, language) })}</div>
               </div>
 
               <div className="flex gap-2">
                 <button className="btn-secondary flex-1" onClick={() => showShare(c.id)}>
-                  <QrCode size={14} /> دریافت کانفیگ
+                  <QrCode size={14} /> {t("userDetail.getConfig")}
                 </button>
-                {(c.type === "openvpn" || c.type === "l2tp" || c.type === "ikev2") && (
-                  <button className="btn-secondary" title="محدودیت اتصال هم‌زمان" onClick={() => openLimit(c)}>
+                {(c.type === "openvpn" || c.type === "l2tp" || c.type === "ikev2" || c.type === "sstp") && (
+                  <button className="btn-secondary" title={t("userDetail.concurrentLimitTitle")} onClick={() => openLimit(c)}>
                     <ShieldCheck size={14} />
                   </button>
                 )}
                 <button
                   className="btn-secondary"
-                  title={c.enabled ? "غیرفعال کردن اتصال" : "فعال کردن اتصال"}
+                  title={c.enabled ? t("userDetail.disableConn") : t("userDetail.enableConn")}
                   onClick={() => toggleConnEnabled(c)}
                 >
                   <Power size={14} className={c.enabled ? "text-emerald-600" : "text-gray-400"} />
@@ -386,29 +447,29 @@ export default function UserDetail() {
           );
         })}
         {user.connections.length === 0 && (
-          <div className="card text-center text-gray-400 col-span-2 py-10">هنوز اتصالی برای این کاربر ثبت نشده است</div>
+          <div className="card text-center text-gray-400 col-span-2 py-10">{t("userDetail.noConnections")}</div>
         )}
       </div>
 
       {/* Edit modal */}
-      <Modal open={editOpen} onClose={() => setEditOpen(false)} title="ویرایش کاربر">
+      <Modal open={editOpen} onClose={() => setEditOpen(false)} title={t("userDetail.editUserModal")}>
         <form onSubmit={saveEdit} className="space-y-4">
           <div>
-            <label className="block text-sm text-gray-600 mb-1">نام کامل</label>
+            <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldFullName")}</label>
             <input className="input" value={editForm.full_name} onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm text-gray-600 mb-1">حجم مجاز (گیگابایت)</label>
-              <input type="number" step="0.1" min="0" className="input" placeholder="0 = نامحدود" value={editForm.quota_gb} onChange={(e) => setEditForm({ ...editForm, quota_gb: e.target.value })} />
+              <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldQuota")}</label>
+              <input type="number" step="0.1" min="0" className="input" placeholder={t("userDetail.quotaPlaceholder")} value={editForm.quota_gb} onChange={(e) => setEditForm({ ...editForm, quota_gb: e.target.value })} />
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">تعداد اتصال هم‌زمان (کل سرویس‌های کاربر - OpenVPN/L2TP/WireGuard/Xray)</label>
+              <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldMaxConcurrent")}</label>
               <input
                 type="number"
                 min="0"
                 className="input"
-                placeholder="بدون تغییر"
+                placeholder={t("userDetail.noChangePlaceholder")}
                 value={editForm.max_concurrent_sessions}
                 onChange={(e) => setEditForm({ ...editForm, max_concurrent_sessions: e.target.value })}
               />
@@ -416,7 +477,7 @@ export default function UserDetail() {
           </div>
 
           <div>
-            <label className="block text-sm text-gray-600 mb-1">موجودی اعتبار (تومان)</label>
+            <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldBalance")}</label>
             <input
               type="number"
               className="input"
@@ -427,13 +488,13 @@ export default function UserDetail() {
 
           {isSuperadmin && (
             <div>
-              <label className="block text-sm text-gray-600 mb-1">متعلق به ادمین</label>
+              <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldOwnerAdmin")}</label>
               <select
                 className="input"
                 value={editForm.owner_admin_id}
                 onChange={(e) => setEditForm({ ...editForm, owner_admin_id: e.target.value })}
               >
-                <option value="">بدون ادمین (فقط ادمین اصلی می‌بیند)</option>
+                <option value="">{t("userDetail.noAdminOnlyMain")}</option>
                 {admins.filter((a) => !a.is_superadmin).map((a) => (
                   <option key={a.id} value={a.id}>
                     {a.username}
@@ -444,31 +505,31 @@ export default function UserDetail() {
           )}
 
           <div>
-            <label className="block text-sm text-gray-600 mb-1">آیدی عددی تلگرام (برای اتصال دستی به ربات)</label>
+            <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldTelegramId")}</label>
             <input
               type="number"
               className="input"
-              placeholder="خالی = وصل نیست"
+              placeholder={t("userDetail.telegramIdPlaceholder")}
               dir="ltr"
               value={editForm.telegram_id}
               onChange={(e) => setEditForm({ ...editForm, telegram_id: e.target.value })}
             />
             <div className="text-xs text-gray-400 mt-1">
-              اگه مشتری قبلاً با این پنل حسابی نداشته، می‌تونی آیدی عددی تلگرامش رو اینجا دستی وصل کنی تا از طریق ربات به این حساب دسترسی داشته باشد.
+              {t("userDetail.telegramIdHint")}
             </div>
           </div>
 
           <div>
-            <label className="block text-sm text-gray-600 mb-1">نوع انقضا</label>
+            <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldExpireType")}</label>
             <select
               className="input"
               value={editForm.expire_mode}
               onChange={(e) => setEditForm({ ...editForm, expire_mode: e.target.value })}
             >
-              <option value="none">بدون انقضا</option>
-              <option value="date">تاریخ مشخص</option>
-              <option value="days_from_now">تعداد روز از الان</option>
-              <option value="first_use">تعداد روز از اولین اتصال</option>
+              <option value="none">{t("userDetail.expireNone")}</option>
+              <option value="date">{t("userDetail.expireDate")}</option>
+              <option value="days_from_now">{t("userDetail.expireDaysFromNow")}</option>
+              <option value="first_use">{t("userDetail.expireFirstUse")}</option>
             </select>
 
             {editForm.expire_mode === "date" && (
@@ -485,7 +546,7 @@ export default function UserDetail() {
                 type="number"
                 min="1"
                 className="input mt-2"
-                placeholder="مثلا 30"
+                placeholder={t("userDetail.daysPlaceholder")}
                 value={editForm.expire_days}
                 onChange={(e) => setEditForm({ ...editForm, expire_days: e.target.value })}
               />
@@ -497,43 +558,96 @@ export default function UserDetail() {
                   type="number"
                   min="1"
                   className="input mt-2"
-                  placeholder="مثلا 30"
+                  placeholder={t("userDetail.daysPlaceholder")}
                   value={editForm.expire_days}
                   onChange={(e) => setEditForm({ ...editForm, expire_days: e.target.value })}
                 />
                 <div className="text-xs text-gray-400 mt-1">
-                  تا وقتی کاربر برای اولین بار وصل نشده انقضا فعال نمی‌شود؛ از لحظه اولین اتصال موفق، شمارش {editForm.expire_days || "N"} روز شروع می‌شود.
+                  {t("userDetail.firstUseHint", { days: editForm.expire_days || "N" })}
                 </div>
               </>
             )}
           </div>
 
           <div>
-            <label className="block text-sm text-gray-600 mb-1">یادداشت</label>
+            <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldNotes")}</label>
             <textarea className="input" rows={2} value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} />
           </div>
           {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setEditOpen(false)}>
-              انصراف
+              {t("common.cancel")}
             </button>
             <button type="submit" disabled={saving} className="btn-primary">
-              <Save size={16} /> ذخیره
+              <Save size={16} /> {t("common.save")}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Renew (تمدید سریع) modal */}
+      <Modal open={renewOpen} onClose={() => setRenewOpen(false)} title={t("userDetail.renewModalTitle")}>
+        <form onSubmit={submitRenew} className="space-y-4">
+          <p className="text-xs text-gray-400">
+            {t("userDetail.renewNote")}
+          </p>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldAddGb")}</label>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                step="any"
+                value={renewForm.add_gb}
+                onChange={(e) => setRenewForm((f) => ({ ...f, add_gb: e.target.value }))}
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldAddDays")}</label>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                placeholder={t("userDetail.daysPlaceholder")}
+                value={renewForm.add_days}
+                onChange={(e) => setRenewForm((f) => ({ ...f, add_days: e.target.value }))}
+              />
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="renew_reset_usage"
+              checked={renewForm.reset_usage}
+              onChange={(e) => setRenewForm((f) => ({ ...f, reset_usage: e.target.checked }))}
+            />
+            <label htmlFor="renew_reset_usage" className="text-sm text-gray-600">
+              {t("userDetail.resetUsageLabel")}
+            </label>
+          </div>
+          {renewError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{renewError}</div>}
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" className="btn-secondary" onClick={() => setRenewOpen(false)}>
+              {t("common.cancel")}
+            </button>
+            <button type="submit" disabled={renewSaving} className="btn-primary">
+              <RefreshCw size={16} /> {renewSaving ? "..." : t("userDetail.renew")}
             </button>
           </div>
         </form>
       </Modal>
 
       {/* Add connection modal */}
-      <Modal open={addConnOpen} onClose={() => setAddConnOpen(false)} title="افزودن اتصال جدید">
+      <Modal open={addConnOpen} onClose={() => setAddConnOpen(false)} title={t("userDetail.addConnModalTitle")}>
         <div className="space-y-4">
           <div>
-            <label className="block text-sm text-gray-600 mb-1">سرور</label>
+            <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldServer")}</label>
             <select className="input" value={connNodeId} onChange={(e) => setConnNodeId(e.target.value)}>
-              <option value="">انتخاب کنید...</option>
+              <option value="">{t("userDetail.selectPlaceholder")}</option>
               {nodes.map((n) => (
                 <option key={n.id} value={n.id}>
-                  {n.name} ({n.type === "mikrotik" ? "میکروتیک" : "V2Ray/Xray"})
+                  {n.name} ({n.type === "mikrotik" ? t("userDetail.mikrotikLabel") : "V2Ray/Xray"})
                 </option>
               ))}
             </select>
@@ -544,18 +658,18 @@ export default function UserDetail() {
             <>
               <div>
                 <label className="block text-sm text-gray-600 mb-1">
-                  حداکثر اتصال هم‌زمان (فقط OpenVPN/L2TP/IKEv2)
+                  {t("userDetail.fieldMaxConcurrentMikrotik")}
                 </label>
                 <input
                   type="number"
                   min="0"
                   className="input"
-                  placeholder="0 = نامحدود، پیش‌فرض 1"
+                  placeholder={t("userDetail.maxConcurrentPlaceholder")}
                   value={connMaxSessions}
                   onChange={(e) => setConnMaxSessions(e.target.value)}
                 />
               </div>
-              <div className="grid grid-cols-4 gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 <button disabled={saving} className="btn-secondary" onClick={() => addConnection("wireguard")}>
                   <Wifi size={16} /> WireGuard
                 </button>
@@ -568,46 +682,48 @@ export default function UserDetail() {
                 <button disabled={saving} className="btn-secondary" onClick={() => addConnection("ikev2")}>
                   <KeyRound size={16} /> IKEv2
                 </button>
+                <button disabled={saving} className="btn-secondary" onClick={() => addConnection("sstp")}>
+                  <ShieldEllipsis size={16} /> SSTP
+                </button>
               </div>
             </>
           )}
 
           {selectedNode?.type === "xray" && (
             <button disabled={saving} className="btn-primary w-full" onClick={() => addConnection("xray")}>
-              <Globe size={16} /> افزودن V2Ray
+              <Globe size={16} /> {t("userDetail.addVlessButton")}
             </button>
           )}
 
-          {!selectedNode && <div className="text-xs text-gray-400">بعد از انتخاب سرور، نوع اتصال نمایش داده می‌شود.</div>}
+          {!selectedNode && <div className="text-xs text-gray-400">{t("userDetail.selectServerFirst")}</div>}
         </div>
       </Modal>
 
       {/* Concurrent-session limit modal */}
-      <Modal open={!!limitConn} onClose={() => setLimitConn(null)} title="محدودیت اتصال هم‌زمان">
+      <Modal open={!!limitConn} onClose={() => setLimitConn(null)} title={t("userDetail.maxConcurrentModalTitle")}>
         {limitConn && (
           <div className="space-y-4">
             <div>
-              <label className="block text-sm text-gray-600 mb-1">حداکثر تعداد اتصال هم‌زمان</label>
+              <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldMaxConcurrentSimple")}</label>
               <input
                 type="number"
                 min="0"
                 className="input"
-                placeholder="0 = نامحدود"
+                placeholder={t("userDetail.maxConcurrentSimplePlaceholder")}
                 value={limitValue}
                 onChange={(e) => setLimitValue(e.target.value)}
               />
               <div className="text-xs text-gray-400 mt-1">
-                اگه کاربر بیشتر از این تعداد و به‌طور مکرر (۵ بار در ۱ دقیقه) تلاش کنه هم‌زمان وصل بشه، به‌مدت ۳ دقیقه
-                موقتا بن می‌شه.
+                {t("userDetail.banHint")}
               </div>
             </div>
             {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
             <div className="flex justify-end gap-2 pt-2">
               <button type="button" className="btn-secondary" onClick={() => setLimitConn(null)}>
-                انصراف
+                {t("common.cancel")}
               </button>
               <button type="button" disabled={saving} className="btn-primary" onClick={saveLimit}>
-                ذخیره
+                {t("common.save")}
               </button>
             </div>
           </div>
@@ -615,46 +731,46 @@ export default function UserDetail() {
       </Modal>
 
       {/* Share modal */}
-      <Modal open={!!shareData} onClose={closeShare} title="کانفیگ اتصال">
+      <Modal open={!!shareData} onClose={closeShare} title={t("userDetail.shareModalTitle")}>
         {shareData && (
           <div className="space-y-4">
             {qrUrl && (
               <div className="flex flex-col items-center gap-2">
                 <img src={qrUrl} alt="QR Code" className="rounded-xl border border-gray-100" width={200} height={200} />
-                <div className="text-xs text-gray-400">با اسکن این QR هم می‌توانید در اکثر اپ‌های کلاینت وصل شوید</div>
+                <div className="text-xs text-gray-400">{t("userDetail.qrHint")}</div>
               </div>
             )}
 
             {shareData.link && (
               <div>
-                <div className="text-xs text-gray-500 mb-1">لینک اشتراک‌گذاری</div>
+                <div className="text-xs text-gray-500 mb-1">{t("userDetail.shareLink")}</div>
                 <div className="flex gap-2">
                   <input readOnly className="input font-mono text-xs" value={shareData.link} />
                   <button className="btn-secondary" onClick={() => onCopy("link", shareData.link)}>
                     {copiedKey === "link" ? <Check size={14} /> : <Copy size={14} />}
                   </button>
                 </div>
-                {copiedKey === "link" && <div className="text-xs text-emerald-600 mt-1">کپی شد</div>}
-                {copiedKey === "link-failed" && <div className="text-xs text-red-500 mt-1">کپی خودکار پشتیبانی نشد؛ متن را دستی انتخاب و کپی کنید</div>}
+                {copiedKey === "link" && <div className="text-xs text-emerald-600 mt-1">{t("userDetail.copied")}</div>}
+                {copiedKey === "link-failed" && <div className="text-xs text-red-500 mt-1">{t("userDetail.copyFailed")}</div>}
               </div>
             )}
 
             {shareData.config_text && (
               <div>
                 <div className="text-xs text-gray-500 mb-1">
-                  {shareData.kind === "wireguard" ? "فایل کانفیگ WireGuard (.conf)" : "اطلاعات اتصال (یوزر/پسورد)"}
+                  {shareData.kind === "wireguard" ? t("userDetail.wireguardConfigFile") : t("userDetail.connectionInfo")}
                 </div>
                 <textarea readOnly className="input font-mono text-xs" rows={9} value={shareData.config_text} />
                 <div className="flex gap-2 mt-2">
                   <button className="btn-secondary flex-1" onClick={() => onCopy("config", shareData.config_text)}>
-                    {copiedKey === "config" ? <Check size={14} /> : <Copy size={14} />} کپی
+                    {copiedKey === "config" ? <Check size={14} /> : <Copy size={14} />} {t("userDetail.copy")}
                   </button>
                   <button className="btn-primary flex-1" onClick={onDownload}>
-                    <Download size={14} /> دانلود فایل
+                    <Download size={14} /> {t("userDetail.downloadFile")}
                   </button>
                 </div>
-                {copiedKey === "config" && <div className="text-xs text-emerald-600 mt-1">کپی شد</div>}
-                {copiedKey === "config-failed" && <div className="text-xs text-red-500 mt-1">کپی خودکار پشتیبانی نشد؛ متن را دستی انتخاب و کپی کنید</div>}
+                {copiedKey === "config" && <div className="text-xs text-emerald-600 mt-1">{t("userDetail.copied")}</div>}
+                {copiedKey === "config-failed" && <div className="text-xs text-red-500 mt-1">{t("userDetail.copyFailed")}</div>}
               </div>
             )}
           </div>

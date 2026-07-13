@@ -91,3 +91,18 @@ def build_ikev2_info(connection: models.Connection, node: models.Node) -> str:
         lines.append(f"کلید IPsec (Pre-shared key): {node.mt_ikev2_psk}")
     lines.append("(سرور IKEv2/IPsec مستقیما روی خود میکروتیک تنظیم شده؛ پنل فقط یوزر/پسورد را می‌سازد)")
     return "\n".join(lines)
+
+
+def build_sstp_info(connection: models.Connection, node: models.Node) -> str:
+    """Like build_openvpn_config: SSTP tunnels PPP inside a TLS connection
+    (needs a server certificate, not a PSK), which the panel does not have
+    access to - just returns the plain credentials/port as info."""
+    lines = [
+        f"آدرس سرور: {node.mt_endpoint_host}",
+        f"پورت: {node.mt_sstp_port or 443}",
+        f"نام کاربری: {connection.ppp_username}",
+        f"رمز عبور: {connection.ppp_password}",
+        "نوع VPN: SSTP",
+        "(سرور SSTP و سرتیفیکیت آن مستقیما روی خود میکروتیک تنظیم شده؛ پنل فقط یوزر/پسورد را می‌سازد.)",
+    ]
+    return "\n".join(lines)

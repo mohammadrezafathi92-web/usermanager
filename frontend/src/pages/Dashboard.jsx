@@ -7,17 +7,19 @@ import Topbar from "../components/Topbar.jsx";
 import StatCard from "../components/StatCard.jsx";
 import { fetchDashboard } from "../api/client.js";
 import { formatBytes } from "../utils.js";
+import { useLanguage } from "../context/LanguageContext.jsx";
 
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const navigate = useNavigate();
+  const { t } = useLanguage();
 
   const load = () => fetchDashboard().then((res) => setStats(res.data));
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 15000);
-    return () => clearInterval(t);
+    const timer = setInterval(load, 15000);
+    return () => clearInterval(timer);
   }, []);
 
   const chartData = (stats?.usage_last_24h || []).map((d) => ({
@@ -28,17 +30,17 @@ export default function Dashboard() {
 
   return (
     <Layout>
-      <Topbar title="داشبورد" subtitle="نمای کلی مصرف و وضعیت کاربران" />
+      <Topbar title={t("dashboard.title")} subtitle={t("dashboard.subtitle")} />
 
       {!stats ? (
-        <div className="text-gray-400">در حال بارگذاری...</div>
+        <div className="text-gray-400">{t("common.loading")}</div>
       ) : (
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-            <StatCard icon={Users} label="کل کاربران" value={stats.total_users} tone="brand" onClick={() => navigate("/users")} />
-            <StatCard icon={UserCheck} label="کاربران فعال" value={stats.active_users} tone="emerald" onClick={() => navigate("/users?status=active")} />
-            <StatCard icon={AlertTriangle} label="اتمام حجم" value={stats.quota_exceeded_users} tone="amber" onClick={() => navigate("/users?status=quota_exceeded")} />
-            <StatCard icon={UserX} label="غیرفعال" value={stats.disabled_users} tone="red" onClick={() => navigate("/users?status=disabled")} />
+            <StatCard icon={Users} label={t("dashboard.totalUsers")} value={stats.total_users} tone="brand" onClick={() => navigate("/users")} />
+            <StatCard icon={UserCheck} label={t("dashboard.activeUsers")} value={stats.active_users} tone="emerald" onClick={() => navigate("/users?status=active")} />
+            <StatCard icon={AlertTriangle} label={t("dashboard.quotaExceeded")} value={stats.quota_exceeded_users} tone="amber" onClick={() => navigate("/users?status=quota_exceeded")} />
+            <StatCard icon={UserX} label={t("dashboard.disabledUsers")} value={stats.disabled_users} tone="red" onClick={() => navigate("/users?status=disabled")} />
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -50,7 +52,7 @@ export default function Dashboard() {
                 <div className="text-2xl font-bold text-gray-800 dark:text-gray-100" dir="ltr">
                   {stats.online_nodes}/{stats.total_nodes}
                 </div>
-                <div className="text-sm text-gray-400">سرورهای آنلاین</div>
+                <div className="text-sm text-gray-400">{t("dashboard.onlineServers")}</div>
               </div>
             </div>
             <button
@@ -65,7 +67,7 @@ export default function Dashboard() {
                 <div className="text-2xl font-bold text-gray-800 dark:text-gray-100" dir="ltr">
                   {stats.online_users_now}
                 </div>
-                <div className="text-sm text-gray-400">کاربران آنلاین الان</div>
+                <div className="text-sm text-gray-400">{t("dashboard.onlineUsersNow")}</div>
               </div>
             </button>
             <div className="card flex items-center gap-4">
@@ -75,9 +77,9 @@ export default function Dashboard() {
               <div>
                 <div className="text-2xl font-bold text-gray-800 dark:text-gray-100 whitespace-nowrap" dir="ltr">
                   {formatBytes(stats.total_used_bytes)}
-                  <span className="text-sm text-gray-400 font-normal"> / {stats.total_quota_bytes ? formatBytes(stats.total_quota_bytes) : "نامحدود"}</span>
+                  <span className="text-sm text-gray-400 font-normal"> / {stats.total_quota_bytes ? formatBytes(stats.total_quota_bytes) : t("userDetail.unlimited")}</span>
                 </div>
-                <div className="text-sm text-gray-400">مجموع مصرف همه کاربران</div>
+                <div className="text-sm text-gray-400">{t("dashboard.totalUsageAllUsers")}</div>
               </div>
             </div>
             <div className="card flex items-center gap-4">
@@ -89,7 +91,7 @@ export default function Dashboard() {
                   {formatBytes(stats.avg_speed_bps)}
                   <span className="text-sm text-gray-400 font-normal">/s</span>
                 </div>
-                <div className="text-sm text-gray-400">میانگین سرعت مصرف (۱ دقیقه اخیر)</div>
+                <div className="text-sm text-gray-400">{t("dashboard.avgSpeed")}</div>
               </div>
             </div>
             {stats.admin_balance != null && (
@@ -99,16 +101,16 @@ export default function Dashboard() {
                 </div>
                 <div>
                   <div className="text-2xl font-bold text-gray-800 dark:text-gray-100" dir="ltr">
-                    {new Intl.NumberFormat("fa-IR").format(stats.admin_balance)} <span className="text-sm text-gray-400 font-normal">تومان</span>
+                    {new Intl.NumberFormat("fa-IR").format(stats.admin_balance)} <span className="text-sm text-gray-400 font-normal">{t("dashboard.tomanUnit")}</span>
                   </div>
-                  <div className="text-sm text-gray-400">اعتبار فعلی شما</div>
+                  <div className="text-sm text-gray-400">{t("dashboard.yourBalance")}</div>
                 </div>
               </div>
             )}
           </div>
 
           <div className="card">
-            <h3 className="font-bold text-gray-700 dark:text-gray-300 mb-4">مصرف ۲۴ ساعت اخیر</h3>
+            <h3 className="font-bold text-gray-700 dark:text-gray-300 mb-4">{t("dashboard.usageLast24h")}</h3>
             <ResponsiveContainer width="100%" height={280}>
               <AreaChart data={chartData}>
                 <defs>
@@ -120,7 +122,7 @@ export default function Dashboard() {
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                 <XAxis dataKey="time" tick={{ fontSize: 12 }} />
                 <YAxis tickFormatter={(v) => formatBytes(v)} tick={{ fontSize: 12 }} width={70} />
-                <Tooltip formatter={(v) => formatBytes(v)} labelFormatter={(l) => `ساعت ${l}`} />
+                <Tooltip formatter={(v) => formatBytes(v)} labelFormatter={(l) => t("dashboard.hourLabel", { value: l })} />
                 <Area type="monotone" dataKey="bytes" stroke="#4763f5" fill="url(#colorUsage)" strokeWidth={2} />
               </AreaChart>
             </ResponsiveContainer>

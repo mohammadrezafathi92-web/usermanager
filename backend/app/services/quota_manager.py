@@ -15,7 +15,7 @@ from .xray_client import XrayError, client_for_node
 
 logger = logging.getLogger("quota_manager")
 
-PPP_TYPES = (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2)
+PPP_TYPES = (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp)
 
 # A WireGuard peer whose last cryptographic handshake was more recent than
 # this counts as "currently connected" for online-status display and the
@@ -53,6 +53,16 @@ def _apply_delta(db: Session, connection: models.Connection, rx: int, tx: int):
     user.used_bytes = (user.used_bytes or 0) + delta
 
     db.add(models.UsageLog(user_id=user.id, connection_id=connection.id, delta_bytes=delta))
+
+    # Usage-based reseller billing (see AdminUser.billing_mode) - for
+    # admins in "usage" mode, this single choke point (every protocol's
+    # traffic ends up here - WireGuard/Xray polling, and RADIUS accounting
+    # for OpenVPN/L2TP/IKEv2) is where their GB volume pool depletes in
+    # near-real-time, instead of being charged a flat price per package at
+    # creation time (see routers/users.py's _charge_admin_for_package).
+    admin = user.owner_admin
+    if admin is not None and not admin.is_superadmin and admin.billing_mode == "usage":
+        admin.volume_balance_gb = (admin.volume_balance_gb or 0) - (delta / (1024 ** 3))
 
 
 def _enforce_user_limits(db: Session, user: models.User):

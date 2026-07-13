@@ -176,6 +176,7 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
                         pending["target_username"],
                         add_gb=pending["quota_gb"] or 0,
                         add_days=pending["duration_days"] or 0,
+                        package_id=(pkg or {}).get("id"),
                     )
             else:
                 user = await api.create_user(
@@ -186,11 +187,15 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
                     telegram_id=pending["telegram_id"],
                     connections=connections,
                     package_name=(pkg or {}).get("name"),
+                    package_id=(pkg or {}).get("id"),
                 )
                 new_connections = user["connections"]
             customer_msg = f"✅ پرداخت شما تایید شد!\n\nنام کاربری: <code>{pending['target_username']}</code>"
         elif pending["kind"] == "renew":
-            await api.renew(pending["target_username"], add_gb=pending["quota_gb"], add_days=pending["duration_days"])
+            await api.renew(
+                pending["target_username"], add_gb=pending["quota_gb"], add_days=pending["duration_days"],
+                package_id=(pkg or {}).get("id"),
+            )
             customer_msg = f"✅ پرداخت شما تایید شد و حساب «{pending['target_username']}» تمدید شد."
         elif pending["kind"] == "link":
             # Security-gated version of the old instant customer.py

@@ -33,12 +33,13 @@ from .. import models
 from ..config import settings
 from ..database import SessionLocal
 from .quota_manager import _apply_delta, _enforce_user_limits
+from . import mschapv2
 
 logger = logging.getLogger("radius_server")
 
 DICT_PATH = os.path.join(os.path.dirname(__file__), "..", "radius", "dictionary")
 
-PPP_TYPES = (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2)
+PPP_TYPES = (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp)
 
 # Shared-users (max simultaneous sessions) enforcement: a new connection
 # attempt beyond the limit is simply rejected (no CoA/disconnect-oldest -
@@ -176,6 +177,61 @@ class UserManagerRadiusServer(Server):
             logger.exception("RADIUS password check failed")
         return False
 
+    def _check_mschapv2(self, pkt, reply, username: str, expected_password: str) -> bool:
+        """MS-CHAPv2 (see services/mschapv2.py) - the auth method most
+        native L2TP/SSTP/IKEv2 clients use (SSTP on Windows in particular
+        ALWAYS uses it, no PAP/CHAP fallback exists in the OS), unlike the
+        OpenVPN client this panel already worked with. Only reached when
+        _check_password above found no plain User-Password/CHAP-Password
+        attribute to check (a pure MS-CHAPv2 request has neither), so this
+        can't affect already-working PAP/CHAP logins. On success, also
+        attaches MS-CHAP2-Success + MS-MPPE-Send/Recv-Key to `reply` -
+        MikroTik expects these alongside a bare Access-Accept when the
+        session negotiated MS-CHAPv2."""
+        try:
+            # pyrad already splits incoming Vendor-Specific attributes into
+            # (vendor_id, vendor_type) tuple keys during decode - see the
+            # module docstring in mschapv2.py's "RADIUS VSA wiring" section
+            # for why reading and writing VSAs use two different pyrad
+            # mechanisms. Numeric/tuple keys bypass dictionary-based value
+            # decoding same as the `pkt[2]`/`pkt[3]` PAP/CHAP access above,
+            # returning untouched raw bytes.
+            chal_list = pkt.get((mschapv2.MS_VENDOR_ID, mschapv2.MS_CHAP_CHALLENGE))
+            resp_list = pkt.get((mschapv2.MS_VENDOR_ID, mschapv2.MS_CHAP2_RESPONSE))
+            chal = bytes(chal_list[0]) if chal_list else None
+            resp = bytes(resp_list[0]) if resp_list else None
+            if not chal or len(chal) != 16 or not resp or len(resp) < 50:
+                return False  # not an MS-CHAPv2 request at all
+
+            ident = resp[0]
+            peer_challenge = resp[2:18]
+            nt_response = resp[26:50]
+            expected_nt_response = mschapv2.generate_nt_response(chal, peer_challenge, username, expected_password)
+            if expected_nt_response != nt_response:
+                logger.info("MS-CHAPv2 NT-Response mismatch for user=%r", username)
+                return False
+
+            auth_response = mschapv2.generate_authenticator_response(
+                expected_password, nt_response, peer_challenge, chal, username
+            )
+            success_value = bytes([ident]) + auth_response.encode("ascii")
+            reply.AddAttribute("Vendor-Specific", mschapv2.build_vsa(mschapv2.MS_CHAP2_SUCCESS, success_value))
+
+            secret = pkt.secret if isinstance(pkt.secret, bytes) else pkt.secret.encode()
+            send_key, recv_key = mschapv2.get_send_recv_keys(expected_password, nt_response)
+            reply.AddAttribute(
+                "Vendor-Specific",
+                mschapv2.build_vsa(mschapv2.MS_MPPE_SEND_KEY, mschapv2.encrypt_mppe_key(send_key, secret, pkt.authenticator)),
+            )
+            reply.AddAttribute(
+                "Vendor-Specific",
+                mschapv2.build_vsa(mschapv2.MS_MPPE_RECV_KEY, mschapv2.encrypt_mppe_key(recv_key, secret, pkt.authenticator)),
+            )
+            return True
+        except Exception:
+            logger.exception("MS-CHAPv2 check failed for user=%r", username)
+            return False
+
     def HandleAuthPacket(self, pkt):
         db = SessionLocal()
         try:
@@ -210,6 +266,8 @@ class UserManagerRadiusServer(Server):
                     reason = "expired"
                 else:
                     ok = self._check_password(pkt, conn.ppp_password)
+                    if not ok:
+                        ok = self._check_mschapv2(pkt, reply, username, conn.ppp_password)
                     if not ok:
                         reason = "wrong password"
                     else:

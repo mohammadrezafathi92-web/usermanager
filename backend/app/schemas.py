@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from .models import NodeType, ConnectionType, UserStatus
 
 _PORT_FIELDS = (
-    "mt_port", "mt_api_ssl_port", "mt_endpoint_port", "mt_ovpn_port",
+    "mt_port", "mt_api_ssl_port", "mt_endpoint_port", "mt_ovpn_port", "mt_sstp_port",
     "xr_ssh_port", "xr_public_port",
 )
 
@@ -42,6 +42,8 @@ class NodeBase(BaseModel):
     mt_l2tp_use_ipsec: Optional[bool] = True
     mt_l2tp_ipsec_secret: Optional[str] = None
     mt_ikev2_psk: Optional[str] = None
+    mt_sstp_port: Optional[int] = 443
+    mt_sstp_certificate: Optional[str] = None
 
     xr_panel_mode: Optional[str] = "ssh"  # "ssh" یا "3xui"
     xr_panel_base_url: Optional[str] = None
@@ -106,6 +108,21 @@ class RadiusPushResult(BaseModel):
     message: str
 
 
+# ---------- SSTP/L2TP/IKEv2 auto-provisioning ----------
+# All three share the same "panel_host" fallback-to-PANEL_PUBLIC_HOST idea
+# as RadiusPushRequest above, since SSTP/IKEv2 also need to register this
+# panel as a RADIUS client on the router (SSTP via the existing service=ppp
+# entry that push-radius-config already sets up; IKEv2 via a separate
+# service=ipsec entry pushed by this same endpoint).
+class ProtocolPushRequest(BaseModel):
+    panel_host: Optional[str] = None
+
+
+class ProtocolPushResult(BaseModel):
+    ok: bool
+    message: str
+
+
 # ---------- Import pre-existing /ppp/secret accounts ----------
 class PppImportSkipped(BaseModel):
     name: str
@@ -135,6 +152,11 @@ class ConnectionCreateL2tp(BaseModel):
 
 
 class ConnectionCreateIkev2(BaseModel):
+    node_id: int
+    max_concurrent_sessions: Optional[int] = 1  # 0 = unlimited
+
+
+class ConnectionCreateSstp(BaseModel):
     node_id: int
     max_concurrent_sessions: Optional[int] = 1  # 0 = unlimited
 
@@ -208,7 +230,9 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     # If set, quota/expiry are taken from the package (overriding whatever
     # was in total_quota_bytes/expire_at above) and every server/service
-    # bundled into the package is provisioned automatically.
+    # bundled into the package is provisioned automatically. Also stamped
+    # onto the created user's own package_id (see models.User) so it can
+    # later be filtered/selected by package in the users list.
     package_id: Optional[int] = None
     # Only superadmins may set this (which admin/group owns the new user -
     # see routers/users.py); ignored from non-superadmin requests, who
@@ -253,6 +277,7 @@ class UserOut(UserBase):
     # router (not a real relationship traversal here) so the UI doesn't
     # need a second request just to show "کدام ادمین".
     owner_admin_username: Optional[str] = None
+    package_id: Optional[int] = None
 
 
 class UserListItem(BaseModel):
@@ -276,6 +301,7 @@ class UserListItem(BaseModel):
     online: bool = False
     owner_admin_id: Optional[int] = None
     owner_admin_username: Optional[str] = None
+    package_id: Optional[int] = None
 
 
 class UserListPage(BaseModel):
@@ -321,6 +347,12 @@ class BulkUpdateUsersRequest(BaseModel):
     reset_usage: bool = False
     status: Optional[UserStatus] = None
     max_concurrent_sessions: Optional[int] = None  # applied to all of the user's connections
+    # If set, every selected user's quota/duration/concurrent-session-cap is
+    # overwritten outright from this package (like a fresh "renew with
+    # package" for each of them) and their package_id is stamped to match -
+    # takes priority over add_gb/add_days above when both are sent, so a
+    # group can be re-based onto a different package plan in one action.
+    package_id: Optional[int] = None
 
     @field_validator("user_ids")
     @classmethod
@@ -429,7 +461,8 @@ class PackageBase(BaseModel):
     # `price` (no cooperation discount configured for this package).
     cooperation_price: Optional[int] = None
     description: Optional[str] = None
-    enabled: bool = True
+    enabled: bool = True  # visible in the web panel's package pickers
+    bot_enabled: bool = True  # visible in the Telegram bot's package picker
     sort_order: int = 0
     # Combined cap across every bundled OpenVPN/L2TP service together (not
     # per service) - copied onto User.max_concurrent_sessions when a user
@@ -452,6 +485,7 @@ class PackageUpdate(BaseModel):
     cooperation_price: Optional[int] = None
     description: Optional[str] = None
     enabled: Optional[bool] = None
+    bot_enabled: Optional[bool] = None
     sort_order: Optional[int] = None
     max_concurrent_sessions: Optional[int] = None
     custom_message: Optional[str] = None
@@ -473,6 +507,24 @@ class PanelSettingsOut(BaseModel):
     payment_card_holder: Optional[str] = None
     payment_instructions: Optional[str] = None
     topup_presets: Optional[str] = ""
+    # HA / near-real-time replication به سرور دوم (مورد ۱۰) - see models.PanelSettings
+    ha_enabled: bool = False
+    ha_mode: Optional[str] = "standby"
+    ha_peer_url: Optional[str] = None
+    ha_peer_api_key: Optional[str] = None
+    ha_standby_active: bool = False
+    ha_promoted_at: Optional[dt.datetime] = None
+    ha_last_sync_at: Optional[dt.datetime] = None
+    ha_last_health_ok_at: Optional[dt.datetime] = None
+    ha_last_error: Optional[str] = None
+    # Configurable panel web port (see models.PanelSettings)
+    panel_web_port: Optional[int] = 80
+    panel_ssh_host: Optional[str] = None
+    panel_ssh_port: Optional[int] = 22
+    panel_ssh_username: Optional[str] = "root"
+    panel_project_dir: Optional[str] = "/root/usermanager"
+    panel_port_status: Optional[str] = None
+    panel_port_changed_at: Optional[dt.datetime] = None
 
 
 class PanelSettingsUpdate(BaseModel):
@@ -480,6 +532,34 @@ class PanelSettingsUpdate(BaseModel):
     payment_card_holder: Optional[str] = None
     payment_instructions: Optional[str] = None
     topup_presets: Optional[str] = None
+    ha_enabled: Optional[bool] = None
+    ha_mode: Optional[str] = None
+    ha_peer_url: Optional[str] = None
+    ha_peer_api_key: Optional[str] = None
+    panel_ssh_host: Optional[str] = None
+    panel_ssh_port: Optional[int] = None
+    panel_ssh_username: Optional[str] = None
+    panel_project_dir: Optional[str] = None
+
+
+class PanelPortChangeRequest(BaseModel):
+    # SSH password is deliberately NOT part of PanelSettingsUpdate above -
+    # same "held in memory for one call only, never persisted" rule as the
+    # remote-bot deploy feature.
+    ssh_password: str
+    new_port: int
+
+    @field_validator("new_port")
+    @classmethod
+    def _validate_new_port(cls, v):
+        if not (1 <= v <= 65535):
+            raise ValueError("شماره پورت باید بین 1 تا 65535 باشد")
+        return v
+
+
+class PanelPortChangeResult(BaseModel):
+    ok: bool
+    message: str
 
 
 # ---------- Built-in Telegram bot settings (runs in-process, no .env/SSH) ----------
@@ -562,12 +642,23 @@ class BotCreateUserRequest(BaseModel):
     # group, same as creating them from the panel would. None (the sales
     # bot's own customer-signup flow never sends this) = unassigned.
     owner_admin_id: Optional[int] = None
+    # The actual package id being purchased (package_name above is only a
+    # display label) - stamped onto the created user's package_id so the
+    # web panel can later filter/select this user by package (see
+    # models.User.package_id). None for admin-created users with no package
+    # (e.g. admin_users.py's manual node/protocol flow).
+    package_id: Optional[int] = None
 
 
 class BotRenewRequest(BaseModel):
     add_gb: float = 0
     add_days: int = 0
     reset_usage: bool = False
+    # Same as BotCreateUserRequest.package_id above - if this renewal came
+    # from a package purchase, stamp/refresh the user's package_id so
+    # package-based filtering in the panel stays accurate across renewals
+    # too (not just at first creation).
+    package_id: Optional[int] = None
 
 
 class BotAddBalanceRequest(BaseModel):
@@ -705,6 +796,17 @@ class AdminCreate(BaseModel):
     # If set, this admin's effective permissions come from the group
     # instead of the `permissions` list above (see permissions.effective_permissions).
     group_id: Optional[int] = None
+    # Optional "اعتبار پایه" - starting wholesale credit balance given to
+    # this reseller right when they're created. Recorded as the first
+    # AdminBalanceLog entry (note="اعتبار پایه اولیه"). 0/None = starts
+    # with no credit, same as before this field existed.
+    initial_balance: Optional[int] = None
+    # "flat" (default) or "usage" - see models.AdminUser.billing_mode.
+    billing_mode: Optional[str] = None
+    # Starting GB volume pool, only meaningful when billing_mode="usage".
+    # Recorded as the first AdminVolumeLog entry, same pattern as
+    # initial_balance above.
+    initial_volume_gb: Optional[float] = None
 
 
 class AdminUpdate(BaseModel):
@@ -721,6 +823,11 @@ class AdminUpdate(BaseModel):
     # to the individual `permissions` checkboxes) - same 0-means-clear
     # convention used elsewhere in this schema/router.
     group_id: Optional[int] = None
+    # "flat" or "usage" - see models.AdminUser.billing_mode. Switching an
+    # admin between modes does NOT convert/transfer any existing
+    # balance/volume_balance_gb - each pool is simply ignored while the
+    # other mode is active.
+    billing_mode: Optional[str] = None
 
 
 class AdminOut(BaseModel):
@@ -735,6 +842,8 @@ class AdminOut(BaseModel):
     users_count: int = 0
     group_id: Optional[int] = None
     group_name: Optional[str] = None
+    billing_mode: str = "flat"
+    volume_balance_gb: Optional[float] = None
 
 
 class AdminGroupCreate(BaseModel):
@@ -752,6 +861,49 @@ class AdminGroupOut(BaseModel):
     name: str
     permissions: List[str] = []
     admins_count: int = 0
+
+
+class AdminTopupRequest(BaseModel):
+    # Signed delta - positive to top up, negative for a manual correction.
+    amount: int
+    note: Optional[str] = None
+
+
+class AdminBalanceLogOut(BaseModel):
+    id: int
+    admin_id: int
+    amount: int
+    balance_after: int
+    note: Optional[str] = None
+    created_by_username: Optional[str] = None
+    created_at: dt.datetime
+
+
+class AdminVolumeTopupRequest(BaseModel):
+    # Signed delta in GB - positive to top up, negative for a manual correction.
+    amount_gb: float
+    note: Optional[str] = None
+
+
+class AdminVolumeLogOut(BaseModel):
+    id: int
+    admin_id: int
+    amount_gb: float
+    balance_after_gb: float
+    note: Optional[str] = None
+    created_by_username: Optional[str] = None
+    created_at: dt.datetime
+
+
+class AdminLoginLogOut(BaseModel):
+    id: int
+    admin_id: Optional[int] = None
+    admin_username: Optional[str] = None
+    attempted_username: Optional[str] = None
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    success: bool
+    created_at: dt.datetime
 
 
 # ---------- Bulk messaging ----------

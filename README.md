@@ -1,11 +1,5 @@
 # یوزر منیجر یکپارچه (MikroTik: WireGuard/OpenVPN/L2TP + V2Ray/Xray + ربات تلگرام)
 
-> **اطلاعات دیپلوی فعلی (سرور واقعی):**
-> - IP سرور: `155.117.5.24`
-> - مسیر پروژه روی سرور: `~/usermanager`
-> - پنل: `http://155.117.5.24` | API: `http://155.117.5.24:8000`
-> - هر جا تو دستورات این README نوشته `SERVER_IP`، یعنی همین `155.117.5.24`.
-
 پنل مدیریت کاربران VPN با یک **سهمیه (حجم) مشترک** برای هر کاربر؛ هر کاربر می‌تواند هم‌زمان چند اتصال از پروتکل‌های مختلف داشته باشد (WireGuard، OpenVPN و L2TP روی میکروتیک، و/یا یک اکانت V2Ray/Xray) و مصرف همه از همان یک سهمیه کم می‌شود. وقتی حجم تمام شود یا تاریخ انقضا برسد، تمام اتصالات آن کاربر به‌صورت خودکار غیرفعال می‌شوند.
 
 علاوه بر پنل مدیریت، این پروژه شامل موارد زیر هم هست:
@@ -175,9 +169,9 @@ usermanager/
 
 ```powershell
 # کنار پوشه usermanager، فایل‌های install.sh و install_from_windows.ps1 را داشته باشید
-.\install_from_windows.ps1 -ServerIp 155.117.5.24
-# برای پورت دلخواه: .\install_from_windows.ps1 -ServerIp 155.117.5.24 -Port 8080
-# برای آپدیت بعدی همین سرور با کد جدید:  .\install_from_windows.ps1 -ServerIp 155.117.5.24 -Update
+.\install_from_windows.ps1 -ServerIp SERVER_IP
+# برای پورت دلخواه: .\install_from_windows.ps1 -ServerIp SERVER_IP -Port 8080
+# برای آپدیت بعدی همین سرور با کد جدید:  .\install_from_windows.ps1 -ServerIp SERVER_IP -Update
 ```
 
 این اسکریپت پوشه `usermanager` را (بدون `node_modules`/`.git`/`venv`/دیتا) tar می‌کند، به سرور `scp` می‌کند و `install.sh` را همان‌جا اجرا می‌کند - در یک دستور.

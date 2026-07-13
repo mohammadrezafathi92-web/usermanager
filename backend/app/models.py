@@ -553,6 +553,40 @@ class RadiusActiveSession(Base):
     last_seen_at = Column(DateTime, default=now, index=True)
 
 
+class RadiusLimitEventLog(Base):
+    """Persisted history of RADIUS auth attempts rejected for exceeding the
+    concurrent-session limit (Connection.max_concurrent_sessions /
+    User.max_concurrent_sessions), and of the temporary bans that follow
+    repeated attempts - see services/radius_server.py's HandleAuthPacket
+    (the `limit and active_count >= limit` branch) which is the only writer
+    of this table, and _record_overlimit_attempt for the ban threshold
+    itself. Before this table existed, these events only ever showed up in
+    the container's own `logger.info` output (docker logs), invisible from
+    the panel itself - an admin had to SSH in and grep to see who got
+    banned and when. user_id/username/connection_type are denormalized
+    (copied at write time rather than only living behind a join) so this
+    history stays meaningful even if the user/connection is later renamed
+    or deleted."""
+
+    __tablename__ = "radius_limit_event_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    connection_id = Column(Integer, ForeignKey("connections.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    owner_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True, index=True)
+    username = Column(String(128), nullable=True, index=True)
+    connection_type = Column(String(32), nullable=True)
+    # "reject": this single attempt was rejected for being over the limit.
+    # "ban": this attempt ALSO just triggered a new temporary ban (i.e. the
+    # Nth reject within the abuse-detection window - see BAN_DURATION_MINUTES/
+    # OVERLIMIT_ATTEMPTS_THRESHOLD in radius_server.py).
+    event_type = Column(String(16), nullable=False, default="reject")
+    active_count = Column(Integer, nullable=True)
+    limit_value = Column(Integer, nullable=True)
+    banned_until = Column(DateTime, nullable=True)  # set only for event_type="ban"
+    created_at = Column(DateTime, default=now, index=True)
+
+
 class Package(Base):
     """A purchasable plan (quota + duration + price) shown to customers by
     the sales bot. Optionally bundles one or more server+protocol combos

@@ -906,6 +906,20 @@ class AdminLoginLogOut(BaseModel):
     created_at: dt.datetime
 
 
+# ---------- RADIUS concurrent-session-limit reject/ban history ----------
+class RadiusLimitEventLogOut(BaseModel):
+    id: int
+    connection_id: Optional[int] = None
+    user_id: Optional[int] = None
+    username: Optional[str] = None
+    connection_type: Optional[str] = None
+    event_type: str
+    active_count: Optional[int] = None
+    limit_value: Optional[int] = None
+    banned_until: Optional[dt.datetime] = None
+    created_at: dt.datetime
+
+
 # ---------- Bulk messaging ----------
 class BroadcastRequest(BaseModel):
     text: str

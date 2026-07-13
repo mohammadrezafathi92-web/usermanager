@@ -325,6 +325,23 @@ class UserManagerRadiusServer(Server):
                             reason = f"concurrent-session limit reached ({active_count}/{limit})"
                             if just_banned:
                                 reason += " -> banned for %d min after repeated attempts" % BAN_DURATION_MINUTES
+                            # Persist this event so it's visible from the panel
+                            # (لاگ محدودیت اتصال page + UserDetail) instead of
+                            # only ever existing in the container's own stdout
+                            # logs - see models.RadiusLimitEventLog's docstring.
+                            db.add(
+                                models.RadiusLimitEventLog(
+                                    connection_id=conn.id,
+                                    user_id=user.id,
+                                    owner_admin_id=user.owner_admin_id,
+                                    username=username,
+                                    connection_type=conn.type.value if hasattr(conn.type, "value") else str(conn.type),
+                                    event_type="ban" if just_banned else "reject",
+                                    active_count=active_count,
+                                    limit_value=limit,
+                                    banned_until=conn.banned_until if just_banned else None,
+                                )
+                            )
                         if ok and user.expire_at is None and user.expire_days_after_first_use:
                             # This is the user's first-ever successful login
                             # and their plan is set to "count validity from

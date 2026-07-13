@@ -29,7 +29,7 @@ export default function Login() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-brand-700 to-brand-900 p-4" dir={dir}>
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-8 relative">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-xl w-full max-w-sm p-8 relative">
         <button
           type="button"
           onClick={toggleLanguage}

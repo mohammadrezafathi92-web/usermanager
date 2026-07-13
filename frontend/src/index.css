@@ -49,3 +49,44 @@ body {
 .badge {
   @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
 }
+
+/* Dark-mode text contrast fix: most pages predate the dark-mode toggle and
+   only ever used light-mode text-gray-* utility classes with no dark:
+   variant - fine on white/light-gray backgrounds, but nearly unreadable
+   once .card/.dark body switch to a dark slate background (e.g. the
+   username link in Users.jsx used text-gray-800, close to black, on top of
+   dark:bg-slate-900 - reported as "username not visible in dark mode").
+   Rather than hand-editing dark: variants onto ~380 separate text-gray-*
+   usages across 17 files, remap the whole gray scale once here under
+   .dark - keeps the same visual hierarchy (darker gray = more muted text)
+   just inverted for a dark background, so every page gets readable text
+   in dark mode at once instead of only the couple of pages that had been
+   manually given dark: classes before. */
+.dark .text-gray-900,
+.dark .text-gray-800 {
+  color: #f1f5f9;
+}
+.dark .text-gray-700,
+.dark .text-gray-600 {
+  color: #cbd5e1;
+}
+.dark .text-gray-500 {
+  color: #94a3b8;
+}
+.dark .text-gray-400 {
+  color: #64748b;
+}
+.dark .text-gray-300 {
+  color: #475569;
+}
+.dark .border-gray-50,
+.dark .border-gray-100 {
+  border-color: #1e293b;
+}
+.dark .hover\:bg-gray-50:hover,
+.dark .hover\:bg-gray-50\/60:hover {
+  background-color: rgba(148, 163, 184, 0.08);
+}
+.dark .hover\:bg-gray-100:hover {
+  background-color: rgba(148, 163, 184, 0.12);
+}

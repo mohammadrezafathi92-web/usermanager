@@ -21,6 +21,7 @@ import {
   getShareLink,
   updateConnection,
   fetchAdmins,
+  fetchRadiusLimitLogs,
 } from "../api/client.js";
 import { statusLabel, STATUS_STYLES, gbToBytes, bytesToGb, formatBytes, formatDateTime, copyText, downloadTextFile } from "../utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
@@ -80,6 +81,7 @@ export default function UserDetail() {
   const [connMaxSessions, setConnMaxSessions] = useState(location.state?.defaultMaxSessions ?? 1);
   const [limitConn, setLimitConn] = useState(null); // connection being edited in the limit modal
   const [limitValue, setLimitValue] = useState(1);
+  const [limitLogs, setLimitLogs] = useState([]);
 
   const load = () => fetchUser(id).then((res) => {
     setUser(res.data);
@@ -104,6 +106,9 @@ export default function UserDetail() {
     load();
     fetchNodes().then((res) => setNodes(res.data));
     if (isSuperadmin) fetchAdmins().then((res) => setAdmins(res.data));
+    fetchRadiusLimitLogs({ user_id: id, limit: 50 })
+      .then((res) => setLimitLogs(res.data))
+      .catch(() => setLimitLogs([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
@@ -450,6 +455,42 @@ export default function UserDetail() {
           <div className="card text-center text-gray-400 col-span-2 py-10">{t("userDetail.noConnections")}</div>
         )}
       </div>
+
+      {limitLogs.length > 0 && (
+        <div className="card mt-4">
+          <h3 className="font-bold text-gray-700 mb-3">{t("userDetail.limitLogHeading")}</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-gray-400">
+                  <th className="text-right font-medium py-2">{t("radiusLogs.colType")}</th>
+                  <th className="text-right font-medium py-2">{t("radiusLogs.colConnType")}</th>
+                  <th className="text-right font-medium py-2">{t("radiusLogs.colCount")}</th>
+                  <th className="text-right font-medium py-2">{t("radiusLogs.colBannedUntil")}</th>
+                  <th className="text-right font-medium py-2">{t("radiusLogs.colTime")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {limitLogs.map((l) => (
+                  <tr key={l.id} className="border-t border-gray-50">
+                    <td className="py-2">
+                      <span className={`badge ${l.event_type === "ban" ? "bg-red-50 text-red-600" : "bg-amber-50 text-amber-600"}`}>
+                        {l.event_type === "ban" ? t("radiusLogs.eventBan") : t("radiusLogs.eventReject")}
+                      </span>
+                    </td>
+                    <td className="py-2 text-gray-500">{l.connection_type || "-"}</td>
+                    <td className="py-2 text-gray-500">
+                      {l.active_count ?? "-"}/{l.limit_value ?? "-"}
+                    </td>
+                    <td className="py-2 text-gray-500">{l.banned_until ? formatDateTime(l.banned_until, language) : "-"}</td>
+                    <td className="py-2 text-gray-500">{formatDateTime(l.created_at, language)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Edit modal */}
       <Modal open={editOpen} onClose={() => setEditOpen(false)} title={t("userDetail.editUserModal")}>

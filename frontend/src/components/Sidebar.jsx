@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, Users, Server, Settings, Network, Package, GraduationCap, ShieldCheck, Sun, Moon, X, Languages } from "lucide-react";
+import { LayoutDashboard, Users, Server, Settings, Network, Package, GraduationCap, ShieldCheck, ShieldAlert, Sun, Moon, X, Languages } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
@@ -10,6 +10,7 @@ const allLinks = [
   { to: "/nodes", labelKey: "nav.nodes", icon: Server, perm: "manage_nodes" },
   { to: "/packages", labelKey: "nav.packages", icon: Package, perm: "manage_packages" },
   { to: "/tutorials", labelKey: "nav.tutorials", icon: GraduationCap, perm: "manage_tutorials" },
+  { to: "/radius-logs", labelKey: "nav.radiusLogs", icon: ShieldAlert, perm: null },
   { to: "/settings", labelKey: "nav.settings", icon: Settings, perm: "manage_settings" },
   { to: "/admins", labelKey: "nav.admins", icon: ShieldCheck, perm: "__superadmin__" },
 ];

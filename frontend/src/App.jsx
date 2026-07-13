@@ -11,6 +11,7 @@ import Packages from "./pages/Packages.jsx";
 import Tutorials from "./pages/Tutorials.jsx";
 import Settings from "./pages/Settings.jsx";
 import Admins from "./pages/Admins.jsx";
+import RadiusLogs from "./pages/RadiusLogs.jsx";
 
 function Protected({ children }) {
   const { token, loading } = useAuth();
@@ -110,6 +111,14 @@ export default function App() {
           <SuperadminOnly>
             <Admins />
           </SuperadminOnly>
+        }
+      />
+      <Route
+        path="/radius-logs"
+        element={
+          <Protected>
+            <RadiusLogs />
+          </Protected>
         }
       />
       <Route path="/a/:slug" element={<Navigate to="/login" replace />} />

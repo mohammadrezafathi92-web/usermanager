@@ -197,3 +197,7 @@ export const topupAdminVolume = (id, data) => client.post(`/admins/${id}/volume-
 export const fetchAdminVolumeLogs = (id) => client.get(`/admins/${id}/volume-logs`);
 
 export const fetchAdminLoginLogs = (params) => client.get("/admins/login-logs", { params });
+
+// RADIUS concurrent-session-limit reject/ban history - either the whole
+// panel-wide page (no user_id) or scoped to one user (UserDetail.jsx).
+export const fetchRadiusLimitLogs = (params) => client.get("/radius-logs", { params });

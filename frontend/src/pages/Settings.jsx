@@ -412,7 +412,14 @@ export default function Settings() {
       const res = await restoreBackup(file);
       setRestoreMsg({ type: "ok", text: res.data?.message || t("settings.msgRestoreSuccess") });
     } catch (err) {
-      setRestoreMsg({ type: "err", text: err?.response?.data?.detail || t("settings.msgRestoreError") });
+      // nginx/proxy errors (e.g. 413 body-too-large) come back as plain HTML,
+      // not JSON, so err.response.data.detail is undefined - fall back to
+      // showing the HTTP status at least, instead of a status-less generic
+      // message that hides which kind of failure this was.
+      const detail = err?.response?.data?.detail;
+      const status = err?.response?.status;
+      const fallback = status ? `${t("settings.msgRestoreError")} (HTTP ${status})` : t("settings.msgRestoreError");
+      setRestoreMsg({ type: "err", text: detail || fallback });
     } finally {
       setRestoring(false);
     }

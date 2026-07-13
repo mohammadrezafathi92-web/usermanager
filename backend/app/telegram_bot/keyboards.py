@@ -8,6 +8,7 @@ from .callbacks import (
     NodeCB,
     ProtocolCB,
     PackageCB,
+    SessionCountCB,
     TutorialCB,
     TopupAmountCB,
     PayCB,
@@ -137,6 +138,30 @@ def protocols_kb(node_type: str) -> InlineKeyboardMarkup:
 
 
 # --------------------------------------------------------------- customer
+def session_count_label(count: int) -> str:
+    if count <= 0:
+        return "♾️ نامحدود"
+    if count == 1:
+        return "👤 تک کاربر"
+    return f"👥 {count} کاربر"
+
+
+def session_count_kb(counts: list[int], kind: str) -> InlineKeyboardMarkup:
+    """Step shown before the package list itself when the currently
+    available packages don't all share one Package.max_concurrent_sessions
+    value - lets the customer filter straight to "تک کاربر"/"۲ کاربر"/...
+    packages instead of scrolling through every package regardless of how
+    many people are meant to share it. `counts` is the SORTED list of
+    distinct values actually present among the packages (0 stands in for
+    "نامحدود"/None - see _start_package_picker)."""
+    kb = InlineKeyboardBuilder()
+    for c in counts:
+        kb.button(text=session_count_label(c), callback_data=SessionCountCB(kind=kind, count=c))
+    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 def packages_kb(packages: list[dict], kind: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for p in packages:

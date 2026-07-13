@@ -22,6 +22,9 @@ class CustomerLinkStates(StatesGroup):
 
 
 class CustomerPurchaseStates(StatesGroup):
+    picking_session_count = State()  # SessionCountCB callback expected - only shown when
+                                      # the available packages don't all share one concurrent-
+                                      # session limit (see customer.py's _start_package_picker)
     picking_package = State()   # PackageCB callback expected
     picking_node = State()      # NodeCB callback expected (only for a fresh purchase)
     picking_protocol = State()  # ProtocolCB callback expected (only for a fresh purchase)

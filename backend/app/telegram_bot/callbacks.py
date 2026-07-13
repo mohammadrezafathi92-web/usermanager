@@ -40,6 +40,17 @@ class PackageCB(CallbackData, prefix="pkg"):
     package_id: int
 
 
+class SessionCountCB(CallbackData, prefix="sc"):
+    # Picked from the "چند کاربره؟" step shown before the package list when
+    # the available packages don't all share one Package.max_concurrent_sessions
+    # value - see keyboards.session_count_kb / customer.py's
+    # _start_package_picker and pick_session_count. 0 = the "نامحدود"
+    # (unlimited) bucket, for packages with max_concurrent_sessions left
+    # empty/None.
+    kind: str  # "new" or "renew" - carried through so pick_session_count doesn't need extra state lookups
+    count: int
+
+
 class TutorialCB(CallbackData, prefix="tut"):
     tutorial_id: int
 

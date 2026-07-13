@@ -6,11 +6,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from ..panel_bridge import api, ApiError
-from ..callbacks import MenuCB, PackageCB, NodeCB, ProtocolCB, TopupAmountCB, PayCB, ConnectionCB, PurchaseCB, SwitchAccountCB
+from ..callbacks import MenuCB, PackageCB, SessionCountCB, NodeCB, ProtocolCB, TopupAmountCB, PayCB, ConnectionCB, PurchaseCB, SwitchAccountCB
 from ..config import config
 from ..admin_scope import resolve_admin_scope
 from ..keyboards import (
     packages_kb,
+    session_count_kb,
     nodes_kb,
     protocols_kb,
     cancel_kb,
@@ -196,6 +197,16 @@ async def cmd_link(message: Message, state: FSMContext) -> None:
     await message.answer("نام کاربری حساب قبلی‌تان را بفرستید:", reply_markup=cancel_kb())
 
 
+def _distinct_session_counts(packages: list[dict]) -> list[int]:
+    """Every distinct Package.max_concurrent_sessions value present among
+    the given packages, sorted ascending (0 stands in for None/unlimited).
+    Used to decide whether the "چند کاربره می‌خواهید؟" step is worth
+    showing at all - if every available package shares the same limit (the
+    common case for an admin selling only single-user packages, say),
+    skipping straight to the package list avoids an extra, pointless tap."""
+    return sorted({(p.get("max_concurrent_sessions") or 0) for p in packages})
+
+
 @router.message(Command("buy"))
 async def cmd_buy(message: Message, state: FSMContext) -> None:
     """Slash-command shortcut for "🛒 خرید اکانت جدید"."""
@@ -208,8 +219,13 @@ async def cmd_buy(message: Message, state: FSMContext) -> None:
     if not packages:
         await message.answer("در حال حاضر پکیجی برای فروش تعریف نشده.", reply_markup=home_kb())
         return
-    await state.set_state(CustomerPurchaseStates.picking_package)
     await state.update_data(kind="new", packages={p["id"]: p for p in packages})
+    counts = _distinct_session_counts(packages)
+    if len(counts) > 1:
+        await state.set_state(CustomerPurchaseStates.picking_session_count)
+        await message.answer("چند کاربره می‌خواهید؟", reply_markup=session_count_kb(counts, "new"))
+        return
+    await state.set_state(CustomerPurchaseStates.picking_package)
     await message.answer("یک پکیج انتخاب کنید:", reply_markup=packages_kb(packages, "new"))
 
 
@@ -431,9 +447,31 @@ async def _start_package_picker(call: CallbackQuery, state: FSMContext, kind: st
         await call.message.edit_text("در حال حاضر پکیجی برای فروش تعریف نشده.", reply_markup=home_kb())
         await call.answer()
         return
-    await state.set_state(CustomerPurchaseStates.picking_package)
     await state.update_data(kind=kind, packages={p["id"]: p for p in packages})
+    counts = _distinct_session_counts(packages)
+    if len(counts) > 1:
+        # More than one concurrent-session limit is on offer - ask first,
+        # same as cmd_buy above, instead of dumping every package regardless
+        # of how many people are meant to share it (see keyboards.session_count_kb).
+        await state.set_state(CustomerPurchaseStates.picking_session_count)
+        await call.message.edit_text("چند کاربره می‌خواهید؟", reply_markup=session_count_kb(counts, kind))
+        await call.answer()
+        return
+    await state.set_state(CustomerPurchaseStates.picking_package)
     await call.message.edit_text("یک پکیج انتخاب کنید:", reply_markup=packages_kb(packages, kind))
+    await call.answer()
+
+
+@router.callback_query(SessionCountCB.filter(), CustomerPurchaseStates.picking_session_count)
+async def pick_session_count(call: CallbackQuery, callback_data: SessionCountCB, state: FSMContext) -> None:
+    data = await state.get_data()
+    packages = list((data.get("packages") or {}).values())
+    filtered = [p for p in packages if (p.get("max_concurrent_sessions") or 0) == callback_data.count]
+    if not filtered:
+        await call.answer("پکیجی با این تعداد کاربر پیدا نشد", show_alert=True)
+        return
+    await state.set_state(CustomerPurchaseStates.picking_package)
+    await call.message.edit_text("یک پکیج انتخاب کنید:", reply_markup=packages_kb(filtered, callback_data.kind))
     await call.answer()
 
 

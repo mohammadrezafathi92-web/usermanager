@@ -89,12 +89,25 @@ export default function Settings() {
   const [changingPort, setChangingPort] = useState(false);
   const [portMsg, setPortMsg] = useState(null);
 
+  // Race condition fix: the initial GET below is async, so if the admin
+  // starts typing into e.g. the HA peer-API-key field right after the page
+  // opens (very easy to do - open Settings, click straight into the HA
+  // card), the response could land WHILE they're typing. The old code did
+  // setHa((h) => ({ ...h, ...res.data })) unconditionally, which silently
+  // overwrote whatever they'd already typed with the stale server value -
+  // then clicking "save" would persist that clobbered value instead of
+  // what they actually entered. settingsLoaded gates the editable forms
+  // below (disabled until true) so there's no window where the user can
+  // type before the merge happens.
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+
   useEffect(() => {
     fetchPanelSettings().then((res) => {
       setPayment({ payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "", ...res.data });
       setHa((h) => ({ ...h, ...res.data }));
       setPortForm((p) => ({ ...p, ...res.data }));
       setNewPort(String(res.data.panel_web_port || 80));
+      setSettingsLoaded(true);
     });
   }, []);
 
@@ -823,11 +836,15 @@ export default function Settings() {
             </div>
           )}
 
+          {!settingsLoaded && (
+            <div className="text-sm text-gray-400 mb-3">{t("common.loading")}</div>
+          )}
           <form onSubmit={submitHa} className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="md:col-span-2 flex items-center gap-2">
               <input
                 type="checkbox"
                 id="ha_enabled"
+                disabled={!settingsLoaded}
                 checked={!!ha.ha_enabled}
                 onChange={(e) => setHa((h) => ({ ...h, ha_enabled: e.target.checked }))}
               />
@@ -837,6 +854,7 @@ export default function Settings() {
               <label className="block text-sm text-gray-600 mb-1">{t("settings.thisServerRole")}</label>
               <select
                 className="input"
+                disabled={!settingsLoaded}
                 value={ha.ha_mode || "standby"}
                 onChange={(e) => setHa((h) => ({ ...h, ha_mode: e.target.value }))}
               >
@@ -849,6 +867,7 @@ export default function Settings() {
               <input
                 className="input"
                 dir="ltr"
+                disabled={!settingsLoaded}
                 placeholder="http://1.2.3.4:8000"
                 value={ha.ha_peer_url || ""}
                 onChange={(e) => setHa((h) => ({ ...h, ha_peer_url: e.target.value }))}
@@ -859,6 +878,7 @@ export default function Settings() {
               <input
                 className="input"
                 dir="ltr"
+                disabled={!settingsLoaded}
                 value={ha.ha_peer_api_key || ""}
                 onChange={(e) => setHa((h) => ({ ...h, ha_peer_api_key: e.target.value }))}
               />
@@ -869,7 +889,7 @@ export default function Settings() {
               {ha.ha_last_error && <div className="text-red-500">{t("settings.lastErrorLine", { value: ha.ha_last_error })}</div>}
             </div>
             <div className="md:col-span-2">
-              <button type="submit" disabled={savingHa} className="btn-primary">
+              <button type="submit" disabled={savingHa || !settingsLoaded} className="btn-primary">
                 {savingHa ? t("settings.saving") : t("settings.saveHaSettings")}
               </button>
             </div>

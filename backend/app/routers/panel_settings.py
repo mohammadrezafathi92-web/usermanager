@@ -44,7 +44,18 @@ def get_settings(db: Session = Depends(get_db)):
 @router.put("", response_model=schemas.PanelSettingsOut)
 def update_settings(payload: schemas.PanelSettingsUpdate, db: Session = Depends(get_db)):
     row = _get_or_create(db)
-    for k, v in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("ha_peer_url"):
+        # Admins commonly type just "IP:8000" - requests then raises
+        # MissingSchema on every health-check/pull, which ha_tick can only
+        # see as "peer unreachable", silently leading to a false-alarm
+        # auto-failover ~100s later. Auto-prepend http:// so a bare
+        # host:port still works instead of failing in a confusing way.
+        url = data["ha_peer_url"].strip()
+        if url and "://" not in url:
+            url = f"http://{url}"
+        data["ha_peer_url"] = url
+    for k, v in data.items():
         setattr(row, k, v)
     db.commit()
     db.refresh(row)

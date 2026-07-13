@@ -133,6 +133,53 @@ def send_backup_to_telegram(path: Path) -> tuple[int, int]:
     return sent, len(admin_ids)
 
 
+# PanelSettings columns that describe THIS server's own HA identity/role
+# rather than replicated application data - see _apply_db_bytes's docstring
+# for why these must survive a passive-standby sync instead of being
+# overwritten by whatever the primary's row happened to contain.
+_HA_LOCAL_IDENTITY_COLUMNS = (
+    "ha_enabled",
+    "ha_mode",
+    "ha_peer_url",
+    "ha_peer_api_key",
+)
+
+
+def _read_local_ha_identity() -> dict | None:
+    """Reads this server's own ha_enabled/ha_mode/ha_peer_url/ha_peer_api_key
+    from the CURRENT (about-to-be-replaced) database, if present. Returns
+    None if there's no panel_settings row yet (fresh install)."""
+    try:
+        conn = sqlite3.connect(_db_path())
+        try:
+            cols = ", ".join(_HA_LOCAL_IDENTITY_COLUMNS)
+            row = conn.execute(f"SELECT {cols} FROM panel_settings WHERE id = 1").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    return dict(zip(_HA_LOCAL_IDENTITY_COLUMNS, row))
+
+
+def _restore_local_ha_identity(db_path: str, identity: dict) -> None:
+    """Writes the preserved identity dict back into the just-swapped-in
+    database file, if it has a panel_settings row to write into."""
+    conn = sqlite3.connect(db_path)
+    try:
+        cols = ", ".join(f"{c} = ?" for c in _HA_LOCAL_IDENTITY_COLUMNS)
+        conn.execute(
+            f"UPDATE panel_settings SET {cols} WHERE id = 1",
+            [identity[c] for c in _HA_LOCAL_IDENTITY_COLUMNS],
+        )
+        conn.commit()
+    except sqlite3.Error:
+        pass  # no panel_settings table/row in the incoming snapshot - nothing to restore into
+    finally:
+        conn.close()
+
+
 def _apply_db_bytes(data: bytes, *, safety_backup: bool) -> None:
     """Shared core of restore_from_upload() / ha_pull_and_apply(): validates
     the given bytes as a real SQLite database belonging to this app and
@@ -146,6 +193,21 @@ def _apply_db_bytes(data: bytes, *, safety_backup: bool) -> None:
     it runs every ~20 seconds - doing a full safety backup every cycle
     would blow through KEEP_LAST rotation in minutes and spam the backup
     history shown in the UI.
+
+    IMPORTANT (bug found 2026-07-13 via live HA testing): a passive-standby
+    sync pulls the PRIMARY's entire database file, including its
+    panel_settings row - which holds ha_mode/ha_peer_url/ha_peer_api_key.
+    Copying that row wholesale overwrote the STANDBY's own HA role/peer
+    config with the PRIMARY's (e.g. the standby would end up with
+    mode="primary" and a peer_url pointing at itself), breaking the HA
+    pairing after the very first successful sync - independently of
+    whatever else looked wrong in testing. Since safety_backup=False
+    uniquely identifies the passive-sync path (the manual restore path
+    always passes True and legitimately SHOULD fully overwrite everything,
+    including HA config, since the admin is deliberately restoring a
+    specific snapshot), only that path now preserves the four HA identity
+    columns across the swap - every other table (users, packages, api_keys,
+    etc.) still replicates fully, which is correct/intended for HA.
 
     Note: this only swaps the file on disk. SQLAlchemy connections already
     open in this process keep reading the OLD file (POSIX rename doesn't
@@ -182,6 +244,10 @@ def _apply_db_bytes(data: bytes, *, safety_backup: bool) -> None:
         finally:
             conn.close()
 
+        # Snapshot THIS server's own HA identity before it's overwritten,
+        # only relevant for the passive auto-sync path (see docstring above).
+        local_ha_identity = None if safety_backup else _read_local_ha_identity()
+
         if safety_backup:
             # Safety net: keep a backup of the CURRENT live db before overwriting it.
             create_backup()
@@ -195,6 +261,9 @@ def _apply_db_bytes(data: bytes, *, safety_backup: bool) -> None:
         # restored file is a full checkpointed snapshot on its own.
         Path(f"{src_path}-wal").unlink(missing_ok=True)
         Path(f"{src_path}-shm").unlink(missing_ok=True)
+
+        if local_ha_identity is not None:
+            _restore_local_ha_identity(str(src_path), local_ha_identity)
     finally:
         tmp_path.unlink(missing_ok=True)
 

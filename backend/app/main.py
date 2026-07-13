@@ -209,8 +209,29 @@ def ha_tick() -> None:
     auto-promoted itself (ha_standby_active - the split-brain guard: once
     True, this function returns immediately at the top forever, so a standby
     that took over never goes back to silently overwriting itself with the
-    old primary's data)."""
+    old primary's data).
+
+    IMPORTANT (bug found 2026-07-13 via live testing - "دیتا سینک شد ولی
+    وضعیت آپدیت نشد" / data replicated but the status fields never showed
+    it): a successful ha_pull_and_apply() call does os.replace() on the live
+    db file AND disposes the SQLAlchemy engine's connection pool. But the
+    `db` Session opened at the top of this function had ALREADY checked out
+    a connection (from the very first db.get() below) before that happens -
+    and that specific connection keeps reading/writing the OLD, now-unlinked
+    file via its still-open file descriptor (POSIX rename/replace doesn't
+    invalidate fds already open on the old inode) until it's closed, engine
+    dispose() only recycles the pool for FUTURE checkouts. So writing
+    ha_last_sync_at/ha_last_error through that same original `db`/`row`
+    right after a successful pull silently lands in the orphaned pre-swap
+    file, which is discarded the instant this function's `db.close()` runs -
+    the write appears to succeed (no exception, nothing in the logs) but is
+    never actually visible again. Fix: do the health-check/pull using one
+    short-lived session for just the read, then ALWAYS record the
+    success/failure status through a brand-new session opened AFTER the
+    pull - guaranteed to get a fresh connection against whatever file is
+    actually live on disk at that point."""
     global _ha_consecutive_failures
+
     db = SessionLocal()
     try:
         row = db.get(models.PanelSettings, 1)
@@ -218,36 +239,51 @@ def ha_tick() -> None:
             return
         if not row.ha_peer_url or not row.ha_peer_api_key:
             return
-        try:
-            healthy, reason = ha_healthcheck(row.ha_peer_url)
-            if not healthy:
-                raise RuntimeError(f"بررسی سلامت سرور اصلی ناموفق بود: {reason}")
-            ha_pull_and_apply(row.ha_peer_url, row.ha_peer_api_key)
+        peer_url = row.ha_peer_url
+        peer_api_key = row.ha_peer_api_key
+    finally:
+        db.close()
+
+    error_text = None
+    try:
+        healthy, reason = ha_healthcheck(peer_url)
+        if not healthy:
+            raise RuntimeError(f"بررسی سلامت سرور اصلی ناموفق بود: {reason}")
+        ha_pull_and_apply(peer_url, peer_api_key)
+    except Exception as exc:
+        _ha_consecutive_failures += 1
+        # Prefix with a UTC timestamp + attempt counter so the admin can
+        # tell a stale error (left over from before a config fix) from a
+        # fresh one without cross-referencing server logs.
+        now = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        error_text = f"[{now}] ({_ha_consecutive_failures}/{HA_FAILOVER_THRESHOLD}) {exc}"
+        logging.warning(
+            "HA: بررسی/همگام‌سازی سرور اصلی ناموفق بود (%s/%s): %s",
+            _ha_consecutive_failures,
+            HA_FAILOVER_THRESHOLD,
+            exc,
+        )
+    else:
+        _ha_consecutive_failures = 0
+
+    # Always through a FRESH session opened here - see docstring above for
+    # why reusing the session from the read at the top would silently
+    # write into an orphaned file after a successful pull.
+    db = SessionLocal()
+    try:
+        row = db.get(models.PanelSettings, 1)
+        if not row:
+            return
+        if error_text is None:
             row.ha_last_sync_at = dt.datetime.utcnow()
             row.ha_last_health_ok_at = dt.datetime.utcnow()
             row.ha_last_error = None
-            db.commit()
-            _ha_consecutive_failures = 0
-        except Exception as exc:
-            _ha_consecutive_failures += 1
-            # Prefix with a UTC timestamp so the admin can tell a stale
-            # error (left over from before a config fix) from a fresh one
-            # without cross-referencing server logs - this field has no
-            # separate "last attempt" timestamp of its own, only
-            # ha_last_sync_at/ha_last_health_ok_at which only update on
-            # SUCCESS, so a repeatedly-failing standby previously showed the
-            # exact same untimed error message forever.
-            now = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-            row.ha_last_error = f"[{now}] ({_ha_consecutive_failures}/{HA_FAILOVER_THRESHOLD}) {exc}"
-            db.commit()
-            logging.warning(
-                "HA: بررسی/همگام‌سازی سرور اصلی ناموفق بود (%s/%s): %s",
-                _ha_consecutive_failures,
-                HA_FAILOVER_THRESHOLD,
-                exc,
-            )
-            if _ha_consecutive_failures >= HA_FAILOVER_THRESHOLD:
-                _promote_to_active(db, row)
+        else:
+            row.ha_last_error = error_text
+        db.commit()
+        need_promote = error_text is not None and _ha_consecutive_failures >= HA_FAILOVER_THRESHOLD and not row.ha_standby_active
+        if need_promote:
+            _promote_to_active(db, row)
     finally:
         db.close()
 

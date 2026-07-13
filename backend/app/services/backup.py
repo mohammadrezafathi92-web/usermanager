@@ -336,15 +336,31 @@ def create_snapshot_bytes() -> bytes:
     return gzip.compress(raw)
 
 
-def ha_healthcheck(peer_url: str, timeout: float = 8) -> bool:
+def ha_healthcheck(peer_url: str, timeout: float = 8) -> tuple[bool, str]:
     """Plain liveness check against the peer's existing, unauthenticated
     GET /api/health - no HA-specific auth needed for this, it's just "is
-    the process up and answering HTTP at all"."""
+    the process up and answering HTTP at all".
+
+    Returns (ok, reason) instead of a bare bool so the admin actually sees
+    WHY a check failed in the panel's "آخرین خطا" line (timeout vs DNS/
+    connection-refused vs a bad URL missing its scheme vs an unexpected
+    HTTP status) instead of one generic "peer didn't answer" message that
+    looked identical for every failure mode - this made several real
+    misconfigurations (missing http://, wrong port, firewall) much harder
+    to tell apart than they needed to be."""
     try:
         resp = requests.get(f"{peer_url.rstrip('/')}/api/health", timeout=timeout)
-        return resp.status_code == 200
-    except requests.RequestException:
-        return False
+    except requests.exceptions.MissingSchema:
+        return False, "آدرس سرور مقابل فاقد http:// است"
+    except requests.exceptions.ConnectTimeout:
+        return False, f"تایم‌اوت اتصال به {peer_url} (بعد از {timeout} ثانیه) - شبکه/فایروال را بررسی کنید"
+    except requests.exceptions.ConnectionError as exc:
+        return False, f"اتصال به {peer_url} برقرار نشد: {exc}"
+    except requests.RequestException as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    if resp.status_code != 200:
+        return False, f"سرور مقابل با کد HTTP {resp.status_code} پاسخ داد (انتظار ۲۰۰)"
+    return True, ""
 
 
 def ha_pull_and_apply(peer_url: str, api_key: str, timeout: float = 20) -> None:
@@ -358,17 +374,37 @@ def ha_pull_and_apply(peer_url: str, api_key: str, timeout: float = 20) -> None:
     failure - the caller (main.py's ha_tick) counts consecutive failures
     and decides when to fail over; this function itself never touches
     PanelSettings or the scheduler."""
-    resp = requests.get(
-        f"{peer_url.rstrip('/')}/api/ha/snapshot",
-        headers={"X-API-Key": api_key},
-        timeout=timeout,
-    )
+    try:
+        resp = requests.get(
+            f"{peer_url.rstrip('/')}/api/ha/snapshot",
+            headers={"X-API-Key": api_key},
+            timeout=timeout,
+        )
+    except requests.exceptions.MissingSchema:
+        raise RuntimeError("آدرس سرور مقابل فاقد http:// است")
+    except requests.exceptions.ConnectTimeout:
+        raise RuntimeError(f"تایم‌اوت اتصال به {peer_url} هنگام دریافت اسنپ‌شات (بعد از {timeout} ثانیه)")
+    except requests.exceptions.ConnectionError as exc:
+        raise RuntimeError(f"اتصال به {peer_url} برای دریافت اسنپ‌شات برقرار نشد: {exc}")
+    except requests.RequestException as exc:
+        raise RuntimeError(f"خطا در دریافت اسنپ‌شات از سرور اصلی: {type(exc).__name__}: {exc}")
+
     if resp.status_code == 401:
-        raise RuntimeError("کلید API برای همگام‌سازی HA نامعتبر است")
+        raise RuntimeError("کلید API برای همگام‌سازی HA نامعتبر است (کلید متعلق به سرور مقابل نیست یا غیرفعال است)")
     if resp.status_code != 200:
         raise RuntimeError(f"دریافت اسنپ‌شات از سرور اصلی ناموفق بود (HTTP {resp.status_code})")
+    if not resp.content:
+        raise RuntimeError("اسنپ‌شات دریافتی از سرور اصلی خالی بود")
 
-    _apply_db_bytes(resp.content, safety_backup=False)
+    try:
+        _apply_db_bytes(resp.content, safety_backup=False)
+    except ValueError as exc:
+        # _apply_db_bytes already raises Persian, admin-safe messages for
+        # corrupt/invalid snapshots (bad gzip, failed integrity check,
+        # missing core tables) - re-raise as-is rather than wrapping, so
+        # ha_last_error shows the SPECIFIC validation failure instead of a
+        # generic "sync failed".
+        raise RuntimeError(str(exc)) from exc
 
     from ..database import engine as _engine  # local import: avoids a hard import-time dependency for callers that never use HA
 

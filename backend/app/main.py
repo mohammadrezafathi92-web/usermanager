@@ -219,8 +219,9 @@ def ha_tick() -> None:
         if not row.ha_peer_url or not row.ha_peer_api_key:
             return
         try:
-            if not ha_healthcheck(row.ha_peer_url):
-                raise RuntimeError("سرور اصلی به بررسی سلامت (health check) پاسخ نداد")
+            healthy, reason = ha_healthcheck(row.ha_peer_url)
+            if not healthy:
+                raise RuntimeError(f"بررسی سلامت سرور اصلی ناموفق بود: {reason}")
             ha_pull_and_apply(row.ha_peer_url, row.ha_peer_api_key)
             row.ha_last_sync_at = dt.datetime.utcnow()
             row.ha_last_health_ok_at = dt.datetime.utcnow()
@@ -229,7 +230,15 @@ def ha_tick() -> None:
             _ha_consecutive_failures = 0
         except Exception as exc:
             _ha_consecutive_failures += 1
-            row.ha_last_error = str(exc)
+            # Prefix with a UTC timestamp so the admin can tell a stale
+            # error (left over from before a config fix) from a fresh one
+            # without cross-referencing server logs - this field has no
+            # separate "last attempt" timestamp of its own, only
+            # ha_last_sync_at/ha_last_health_ok_at which only update on
+            # SUCCESS, so a repeatedly-failing standby previously showed the
+            # exact same untimed error message forever.
+            now = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            row.ha_last_error = f"[{now}] ({_ha_consecutive_failures}/{HA_FAILOVER_THRESHOLD}) {exc}"
             db.commit()
             logging.warning(
                 "HA: بررسی/همگام‌سازی سرور اصلی ناموفق بود (%s/%s): %s",

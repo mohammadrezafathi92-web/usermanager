@@ -470,7 +470,12 @@ class User(Base):
         "Connection", back_populates="user", cascade="all, delete-orphan"
     )
     owner_admin = relationship("AdminUser")
-    package = relationship("Package")
+    # foreign_keys is required here - reserved_package_id (added for the
+    # "reserved renewal" feature above) is a SECOND foreign key from User to
+    # Package, so without this SQLAlchemy can't tell which column this
+    # relationship should join on (AmbiguousForeignKeysError at startup).
+    package = relationship("Package", foreign_keys=[package_id])
+    reserved_package = relationship("Package", foreign_keys=[reserved_package_id])
     referred_by = relationship("User", remote_side="User.id")
 
     @property

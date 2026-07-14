@@ -20,7 +20,7 @@ from ..telegram_bot import runner as telegram_bot_runner
 from ..telegram_bot.config import parse_id_set
 from .telegram_bot_settings import _get_or_create as _get_or_create_bot_settings, _response as _bot_settings_response
 
-router = APIRouter(prefix="/api/remote-bot", tags=["remote-bot"], dependencies=[Depends(require_permission("manage_settings"))])
+router = APIRouter(prefix="/api/remote-bot", tags=["remote-bot"], dependencies=[Depends(require_permission("manage_bot_settings"))])
 
 
 @router.get("/status", response_model=schemas.BotSettingsOut)

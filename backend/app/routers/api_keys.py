@@ -6,7 +6,7 @@ from ..database import get_db
 from ..deps import require_permission
 from ..services.keys import generate_api_key
 
-router = APIRouter(prefix="/api/api-keys", tags=["api-keys"], dependencies=[Depends(require_permission("manage_settings"))])
+router = APIRouter(prefix="/api/api-keys", tags=["api-keys"], dependencies=[Depends(require_permission("manage_api_keys"))])
 
 
 @router.get("", response_model=list[schemas.ApiKeyOut])

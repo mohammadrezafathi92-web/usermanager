@@ -51,8 +51,14 @@ export function AuthProvider({ children }) {
   // management/dashboard) is available to every logged-in admin.
   const can = (perm) => isSuperadmin || permissions.includes(perm);
 
+  // true if this admin has AT LEAST ONE of the given permissions - used for
+  // pages/routes made of several independently-toggleable sub-permissions
+  // (e.g. /settings, whose tabs are each gated by their own permission -
+  // see task #230/permissions.py's PERMISSION_GROUPS.settings).
+  const canAny = (perms) => isSuperadmin || (perms || []).some((p) => permissions.includes(p));
+
   return (
-    <AuthContext.Provider value={{ token, username, isSuperadmin, permissions, can, loading, login, logout }}>
+    <AuthContext.Provider value={{ token, username, isSuperadmin, permissions, can, canAny, loading, login, logout }}>
       {children}
     </AuthContext.Provider>
   );

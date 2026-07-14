@@ -4,20 +4,28 @@ import { LayoutDashboard, Users, Server, Settings, Network, Package, GraduationC
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
+// `perm` may be a single permission string or an array meaning "any one of
+// these is enough" (see AuthContext.jsx's canAny) - matches the same
+// granular per-page permissions used by App.jsx's routes (task #230).
 const allLinks = [
   { to: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, end: true, perm: null },
   { to: "/users", labelKey: "nav.users", icon: Users, perm: null },
-  { to: "/nodes", labelKey: "nav.nodes", icon: Server, perm: "manage_nodes" },
-  { to: "/packages", labelKey: "nav.packages", icon: Package, perm: "manage_packages" },
-  { to: "/tutorials", labelKey: "nav.tutorials", icon: GraduationCap, perm: "manage_tutorials" },
+  { to: "/nodes", labelKey: "nav.nodes", icon: Server, perm: ["view_nodes", "edit_nodes", "delete_nodes"] },
+  { to: "/packages", labelKey: "nav.packages", icon: Package, perm: ["view_packages", "edit_packages", "delete_packages"] },
+  { to: "/tutorials", labelKey: "nav.tutorials", icon: GraduationCap, perm: ["view_tutorials", "edit_tutorials", "delete_tutorials"] },
   { to: "/radius-logs", labelKey: "nav.radiusLogs", icon: ShieldAlert, perm: null },
-  { to: "/discount-codes", labelKey: "nav.discountCodes", icon: Ticket, perm: "manage_settings" },
-  { to: "/settings", labelKey: "nav.settings", icon: Settings, perm: "manage_settings" },
+  { to: "/discount-codes", labelKey: "nav.discountCodes", icon: Ticket, perm: "manage_discount_codes" },
+  {
+    to: "/settings",
+    labelKey: "nav.settings",
+    icon: Settings,
+    perm: ["manage_payment_settings", "manage_bot_settings", "manage_api_keys", "manage_backup", "manage_discount_codes"],
+  },
   { to: "/admins", labelKey: "nav.admins", icon: ShieldCheck, perm: "__superadmin__" },
 ];
 
 export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
-  const { can, isSuperadmin } = useAuth();
+  const { canAny, isSuperadmin } = useAuth();
   const { t, toggleLanguage } = useLanguage();
   const [dark, setDark] = useState(() => {
     try {
@@ -39,7 +47,7 @@ export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
   const links = allLinks.filter((l) => {
     if (l.perm === null) return true;
     if (l.perm === "__superadmin__") return isSuperadmin;
-    return can(l.perm);
+    return canAny(Array.isArray(l.perm) ? l.perm : [l.perm]);
   });
 
   return (

@@ -57,6 +57,7 @@ export default function RadiusLogs() {
                 <th className="text-right font-medium px-4 py-3">{t("radiusLogs.colType")}</th>
                 <th className="text-right font-medium px-4 py-3">{t("radiusLogs.colUser")}</th>
                 <th className="text-right font-medium px-4 py-3">{t("radiusLogs.colConnType")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("radiusLogs.colIp")}</th>
                 <th className="text-right font-medium px-4 py-3">{t("radiusLogs.colCount")}</th>
                 <th className="text-right font-medium px-4 py-3">{t("radiusLogs.colBannedUntil")}</th>
                 <th className="text-right font-medium px-4 py-3">{t("radiusLogs.colTime")}</th>
@@ -80,6 +81,7 @@ export default function RadiusLogs() {
                     )}
                   </td>
                   <td className="px-4 py-3 text-gray-500">{l.connection_type || "-"}</td>
+                  <td className="px-4 py-3 text-gray-500 font-mono" dir="ltr">{l.client_ip || "-"}</td>
                   <td className="px-4 py-3 text-gray-500">
                     {l.active_count ?? "-"}/{l.limit_value ?? "-"}
                   </td>
@@ -89,7 +91,7 @@ export default function RadiusLogs() {
               ))}
               {!loading && logs.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-gray-400">
+                  <td colSpan={7} className="px-4 py-10 text-center text-gray-400">
                     {t("radiusLogs.empty")}
                   </td>
                 </tr>

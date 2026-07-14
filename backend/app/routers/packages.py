@@ -12,10 +12,13 @@ from ..deps import get_current_admin, require_permission
 
 # Router-level dependency is just "logged in" - listing packages is
 # available to every admin (needed to pick a package while creating a
-# user, even for an admin without the "manage_packages" permission). Only
-# the mutating endpoints below require that permission.
+# user, even for an admin without the "edit_packages" permission). Mutating
+# endpoints split into "edit_packages" (create/update/files) and
+# "delete_packages" (package delete only) - see permissions.py.
 router = APIRouter(prefix="/api/packages", tags=["packages"], dependencies=[Depends(get_current_admin)])
-_manage = Depends(require_permission("manage_packages"))
+_edit = Depends(require_permission("edit_packages"))
+_delete = Depends(require_permission("delete_packages"))
+_manage = _edit  # legacy alias
 
 # Same persistent /app/data volume the sqlite DB itself lives on (see
 # docker-compose.yml: ./backend/data:/app/data), so uploaded files survive
@@ -49,7 +52,7 @@ def list_packages(db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=schemas.PackageOut)
-def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db), _perm=_manage):
+def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db), _perm=_edit):
     data = payload.model_dump(exclude={"connections"})
     pkg = models.Package(**data)
     db.add(pkg)
@@ -61,7 +64,7 @@ def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db)
 
 
 @router.put("/{package_id}", response_model=schemas.PackageOut)
-def update_package(package_id: int, payload: schemas.PackageUpdate, db: Session = Depends(get_db), _perm=_manage):
+def update_package(package_id: int, payload: schemas.PackageUpdate, db: Session = Depends(get_db), _perm=_edit):
     pkg = db.get(models.Package, package_id)
     if not pkg:
         raise HTTPException(404, "پکیج پیدا نشد")
@@ -76,7 +79,7 @@ def update_package(package_id: int, payload: schemas.PackageUpdate, db: Session 
 
 
 @router.delete("/{package_id}")
-def delete_package(package_id: int, db: Session = Depends(get_db), _perm=_manage):
+def delete_package(package_id: int, db: Session = Depends(get_db), _perm=_delete):
     pkg = db.get(models.Package, package_id)
     if not pkg:
         raise HTTPException(404, "پکیج پیدا نشد")
@@ -96,7 +99,7 @@ def _unlink_quiet(path: str) -> None:
 
 
 @router.post("/{package_id}/files", response_model=schemas.PackageFileOut)
-def upload_package_file(package_id: int, file: UploadFile = File(...), db: Session = Depends(get_db), _perm=_manage):
+def upload_package_file(package_id: int, file: UploadFile = File(...), db: Session = Depends(get_db), _perm=_edit):
     """Attaches a file (VPN config, setup guide, installer, ...) to a
     package - the built-in sales bot sends every attached file to the
     customer automatically right after they buy/renew this package (see
@@ -142,7 +145,7 @@ def upload_package_file(package_id: int, file: UploadFile = File(...), db: Sessi
 
 
 @router.delete("/{package_id}/files/{file_id}")
-def delete_package_file(package_id: int, file_id: int, db: Session = Depends(get_db), _perm=_manage):
+def delete_package_file(package_id: int, file_id: int, db: Session = Depends(get_db), _perm=_edit):
     pf = db.get(models.PackageFile, file_id)
     if not pf or pf.package_id != package_id:
         raise HTTPException(404, "فایل پیدا نشد")

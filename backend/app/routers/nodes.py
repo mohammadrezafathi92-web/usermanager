@@ -25,11 +25,15 @@ def _resolve_panel_host(payload_host: Optional[str]) -> str:
 # Router-level dependency is just "logged in" - listing/reading nodes is
 # available to every admin regardless of permissions (a restricted admin
 # still needs to see which servers exist to provision a connection for
-# their own users - see routers/users.py's connection endpoints). Only the
-# mutating endpoints below (create/update/delete/test/import/RADIUS push)
-# additionally require the "manage_nodes" permission.
+# their own users - see routers/users.py's connection endpoints). The
+# mutating endpoints below are split into "edit_nodes" (create/update/test/
+# import/RADIUS+protocol pushes) and "delete_nodes" (delete only) - see
+# permissions.py's docstring on why this used to be one broad "manage_nodes"
+# and was split into granular per-action permissions.
 router = APIRouter(prefix="/api/nodes", tags=["nodes"], dependencies=[Depends(get_current_admin)])
-_manage = Depends(require_permission("manage_nodes"))
+_edit = Depends(require_permission("edit_nodes"))
+_delete = Depends(require_permission("delete_nodes"))
+_manage = _edit  # legacy alias, in case any other module still imports it
 
 
 @router.get("", response_model=list[schemas.NodeOut])
@@ -38,7 +42,7 @@ def list_nodes(db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=schemas.NodeOut)
-def create_node(payload: schemas.NodeCreate, db: Session = Depends(get_db), _perm=_manage):
+def create_node(payload: schemas.NodeCreate, db: Session = Depends(get_db), _perm=_edit):
     node = models.Node(**payload.model_dump())
     db.add(node)
     db.commit()
@@ -55,7 +59,7 @@ def get_node(node_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/{node_id}", response_model=schemas.NodeOut)
-def update_node(node_id: int, payload: schemas.NodeUpdate, db: Session = Depends(get_db), _perm=_manage):
+def update_node(node_id: int, payload: schemas.NodeUpdate, db: Session = Depends(get_db), _perm=_edit):
     node = db.get(models.Node, node_id)
     if not node:
         raise HTTPException(404, "نود پیدا نشد")
@@ -67,7 +71,7 @@ def update_node(node_id: int, payload: schemas.NodeUpdate, db: Session = Depends
 
 
 @router.delete("/{node_id}")
-def delete_node(node_id: int, db: Session = Depends(get_db), _perm=_manage):
+def delete_node(node_id: int, db: Session = Depends(get_db), _perm=_delete):
     node = db.get(models.Node, node_id)
     if not node:
         raise HTTPException(404, "نود پیدا نشد")
@@ -79,7 +83,7 @@ def delete_node(node_id: int, db: Session = Depends(get_db), _perm=_manage):
 
 
 @router.post("/{node_id}/test")
-def test_node(node_id: int, db: Session = Depends(get_db), _perm=_manage):
+def test_node(node_id: int, db: Session = Depends(get_db), _perm=_edit):
     node = db.get(models.Node, node_id)
     if not node:
         raise HTTPException(404, "نود پیدا نشد")
@@ -113,7 +117,7 @@ def test_node(node_id: int, db: Session = Depends(get_db), _perm=_manage):
 
 
 @router.post("/{node_id}/push-radius-config", response_model=schemas.RadiusPushResult)
-def push_radius_config(node_id: int, payload: schemas.RadiusPushRequest, db: Session = Depends(get_db), _perm=_manage):
+def push_radius_config(node_id: int, payload: schemas.RadiusPushRequest, db: Session = Depends(get_db), _perm=_edit):
     """One-click alternative to typing the RouterOS commands by hand: uses
     the panel's existing RouterOS API connection to this node to register
     the panel as a /radius client (service=ppp) and switch `ppp aaa` to use
@@ -151,7 +155,7 @@ def push_radius_config(node_id: int, payload: schemas.RadiusPushRequest, db: Ses
 
 
 @router.post("/{node_id}/push-sstp-config", response_model=schemas.ProtocolPushResult)
-def push_sstp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), _perm=_manage):
+def push_sstp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), _perm=_edit):
     """One-click SSTP setup: registers the panel as a /radius client
     (service=ppp, same as push-radius-config) if not already done, creates+
     self-signs a server certificate if none exists yet, and enables the
@@ -187,7 +191,7 @@ def push_sstp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Ses
 
 
 @router.post("/{node_id}/push-l2tp-config", response_model=schemas.ProtocolPushResult)
-def push_l2tp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), _perm=_manage):
+def push_l2tp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), _perm=_edit):
     """One-click L2TP/IPsec setup: registers the panel as a /radius client
     (service=ppp) and enables the L2TP server with use-ipsec + a shared
     pre-shared key. Generates and saves a random IPsec secret onto this
@@ -223,7 +227,7 @@ def push_l2tp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Ses
 
 
 @router.post("/{node_id}/push-ikev2-config", response_model=schemas.ProtocolPushResult)
-def push_ikev2_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), _perm=_manage):
+def push_ikev2_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), _perm=_edit):
     """One-click IKEv2 setup: registers the panel as a /radius client for
     BOTH service=ppp (per-user login) and service=ipsec (IKEv2's own
     RADIUS/EAP relay), then sets up an /ip/ipsec peer+identity pinned to
@@ -271,7 +275,7 @@ def push_ikev2_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Se
 
 
 @router.post("/{node_id}/import-ppp-users", response_model=schemas.PppImportResult)
-def import_ppp_users(node_id: int, db: Session = Depends(get_db), _perm=_manage):
+def import_ppp_users(node_id: int, db: Session = Depends(get_db), _perm=_edit):
     """Reads /ppp/secret directly from the router (read-only) and imports
     any OpenVPN/L2TP account not already known to the panel as a new
     User+Connection, copying the same username/password so RADIUS auth
@@ -283,7 +287,7 @@ def import_ppp_users(node_id: int, db: Session = Depends(get_db), _perm=_manage)
 
 
 @router.post("/{node_id}/import-usermanager-users", response_model=schemas.PppImportResult)
-def import_usermanager_users(node_id: int, db: Session = Depends(get_db), _perm=_manage):
+def import_usermanager_users(node_id: int, db: Session = Depends(get_db), _perm=_edit):
     """Reads accounts from MikroTik's own built-in User Manager
     (/user-manager/...) - a separate, protocol-agnostic RADIUS user database
     with its own quotas/expiry - and imports any not already known to the
@@ -295,7 +299,7 @@ def import_usermanager_users(node_id: int, db: Session = Depends(get_db), _perm=
 
 
 @router.post("/{node_id}/import-3xui-clients", response_model=schemas.PppImportResult)
-def import_3xui_clients(node_id: int, db: Session = Depends(get_db), _perm=_manage):
+def import_3xui_clients(node_id: int, db: Session = Depends(get_db), _perm=_edit):
     """Reads clients that already exist on the 3X-UI panel's configured
     inbound (created there before this node was connected) and imports any
     not already known to the panel as a new User+Connection, preserving

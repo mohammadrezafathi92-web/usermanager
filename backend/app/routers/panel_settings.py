@@ -22,7 +22,7 @@ from ..deps import require_permission, require_superadmin, get_bot_api_key
 from ..services import backup as backup_service
 from ..services import local_deploy
 
-router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_permission("manage_settings"))])
+router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_permission("manage_payment_settings"))])
 
 
 def _get_or_create(db: Session) -> models.PanelSettings:

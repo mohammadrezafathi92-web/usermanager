@@ -579,7 +579,7 @@ def add_wireguard_connection(
     admin: models.AdminUser = Depends(get_current_admin),
 ):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
-    return user_ops.provision_wireguard(db, user, node)
+    return user_ops.provision_wireguard(db, user, node, max_concurrent_sessions=payload.max_concurrent_sessions)
 
 
 @router.post("/{user_id}/connections/openvpn", response_model=schemas.ConnectionOut)
@@ -646,13 +646,29 @@ def update_connection(
     admin: models.AdminUser = Depends(get_current_admin),
 ):
     """Lets the admin change a connection's simultaneous-session limit,
-    manually enable/disable it, or clear a temporary ban (set banned_until
-    to null or a past date)."""
+    manually enable/disable it, clear a temporary ban (set banned_until to
+    null or a past date), or edit its identity/credentials (peer name for
+    WireGuard, username/password for OpenVPN/L2TP/IKEv2/SSTP - see
+    schemas.ConnectionUpdate)."""
     _get_owned_user(db, admin, user_id)
     conn = db.get(models.Connection, connection_id)
     if not conn or conn.user_id != user_id:
         raise HTTPException(404, "کانکشن پیدا نشد")
-    for k, v in payload.model_dump(exclude_unset=True).items():
+
+    data = payload.model_dump(exclude_unset=True)
+    new_peer_name = data.get("wg_peer_name")
+    if (
+        conn.type == models.ConnectionType.wireguard
+        and new_peer_name
+        and new_peer_name != conn.wg_peer_name
+    ):
+        try:
+            with user_ops.MikrotikClient.for_node(conn.node) as mt:
+                mt.rename_peer(conn.node.mt_wireguard_interface, conn.wg_peer_name, new_peer_name)
+        except user_ops.MikrotikError as exc:
+            raise HTTPException(400, str(exc))
+
+    for k, v in data.items():
         setattr(conn, k, v)
     db.commit()
     db.refresh(conn)

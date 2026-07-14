@@ -225,7 +225,17 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
                     await api.redeem_discount(pending["discount_code"], pending["target_username"], pending["price"])
                 except ApiError:
                     pass
-            customer_msg = f"✅ پرداخت شما تایید شد و حساب «{pending['target_username']}» تمدید شد."
+            if user.get("reserved_quota_gb") or user.get("reserved_duration_days"):
+                # renew_user() queued this instead of applying it right now -
+                # the current package still has room left (see
+                # services/user_ops.py's renew_user docstring) - say so
+                # instead of claiming the renewal already took effect.
+                customer_msg = (
+                    f"✅ پرداخت شما تایید شد.\n\nسرویس فعلی «{pending['target_username']}» هنوز اعتبار دارد، "
+                    f"پس این تمدید رزرو شد و به محض تمام شدن سرویس فعلی خودکار فعال می‌شود."
+                )
+            else:
+                customer_msg = f"✅ پرداخت شما تایید شد و حساب «{pending['target_username']}» تمدید شد."
             if user.get("loyalty_reward_credit") or user.get("loyalty_reward_gb"):
                 from .customer import _loyalty_reward_text  # local import avoids a circular import at module load
                 customer_msg += "\n\n" + _loyalty_reward_text(user)

@@ -54,6 +54,20 @@ def _account_text(user: dict) -> str:
     ]
     if user.get("referral_code"):
         lines.append(f"🎁 کد دعوت شما: <code>{user['referral_code']}</code>")
+    reserved_gb = user.get("reserved_quota_gb")
+    reserved_days = user.get("reserved_duration_days")
+    if reserved_gb or reserved_days:
+        # A renewal was paid for while the current package still had room -
+        # it's queued, not lost/forgotten - see models.User.reserved_quota_bytes's
+        # docstring and services/user_ops.py's renew_user.
+        parts = []
+        if reserved_gb:
+            parts.append(f"{reserved_gb:g} گیگابایت")
+        if reserved_days:
+            parts.append(f"{reserved_days} روز")
+        lines.append(
+            "⏳ یک تمدید (" + " و ".join(parts) + ") رزرو شده و به محض تمام شدن سرویس فعلی‌تان خودکار فعال می‌شود."
+        )
     if user["connections"]:
         lines.append(f"\n<b>خریدهای شما ({len(user['connections'])} سرویس):</b> روی هرکدوم از دکمه‌های پایین بزنید 👇")
         lines.append(usage_per_service_text(user["connections"]))
@@ -200,7 +214,7 @@ async def cmd_account(message: Message, state: FSMContext, bot: Bot) -> None:
         return
     if not user:
         scope = await resolve_admin_scope(message.from_user.id)
-        await message.answer("هنوز حسابی برای شما ثبت نشده.", reply_markup=main_menu_kb(scope))
+        await message.answer("هنوز حسابی برای شما ثبت نشده.", reply_markup=await main_menu_kb(scope))
         return
     groups = group_connections_by_purchase(user["connections"]) if user["connections"] else []
     await message.answer(
@@ -286,7 +300,7 @@ async def cb_account(call: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     if not user:
         scope = await resolve_admin_scope(call.from_user.id)
         await call.message.edit_text(
-            "هنوز حسابی برای شما ثبت نشده.", reply_markup=main_menu_kb(scope)
+            "هنوز حسابی برای شما ثبت نشده.", reply_markup=await main_menu_kb(scope)
         )
         await call.answer()
         return
@@ -800,6 +814,10 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
 
     await state.clear()
     text = f"✅ خرید با موفقیت از اعتبار شما پرداخت شد.\n\nموجودی فعلی: {user['balance']:,} تومان"
+    if user.get("reserved_quota_gb") or user.get("reserved_duration_days"):
+        # renew_user() queued this instead of applying it right now - see
+        # services/user_ops.py's renew_user docstring.
+        text += "\n\n⏳ سرویس فعلی شما هنوز اعتبار دارد، پس این تمدید رزرو شد و به محض تمام شدنش خودکار فعال می‌شود."
     if user.get("loyalty_reward_credit") or user.get("loyalty_reward_gb"):
         text += "\n\n" + _loyalty_reward_text(user)
     await call.message.edit_text(text, reply_markup=home_kb())

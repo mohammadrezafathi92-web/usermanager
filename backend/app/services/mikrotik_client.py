@@ -138,6 +138,24 @@ class MikrotikClient:
         except Exception as exc:
             raise MikrotikError(f"تنظیم آدرس IP روی اینترفیس WireGuard ناموفق بود: {exc}") from exc
 
+    def set_interface_address(self, interface: str, address_with_prefix: str):
+        """Forces the WireGuard interface's own IP/prefix to match
+        address_with_prefix, replacing any existing address entry for that
+        interface instead of skipping (unlike ensure_interface_address).
+        Used when the client subnet was just auto-expanded (see
+        services/user_ops.py's _wg_gateway_and_client_ip) - the gateway IP
+        itself usually stays the same, but its prefix length grows, so the
+        router's own /ip/address entry needs updating to keep routing/NAT
+        consistent with the wider pool."""
+        path = self._api.path("ip", "address")
+        existing = list(path.select(Key(".id"), Key("interface")).where(Key("interface") == interface))
+        try:
+            for row in existing:
+                path.remove(row[".id"])
+            path.add(address=address_with_prefix, interface=interface)
+        except Exception as exc:
+            raise MikrotikError(f"به‌روزرسانی آدرس IP اینترفیس WireGuard ناموفق بود: {exc}") from exc
+
     def list_peers(self, interface: Optional[str] = None) -> list[dict]:
         path = self._api.path("interface", "wireguard", "peers")
         rows = list(path)
@@ -166,6 +184,26 @@ class MikrotikClient:
             return result
         except Exception as exc:
             raise MikrotikError(f"افزودن peer در میکروتیک ناموفق بود: {exc}") from exc
+
+    def rename_peer(self, interface: str, old_comment: str, new_comment: str):
+        """Finds the WireGuard peer by its current comment (the panel has no
+        stored RouterOS `.id` for peers - see deprovision_connection in
+        services/user_ops.py, which matches the same way) and updates its
+        comment to new_comment. Used when an admin renames a connection's
+        peer name from the panel (routers/users.py's update_connection) -
+        keeps the router-side comment in sync so future lookups by comment
+        (delete/disable) keep matching the right peer."""
+        if old_comment == new_comment:
+            return
+        path = self._api.path("interface", "wireguard", "peers")
+        peers = list(path.select(Key(".id"), Key("comment")).where(Key("interface") == interface))
+        match = next((p for p in peers if p.get("comment") == old_comment), None)
+        if not match:
+            return  # nothing on the router to sync - DB rename still applies
+        try:
+            path.update(**{".id": match[".id"], "comment": new_comment})
+        except Exception as exc:
+            raise MikrotikError(f"تغییر نام peer در میکروتیک ناموفق بود: {exc}") from exc
 
     def set_peer_disabled(self, peer_id: str, disabled: bool):
         path = self._api.path("interface", "wireguard", "peers")

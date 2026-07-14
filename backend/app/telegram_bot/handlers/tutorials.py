@@ -54,7 +54,21 @@ async def cb_tutorial_detail(call: CallbackQuery, callback_data: TutorialCB, bot
     text = f"📄 <b>{tutorial['title']}</b>"
     if tutorial.get("text"):
         text += f"\n\n{tutorial['text']}"
-    await call.message.edit_text(text, reply_markup=home_kb())
+
+    # Link-only software entries are shown right inside this same message
+    # (as plain clickable URLs) - only entries with an uploaded file need a
+    # separate message below, sent as an actual document.
+    software = tutorial.get("software") or []
+    link_only = [s for s in software if s.get("url") and not s.get("filename")]
+    file_entries = [s for s in software if s.get("filename")]
+    if software:
+        text += "\n\n📥 <b>دانلود نرم‌افزار</b>"
+        for s in link_only:
+            text += f"\n• {s['name']}: {s['url']}"
+        for s in file_entries:
+            text += f"\n• {s['name']} (فایل ضمیمه ⬇️)"
+
+    await call.message.edit_text(text, reply_markup=home_kb(), disable_web_page_preview=True)
 
     try:
         media = await api.get_tutorial_media(tutorial["id"])
@@ -69,7 +83,21 @@ async def cb_tutorial_detail(call: CallbackQuery, callback_data: TutorialCB, bot
                 await bot.send_photo(call.from_user.id, file)
         except Exception:
             pass
-    if media:
+
+    for s in file_entries:
+        try:
+            data = await api.get_tutorial_software_file(s["id"], tutorial_id=tutorial["id"])
+        except ApiError:
+            data = None
+        if not data:
+            continue
+        try:
+            file = BufferedInputFile(data["content"], filename=s.get("filename") or s["name"])
+            await bot.send_document(call.from_user.id, file, caption=s["name"])
+        except Exception:
+            pass
+
+    if media or file_entries:
         try:
             await bot.send_message(call.from_user.id, "🏠 منو:", reply_markup=home_kb())
         except Exception:

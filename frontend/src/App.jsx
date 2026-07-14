@@ -36,13 +36,17 @@ function SuperadminOnly({ children }) {
 }
 
 function PermRoute({ perm, children }) {
-  const { token, loading, can } = useAuth();
+  // `perm` may be a single permission string or an array - an array means
+  // "any one of these is enough" (used by pages made of several
+  // independently-toggleable sub-permissions, e.g. /settings - see
+  // permissions.py's PERMISSION_GROUPS.settings and task #230).
+  const { token, loading, canAny } = useAuth();
   const { t } = useLanguage();
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center text-gray-400">{t("common.loading")}</div>;
   }
   if (!token) return <Navigate to="/login" replace />;
-  if (!can(perm)) return <Navigate to="/" replace />;
+  if (!canAny(Array.isArray(perm) ? perm : [perm])) return <Navigate to="/" replace />;
   return children;
 }
 
@@ -77,7 +81,7 @@ export default function App() {
       <Route
         path="/nodes"
         element={
-          <PermRoute perm="manage_nodes">
+          <PermRoute perm={["view_nodes", "edit_nodes", "delete_nodes"]}>
             <Nodes />
           </PermRoute>
         }
@@ -85,7 +89,7 @@ export default function App() {
       <Route
         path="/packages"
         element={
-          <PermRoute perm="manage_packages">
+          <PermRoute perm={["view_packages", "edit_packages", "delete_packages"]}>
             <Packages />
           </PermRoute>
         }
@@ -93,7 +97,7 @@ export default function App() {
       <Route
         path="/tutorials"
         element={
-          <PermRoute perm="manage_tutorials">
+          <PermRoute perm={["view_tutorials", "edit_tutorials", "delete_tutorials"]}>
             <Tutorials />
           </PermRoute>
         }
@@ -101,7 +105,9 @@ export default function App() {
       <Route
         path="/settings"
         element={
-          <PermRoute perm="manage_settings">
+          <PermRoute
+            perm={["manage_payment_settings", "manage_bot_settings", "manage_api_keys", "manage_backup", "manage_discount_codes"]}
+          >
             <Settings />
           </PermRoute>
         }
@@ -125,7 +131,7 @@ export default function App() {
       <Route
         path="/discount-codes"
         element={
-          <PermRoute perm="manage_settings">
+          <PermRoute perm="manage_discount_codes">
             <DiscountCodes />
           </PermRoute>
         }

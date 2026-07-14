@@ -251,13 +251,46 @@ def renew_user(
     reset_usage: bool = False,
     package_id: Optional[int] = None,
 ) -> models.User:
-    if add_gb:
-        user.total_quota_bytes = (user.total_quota_bytes or 0) + gb_to_bytes(add_gb)
-    if add_days:
-        base = user.expire_at if (user.expire_at and user.expire_at > dt.datetime.utcnow()) else dt.datetime.utcnow()
-        user.expire_at = base + dt.timedelta(days=add_days)
-    if reset_usage:
+    """Renews a user - but NOT always immediately. If the user's CURRENT
+    quota and expiry both still have room left (they haven't actually used
+    up what they already paid for), this renewal is queued as a "reserved"
+    package instead of being applied on top - see
+    User.reserved_quota_bytes's docstring and _maybe_activate_reserved_renewal
+    below, which is what actually turns a reservation into a real
+    quota/expiry reset once the current one genuinely runs out.
+
+    If either dimension IS already exhausted (or the user had no
+    quota/expiry limits set at all yet), this renewal applies right now as
+    a full fresh reset (usage -> 0, quota/expiry -> exactly what's being
+    granted) rather than stacking onto a used-up allotment - deliberately a
+    RESET, not an addition, per the requested behavior."""
+    now = dt.datetime.utcnow()
+    is_real_renewal = bool(add_gb or add_days)
+
+    if is_real_renewal:
+        quota_ok = not user.total_quota_bytes or user.used_bytes < user.total_quota_bytes
+        expiry_ok = not user.expire_at or user.expire_at > now
+        has_existing_limits = bool(user.total_quota_bytes or user.expire_at)
+        if has_existing_limits and quota_ok and expiry_ok:
+            user.reserved_quota_bytes = (user.reserved_quota_bytes or 0) + (gb_to_bytes(add_gb) if add_gb else 0)
+            user.reserved_duration_days = (user.reserved_duration_days or 0) + add_days
+            if package_id is not None:
+                user.reserved_package_id = package_id
+            if user.reserved_created_at is None:
+                user.reserved_created_at = now
+            db.commit()
+            db.refresh(user)
+            return user
+        # Current quota or expiry is already exhausted (or this user never
+        # had limits set before) - apply as a clean restart right now.
         user.used_bytes = 0
+        if add_gb:
+            user.total_quota_bytes = gb_to_bytes(add_gb)
+        if add_days:
+            user.expire_at = now + dt.timedelta(days=add_days)
+    elif reset_usage:
+        user.used_bytes = 0
+
     if user.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
         user.status = models.UserStatus.active
     # Same package_id gap as create_user_record above - a bot renewal from a
@@ -266,7 +299,7 @@ def renew_user(
     # just at first creation.
     if package_id is not None:
         user.package_id = package_id
-    if add_gb or add_days:
+    if is_real_renewal:
         # Only a REAL renewal (actual quota/time added) counts toward
         # loyalty progress - a bare package re-tag or a reset-usage-only
         # call shouldn't silently advance it. See _maybe_grant_loyalty_reward.
@@ -275,6 +308,37 @@ def renew_user(
     db.commit()
     db.refresh(user)
     return user
+
+
+def _maybe_activate_reserved_renewal(db: Session, user: models.User) -> bool:
+    """Called right when a user's quota/expiry is ABOUT to be marked
+    exhausted (quota_manager.py's _enforce_user_limits - the single choke
+    point both the periodic poll and RADIUS accounting funnel through - and
+    radius_server.py's HandleAuthPacket, for the real-time login-attempt
+    check). If they have a renewal queued up (see renew_user's docstring),
+    activates it right now instead: full reset using the reserved amounts,
+    clearing the reservation. Returns True if something was activated, so
+    the caller knows to re-evaluate exceeded/expired against the fresh
+    values rather than the stale ones it just computed."""
+    if not (user.reserved_quota_bytes or user.reserved_duration_days or user.reserved_package_id):
+        return False
+    now = dt.datetime.utcnow()
+    user.used_bytes = 0
+    if user.reserved_quota_bytes:
+        user.total_quota_bytes = user.reserved_quota_bytes
+    if user.reserved_duration_days:
+        user.expire_at = now + dt.timedelta(days=user.reserved_duration_days)
+    if user.reserved_package_id is not None:
+        user.package_id = user.reserved_package_id
+    user.reserved_quota_bytes = None
+    user.reserved_duration_days = None
+    user.reserved_package_id = None
+    user.reserved_created_at = None
+    if user.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
+        user.status = models.UserStatus.active
+    user.purchase_count = (user.purchase_count or 0) + 1
+    _maybe_grant_loyalty_reward(db, user)
+    return True
 
 
 def delete_user_cascade(db: Session, user: models.User):
@@ -458,22 +522,72 @@ def bulk_update_users(
 
 
 # ------------------------------------------------------------------ wireguard
-def _wg_gateway_and_client_ip(node: models.Node, db: Session) -> tuple[str, str]:
-    subnet = ipaddress.ip_network(node.mt_client_subnet or "10.66.66.0/24")
-    gateway_with_prefix = f"{subnet.network_address + 1}/{subnet.prefixlen}"
+# Auto-expand cap: never widen a node's WireGuard client subnet automatically
+# past a /16 (65 534 usable hosts) - if that's not enough, an admin needs to
+# step in manually rather than the panel silently growing it forever.
+_WG_SUBNET_AUTO_EXPAND_MIN_PREFIXLEN = 16
 
+
+def _wg_used_ips(node: models.Node, db: Session) -> set:
+    """Every client IP already claimed on this node's WireGuard interface.
+    A single Connection can reserve more than one address at once (see
+    provision_wireguard's `count` - a shared/multi-user peer keeps ONE
+    config but several adjacent IPs, comma-joined in wg_client_address so
+    each concurrently-connecting device gets a distinct source IP)."""
     used = set()
     for conn in db.query(models.Connection).filter(
         models.Connection.node_id == node.id,
         models.Connection.type == models.ConnectionType.wireguard,
     ):
         if conn.wg_client_address:
-            used.add(conn.wg_client_address.split("/")[0])
+            for part in conn.wg_client_address.split(","):
+                ip = part.strip().split("/")[0]
+                if ip:
+                    used.add(ip)
+    return used
 
+
+def _wg_find_free_run(subnet, gateway, used: set, count: int) -> Optional[list]:
+    """First run of `count` FREE, CONSECUTIVE host addresses in `subnet`
+    (skipping the gateway), or None if no such run exists."""
+    run: list = []
     for host in subnet.hosts():
-        if str(host) not in used and str(host) != str(subnet.network_address + 1):
-            return gateway_with_prefix, f"{host}/32"
-    raise HTTPException(400, "ظرفیت آدرس‌های WireGuard این نود تمام شده است")
+        if host == gateway or str(host) in used:
+            run = []
+            continue
+        run.append(host)
+        if len(run) == count:
+            return run
+    return None
+
+
+def _wg_reserve_ips(node: models.Node, db: Session, count: int = 1) -> tuple[str, list, bool]:
+    """Finds `count` free, adjacent host addresses on node.mt_client_subnet.
+    If the current subnet has no such run left (pool exhausted), it is
+    auto-expanded (doubled) and persisted on the node instead of rejecting
+    the new connection - this is the admin's own explicit choice for task
+    #226 ("ساب‌نت رو خودکار بزرگ‌تر کن"). Returns
+    (gateway_with_prefix, [ip_str, ...], subnet_was_expanded)."""
+    subnet = ipaddress.ip_network(node.mt_client_subnet or "10.66.66.0/24")
+    expanded = False
+
+    run = _wg_find_free_run(subnet, subnet.network_address + 1, _wg_used_ips(node, db), count)
+    while run is None:
+        new_subnet = subnet.supernet(prefixlen_diff=1)
+        if new_subnet.prefixlen < _WG_SUBNET_AUTO_EXPAND_MIN_PREFIXLEN:
+            raise HTTPException(
+                400,
+                "ظرفیت آدرس‌های WireGuard این نود تمام شده و امکان بزرگ‌تر کردن خودکار بیشتر وجود ندارد",
+            )
+        subnet = new_subnet
+        node.mt_client_subnet = str(subnet)
+        db.commit()
+        db.refresh(node)
+        expanded = True
+        run = _wg_find_free_run(subnet, subnet.network_address + 1, _wg_used_ips(node, db), count)
+
+    gateway_with_prefix = f"{subnet.network_address + 1}/{subnet.prefixlen}"
+    return gateway_with_prefix, [str(h) for h in run], expanded
 
 
 def provision_wireguard(
@@ -482,18 +596,37 @@ def provision_wireguard(
     node: models.Node,
     purchase_batch: Optional[str] = None,
     package_name: Optional[str] = None,
+    max_concurrent_sessions: Optional[int] = 1,
 ) -> models.Connection:
+    """max_concurrent_sessions > 1 means this ONE peer/config is meant to be
+    shared by several people/devices at once (see routers/users.py and the
+    admin's explicit choice for task #227: "فقط رزرو N آی‌پی کنار هم بدون
+    ساخت کانفیگ جدا") - reserves that many adjacent free IPs under a single
+    WireGuard key instead of creating N separate peers. All reserved IPs are
+    comma-joined into wg_client_address and comma-joined into the peer's
+    RouterOS allowed-address list, and link_builder.build_wireguard_config
+    already emits them as a comma-separated wg-quick `Address =` line
+    unchanged - see that module."""
     if node.type != models.NodeType.mikrotik:
         raise HTTPException(400, "نود میکروتیک معتبر نیست")
 
-    gateway_with_prefix, client_address = _wg_gateway_and_client_ip(node, db)
+    count = max(1, max_concurrent_sessions or 1)
+    gateway_with_prefix, client_ips, subnet_expanded = _wg_reserve_ips(node, db, count)
+    client_address = ",".join(f"{ip}/32" for ip in client_ips)
     private_key, public_key = generate_wireguard_keypair()
     peer_name = f"user-{user.username}-{uuid.uuid4().hex[:6]}"
 
     try:
         with MikrotikClient.for_node(node) as mt:
             mt.ensure_wireguard_interface(node.mt_wireguard_interface, node.mt_endpoint_port or 13231)
-            mt.ensure_interface_address(node.mt_wireguard_interface, gateway_with_prefix)
+            if subnet_expanded:
+                # The gateway's prefix length just grew (e.g. /24 -> /23) -
+                # ensure_interface_address would skip since an address
+                # already exists, so force-replace it to keep routing/NAT
+                # consistent with the wider pool.
+                mt.set_interface_address(node.mt_wireguard_interface, gateway_with_prefix)
+            else:
+                mt.ensure_interface_address(node.mt_wireguard_interface, gateway_with_prefix)
             mt.add_peer(
                 node.mt_wireguard_interface,
                 public_key=public_key,
@@ -511,6 +644,7 @@ def provision_wireguard(
         wg_public_key=public_key,
         wg_private_key=private_key,
         wg_client_address=client_address,
+        max_concurrent_sessions=count,
         purchase_batch=purchase_batch,
         package_name_snapshot=package_name,
     )
@@ -693,7 +827,7 @@ def provision_connection(
     """Generic dispatcher used by the bot API, where the protocol is picked
     dynamically per request."""
     if protocol == models.ConnectionType.wireguard:
-        return provision_wireguard(db, user, node, purchase_batch, package_name)
+        return provision_wireguard(db, user, node, purchase_batch, package_name, max_concurrent_sessions)
     if protocol == models.ConnectionType.openvpn:
         return provision_openvpn(db, user, node, max_concurrent_sessions, purchase_batch, package_name)
     if protocol == models.ConnectionType.l2tp:

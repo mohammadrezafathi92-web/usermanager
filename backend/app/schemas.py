@@ -139,6 +139,11 @@ class PppImportResult(BaseModel):
 # ---------- Connection ----------
 class ConnectionCreateWireguard(BaseModel):
     node_id: int
+    # >1 means this one WireGuard peer/config is meant to be shared by
+    # several people at once (see services/user_ops.py's provision_wireguard
+    # docstring) - reserves that many adjacent IPs for the SAME peer instead
+    # of creating a separate config per person.
+    max_concurrent_sessions: Optional[int] = 1
 
 
 class ConnectionCreateOpenvpn(BaseModel):
@@ -170,6 +175,14 @@ class ConnectionUpdate(BaseModel):
     enabled: Optional[bool] = None
     max_concurrent_sessions: Optional[int] = None
     banned_until: Optional[dt.datetime] = None  # set to null/past to unban
+    # Editable connection identity/credentials (see routers/users.py's
+    # update_connection) - only the field(s) relevant to the connection's
+    # own type should be sent; wg_peer_name is also synced to the MikroTik
+    # peer's comment, ppp_username/ppp_password are DB-only (RADIUS reads
+    # straight from here, see services/radius_server.py).
+    wg_peer_name: Optional[str] = None
+    ppp_username: Optional[str] = None
+    ppp_password: Optional[str] = None
 
 
 class ConnectionOut(BaseModel):
@@ -281,6 +294,13 @@ class UserOut(UserBase):
     # Referral program (کد دعوت) - see models.User/PanelSettings
     referral_code: Optional[str] = None
     purchase_count: int = 0
+    # Queued renewal (بسته رزرو) - see models.User.reserved_quota_bytes's
+    # docstring. Non-null gb/days means this user paid for a renewal that
+    # hasn't taken effect yet because their current package still has room.
+    reserved_quota_bytes: Optional[int] = None
+    reserved_duration_days: Optional[int] = None
+    reserved_package_id: Optional[int] = None
+    reserved_created_at: Optional[dt.datetime] = None
 
 
 class UserListItem(BaseModel):
@@ -674,6 +694,7 @@ class BotSettingsOut(BaseModel):
     remote_status: Optional[str] = None
     remote_deployed_at: Optional[dt.datetime] = None
     customer_bot_enabled: bool = True
+    customer_menu_disabled_items: Optional[str] = ""
 
 
 class BotSettingsUpdate(BaseModel):
@@ -682,6 +703,7 @@ class BotSettingsUpdate(BaseModel):
     approval_chat_ids: Optional[str] = None
     enabled: Optional[bool] = None
     customer_bot_enabled: Optional[bool] = None
+    customer_menu_disabled_items: Optional[str] = None
 
 
 # ---------- Remote bot deployment (install the interactive bot on a 2nd server) ----------
@@ -810,6 +832,12 @@ class BotUserResponse(BaseModel):
     # notice right after that purchase/renewal. Never re-sent afterward.
     loyalty_reward_credit: Optional[int] = None
     loyalty_reward_gb: Optional[float] = None
+    # Queued renewal (بسته رزرو) - see models.User.reserved_quota_bytes's
+    # docstring. Non-null means this customer already paid for a renewal
+    # that's waiting for the current package to actually run out - shown in
+    # "اکانت من" so it isn't mistaken for the renewal having failed/vanished.
+    reserved_quota_gb: Optional[float] = None
+    reserved_duration_days: Optional[int] = None
 
 
 class BotUserListItem(BaseModel):
@@ -863,6 +891,29 @@ class TutorialMediaOut(BaseModel):
     created_at: dt.datetime
 
 
+class TutorialSoftwareOut(BaseModel):
+    """Like TutorialMediaOut - no path field, the bot reads stored_path
+    straight from the DB. The admin UI tells whether an uploaded file
+    exists just by checking `filename` (separate from `url`, since either
+    or both may be set - see models.TutorialSoftware's docstring)."""
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    url: Optional[str] = None
+    filename: Optional[str] = None
+    size_bytes: int = 0
+    sort_order: int = 0
+    created_at: dt.datetime
+
+
+class TutorialSoftwareCreate(BaseModel):
+    """URL-only creation (no file) - see the separate multipart upload
+    endpoint for attaching a file instead/also."""
+    name: str
+    url: Optional[str] = None
+    sort_order: int = 0
+
+
 class TutorialBase(BaseModel):
     title: str
     text: Optional[str] = None
@@ -886,6 +937,7 @@ class TutorialOut(TutorialBase):
     id: int
     created_at: dt.datetime
     media: List[TutorialMediaOut] = []
+    software: List[TutorialSoftwareOut] = []
 
 
 # ---------- Admin management (superadmin only) ----------
@@ -1019,6 +1071,7 @@ class RadiusLimitEventLogOut(BaseModel):
     active_count: Optional[int] = None
     limit_value: Optional[int] = None
     banned_until: Optional[dt.datetime] = None
+    client_ip: Optional[str] = None
     created_at: dt.datetime
 
 

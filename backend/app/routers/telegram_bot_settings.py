@@ -12,7 +12,7 @@ from ..deps import require_permission
 from ..telegram_bot import runner
 from ..telegram_bot.config import parse_id_set
 
-router = APIRouter(prefix="/api/telegram-bot", tags=["telegram-bot"], dependencies=[Depends(require_permission("manage_settings"))])
+router = APIRouter(prefix="/api/telegram-bot", tags=["telegram-bot"], dependencies=[Depends(require_permission("manage_bot_settings"))])
 
 
 def _get_or_create(db: Session) -> models.BotSettings:
@@ -42,6 +42,7 @@ def _response(row: models.BotSettings) -> schemas.BotSettingsOut:
         remote_status=row.remote_status,
         remote_deployed_at=row.remote_deployed_at,
         customer_bot_enabled=row.customer_bot_enabled if row.customer_bot_enabled is not None else True,
+        customer_menu_disabled_items=row.customer_menu_disabled_items or "",
     )
 
 

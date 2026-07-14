@@ -19,7 +19,7 @@ from ..deps import require_permission
 router = APIRouter(
     prefix="/api/discount-codes",
     tags=["discount-codes"],
-    dependencies=[Depends(require_permission("manage_settings"))],
+    dependencies=[Depends(require_permission("manage_discount_codes"))],
 )
 
 

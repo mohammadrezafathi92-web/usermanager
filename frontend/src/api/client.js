@@ -88,8 +88,8 @@ export const bulkDeleteUsers = (userIds) => client.delete("/users/bulk", { data:
 export const updateConnection = (userId, connectionId, data) =>
   client.put(`/users/${userId}/connections/${connectionId}`, data);
 
-export const addWireguardConnection = (userId, nodeId) =>
-  client.post(`/users/${userId}/connections/wireguard`, { node_id: nodeId });
+export const addWireguardConnection = (userId, nodeId, maxConcurrentSessions = 1) =>
+  client.post(`/users/${userId}/connections/wireguard`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });
 export const addOpenvpnConnection = (userId, nodeId, maxConcurrentSessions = 1) =>
   client.post(`/users/${userId}/connections/openvpn`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });
 export const addL2tpConnection = (userId, nodeId, maxConcurrentSessions = 1) =>
@@ -153,6 +153,15 @@ export const uploadTutorialMedia = (id, file) => {
   return client.post(`/tutorials/${id}/media`, fd, { headers: { "Content-Type": "multipart/form-data" } });
 };
 export const deleteTutorialMedia = (id, mediaId) => client.delete(`/tutorials/${id}/media/${mediaId}`);
+
+export const createTutorialSoftwareLink = (id, data) => client.post(`/tutorials/${id}/software`, data);
+export const uploadTutorialSoftwareFile = (id, file, name) => {
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("name", name);
+  return client.post(`/tutorials/${id}/software/file`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+};
+export const deleteTutorialSoftware = (id, softwareId) => client.delete(`/tutorials/${id}/software/${softwareId}`);
 
 export const fetchPanelSettings = () => client.get("/settings");
 export const updatePanelSettings = (data) => client.put("/settings", data);

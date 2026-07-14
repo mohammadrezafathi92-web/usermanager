@@ -33,6 +33,7 @@ from .. import models
 from ..config import settings
 from ..database import SessionLocal
 from .quota_manager import _apply_delta, _enforce_user_limits
+from .user_ops import _maybe_activate_reserved_renewal
 from . import mschapv2
 
 logger = logging.getLogger("radius_server")
@@ -237,6 +238,14 @@ class UserManagerRadiusServer(Server):
         try:
             reply = self.CreateReplyPacket(pkt)
             username = _to_str(pkt.get("User-Name", [None])[0])
+            # Best-effort caller IP for RadiusLimitEventLog below - prefer
+            # Calling-Station-Id (the client's real remote IP for PPP-based
+            # protocols, when the NAS sends it) and fall back to the NAS's
+            # own source IP (the MikroTik router itself) if not - see
+            # models.RadiusLimitEventLog.client_ip's docstring.
+            client_ip = _to_str(pkt.get("Calling-Station-Id", [None])[0]) or (
+                pkt.source[0] if getattr(pkt, "source", None) else None
+            )
             conn = (
                 db.query(models.Connection)
                 .filter(
@@ -257,6 +266,15 @@ class UserManagerRadiusServer(Server):
                 user = conn.user
                 quota_ok = not user.total_quota_bytes or user.used_bytes < user.total_quota_bytes
                 expiry_ok = not user.expire_at or user.expire_at > dt.datetime.utcnow()
+                if (not quota_ok or not expiry_ok) and _maybe_activate_reserved_renewal(db, user):
+                    # A reserved renewal (see User.reserved_quota_bytes's
+                    # docstring) just kicked in - this login attempt should
+                    # be judged against the fresh quota/expiry it just set,
+                    # not the exhausted ones that triggered it, so this
+                    # customer isn't needlessly rejected right at the
+                    # boundary until the next poll cycle catches up.
+                    quota_ok = not user.total_quota_bytes or user.used_bytes < user.total_quota_bytes
+                    expiry_ok = not user.expire_at or user.expire_at > dt.datetime.utcnow()
                 status_ok = user.status == models.UserStatus.active
                 if not status_ok:
                     reason = f"user status={user.status}"
@@ -340,6 +358,7 @@ class UserManagerRadiusServer(Server):
                                     active_count=active_count,
                                     limit_value=limit,
                                     banned_until=conn.banned_until if just_banned else None,
+                                    client_ip=client_ip,
                                 )
                             )
                         if ok and user.expire_at is None and user.expire_days_after_first_use:

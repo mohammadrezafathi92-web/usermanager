@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import QRCode from "qrcode";
-import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, ShieldCheck, Lock, Save, KeyRound, Power, ShieldEllipsis, RefreshCw } from "lucide-react";
+import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, ShieldCheck, Lock, Save, KeyRound, Power, ShieldEllipsis, RefreshCw, Pencil } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
@@ -80,6 +80,8 @@ export default function UserDetail() {
   const [connFlow, setConnFlow] = useState("");
   const [connMaxSessions, setConnMaxSessions] = useState(location.state?.defaultMaxSessions ?? 1);
   const [limitConn, setLimitConn] = useState(null); // connection being edited in the limit modal
+  const [editConn, setEditConn] = useState(null); // connection being edited in the identity/credentials modal
+  const [editConnForm, setEditConnForm] = useState({ wg_peer_name: "", ppp_username: "", ppp_password: "" });
   const [limitValue, setLimitValue] = useState(1);
   const [limitLogs, setLimitLogs] = useState([]);
 
@@ -235,7 +237,7 @@ export default function UserDetail() {
     setError("");
     try {
       if (protocol === "wireguard") {
-        await addWireguardConnection(user.id, Number(connNodeId));
+        await addWireguardConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 1);
       } else if (protocol === "openvpn") {
         await addOpenvpnConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 0);
       } else if (protocol === "l2tp") {
@@ -306,6 +308,40 @@ export default function UserDetail() {
     }
   };
 
+  const openEditConn = (c) => {
+    setEditConn(c);
+    setEditConnForm({
+      wg_peer_name: c.wg_peer_name || "",
+      ppp_username: c.ppp_username || "",
+      ppp_password: "",
+    });
+    setError("");
+  };
+
+  const saveEditConn = async () => {
+    if (!editConn) return;
+    setSaving(true);
+    setError("");
+    try {
+      const payload = {};
+      if (editConn.type === "wireguard") {
+        payload.wg_peer_name = editConnForm.wg_peer_name.trim();
+      } else {
+        payload.ppp_username = editConnForm.ppp_username.trim();
+        if (editConnForm.ppp_password.trim()) {
+          payload.ppp_password = editConnForm.ppp_password.trim();
+        }
+      }
+      await updateConnection(user.id, editConn.id, payload);
+      setEditConn(null);
+      load();
+    } catch (err) {
+      setError(err?.response?.data?.detail || t("userDetail.saveError"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const unban = async (c) => {
     await updateConnection(user.id, c.id, { banned_until: null });
     load();
@@ -355,6 +391,16 @@ export default function UserDetail() {
           {isSuperadmin && (
             <div className="text-xs text-gray-400 mt-1">
               {t("userDetail.ownerAdmin", { value: user.owner_admin_username || t("userDetail.noAdmin") })}
+            </div>
+          )}
+          {(user.reserved_quota_bytes || user.reserved_duration_days) && (
+            <div className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mt-2">
+              ⏳ {t("userDetail.reservedRenewal", {
+                value: [
+                  user.reserved_quota_bytes ? formatBytes(user.reserved_quota_bytes) : null,
+                  user.reserved_duration_days ? t("userDetail.reservedDays", { days: user.reserved_duration_days }) : null,
+                ].filter(Boolean).join(" + "),
+              })}
             </div>
           )}
         </div>
@@ -437,6 +483,11 @@ export default function UserDetail() {
                     <ShieldCheck size={14} />
                   </button>
                 )}
+                {(c.type === "wireguard" || c.type === "openvpn" || c.type === "l2tp" || c.type === "ikev2" || c.type === "sstp") && (
+                  <button className="btn-secondary" title={t("userDetail.editConnTitle")} onClick={() => openEditConn(c)}>
+                    <Pencil size={14} />
+                  </button>
+                )}
                 <button
                   className="btn-secondary"
                   title={c.enabled ? t("userDetail.disableConn") : t("userDetail.enableConn")}
@@ -465,6 +516,7 @@ export default function UserDetail() {
                 <tr className="text-xs text-gray-400">
                   <th className="text-right font-medium py-2">{t("radiusLogs.colType")}</th>
                   <th className="text-right font-medium py-2">{t("radiusLogs.colConnType")}</th>
+                  <th className="text-right font-medium py-2">{t("radiusLogs.colIp")}</th>
                   <th className="text-right font-medium py-2">{t("radiusLogs.colCount")}</th>
                   <th className="text-right font-medium py-2">{t("radiusLogs.colBannedUntil")}</th>
                   <th className="text-right font-medium py-2">{t("radiusLogs.colTime")}</th>
@@ -479,6 +531,7 @@ export default function UserDetail() {
                       </span>
                     </td>
                     <td className="py-2 text-gray-500">{l.connection_type || "-"}</td>
+                    <td className="py-2 text-gray-500 font-mono" dir="ltr">{l.client_ip || "-"}</td>
                     <td className="py-2 text-gray-500">
                       {l.active_count ?? "-"}/{l.limit_value ?? "-"}
                     </td>
@@ -764,6 +817,53 @@ export default function UserDetail() {
                 {t("common.cancel")}
               </button>
               <button type="button" disabled={saving} className="btn-primary" onClick={saveLimit}>
+                {t("common.save")}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Edit connection identity/credentials modal */}
+      <Modal open={!!editConn} onClose={() => setEditConn(null)} title={t("userDetail.editConnModalTitle")}>
+        {editConn && (
+          <div className="space-y-4">
+            {editConn.type === "wireguard" ? (
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldConnName")}</label>
+                <input
+                  className="input"
+                  value={editConnForm.wg_peer_name}
+                  onChange={(e) => setEditConnForm((f) => ({ ...f, wg_peer_name: e.target.value }))}
+                />
+              </div>
+            ) : (
+              <>
+                <div>
+                  <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldConnUsername")}</label>
+                  <input
+                    className="input"
+                    value={editConnForm.ppp_username}
+                    onChange={(e) => setEditConnForm((f) => ({ ...f, ppp_username: e.target.value }))}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldConnPassword")}</label>
+                  <input
+                    className="input"
+                    placeholder={t("userDetail.fieldConnPasswordPlaceholder")}
+                    value={editConnForm.ppp_password}
+                    onChange={(e) => setEditConnForm((f) => ({ ...f, ppp_password: e.target.value }))}
+                  />
+                </div>
+              </>
+            )}
+            {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" className="btn-secondary" onClick={() => setEditConn(null)}>
+                {t("common.cancel")}
+              </button>
+              <button type="button" disabled={saving} className="btn-primary" onClick={saveEditConn}>
                 {t("common.save")}
               </button>
             </div>

@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from ..deps import require_permission, require_superadmin
 from ..services import backup as backup_service
 
-router = APIRouter(prefix="/api/backup", tags=["backup"], dependencies=[Depends(require_permission("manage_settings"))])
+router = APIRouter(prefix="/api/backup", tags=["backup"], dependencies=[Depends(require_permission("manage_backup"))])
 
 
 @router.post("/run")

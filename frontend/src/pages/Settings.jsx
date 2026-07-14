@@ -27,17 +27,45 @@ import { formatDateTime, formatBytes, copyText, downloadBlob } from "../utils.js
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
+// Same action keys/order as backend/app/telegram_bot/keyboards.py's
+// CUSTOMER_MENU_ITEMS - keep in sync if a menu item is ever added/removed.
+const CUSTOMER_MENU_ITEM_KEYS = [
+  "cust_account",
+  "cust_usage",
+  "cust_renew",
+  "cust_buy",
+  "cust_topup",
+  "cust_tutorials",
+  "cust_referral",
+  "cust_support",
+  "cust_link",
+  "cust_myid",
+];
+
 export default function Settings() {
-  const { isSuperadmin } = useAuth();
+  const { isSuperadmin, can, canAny } = useAuth();
   const { t, language } = useLanguage();
 
-  const SETTINGS_TABS = [
-    { id: "general", label: t("settings.tabGeneral"), icon: KeyRound },
-    { id: "bot", label: t("settings.tabBot"), icon: Bot },
-    { id: "server", label: t("settings.tabServer"), icon: Server },
-    { id: "data", label: t("settings.tabData"), icon: DatabaseBackup },
+  // Each tab requires its own permission (task #230's granular settings
+  // split - see permissions.py's PERMISSION_GROUPS.settings) - "general"
+  // (password change) stays open to every admin since it's not
+  // permission-gated at all. "data" needs EITHER backup or API-key access
+  // since it holds both cards, each additionally self-gated below.
+  const ALL_SETTINGS_TABS = [
+    { id: "general", label: t("settings.tabGeneral"), icon: KeyRound, visible: true },
+    { id: "bot", label: t("settings.tabBot"), icon: Bot, visible: can("manage_bot_settings") },
+    { id: "server", label: t("settings.tabServer"), icon: Server, visible: can("manage_payment_settings") },
+    { id: "data", label: t("settings.tabData"), icon: DatabaseBackup, visible: canAny(["manage_backup", "manage_api_keys"]) },
   ];
+  const SETTINGS_TABS = ALL_SETTINGS_TABS.filter((t) => t.visible);
   const [activeTab, setActiveTab] = useState("general");
+
+  useEffect(() => {
+    if (!SETTINGS_TABS.some((tab) => tab.id === activeTab) && SETTINGS_TABS.length > 0) {
+      setActiveTab(SETTINGS_TABS[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [SETTINGS_TABS.map((t) => t.id).join(",")]);
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [message, setMessage] = useState(null);
@@ -729,6 +757,30 @@ export default function Settings() {
               {t("settings.customerBotEnabledLabel")}
             </label>
           </div>
+          <div className="md:col-span-2">
+            <div className="text-sm text-gray-600 mb-2">{t("settings.customerMenuItemsLabel")}</div>
+            <div className="grid grid-cols-2 gap-2">
+              {CUSTOMER_MENU_ITEM_KEYS.map((key) => {
+                const disabledSet = new Set((botForm.customer_menu_disabled_items || "").split(",").map((x) => x.trim()).filter(Boolean));
+                const checked = !disabledSet.has(key);
+                return (
+                  <label key={key} className="flex items-center gap-2 text-sm text-gray-600">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        const next = new Set(disabledSet);
+                        if (e.target.checked) next.delete(key);
+                        else next.add(key);
+                        setBotForm((f) => ({ ...f, customer_menu_disabled_items: Array.from(next).join(",") }));
+                      }}
+                    />
+                    {t(`settings.customerMenuItem.${key}`)}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
           {botMsg && (
             <div className={`md:col-span-2 text-sm rounded-lg px-3 py-2 ${botMsg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
               {botMsg.text}
@@ -1017,6 +1069,7 @@ export default function Settings() {
 
       {activeTab === "data" && (
         <>
+      {can("manage_backup") && (
       <div className="card mb-4">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
@@ -1087,7 +1140,9 @@ export default function Settings() {
           </div>
         )}
       </div>
+      )}
 
+      {can("manage_api_keys") && (
       <div className="card">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
@@ -1137,6 +1192,7 @@ export default function Settings() {
           {keys.length === 0 && <div className="text-center text-gray-400 py-6 text-sm">{t("settings.noKeysYet")}</div>}
         </div>
       </div>
+      )}
         </>
       )}
 

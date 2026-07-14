@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..database import SessionLocal
 from .mikrotik_client import MikrotikClient, MikrotikError, parse_ros_duration_seconds
+from .user_ops import _maybe_activate_reserved_renewal
 from .xray_client import XrayError, client_for_node
 
 logger = logging.getLogger("quota_manager")
@@ -66,11 +67,18 @@ def _apply_delta(db: Session, connection: models.Connection, rx: int, tx: int):
 
 
 def _enforce_user_limits(db: Session, user: models.User):
+    if user.status == models.UserStatus.disabled:
+        return  # manually disabled by admin - do not touch
+
     exceeded = user.total_quota_bytes and user.used_bytes >= user.total_quota_bytes
     expired = user.expire_at and user.expire_at < dt.datetime.utcnow()
 
-    if user.status == models.UserStatus.disabled:
-        return  # manually disabled by admin - do not touch
+    if (exceeded or expired) and _maybe_activate_reserved_renewal(db, user):
+        # A queued renewal (see User.reserved_quota_bytes's docstring) just
+        # kicked in - re-check against the fresh quota/expiry it just set
+        # instead of the stale exhausted ones computed above.
+        exceeded = user.total_quota_bytes and user.used_bytes >= user.total_quota_bytes
+        expired = user.expire_at and user.expire_at < dt.datetime.utcnow()
 
     if exceeded:
         target_status = models.UserStatus.quota_exceeded

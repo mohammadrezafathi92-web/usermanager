@@ -70,6 +70,7 @@ export default function Admins() {
   const { t, language } = useLanguage();
   const [items, setItems] = useState([]);
   const [choices, setChoices] = useState({});
+  const [permGroups, setPermGroups] = useState({});
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm);
@@ -114,7 +115,10 @@ export default function Admins() {
   useEffect(() => {
     load();
     loadGroups();
-    fetchPermissionChoices().then((res) => setChoices(res.data));
+    fetchPermissionChoices().then((res) => {
+      setChoices(res.data.choices || res.data);
+      setPermGroups(res.data.groups || {});
+    });
   }, []);
 
   const loadLoginLogs = () => {
@@ -646,12 +650,19 @@ export default function Admins() {
 
           <div className={form.group_id ? "opacity-40 pointer-events-none" : ""}>
             <label className="block text-sm text-gray-600 mb-2">{t("admins.permissionsLabel")}</label>
-            <div className="space-y-1.5">
-              {Object.entries(choices).map(([key, label]) => (
-                <label key={key} className="flex items-center gap-2 text-sm text-gray-600">
-                  <input type="checkbox" checked={form.permissions.includes(key)} onChange={() => togglePerm(key)} />
-                  {label}
-                </label>
+            <div className="space-y-3">
+              {Object.entries(permGroups).map(([groupKey, group]) => (
+                <div key={groupKey}>
+                  <div className="text-xs font-medium text-gray-500 mb-1">{group.label}</div>
+                  <div className="space-y-1.5">
+                    {Object.entries(group.perms || {}).map(([key, label]) => (
+                      <label key={key} className="flex items-center gap-2 text-sm text-gray-600">
+                        <input type="checkbox" checked={form.permissions.includes(key)} onChange={() => togglePerm(key)} />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
           </div>
@@ -896,12 +907,19 @@ export default function Admins() {
           </div>
           <div>
             <label className="block text-sm text-gray-600 mb-2">{t("admins.permissionsLabel")}</label>
-            <div className="space-y-1.5">
-              {Object.entries(choices).map(([key, label]) => (
-                <label key={key} className="flex items-center gap-2 text-sm text-gray-600">
-                  <input type="checkbox" checked={groupForm.permissions.includes(key)} onChange={() => toggleGroupPerm(key)} />
-                  {label}
-                </label>
+            <div className="space-y-3">
+              {Object.entries(permGroups).map(([groupKey, group]) => (
+                <div key={groupKey}>
+                  <div className="text-xs font-medium text-gray-500 mb-1">{group.label}</div>
+                  <div className="space-y-1.5">
+                    {Object.entries(group.perms || {}).map(([key, label]) => (
+                      <label key={key} className="flex items-center gap-2 text-sm text-gray-600">
+                        <input type="checkbox" checked={groupForm.permissions.includes(key)} onChange={() => toggleGroupPerm(key)} />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
           </div>

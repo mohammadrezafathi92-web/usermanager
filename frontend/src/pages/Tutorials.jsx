@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Plus, Pencil, Trash2, Power, GraduationCap, ImagePlus, Video, Download } from "lucide-react";
+import { Plus, Pencil, Trash2, Power, GraduationCap, ImagePlus, Video, Download, Link2, FileUp } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
@@ -10,6 +10,9 @@ import {
   deleteTutorial,
   uploadTutorialMedia,
   deleteTutorialMedia,
+  createTutorialSoftwareLink,
+  uploadTutorialSoftwareFile,
+  deleteTutorialSoftware,
 } from "../api/client.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
@@ -29,9 +32,13 @@ export default function Tutorials() {
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [editingMedia, setEditingMedia] = useState([]);
+  const [editingSoftware, setEditingSoftware] = useState([]);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadingSoftware, setUploadingSoftware] = useState(false);
+  const [swName, setSwName] = useState("");
+  const [swUrl, setSwUrl] = useState("");
 
   const load = () => fetchTutorials().then((res) => setItems(res.data));
   useEffect(() => {
@@ -44,6 +51,9 @@ export default function Tutorials() {
     setEditingId(null);
     setForm(emptyForm);
     setEditingMedia([]);
+    setEditingSoftware([]);
+    setSwName("");
+    setSwUrl("");
     setError("");
     setOpen(true);
   };
@@ -52,6 +62,9 @@ export default function Tutorials() {
     setEditingId(tut.id);
     setForm({ title: tut.title, text: tut.text || "", enabled: tut.enabled, sort_order: tut.sort_order });
     setEditingMedia(tut.media || []);
+    setEditingSoftware(tut.software || []);
+    setSwName("");
+    setSwUrl("");
     setError("");
     setOpen(true);
   };
@@ -76,6 +89,49 @@ export default function Tutorials() {
     if (!editingId) return;
     await deleteTutorialMedia(editingId, mediaId);
     setEditingMedia((media) => media.filter((m) => m.id !== mediaId));
+  };
+
+  const onAddSoftwareLink = async () => {
+    if (!editingId || !swName.trim() || !swUrl.trim()) {
+      setError(t("tutorials.softwareNameRequired"));
+      return;
+    }
+    setError("");
+    try {
+      const res = await createTutorialSoftwareLink(editingId, { name: swName.trim(), url: swUrl.trim() });
+      setEditingSoftware((sw) => [...sw, res.data]);
+      setSwName("");
+      setSwUrl("");
+    } catch (err) {
+      setError(err?.response?.data?.detail || t("tutorials.saveError"));
+    }
+  };
+
+  const onUploadSoftwareFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !editingId) return;
+    if (!swName.trim()) {
+      setError(t("tutorials.softwareNameRequired"));
+      return;
+    }
+    setUploadingSoftware(true);
+    setError("");
+    try {
+      const res = await uploadTutorialSoftwareFile(editingId, file, swName.trim());
+      setEditingSoftware((sw) => [...sw, res.data]);
+      setSwName("");
+    } catch (err) {
+      setError(err?.response?.data?.detail || t("tutorials.uploadError"));
+    } finally {
+      setUploadingSoftware(false);
+    }
+  };
+
+  const onDeleteSoftware = async (softwareId) => {
+    if (!editingId) return;
+    await deleteTutorialSoftware(editingId, softwareId);
+    setEditingSoftware((sw) => sw.filter((s) => s.id !== softwareId));
   };
 
   const submit = async (e) => {
@@ -223,6 +279,61 @@ export default function Tutorials() {
                 </button>
               </div>
             ))}
+          </div>
+
+          <div className="border-t border-gray-100 pt-3">
+            <div className="text-sm font-medium text-gray-700 mb-2">{t("tutorials.softwareHeading")}</div>
+            {!editingId && (
+              <div className="text-xs text-gray-400">{t("tutorials.saveFirst")}</div>
+            )}
+            {editingId && (
+              <>
+                {editingSoftware.length === 0 && (
+                  <div className="text-xs text-gray-400 mb-2">{t("tutorials.noSoftware")}</div>
+                )}
+                {editingSoftware.map((s) => (
+                  <div key={s.id} className="flex items-center justify-between gap-2 py-1.5 px-2 rounded-lg bg-gray-50 mb-1.5 text-sm">
+                    <div className="flex items-center gap-2 text-gray-700 truncate">
+                      {s.filename ? (
+                        <FileUp size={14} className="text-gray-400 shrink-0" />
+                      ) : (
+                        <Link2 size={14} className="text-gray-400 shrink-0" />
+                      )}
+                      <span className="truncate">{s.name}</span>
+                      {s.filename ? (
+                        <span className="text-xs text-gray-400 shrink-0">({formatFileSize(s.size_bytes)})</span>
+                      ) : (
+                        <span className="text-xs text-gray-400 truncate">{s.url}</span>
+                      )}
+                    </div>
+                    <button type="button" className="text-gray-400 hover:text-red-600 shrink-0" onClick={() => onDeleteSoftware(s.id)}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+                <div className="flex flex-wrap items-center gap-2 mt-2">
+                  <input
+                    className="input !w-auto flex-1 min-w-[140px]"
+                    placeholder={t("tutorials.softwareNamePlaceholder")}
+                    value={swName}
+                    onChange={(e) => setSwName(e.target.value)}
+                  />
+                  <input
+                    className="input !w-auto flex-1 min-w-[160px]"
+                    placeholder={t("tutorials.softwareUrlPlaceholder")}
+                    value={swUrl}
+                    onChange={(e) => setSwUrl(e.target.value)}
+                  />
+                  <button type="button" className="btn-secondary" onClick={onAddSoftwareLink}>
+                    <Link2 size={14} /> {t("tutorials.softwareAddBtn")}
+                  </button>
+                  <label className="btn-secondary cursor-pointer">
+                    <FileUp size={14} /> {uploadingSoftware ? t("tutorials.uploading") : t("tutorials.addSoftwareFile")}
+                    <input type="file" className="hidden" onChange={onUploadSoftwareFile} disabled={uploadingSoftware} />
+                  </label>
+                </div>
+              </>
+            )}
           </div>
 
           {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}

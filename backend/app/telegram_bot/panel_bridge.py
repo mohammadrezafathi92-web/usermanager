@@ -109,6 +109,13 @@ class PanelBridge:
         row = await _call(bot_router.get_payment_info)
         return _dump(schemas.PanelSettingsOut.model_validate(row))
 
+    async def get_customer_menu_disabled_items(self) -> list[str]:
+        """Which customer main-menu buttons an admin has hidden from
+        Settings > ربات (see telegram_bot/keyboards.py's CUSTOMER_MENU_ITEMS
+        and models.BotSettings.customer_menu_disabled_items)."""
+        row = await _call(bot_router.get_customer_menu_config)
+        return row.get("disabled_items", [])
+
     # -------------------------------------------------------- tutorials
     async def list_tutorials(self) -> list[dict]:
         tutorials = await _call(bot_router.list_tutorials)
@@ -135,6 +142,34 @@ class PanelBridge:
                         continue
                     out.append({"kind": r.kind, "filename": r.filename, "content": content})
                 return out
+            finally:
+                db.close()
+
+        return await asyncio.to_thread(_run)
+
+    async def get_tutorial_software_file(self, software_id: int, tutorial_id: Optional[int] = None) -> dict | None:
+        """Filename + raw bytes for one uploaded tutorial-software file -
+        same rationale as get_tutorial_media above. list_tutorials() above
+        already carries each software entry's metadata (name/url/filename)
+        via TutorialOut.software, so this is only needed to fetch the bytes
+        of an entry that has an uploaded file (stored_path set) rather than
+        just a plain download url. tutorial_id is accepted (but unused here)
+        only to keep this method's signature identical to
+        remote_bridge.RemoteBridge's version, which needs it to build the
+        download URL - see that module for why."""
+
+        def _run():
+            db = SessionLocal()
+            try:
+                r = db.get(models.TutorialSoftware, software_id)
+                if not r or not r.stored_path:
+                    return None
+                try:
+                    with open(r.stored_path, "rb") as f:
+                        content = f.read()
+                except OSError:
+                    return None
+                return {"filename": r.filename, "content": content}
             finally:
                 db.close()
 

@@ -66,6 +66,8 @@ def _user_response(user: models.User) -> schemas.BotUserResponse:
         referral_code=user.referral_code,
         loyalty_reward_credit=loyalty[0] if loyalty else None,
         loyalty_reward_gb=loyalty[1] if loyalty else None,
+        reserved_quota_gb=(user.reserved_quota_bytes / (1024 ** 3)) if user.reserved_quota_bytes else None,
+        reserved_duration_days=user.reserved_duration_days,
     )
 
 
@@ -114,6 +116,16 @@ def get_payment_info(db: Session = Depends(get_db)):
     return _get_or_create_settings(db)
 
 
+@router.get("/customer-menu-config")
+def get_customer_menu_config(db: Session = Depends(get_db)):
+    """Which customer main-menu buttons are hidden (see Settings > ربات >
+    منوی مشتری and telegram_bot/keyboards.py's main_menu_kb)."""
+    row = db.get(models.BotSettings, 1)
+    raw = (row.customer_menu_disabled_items or "") if row else ""
+    items = [x.strip() for x in raw.split(",") if x.strip()]
+    return {"disabled_items": items}
+
+
 @router.get("/tutorials", response_model=list[schemas.TutorialOut])
 def list_tutorials(db: Session = Depends(get_db)):
     """Enabled tutorial entries, shown to customers from the bot's "📚
@@ -122,7 +134,7 @@ def list_tutorials(db: Session = Depends(get_db)):
     schema after its DB session has already closed."""
     return (
         db.query(models.Tutorial)
-        .options(joinedload(models.Tutorial.media))
+        .options(joinedload(models.Tutorial.media), joinedload(models.Tutorial.software))
         .filter(models.Tutorial.enabled == True)  # noqa: E712
         .order_by(models.Tutorial.sort_order, models.Tutorial.id)
         .all()
@@ -157,6 +169,22 @@ def download_tutorial_media(tutorial_id: int, media_id: int, db: Session = Depen
         .first()
     )
     if not row or not os.path.exists(row.stored_path):
+        raise HTTPException(404, "فایل پیدا نشد")
+    return FileResponse(row.stored_path, filename=row.filename, media_type=row.content_type or "application/octet-stream")
+
+
+@router.get("/tutorials/{tutorial_id}/software/{software_id}/download")
+def download_tutorial_software(tutorial_id: int, software_id: int, db: Session = Depends(get_db)):
+    """Raw bytes of a tutorial's uploaded software file - same rationale as
+    download_package_file above. Only applies to entries that have an
+    uploaded file (stored_path set); link-only entries are just sent as a
+    URL and never hit this endpoint."""
+    row = (
+        db.query(models.TutorialSoftware)
+        .filter(models.TutorialSoftware.id == software_id, models.TutorialSoftware.tutorial_id == tutorial_id)
+        .first()
+    )
+    if not row or not row.stored_path or not os.path.exists(row.stored_path):
         raise HTTPException(404, "فایل پیدا نشد")
     return FileResponse(row.stored_path, filename=row.filename, media_type=row.content_type or "application/octet-stream")
 

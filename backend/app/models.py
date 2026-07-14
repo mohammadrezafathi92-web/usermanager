@@ -445,6 +445,24 @@ class User(Base):
     purchase_count = Column(Integer, nullable=False, default=0)
     loyalty_rewards_given = Column(Integer, nullable=False, default=0)
 
+    # ---------------------------------------------------------------------
+    # Queued/reserved renewal (بسته رزرو): when renew_user() is called
+    # while the user's CURRENT quota and expiry both still have room left,
+    # the new gb/days/package aren't applied right away - they're stashed
+    # here instead, and only actually take effect (full reset: usage=0,
+    # fresh quota/expiry from these values) once the current package
+    # actually runs out (quota exhausted OR expired) - see
+    # services/user_ops.py's renew_user/_maybe_activate_reserved_renewal,
+    # called from quota_manager.py's _enforce_user_limits (the single
+    # choke point both the poll loop and RADIUS accounting funnel through)
+    # and radius_server.py's HandleAuthPacket (so a login attempt right at
+    # the exhaustion boundary doesn't get needlessly rejected for up to one
+    # poll cycle). NULL/0 in both gb/days columns == nothing reserved.
+    reserved_quota_bytes = Column(BigInteger, nullable=True)
+    reserved_duration_days = Column(Integer, nullable=True)
+    reserved_package_id = Column(Integer, ForeignKey("packages.id"), nullable=True)
+    reserved_created_at = Column(DateTime, nullable=True)  # when this reservation was queued - shown to the customer/admin
+
     created_at = Column(DateTime, default=now)
     updated_at = Column(DateTime, default=now, onupdate=now)
 
@@ -614,6 +632,16 @@ class RadiusLimitEventLog(Base):
     active_count = Column(Integer, nullable=True)
     limit_value = Column(Integer, nullable=True)
     banned_until = Column(DateTime, nullable=True)  # set only for event_type="ban"
+    # Best-effort caller IP for this rejected attempt - Calling-Station-Id
+    # (RADIUS attribute 31) if the NAS (MikroTik) sent one, which for
+    # PPP-based protocols (L2TP/PPTP/OpenVPN/SSTP) is normally the client's
+    # real remote IP; falls back to the NAS's own IP (the router that
+    # forwarded the request) if the NAS didn't send Calling-Station-Id at
+    # all - see services/radius_server.py's HandleAuthPacket. Lets an admin
+    # tell "same device retrying" from "account being shared across
+    # different IPs" apart at a glance instead of only ever seeing the
+    # username repeated.
+    client_ip = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=now, index=True)
 
 
@@ -903,6 +931,15 @@ class BotSettings(Base):
     # being routed to the normal customer handlers.
     customer_bot_enabled = Column(Boolean, default=True)
 
+    # Per-item enable/disable for the customer main menu (see
+    # telegram_bot/keyboards.py's main_menu_kb) - comma-separated action
+    # keys (e.g. "cust_topup,cust_referral") that should be HIDDEN from the
+    # menu. Empty/NULL = every item shown (default, zero behavior change).
+    # Deliberately a single comma-separated column, same pattern as
+    # admin_ids/approval_chat_ids above, instead of one boolean column per
+    # item, to avoid a wide migration every time a menu item is added later.
+    customer_menu_disabled_items = Column(Text, nullable=True, default="")
+
 
 class Tutorial(Base):
     """An admin-authored help/tutorial entry (e.g. "نصب WireGuard روی
@@ -921,6 +958,10 @@ class Tutorial(Base):
     media = relationship(
         "TutorialMedia", back_populates="tutorial", cascade="all, delete-orphan",
         order_by="TutorialMedia.id",
+    )
+    software = relationship(
+        "TutorialSoftware", back_populates="tutorial", cascade="all, delete-orphan",
+        order_by="TutorialSoftware.sort_order, TutorialSoftware.id",
     )
 
 
@@ -942,3 +983,33 @@ class TutorialMedia(Base):
     created_at = Column(DateTime, default=now)
 
     tutorial = relationship("Tutorial", back_populates="media")
+
+
+class TutorialSoftware(Base):
+    """One downloadable app/software entry attached to a Tutorial - shown
+    as a "دانلود نرم‌افزار" section right alongside that tutorial's own
+    content in the bot (see telegram_bot/handlers/tutorials.py), so a
+    customer reading e.g. "نصب وایرگارد روی اندروید" also sees the actual
+    WireGuard app to download without hunting for it elsewhere.
+
+    Two independent ways to point at the software, either or both may be
+    set: `url` (an external link - Google Play/App Store/official site,
+    the common case) and/or an uploaded file (filename/stored_path, same
+    on-disk pattern as PackageFile/TutorialMedia - the built-in bot sends
+    it directly). At least one of the two should be set; the bot renders
+    whichever are present."""
+
+    __tablename__ = "tutorial_software"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tutorial_id = Column(Integer, ForeignKey("tutorials.id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)  # e.g. "وایرگارد - اندروید"
+    url = Column(String(1000), nullable=True)
+    filename = Column(String(255), nullable=True)
+    stored_path = Column(String(500), nullable=True)
+    content_type = Column(String(128), nullable=True)
+    size_bytes = Column(BigInteger, default=0)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=now)
+
+    tutorial = relationship("Tutorial", back_populates="software")

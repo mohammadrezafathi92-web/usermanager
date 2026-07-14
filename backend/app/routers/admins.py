@@ -11,7 +11,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..deps import require_superadmin
 from ..security import hash_password
-from ..permissions import PERMISSION_CHOICES, parse_permissions, format_permissions, effective_permissions
+from ..permissions import PERMISSION_CHOICES, PERMISSION_GROUPS, parse_permissions, format_permissions, effective_permissions
 
 router = APIRouter(prefix="/api/admins", tags=["admins"], dependencies=[Depends(require_superadmin)])
 
@@ -182,8 +182,13 @@ def list_admins(db: Session = Depends(get_db)):
 @router.get("/permission-choices")
 def permission_choices():
     """Feeds the frontend's checkbox list - keeps the human-readable labels
-    defined in one place (permissions.py) instead of duplicated in JS."""
-    return PERMISSION_CHOICES
+    defined in one place (permissions.py) instead of duplicated in JS.
+    Grouped by page (PERMISSION_GROUPS) since task #230 expanded this from
+    4 flat toggles to granular per-page + per-action permissions - the
+    frontend renders one section per group. A flat "choices" map (old
+    shape) is also included for backward compatibility with any code still
+    expecting it."""
+    return {"groups": PERMISSION_GROUPS, "choices": PERMISSION_CHOICES}
 
 
 @router.post("", response_model=schemas.AdminOut)

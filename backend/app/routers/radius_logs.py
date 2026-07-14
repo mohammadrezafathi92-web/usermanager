@@ -28,6 +28,7 @@ def _out(log: models.RadiusLimitEventLog) -> schemas.RadiusLimitEventLogOut:
         active_count=log.active_count,
         limit_value=log.limit_value,
         banned_until=log.banned_until,
+        client_ip=log.client_ip,
         created_at=log.created_at,
     )
 

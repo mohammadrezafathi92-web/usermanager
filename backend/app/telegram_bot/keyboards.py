@@ -30,7 +30,26 @@ PROTOCOL_LABELS = {
 }
 
 
-def main_menu_kb(scope: dict | None) -> InlineKeyboardMarkup:
+# Every toggleable customer main-menu button, in display order - keyed by
+# the same MenuCB action string used below. Shown to the admin in Settings >
+# ربات > منوی مشتری as a matching set of checkboxes (see
+# routers/telegram_bot_settings.py's BotSettings.customer_menu_disabled_items)
+# and used here to filter which buttons actually get built.
+CUSTOMER_MENU_ITEMS = [
+    ("cust_account", "👤 اکانت من"),
+    ("cust_usage", "📊 مصرف سرویس‌ها"),
+    ("cust_renew", "🔄 تمدید سرویس"),
+    ("cust_buy", "🛒 خرید اکانت جدید"),
+    ("cust_topup", "💰 افزایش اعتبار"),
+    ("cust_tutorials", "📚 آموزش"),
+    ("cust_referral", "🎁 دعوت دوستان"),
+    ("cust_support", "🎧 پشتیبانی"),
+    ("cust_link", "🔗 وصل کردن حساب قبلی"),
+    ("cust_myid", "🆔 آیدی عددی من"),
+]
+
+
+async def main_menu_kb(scope: dict | None) -> InlineKeyboardMarkup:
     """`scope` is the dict returned by telegram_bot/admin_scope.py's
     resolve_admin_scope() - None for a regular customer, otherwise a dict
     with an `is_full_admin` flag that picks between the full admin menu
@@ -49,16 +68,17 @@ def main_menu_kb(scope: dict | None) -> InlineKeyboardMarkup:
         kb.button(text="📋 لیست کاربران من", callback_data=MenuCB(action="admin_list"))
         kb.adjust(1)
     else:
-        kb.button(text="👤 اکانت من", callback_data=MenuCB(action="cust_account"))
-        kb.button(text="📊 مصرف سرویس‌ها", callback_data=MenuCB(action="cust_usage"))
-        kb.button(text="🔄 تمدید سرویس", callback_data=MenuCB(action="cust_renew"))
-        kb.button(text="🛒 خرید اکانت جدید", callback_data=MenuCB(action="cust_buy"))
-        kb.button(text="💰 افزایش اعتبار", callback_data=MenuCB(action="cust_topup"))
-        kb.button(text="📚 آموزش", callback_data=MenuCB(action="cust_tutorials"))
-        kb.button(text="🎁 دعوت دوستان", callback_data=MenuCB(action="cust_referral"))
-        kb.button(text="🎧 پشتیبانی", callback_data=MenuCB(action="cust_support"))
-        kb.button(text="🔗 وصل کردن حساب قبلی", callback_data=MenuCB(action="cust_link"))
-        kb.button(text="🆔 آیدی عددی من", callback_data=MenuCB(action="cust_myid"))
+        # local import - avoids a circular import at module load (panel_bridge
+        # imports from routers, which don't import keyboards.py)
+        from .panel_bridge import api, ApiError
+
+        try:
+            disabled = set(await api.get_customer_menu_disabled_items())
+        except ApiError:
+            disabled = set()
+        for action, label in CUSTOMER_MENU_ITEMS:
+            if action not in disabled:
+                kb.button(text=label, callback_data=MenuCB(action=action))
         kb.adjust(1)
     return kb.as_markup()
 

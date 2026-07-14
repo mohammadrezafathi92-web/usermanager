@@ -88,6 +88,10 @@ class RemoteBridge:
     async def get_payment_info(self) -> dict:
         return await self._call("GET", "/payment-info")
 
+    async def get_customer_menu_disabled_items(self) -> list[str]:
+        row = await self._call("GET", "/customer-menu-config")
+        return (row or {}).get("disabled_items", [])
+
     # -------------------------------------------------------- tutorials
     async def list_tutorials(self) -> list[dict]:
         return await self._call("GET", "/tutorials")
@@ -105,6 +109,21 @@ class RemoteBridge:
             if content is not None:
                 out.append({"kind": m["kind"], "filename": m["filename"], "content": content})
         return out
+
+    async def get_tutorial_software_file(self, software_id: int, tutorial_id: Optional[int] = None) -> Optional[dict]:
+        """Filename + raw bytes for an uploaded tutorial-software file.
+        Metadata (name/url/filename) already comes from list_tutorials()'s
+        `software` field, so unlike get_tutorial_media this only needs the
+        tutorial_id to build the download path - callers pass it through
+        from the same tutorial dict they read the software entry off of."""
+        if tutorial_id is None:
+            return None
+        content = await asyncio.to_thread(
+            self._download, f"/tutorials/{tutorial_id}/software/{software_id}/download"
+        )
+        if content is None:
+            return None
+        return {"content": content}
 
     # ---------------------------------------------------------- broadcast
     async def list_telegram_user_ids(self) -> list[int]:

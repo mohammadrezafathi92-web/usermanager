@@ -58,7 +58,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     scope = await resolve_admin_scope(message.from_user.id)
     text = await _welcome_text(message.from_user, scope)
-    await message.answer(text, reply_markup=main_menu_kb(scope))
+    await message.answer(text, reply_markup=await main_menu_kb(scope))
 
 
 @router.message(Command("help"))
@@ -90,7 +90,7 @@ async def cmd_help(message: Message) -> None:
             "🔗 وصل کردن حساب قبلی (/link) — اگه قبلا از ادمین اکانت گرفته بودید.\n\n"
             "همه این‌ها از دکمه Menu کنار پیام هم در دسترس‌اند."
         )
-    await message.answer(text, reply_markup=main_menu_kb(scope))
+    await message.answer(text, reply_markup=await main_menu_kb(scope))
 
 
 @router.callback_query(MenuCB.filter(F.action == "home"))
@@ -98,7 +98,7 @@ async def cb_home(call: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     scope = await resolve_admin_scope(call.from_user.id)
     text = await _welcome_text(call.from_user, scope)
-    await call.message.edit_text(text, reply_markup=main_menu_kb(scope))
+    await call.message.edit_text(text, reply_markup=await main_menu_kb(scope))
     await call.answer()
 
 
@@ -107,7 +107,7 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     scope = await resolve_admin_scope(call.from_user.id)
     text = await _welcome_text(call.from_user, scope)
-    await call.message.edit_text("عملیات لغو شد.\n\n" + text, reply_markup=main_menu_kb(scope))
+    await call.message.edit_text("عملیات لغو شد.\n\n" + text, reply_markup=await main_menu_kb(scope))
     await call.answer("لغو شد")
 
 

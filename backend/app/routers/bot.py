@@ -50,6 +50,7 @@ def _connection_info(conn: models.Connection) -> schemas.BotConnectionInfo:
 
 
 def _user_response(user: models.User) -> schemas.BotUserResponse:
+    loyalty = getattr(user, "_loyalty_reward_just_granted", None)
     return schemas.BotUserResponse(
         id=user.id,
         username=user.username,
@@ -62,6 +63,9 @@ def _user_response(user: models.User) -> schemas.BotUserResponse:
         telegram_id=user.telegram_id,
         balance=user.balance or 0,
         connections=[_connection_info(c) for c in user.connections],
+        referral_code=user.referral_code,
+        loyalty_reward_credit=loyalty[0] if loyalty else None,
+        loyalty_reward_gb=loyalty[1] if loyalty else None,
     )
 
 
@@ -210,6 +214,54 @@ def create_user(payload: schemas.BotCreateUserRequest, db: Session = Depends(get
         )
     db.refresh(user)
     return _user_response(user)
+
+
+@router.post("/referral/apply")
+def apply_referral(payload: schemas.ReferralApplyRequest, db: Session = Depends(get_db)):
+    """Called once, right after admin_pending.py's receipt-approval handler
+    creates a brand-new customer account via create_user above - the ONLY
+    choke point new customer accounts are created through, so this is the
+    one place referral-code redemption needs to be wired in. Actual reward
+    logic lives in services/user_ops.py's apply_referral_code (both the
+    referrer and the new user get a gift, per the confirmed design - not
+    just the referrer)."""
+    user = db.query(models.User).filter(models.User.username == payload.username).first()
+    if not user:
+        raise HTTPException(404, "کاربر پیدا نشد")
+    ok, reason = user_ops.apply_referral_code(db, user, payload.referral_code)
+    return {"ok": ok, "reason": reason}
+
+
+@router.post("/discount/validate", response_model=schemas.DiscountValidateResult)
+def validate_discount(payload: schemas.DiscountValidateRequest, db: Session = Depends(get_db)):
+    """Check-as-you-type step - does NOT consume the code (see
+    /discount/redeem for that). `username`, when the customer already has
+    an account, also catches "you already used this code" before they get
+    to the final confirm screen."""
+    valid, reason, amount = user_ops.validate_discount_code(
+        db, payload.code, payload.package_price, username=payload.username
+    )
+    return schemas.DiscountValidateResult(
+        valid=valid,
+        reason=reason or None,
+        discount_amount=amount,
+        final_price=max(0, (payload.package_price or 0) - amount),
+    )
+
+
+@router.post("/discount/redeem", response_model=schemas.DiscountValidateResult)
+def redeem_discount(payload: schemas.DiscountRedeemRequest, db: Session = Depends(get_db)):
+    """Called once a purchase is actually confirmed - re-validates then
+    atomically consumes the code (bumps used_count, records a
+    DiscountCodeRedemption row). See services/user_ops.py's
+    redeem_discount_code."""
+    ok, reason, amount = user_ops.redeem_discount_code(db, payload.code, payload.username, payload.package_price)
+    return schemas.DiscountValidateResult(
+        valid=ok,
+        reason=reason or None,
+        discount_amount=amount,
+        final_price=max(0, (payload.package_price or 0) - amount),
+    )
 
 
 @router.get("/users", response_model=schemas.BotUserListPage)

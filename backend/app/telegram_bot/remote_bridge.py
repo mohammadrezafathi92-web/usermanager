@@ -212,3 +212,16 @@ class RemoteBridge:
     async def delete_user(self, username: str, owner_admin_id: Optional[int] = None) -> None:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         await self._call("DELETE", f"/users/{username}", params=params)
+
+    # ------------------------------------------------ referral & discount
+    async def apply_referral(self, username: str, referral_code: str) -> dict:
+        payload = {"username": username, "referral_code": referral_code}
+        return await self._call("POST", "/referral/apply", json=payload)
+
+    async def validate_discount(self, code: str, package_price: int = 0, username: Optional[str] = None) -> dict:
+        payload = {"code": code, "package_price": package_price, "username": username}
+        return await self._call("POST", "/discount/validate", json=payload)
+
+    async def redeem_discount(self, code: str, username: str, package_price: int = 0) -> dict:
+        payload = {"code": code, "username": username, "package_price": package_price}
+        return await self._call("POST", "/discount/redeem", json=payload)

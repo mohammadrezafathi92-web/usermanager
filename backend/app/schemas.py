@@ -278,6 +278,9 @@ class UserOut(UserBase):
     # need a second request just to show "کدام ادمین".
     owner_admin_username: Optional[str] = None
     package_id: Optional[int] = None
+    # Referral program (کد دعوت) - see models.User/PanelSettings
+    referral_code: Optional[str] = None
+    purchase_count: int = 0
 
 
 class UserListItem(BaseModel):
@@ -500,6 +503,83 @@ class PackageOut(PackageBase):
     files: List[PackageFileOut] = []
 
 
+# ---------- Discount codes (کد تخفیف) ----------
+class DiscountCodeBase(BaseModel):
+    code: str
+    kind: str = "percent"  # "percent" (0-100) or "fixed" (toman amount)
+    value: float = 0
+    max_uses: Optional[int] = None
+    enabled: bool = True
+    expires_at: Optional[dt.datetime] = None
+    note: Optional[str] = None
+
+    @field_validator("kind")
+    @classmethod
+    def _validate_kind(cls, v):
+        if v not in ("percent", "fixed"):
+            raise ValueError("نوع تخفیف باید percent یا fixed باشد")
+        return v
+
+
+class DiscountCodeCreate(DiscountCodeBase):
+    pass
+
+
+class DiscountCodeUpdate(BaseModel):
+    kind: Optional[str] = None
+    value: Optional[float] = None
+    max_uses: Optional[int] = None
+    enabled: Optional[bool] = None
+    expires_at: Optional[dt.datetime] = None
+    note: Optional[str] = None
+
+
+class DiscountCodeOut(DiscountCodeBase):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    used_count: int = 0
+    created_at: dt.datetime
+
+
+class DiscountCodeRedemptionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    code_id: int
+    user_id: Optional[int] = None
+    username: Optional[str] = None
+    package_price: Optional[int] = None
+    discount_amount: Optional[int] = None
+    created_at: dt.datetime
+
+
+class DiscountValidateRequest(BaseModel):
+    code: str
+    package_price: int = 0
+    # Optional: lets validation also catch "you already used this code"
+    # before the customer gets to the final confirm step - omitted for a
+    # brand-new customer whose account doesn't exist yet (their first
+    # purchase can never collide with a past redemption anyway).
+    username: Optional[str] = None
+
+
+class DiscountValidateResult(BaseModel):
+    valid: bool
+    reason: Optional[str] = None
+    discount_amount: int = 0
+    final_price: int = 0
+
+
+class DiscountRedeemRequest(BaseModel):
+    code: str
+    username: str
+    package_price: int = 0
+
+
+class ReferralApplyRequest(BaseModel):
+    username: str  # the brand-new user who was just created
+    referral_code: str  # the code they entered
+
+
 # ---------- Panel-wide settings (payment info shown by the sales bot) ----------
 class PanelSettingsOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -517,14 +597,25 @@ class PanelSettingsOut(BaseModel):
     ha_last_sync_at: Optional[dt.datetime] = None
     ha_last_health_ok_at: Optional[dt.datetime] = None
     ha_last_error: Optional[str] = None
-    # Configurable panel web port (see models.PanelSettings)
+    # Configurable panel web port (see models.PanelSettings) - as of the
+    # local-docker-socket rewrite this is genuinely just the one number;
+    # panel_ssh_* fields still exist as legacy/unused DB columns (harmless,
+    # left in place to avoid a DROP COLUMN migration) but are no longer
+    # read/written anywhere in the app.
     panel_web_port: Optional[int] = 80
-    panel_ssh_host: Optional[str] = None
-    panel_ssh_port: Optional[int] = 22
-    panel_ssh_username: Optional[str] = "root"
-    panel_project_dir: Optional[str] = "/root/usermanager"
     panel_port_status: Optional[str] = None
     panel_port_changed_at: Optional[dt.datetime] = None
+    # Support contact shown by the bot's "🎧 پشتیبانی" button (see models.PanelSettings)
+    support_contact_text: Optional[str] = None
+    # Referral program (کد دعوت) reward amounts - all 0 = feature is a no-op
+    referral_referrer_reward_credit: int = 0
+    referral_referrer_reward_gb: float = 0
+    referral_new_user_reward_credit: int = 0
+    referral_new_user_reward_gb: float = 0
+    # Loyalty rewards (کاربر وفادار) - independent of referrals
+    loyalty_purchase_threshold: Optional[int] = None
+    loyalty_reward_credit: int = 0
+    loyalty_reward_gb: float = 0
 
 
 class PanelSettingsUpdate(BaseModel):
@@ -536,17 +627,21 @@ class PanelSettingsUpdate(BaseModel):
     ha_mode: Optional[str] = None
     ha_peer_url: Optional[str] = None
     ha_peer_api_key: Optional[str] = None
-    panel_ssh_host: Optional[str] = None
-    panel_ssh_port: Optional[int] = None
-    panel_ssh_username: Optional[str] = None
-    panel_project_dir: Optional[str] = None
+    support_contact_text: Optional[str] = None
+    referral_referrer_reward_credit: Optional[int] = None
+    referral_referrer_reward_gb: Optional[float] = None
+    referral_new_user_reward_credit: Optional[int] = None
+    referral_new_user_reward_gb: Optional[float] = None
+    loyalty_purchase_threshold: Optional[int] = None
+    loyalty_reward_credit: Optional[int] = None
+    loyalty_reward_gb: Optional[float] = None
 
 
 class PanelPortChangeRequest(BaseModel):
-    # SSH password is deliberately NOT part of PanelSettingsUpdate above -
-    # same "held in memory for one call only, never persisted" rule as the
-    # remote-bot deploy feature.
-    ssh_password: str
+    # No SSH/host/password needed any more - the backend container talks to
+    # the HOST's docker daemon directly over the mounted docker.sock (see
+    # services/local_deploy.py) and edits docker-compose.yml through the
+    # project directory bind-mounted at the same path. Just the new port.
     new_port: int
 
     @field_validator("new_port")
@@ -708,6 +803,13 @@ class BotUserResponse(BaseModel):
     telegram_id: Optional[int] = None
     balance: int = 0
     connections: List[BotConnectionInfo] = []
+    referral_code: Optional[str] = None
+    # Transient, one-shot fields - only non-null on the exact response right
+    # after a loyalty-threshold crossing (see services/user_ops.py's
+    # _maybe_grant_loyalty_reward) so the bot can show a "🎁 loyalty reward!"
+    # notice right after that purchase/renewal. Never re-sent afterward.
+    loyalty_reward_credit: Optional[int] = None
+    loyalty_reward_gb: Optional[float] = None
 
 
 class BotUserListItem(BaseModel):

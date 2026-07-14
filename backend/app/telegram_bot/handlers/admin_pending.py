@@ -39,7 +39,12 @@ def _pending_summary(p: dict) -> str:
         lines.append(f"حساب مقصد: {p['target_username']}")
     else:
         lines.append(f"پکیج: {p['package_name']} — {p['quota_gb'] or 'نامحدود'}GB / {p['duration_days'] or '∞'} روز")
-        lines.append(f"مبلغ: {p['price']:,} تومان")
+        if p.get("discount_amount"):
+            lines.append(f"مبلغ: <s>{p['price']:,}</s> {p.get('final_price', p['price']):,} تومان (🎟 کد {p.get('discount_code')} — {p['discount_amount']:,} تومان تخفیف)")
+        else:
+            lines.append(f"مبلغ: {p['price']:,} تومان")
+        if p.get("referral_code"):
+            lines.append(f"🎁 کد دعوت وارد شده: {p['referral_code']}")
         if p["kind"] == "new":
             if p.get("node_name"):
                 lines.append(f"سرور/پروتکل: {p['node_name']} / {p['protocol']}")
@@ -162,6 +167,7 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
             except ApiError:
                 existing_user = None
 
+            user = None
             if existing_user:
                 batch = uuid.uuid4().hex
                 new_connections = []
@@ -172,7 +178,7 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
                     )
                     new_connections.append(conn)
                 if pending["quota_gb"] or pending["duration_days"]:
-                    await api.renew(
+                    user = await api.renew(
                         pending["target_username"],
                         add_gb=pending["quota_gb"] or 0,
                         add_days=pending["duration_days"] or 0,
@@ -190,13 +196,39 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
                     package_id=(pkg or {}).get("id"),
                 )
                 new_connections = user["connections"]
+                # Brand-new account - this is the ONE choke point new
+                # customers are created through (see customer.py's purchase
+                # flow), so it's the only place a referral code can ever be
+                # redeemed. Best-effort: a bad/expired code shouldn't block
+                # the purchase that already succeeded.
+                if pending.get("referral_code"):
+                    try:
+                        await api.apply_referral(pending["target_username"], pending["referral_code"])
+                    except ApiError:
+                        pass
+            if pending.get("discount_code"):
+                try:
+                    await api.redeem_discount(pending["discount_code"], pending["target_username"], pending["price"])
+                except ApiError:
+                    pass
             customer_msg = f"✅ پرداخت شما تایید شد!\n\nنام کاربری: <code>{pending['target_username']}</code>"
+            if user and (user.get("loyalty_reward_credit") or user.get("loyalty_reward_gb")):
+                from .customer import _loyalty_reward_text  # local import avoids a circular import at module load
+                customer_msg += "\n\n" + _loyalty_reward_text(user)
         elif pending["kind"] == "renew":
-            await api.renew(
+            user = await api.renew(
                 pending["target_username"], add_gb=pending["quota_gb"], add_days=pending["duration_days"],
                 package_id=(pkg or {}).get("id"),
             )
+            if pending.get("discount_code"):
+                try:
+                    await api.redeem_discount(pending["discount_code"], pending["target_username"], pending["price"])
+                except ApiError:
+                    pass
             customer_msg = f"✅ پرداخت شما تایید شد و حساب «{pending['target_username']}» تمدید شد."
+            if user.get("loyalty_reward_credit") or user.get("loyalty_reward_gb"):
+                from .customer import _loyalty_reward_text  # local import avoids a circular import at module load
+                customer_msg += "\n\n" + _loyalty_reward_text(user)
         elif pending["kind"] == "link":
             # Security-gated version of the old instant customer.py
             # link_telegram call - only actually links once an admin has

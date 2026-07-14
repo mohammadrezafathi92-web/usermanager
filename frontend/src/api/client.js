@@ -157,8 +157,8 @@ export const deleteTutorialMedia = (id, mediaId) => client.delete(`/tutorials/${
 export const fetchPanelSettings = () => client.get("/settings");
 export const updatePanelSettings = (data) => client.put("/settings", data);
 export const resolveHaFailover = () => client.post("/ha/resolve");
-export const changePanelPort = (sshPassword, newPort) =>
-  client.post("/settings/change-port", { ssh_password: sshPassword, new_port: newPort });
+export const changePanelPort = (newPort) =>
+  client.post("/settings/change-port", { new_port: newPort });
 
 export const fetchTelegramBotSettings = () => client.get("/telegram-bot");
 export const updateTelegramBotSettings = (data) => client.put("/telegram-bot", data);
@@ -201,3 +201,10 @@ export const fetchAdminLoginLogs = (params) => client.get("/admins/login-logs", 
 // RADIUS concurrent-session-limit reject/ban history - either the whole
 // panel-wide page (no user_id) or scoped to one user (UserDetail.jsx).
 export const fetchRadiusLimitLogs = (params) => client.get("/radius-logs", { params });
+
+// Discount/promo codes (کد تخفیف) - panel-wide, see routers/discount_codes.py.
+export const fetchDiscountCodes = () => client.get("/discount-codes");
+export const createDiscountCode = (data) => client.post("/discount-codes", data);
+export const updateDiscountCode = (id, data) => client.put(`/discount-codes/${id}`, data);
+export const deleteDiscountCode = (id) => client.delete(`/discount-codes/${id}`);
+export const fetchDiscountCodeRedemptions = (id) => client.get(`/discount-codes/${id}/redemptions`);

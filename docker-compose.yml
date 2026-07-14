@@ -9,8 +9,18 @@ services:
       - ./backend/.env
     volumes:
       - ./backend/data:/app/data
+      # Let the backend change the panel's own web port with no SSH/password
+      # prompt at all (تنظیمات > پورت پنل وب - see services/local_deploy.py):
+      # talk to the HOST's docker daemon over its socket, and bind-mount this
+      # project directory at the SAME absolute path the daemon sees on the
+      # real host filesystem (must match HOST_PROJECT_DIR below) so relative
+      # paths in this very docker-compose.yml still resolve correctly when
+      # the daemon acts on them.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/root/usermanager
     environment:
       - DATABASE_URL=sqlite:////app/data/usermanager.db
+      - HOST_PROJECT_DIR=/root/usermanager
     ports:
       - "8000:8000"
       - "1812:1812/udp"

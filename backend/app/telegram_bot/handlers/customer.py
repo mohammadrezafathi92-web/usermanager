@@ -19,6 +19,7 @@ from ..keyboards import (
     main_menu_kb,
     topup_amounts_kb,
     receipt_choice_kb,
+    promo_skip_kb,
     connections_list_kb,
     group_connections_by_purchase,
     purchases_kb,
@@ -27,7 +28,7 @@ from ..keyboards import (
     account_picker_kb,
 )
 from ..states import CustomerLinkStates, CustomerPurchaseStates, CustomerTopupStates
-from ..utils import fmt_bytes, fmt_date, STATUS_LABELS
+from ..utils import fmt_bytes, fmt_date, fmt_date_jalali, STATUS_LABELS
 from .. import storage
 from ..connection_sender import send_connection, send_connections
 
@@ -48,13 +49,32 @@ def _account_text(user: dict) -> str:
     lines += [
         f"وضعیت: {STATUS_LABELS.get(user['status'], user['status'])}",
         f"مصرف: {fmt_bytes(user['used_bytes'])} / {fmt_bytes(user['total_quota_bytes']) if user['total_quota_bytes'] else 'نامحدود'}",
-        f"انقضا: {fmt_date(user.get('expire_at'))}",
+        f"انقضا: {fmt_date_jalali(user.get('expire_at'))}",
         f"موجودی اعتبار: {user.get('balance', 0):,} تومان",
     ]
+    if user.get("referral_code"):
+        lines.append(f"🎁 کد دعوت شما: <code>{user['referral_code']}</code>")
     if user["connections"]:
         lines.append(f"\n<b>خریدهای شما ({len(user['connections'])} سرویس):</b> روی هرکدوم از دکمه‌های پایین بزنید 👇")
         lines.append(usage_per_service_text(user["connections"]))
     return "\n".join(lines)
+
+
+def _loyalty_reward_text(user: dict) -> str:
+    """One-shot "🎁 loyalty reward!" line - only ever non-empty right after
+    a purchase/renewal that crossed PanelSettings.loyalty_purchase_threshold
+    (see services/user_ops.py's _maybe_grant_loyalty_reward and
+    BotUserResponse.loyalty_reward_credit/_gb, both transient/one-time)."""
+    parts = []
+    credit = user.get("loyalty_reward_credit")
+    gb = user.get("loyalty_reward_gb")
+    if credit:
+        parts.append(f"{credit:,} تومان اعتبار")
+    if gb:
+        parts.append(f"{gb:g} گیگابایت حجم")
+    if not parts:
+        return ""
+    return "🎁 به‌خاطر خرید مکرر شما هدیه‌ی وفاداری دریافت کردید: " + " و ".join(parts) + "!"
 
 
 async def _clear_state_keep_account(state: FSMContext) -> None:
@@ -278,6 +298,62 @@ async def cb_account(call: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     await call.answer()
 
 
+@router.callback_query(MenuCB.filter(F.action == "cust_support"))
+async def cb_support(call: CallbackQuery) -> None:
+    """Static support text/contact the admin sets from the panel's Settings
+    page (PanelSettings.support_contact_text) - see routers/panel_settings.py.
+    Deliberately simple (no ticket system) per the confirmed design."""
+    try:
+        settings = await api.get_payment_info()  # returns the full PanelSettings row, not just payment fields
+    except ApiError as exc:
+        await call.answer(f"خطا: {exc}", show_alert=True)
+        return
+    text = settings.get("support_contact_text") or "برای پشتیبانی، ادمین هنوز اطلاعات تماسی ثبت نکرده است."
+    await call.message.edit_text(f"🎧 پشتیبانی\n\n{text}", reply_markup=home_kb())
+    await call.answer()
+
+
+@router.callback_query(MenuCB.filter(F.action == "cust_referral"))
+async def cb_referral(call: CallbackQuery, state: FSMContext) -> None:
+    """Shows the customer's own invite code plus the currently-configured
+    reward amounts (both sides get a gift - see PanelSettings.referral_*
+    and services/user_ops.py's apply_referral_code)."""
+    user = await _resolve_account(call, state, call.from_user.id, "cust_referral")
+    if user == "ambiguous":
+        return
+    if not user:
+        await call.answer("ابتدا باید یک حساب داشته باشید.", show_alert=True)
+        return
+    try:
+        settings = await api.get_payment_info()
+    except ApiError:
+        settings = {}
+    lines = [
+        "🎁 دعوت دوستان",
+        "",
+        f"کد دعوت شما: <code>{user.get('referral_code') or '—'}</code>",
+        "این کد را برای دوستانتان بفرستید - با اولین خرید آن‌ها با این کد،",
+    ]
+    rewards = []
+    ref_credit = settings.get("referral_referrer_reward_credit") or 0
+    ref_gb = settings.get("referral_referrer_reward_gb") or 0
+    if ref_credit:
+        rewards.append(f"{ref_credit:,} تومان اعتبار")
+    if ref_gb:
+        rewards.append(f"{ref_gb:g} گیگابایت حجم")
+    lines.append(("شما " + " و ".join(rewards) + " هدیه می‌گیرید،") if rewards else "شما هدیه می‌گیرید،")
+    new_rewards = []
+    new_credit = settings.get("referral_new_user_reward_credit") or 0
+    new_gb = settings.get("referral_new_user_reward_gb") or 0
+    if new_credit:
+        new_rewards.append(f"{new_credit:,} تومان اعتبار")
+    if new_gb:
+        new_rewards.append(f"{new_gb:g} گیگابایت حجم")
+    lines.append(("و خودشان هم " + " و ".join(new_rewards) + " هدیه می‌گیرند.") if new_rewards else "و خودشان هم هدیه می‌گیرند.")
+    await call.message.edit_text("\n".join(lines), reply_markup=home_kb())
+    await call.answer()
+
+
 @router.callback_query(MenuCB.filter(F.action == "cust_usage"))
 async def cb_usage(call: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     """Dedicated top-level "📊 مصرف سرویس‌ها" button - shows the same
@@ -291,7 +367,7 @@ async def cb_usage(call: CallbackQuery, state: FSMContext, bot: Bot) -> None:
         await call.message.edit_text("هنوز حسابی برای شما ثبت نشده.", reply_markup=home_kb())
         await call.answer()
         return
-    await call.message.edit_text(standalone_usage_text(user["connections"]), reply_markup=home_kb())
+    await call.message.edit_text(standalone_usage_text(user["connections"], expire_at=user.get("expire_at")), reply_markup=home_kb())
     await call.answer()
 
 
@@ -492,25 +568,130 @@ async def cb_renew(call: CallbackQuery, state: FSMContext) -> None:
     await _start_package_picker(call, state, "renew")
 
 
+async def _reply(target, text: str, markup=None) -> None:
+    """Sends `text` whether `target` is the CallbackQuery that triggered
+    this step (edits the existing message, like every other handler in this
+    file) or a Message the customer just sent while typing a referral/
+    discount code (sends a fresh one instead - there's no message of ours
+    to edit in that case). Mirrors the isinstance() branch _ask_for_topup_
+    receipt below already used for the exact same reason."""
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(text, reply_markup=markup)
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=markup)
+
+
 async def _ask_for_receipt(call: CallbackQuery, state: FSMContext) -> None:
+    """Entry point once a package (+ node/protocol, if needed) has been
+    picked - resolves the customer's existing account (if any) once here,
+    then hands off to _advance_purchase_flow for the referral-code /
+    discount-code / payment-screen sequence (see states.py's
+    CustomerPurchaseStates for the states involved)."""
+    account = await _resolve_account_silent(state, call.from_user.id)
+    if account:
+        await state.update_data(target_username=account["username"])
+    await _advance_purchase_flow(call, state)
+
+
+async def _advance_purchase_flow(target, state: FSMContext) -> None:
+    """One small state machine covering the two optional pre-payment steps:
+    1) referral code - ONLY for a brand-new "new" purchase (no
+       target_username resolved yet - an existing customer can't be
+       referred after the fact, see services/user_ops.py's
+       apply_referral_code being one-shot).
+    2) discount code - shown to everyone, once per purchase.
+    Each step is skippable via promo_skip_kb's "⏭ رد کردن" button. Once
+    both are done (or skipped), falls through to _show_payment_screen.
+    Called both right after package/protocol selection (a CallbackQuery)
+    and after the customer types a code or taps skip (either a CallbackQuery
+    or a Message) - see _reply above for how both are handled uniformly."""
+    data = await state.get_data()
+
+    if data.get("kind") == "new" and not data.get("target_username") and not data.get("referral_step_done"):
+        await state.update_data(referral_step_done=True)
+        await state.set_state(CustomerPurchaseStates.entering_referral_code)
+        await _reply(
+            target,
+            "🎁 اگر یک کد دعوت دارید همینجا تایپ کنید - هم شما هم معرفتان هدیه می‌گیرید.\n\nدر غیر این صورت دکمه رد کردن را بزنید.",
+            promo_skip_kb(),
+        )
+        return
+
+    if not data.get("discount_step_done"):
+        await state.update_data(discount_step_done=True)
+        await state.set_state(CustomerPurchaseStates.entering_discount_code)
+        await _reply(
+            target,
+            "🎟 اگر کد تخفیف دارید همینجا تایپ کنید.\n\nدر غیر این صورت دکمه رد کردن را بزنید.",
+            promo_skip_kb(),
+        )
+        return
+
+    await _show_payment_screen(target, state)
+
+
+@router.callback_query(MenuCB.filter(F.action == "promo_skip"), CustomerPurchaseStates.entering_referral_code)
+async def skip_referral_code(call: CallbackQuery, state: FSMContext) -> None:
+    await _advance_purchase_flow(call, state)
+
+
+@router.message(CustomerPurchaseStates.entering_referral_code, F.text)
+async def enter_referral_code(message: Message, state: FSMContext) -> None:
+    await state.update_data(referral_code=message.text.strip())
+    await _advance_purchase_flow(message, state)
+
+
+@router.callback_query(MenuCB.filter(F.action == "promo_skip"), CustomerPurchaseStates.entering_discount_code)
+async def skip_discount_code(call: CallbackQuery, state: FSMContext) -> None:
+    await _advance_purchase_flow(call, state)
+
+
+@router.message(CustomerPurchaseStates.entering_discount_code, F.text)
+async def enter_discount_code(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    pkg = data["packages"][data["package_id"]]
+    code = message.text.strip()
+    try:
+        result = await api.validate_discount(code, package_price=pkg["price"], username=data.get("target_username"))
+    except ApiError as exc:
+        await message.answer(f"خطا: {exc}")
+        return
+    if not result.get("valid"):
+        await message.answer(f"❌ {result.get('reason') or 'کد تخفیف نامعتبر است'}\n\nدوباره امتحان کنید یا رد کردن را بزنید.", reply_markup=promo_skip_kb())
+        return
+    await state.update_data(discount_code=code, discount_amount=result.get("discount_amount") or 0)
+    await message.answer(f"✅ کد تخفیف اعمال شد: {result.get('discount_amount', 0):,} تومان تخفیف")
+    await _advance_purchase_flow(message, state)
+
+
+async def _show_payment_screen(target, state: FSMContext) -> None:
     try:
         payment = await api.get_payment_info()
     except ApiError as exc:
-        await call.answer(f"خطا: {exc}", show_alert=True)
+        if isinstance(target, CallbackQuery):
+            await target.answer(f"خطا: {exc}", show_alert=True)
+        else:
+            await target.answer(f"خطا: {exc}")
         return
     data = await state.get_data()
     pkg = data["packages"][data["package_id"]]
     price = pkg["price"]
+    discount_amount = data.get("discount_amount") or 0
+    final_price = max(0, price - discount_amount)
 
     # If the customer already has a linked account with enough balance,
     # offer an instant "pay from balance" option alongside the usual
     # card-to-card receipt flow (see pay_with_balance below).
-    account = await _resolve_account_silent(state, call.from_user.id)
-    can_pay_from_balance = bool(account and price and (account.get("balance") or 0) >= price)
+    account = await _resolve_account_silent(state, _uid(target))
+    can_pay_from_balance = bool(account and final_price and (account.get("balance") or 0) >= final_price)
     if account:
         await state.update_data(target_username=account["username"])
 
-    lines = [f"پکیج: <b>{pkg['name']}</b> — {price:,} تومان", ""]
+    if discount_amount:
+        lines = [f"پکیج: <b>{pkg['name']}</b> — <s>{price:,}</s> {final_price:,} تومان (🎟 {discount_amount:,} تومان تخفیف)", ""]
+    else:
+        lines = [f"پکیج: <b>{pkg['name']}</b> — {price:,} تومان", ""]
     if can_pay_from_balance:
         lines.append(f"💰 موجودی فعلی شما {account['balance']:,} تومان است - می‌توانید فوری از اعتبار پرداخت کنید،")
         lines.append("یا:")
@@ -525,8 +706,11 @@ async def _ask_for_receipt(call: CallbackQuery, state: FSMContext) -> None:
         lines.append("\n" + payment["payment_instructions"])
 
     await state.set_state(CustomerPurchaseStates.waiting_receipt)
-    await call.message.edit_text("\n".join(lines), reply_markup=receipt_choice_kb(can_pay_from_balance, price))
-    await call.answer()
+    await _reply(target, "\n".join(lines), receipt_choice_kb(can_pay_from_balance, final_price))
+
+
+def _uid(target) -> int:
+    return target.from_user.id
 
 
 @router.callback_query(PayCB.filter(F.method == "balance"), CustomerPurchaseStates.waiting_receipt)
@@ -543,6 +727,8 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
 
     add_gb = pkg.get("quota_gb") or 0
     add_days = pkg.get("duration_days") or 0
+    discount_amount = data.get("discount_amount") or 0
+    final_price = max(0, pkg["price"] - discount_amount)
 
     # Debit the wallet FIRST (atomic on the server side - see
     # routers/bot.py's add_balance) and only provision/renew after that
@@ -551,12 +737,24 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
     # (e.g. a double-tap racing the balance down to insufficient funds in
     # between) - i.e. free service. Debiting first means the worst case on
     # a mid-flow failure is "charged but not yet provisioned", which we
-    # recover from below with a refund instead of a free service.
+    # recover from below with a refund instead of a free service. Charges
+    # final_price (after any discount code applied in _advance_purchase_flow),
+    # NOT the original pkg["price"].
     try:
-        user = await api.add_balance(target_username, -pkg["price"])
+        user = await api.add_balance(target_username, -final_price)
     except ApiError as exc:
         await call.answer(f"خطا: {exc}", show_alert=True)
         return
+
+    # Consume the discount code now that payment actually succeeded - best
+    # effort, since the customer has already been charged the discounted
+    # amount either way; a failure here would only mean the code's
+    # used_count/redemption record undercounts, not a wrong charge.
+    if data.get("discount_code"):
+        try:
+            await api.redeem_discount(data["discount_code"], target_username, pkg["price"])
+        except ApiError:
+            pass
 
     # Collects only the connection(s) actually created by THIS purchase, so
     # the message below sends just those - not every connection the
@@ -594,7 +792,7 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
         # Provisioning failed after the debit already went through - refund
         # so the customer isn't charged for nothing, and tell them clearly.
         try:
-            await api.add_balance(target_username, pkg["price"])
+            await api.add_balance(target_username, final_price)
         except ApiError:
             pass
         await call.answer(f"خطا در فعال‌سازی سرویس - مبلغ به کیف پول شما بازگشت داده شد: {exc}", show_alert=True)
@@ -602,6 +800,8 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
 
     await state.clear()
     text = f"✅ خرید با موفقیت از اعتبار شما پرداخت شد.\n\nموجودی فعلی: {user['balance']:,} تومان"
+    if user.get("loyalty_reward_credit") or user.get("loyalty_reward_gb"):
+        text += "\n\n" + _loyalty_reward_text(user)
     await call.message.edit_text(text, reply_markup=home_kb())
     if new_connections:
         await send_connections(bot, call.from_user.id, new_connections)
@@ -678,6 +878,7 @@ async def receive_receipt(message: Message, state: FSMContext, bot: Bot) -> None
     kind = data["kind"]
     target_username = data.get("target_username") or f"tg{message.from_user.id}"
 
+    discount_amount = data.get("discount_amount") or 0
     request_id = storage.create_pending(
         telegram_id=message.from_user.id,
         telegram_username=message.from_user.username,
@@ -689,6 +890,10 @@ async def receive_receipt(message: Message, state: FSMContext, bot: Bot) -> None
         node_name=data.get("node_name"),
         protocol=data.get("protocol"),
         receipt_file_id=message.photo[-1].file_id,
+        referral_code=data.get("referral_code"),
+        discount_code=data.get("discount_code"),
+        discount_amount=discount_amount,
+        final_price=max(0, pkg.get("price", 0) - discount_amount),
     )
     await state.clear()
     await message.answer("✅ رسید شما ثبت شد و برای بررسی ادمین ارسال شد. نتیجه به همین چت اطلاع داده می‌شود.", reply_markup=home_kb())

@@ -251,6 +251,26 @@ class PanelBridge:
     async def delete_user(self, username: str, owner_admin_id: Optional[int] = None) -> None:
         await _call(bot_router.delete_user, username, owner_admin_id=owner_admin_id)
 
+    # ------------------------------------------------ referral & discount
+    async def apply_referral(self, username: str, referral_code: str) -> dict:
+        """Called once, right after create_user, for a brand-new customer
+        who entered someone else's invite code - see
+        handlers/admin_pending.py (the receipt-approval handler is the one
+        choke point new accounts are created through)."""
+        payload = schemas.ReferralApplyRequest(username=username, referral_code=referral_code)
+        return _dump(await _call(bot_router.apply_referral, payload))
+
+    async def validate_discount(self, code: str, package_price: int = 0, username: Optional[str] = None) -> dict:
+        """Check-as-you-type - does not consume the code."""
+        payload = schemas.DiscountValidateRequest(code=code, package_price=package_price, username=username)
+        return _dump(await _call(bot_router.validate_discount, payload))
+
+    async def redeem_discount(self, code: str, username: str, package_price: int = 0) -> dict:
+        """Called once at final purchase confirmation - actually consumes
+        the code (bumps used_count, records a redemption row)."""
+        payload = schemas.DiscountRedeemRequest(code=code, username=username, package_price=package_price)
+        return _dump(await _call(bot_router.redeem_discount, payload))
+
 
 # Mode switch: every handler imports `api` from this module and calls
 # `api.xxx(...)` without caring which implementation is behind it. Set

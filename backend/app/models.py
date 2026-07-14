@@ -416,6 +416,35 @@ class User(Base):
     notified_quota_80 = Column(Boolean, default=False)
     notified_expiry_soon = Column(Boolean, default=False)
 
+    # ---------------------------------------------------------------------
+    # Referral program (کد دعوت) - see PanelSettings.referral_* for the
+    # reward amounts. Every user gets their own short code (generated once,
+    # at creation - see services/user_ops.py's _generate_referral_code) they
+    # can share; `referred_by_id` is set at most ONCE, only if this user was
+    # created by entering somebody ELSE's code during their first purchase
+    # (see telegram_bot/handlers/admin_pending.py + routers/bot.py's
+    # apply_referral) - never retroactively changed afterward.
+    # `referral_reward_granted` guards against ever double-granting the
+    # referrer's reward for the same referred user (e.g. a retried/duplicate
+    # apply_referral call), independent of PanelSettings' reward amounts
+    # changing later.
+    referral_code = Column(String(16), unique=True, index=True, nullable=True)
+    referred_by_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    referral_reward_granted = Column(Boolean, default=False)
+
+    # ---------------------------------------------------------------------
+    # Loyalty rewards (کاربر وفادار) - independent of the referral program.
+    # purchase_count increments on every successful new-purchase/renewal
+    # (see services/user_ops.py); loyalty_rewards_given tracks how many
+    # threshold-crossings have already been rewarded so
+    # `purchase_count // PanelSettings.loyalty_purchase_threshold >
+    # loyalty_rewards_given` is the exact "is a new reward due" check -
+    # comparing counts instead of a simple "% == 0" so a jump of more than
+    # one threshold at once (e.g. a bulk admin action) still only grants the
+    # reward it hasn't already gotten, not one per crossed multiple.
+    purchase_count = Column(Integer, nullable=False, default=0)
+    loyalty_rewards_given = Column(Integer, nullable=False, default=0)
+
     created_at = Column(DateTime, default=now)
     updated_at = Column(DateTime, default=now, onupdate=now)
 
@@ -424,6 +453,7 @@ class User(Base):
     )
     owner_admin = relationship("AdminUser")
     package = relationship("Package")
+    referred_by = relationship("User", remote_side="User.id")
 
     @property
     def remaining_bytes(self):
@@ -683,6 +713,53 @@ class PackageConnection(Base):
     node = relationship("Node")
 
 
+class DiscountCode(Base):
+    """Admin-managed promo code (separate feature from the referral
+    program - see User.referral_code) a customer can type in at checkout in
+    the bot to knock money off a package's price. `value` is interpreted
+    according to `kind`: a percentage (0-100) or a flat toman amount -
+    never both, `kind` picks which. `max_uses` caps TOTAL redemptions
+    across every customer (NULL = unlimited); per-customer reuse is
+    prevented separately by DiscountCodeRedemption (one redemption row per
+    user per code, checked before accepting a code a second time from the
+    same account)."""
+
+    __tablename__ = "discount_codes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(64), unique=True, index=True, nullable=False)
+    kind = Column(String(16), nullable=False, default="percent")  # "percent" or "fixed"
+    value = Column(Float, nullable=False, default=0)  # percent (0-100) or toman amount, per `kind`
+    max_uses = Column(Integer, nullable=True)  # NULL = unlimited total redemptions
+    used_count = Column(Integer, nullable=False, default=0)
+    enabled = Column(Boolean, default=True)
+    expires_at = Column(DateTime, nullable=True)  # NULL = never expires
+    note = Column(String(255), nullable=True)  # admin-only label, e.g. "کمپین نوروز"
+    created_at = Column(DateTime, default=now)
+
+    redemptions = relationship("DiscountCodeRedemption", back_populates="code", cascade="all, delete-orphan")
+
+
+class DiscountCodeRedemption(Base):
+    """One row per successful use of a DiscountCode by a specific user -
+    both the running audit trail shown in the panel and the mechanism that
+    enforces "each customer can use a given code at most once" (checked via
+    a lookup here before accepting the code, rather than a UNIQUE
+    constraint, so admins can see WHEN/on-what-order it was used)."""
+
+    __tablename__ = "discount_code_redemptions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code_id = Column(Integer, ForeignKey("discount_codes.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    username = Column(String(128), nullable=True)  # denormalized, survives the user later being deleted
+    package_price = Column(BigInteger, nullable=True)  # price BEFORE discount, for the audit trail
+    discount_amount = Column(BigInteger, nullable=True)  # actual toman amount knocked off
+    created_at = Column(DateTime, default=now, index=True)
+
+    code = relationship("DiscountCode", back_populates="redemptions")
+
+
 class PanelSettings(Base):
     """Singleton row (always id=1) holding panel-wide settings that aren't
     tied to a specific node - currently just the card-to-card payment info
@@ -728,23 +805,60 @@ class PanelSettings(Base):
     ha_last_error = Column(Text, nullable=True)
 
     # ---------------------------------------------------------------------
-    # Configurable panel web port (مورد via Settings). The panel serves its
-    # UI through the `frontend` container's nginx (see frontend/nginx.conf,
+    # Configurable panel web port via Settings. The panel serves its UI
+    # through the `frontend` container's nginx (see frontend/nginx.conf,
     # docker-compose.yml's "80:80" port mapping) - changing the HOST side of
     # that mapping means editing docker-compose.yml and re-running
-    # `docker compose up -d` on the actual server, which this container has
-    # no filesystem access to do directly. Same SSH-automation pattern as
-    # the remote-bot deploy feature (services/remote_deploy.py) - just
-    # aimed at THIS server instead of a second one. The SSH password is
-    # never stored (see routers/panel_settings.py's change_panel_port) -
-    # only host/port/username/project-dir are persisted here.
+    # `docker compose up -d` on the actual server. As of the local-docker-
+    # socket rewrite this needs NO SSH/host/password at all any more - see
+    # services/local_deploy.py's module docstring (docker.sock + project dir
+    # bind-mounted into this container, see docker-compose.yml) - so this is
+    # now genuinely just "the port" from the admin's point of view.
     panel_web_port = Column(Integer, nullable=True, default=80)  # last known/applied host-side port
+    panel_port_status = Column(Text, nullable=True)  # last change attempt's result, shown in the UI
+    panel_port_changed_at = Column(DateTime, nullable=True)
+    # Legacy/unused columns from the old SSH-based version of this feature -
+    # left in place (harmless) rather than dropped, to avoid an ALTER TABLE
+    # DROP COLUMN migration for zero benefit. Nothing reads/writes these any
+    # more.
     panel_ssh_host = Column(String(255), nullable=True)
     panel_ssh_port = Column(Integer, nullable=True, default=22)
     panel_ssh_username = Column(String(100), nullable=True, default="root")
     panel_project_dir = Column(String(255), nullable=True, default="/root/usermanager")
-    panel_port_status = Column(Text, nullable=True)  # last change attempt's result, shown in the UI
-    panel_port_changed_at = Column(DateTime, nullable=True)
+
+    # ---------------------------------------------------------------------
+    # Static support contact shown by the bot's "🎧 پشتیبانی" menu button -
+    # deliberately just admin-authored text (a username/phone/instructions),
+    # not a ticketing system. Empty/NULL = button still shows but says
+    # support info isn't configured yet, rather than hiding the button
+    # entirely (simpler than threading "is this set?" into every menu build).
+    support_contact_text = Column(Text, nullable=True)
+
+    # ---------------------------------------------------------------------
+    # Referral program (کد دعوت): every User gets a unique referral_code
+    # (see User.referral_code below) they can share. The FIRST TIME a
+    # brand-new customer's purchase is approved with a referral code
+    # attached (see telegram_bot/handlers/admin_pending.py + routers/bot.py's
+    # apply_referral), both sides get a one-time reward - amounts here, all
+    # 0 by default (feature is a no-op until an admin sets at least one to a
+    # positive value). Deliberately NOT itself an on/off toggle - all-zero
+    # amounts already mean "nothing to give", so a separate enabled flag
+    # would just be one more thing to forget to flip.
+    referral_referrer_reward_credit = Column(BigInteger, nullable=False, default=0)  # تومان - to the person who referred
+    referral_referrer_reward_gb = Column(Float, nullable=False, default=0)
+    referral_new_user_reward_credit = Column(BigInteger, nullable=False, default=0)  # تومان - to the new signup
+    referral_new_user_reward_gb = Column(Float, nullable=False, default=0)
+
+    # ---------------------------------------------------------------------
+    # Loyalty rewards (کاربر وفادار) - fully independent of the referral
+    # program above: every `loyalty_purchase_threshold`-th successful
+    # purchase/renewal by the SAME user automatically grants a reward, no
+    # referral code involved at all. See User.purchase_count/
+    # loyalty_rewards_given and services/user_ops.py's grant points.
+    # NULL/0 threshold = feature disabled (default).
+    loyalty_purchase_threshold = Column(Integer, nullable=True)
+    loyalty_reward_credit = Column(BigInteger, nullable=False, default=0)  # تومان
+    loyalty_reward_gb = Column(Float, nullable=False, default=0)
 
 
 class BotSettings(Base):

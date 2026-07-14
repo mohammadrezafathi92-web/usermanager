@@ -13,7 +13,7 @@ from .services.quota_manager import poll_all
 from .services.radius_server import start_radius_server_in_background, cleanup_stale_radius_sessions
 from .services.notify import run_daily_notify_job
 from .services.backup import run_scheduled_backup, ha_healthcheck, ha_pull_and_apply, notify_admins_text
-from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, tutorials, backup, remote_bot, admins, radius_logs
+from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, tutorials, backup, remote_bot, admins, radius_logs, discount_codes
 from .telegram_bot import runner as telegram_bot_runner
 from .telegram_bot.config import parse_id_set
 
@@ -43,6 +43,7 @@ app.include_router(backup.router)
 app.include_router(remote_bot.router)
 app.include_router(admins.router)
 app.include_router(radius_logs.router)
+app.include_router(discount_codes.router)
 app.include_router(panel_settings.ha_router)
 
 scheduler = BackgroundScheduler()

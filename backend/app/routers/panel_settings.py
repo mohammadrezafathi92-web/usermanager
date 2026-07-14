@@ -20,8 +20,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..deps import require_permission, require_superadmin, get_bot_api_key
 from ..services import backup as backup_service
-from ..services import remote_deploy
-from ..services.remote_deploy import DeployError
+from ..services import local_deploy
 
 router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_permission("manage_settings"))])
 
@@ -64,29 +63,19 @@ def update_settings(payload: schemas.PanelSettingsUpdate, db: Session = Depends(
 
 @router.post("/change-port", response_model=schemas.PanelPortChangeResult, dependencies=[Depends(require_superadmin)])
 def change_panel_port(payload: schemas.PanelPortChangeRequest, db: Session = Depends(get_db)):
-    """SSHes into the panel's own host (superadmin-only - this changes how
-    EVERYONE reaches the panel) to edit docker-compose.yml's frontend port
-    mapping and recreate that one container - see
-    services/remote_deploy.py's change_panel_port for the actual commands.
-    Requires panel_ssh_host/panel_project_dir to already be saved via PUT
-    above; the SSH password is taken fresh from this request and never
-    stored (same rule as the remote-bot deploy feature)."""
+    """Changes the port EVERYONE reaches the panel on (superadmin-only) by
+    editing docker-compose.yml and recreating the frontend container -
+    fully local now, over the docker socket mounted into this container
+    (see services/local_deploy.py's module docstring for how/why). No SSH
+    details or password needed any more - just the new port number."""
     row = _get_or_create(db)
-    if not row.panel_ssh_host:
-        raise HTTPException(400, "ابتدا آدرس SSH این سرور را در تنظیمات ذخیره کنید")
-
     current_port = row.panel_web_port or 80
     try:
-        log = remote_deploy.change_panel_port(
-            host=row.panel_ssh_host,
-            ssh_port=row.panel_ssh_port or 22,
-            ssh_username=row.panel_ssh_username or "root",
-            ssh_password=payload.ssh_password,
-            project_dir=row.panel_project_dir or "/root/usermanager",
+        log = local_deploy.change_panel_port_local(
             current_port=current_port,
             new_port=payload.new_port,
         )
-    except DeployError as exc:
+    except local_deploy.DeployError as exc:
         row.panel_port_status = f"خطا: {exc}"
         db.commit()
         raise HTTPException(400, str(exc))

@@ -55,6 +55,8 @@ def main_menu_kb(scope: dict | None) -> InlineKeyboardMarkup:
         kb.button(text="🛒 خرید اکانت جدید", callback_data=MenuCB(action="cust_buy"))
         kb.button(text="💰 افزایش اعتبار", callback_data=MenuCB(action="cust_topup"))
         kb.button(text="📚 آموزش", callback_data=MenuCB(action="cust_tutorials"))
+        kb.button(text="🎁 دعوت دوستان", callback_data=MenuCB(action="cust_referral"))
+        kb.button(text="🎧 پشتیبانی", callback_data=MenuCB(action="cust_support"))
         kb.button(text="🔗 وصل کردن حساب قبلی", callback_data=MenuCB(action="cust_link"))
         kb.button(text="🆔 آیدی عددی من", callback_data=MenuCB(action="cust_myid"))
         kb.adjust(1)
@@ -70,6 +72,16 @@ def cancel_kb() -> InlineKeyboardMarkup:
 def home_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🏠 منوی اصلی", callback_data=MenuCB(action="home"))
+    return kb.as_markup()
+
+
+def promo_skip_kb() -> InlineKeyboardMarkup:
+    """Single "رد کردن" button shown alongside the referral/discount-code
+    text-entry prompts in the purchase flow (see customer.py's
+    _ask_for_receipt) - same MenuCB(action="promo_skip") handled by a
+    different handler depending on which of the two FSM states is active."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⏭ رد کردن", callback_data=MenuCB(action="promo_skip"))
     return kb.as_markup()
 
 
@@ -266,6 +278,9 @@ def group_connections_by_purchase(connections: list[dict]) -> list[dict]:
     for g in result:
         conns = g["connections"]
         date_label = str(g["created_at"])[:10] if g["created_at"] else ""
+        g["date_label"] = date_label  # kept separate from label - see standalone_usage_text, which
+        # shows the package name on its own line instead of joined with the date (button labels
+        # below still use the combined single-line `label`, since a button can't wrap nicely).
         if g["package_name"]:
             suffix = f" ({len(conns)} سرویس)" if len(conns) > 1 else ""
             g["label"] = f"🧾 {g['package_name']}{suffix} — {date_label}"
@@ -315,7 +330,7 @@ def usage_per_service_text(connections: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def standalone_usage_text(connections: list[dict]) -> str:
+def standalone_usage_text(connections: list[dict], expire_at=None) -> str:
     """Full standalone "📊 مصرف سرویس‌ها" view opened directly from the main
     menu (see MenuCB action="cust_usage") - unlike usage_per_service_text
     above (a supplementary section only shown when there's 2+ services,
@@ -326,27 +341,41 @@ def standalone_usage_text(connections: list[dict]) -> str:
     Grouped by purchase (same grouping as "👤 اکانت من" - see
     group_connections_by_purchase) so services bought together show up
     together with their own subtotal, instead of one flat list of every
-    service the customer has ever bought."""
-    from .utils import fmt_bytes
+    service the customer has ever bought. `expire_at`, when given, is shown
+    once near the top in the Jalali calendar (see utils.fmt_date_jalali) -
+    it's a single User-level field (not per-purchase), so it only needs
+    showing once rather than repeated per group."""
+    from .utils import fmt_bytes, fmt_date_jalali
 
     if not connections:
         return "📊 <b>مصرف سرویس‌ها</b>\n\nهنوز هیچ سرویسی برای شما فعال نشده."
 
     groups = group_connections_by_purchase(connections)
     lines = ["📊 <b>مصرف سرویس‌ها:</b>"]
+    if expire_at:
+        lines.append(f"📅 انقضا: {fmt_date_jalali(expire_at)}")
     grand_total = 0
     for g in groups:
         conns = g["connections"]
         group_total = sum(c.get("total_bytes") or 0 for c in conns)
         grand_total += group_total
         lines.append("")
+        # Package name gets its own line (instead of joined with the
+        # purchase date on one line) so it's readable on narrow screens.
+        if g["package_name"]:
+            lines.append(f"🧾 <b>{g['package_name']}</b>")
+            if g["date_label"]:
+                lines.append(f"تاریخ خرید: {g['date_label']}")
         if len(conns) == 1:
-            # Single-service "purchase" - g["label"] already IS the
-            # status+name line (see group_connections_by_purchase), no need
-            # to repeat it as a header above a one-line breakdown.
-            lines.append(f"{g['label']}: {fmt_bytes(group_total)}")
+            single_line = g["label"] if not g["package_name"] else (
+                f"{'✅' if conns[0].get('enabled') else '⛔️'} "
+                + PROTOCOL_LABELS.get(conns[0]["type"], conns[0]["type"])
+                + (f" — {conns[0]['node_name']}" if (conns[0].get("node_name") or "").strip() else "")
+            )
+            lines.append(f"{single_line}: {fmt_bytes(group_total)}")
         else:
-            lines.append(f"<b>{g['label']}</b>")
+            if not g["package_name"]:
+                lines.append(f"<b>{g['label']}</b>")
             for c in conns:
                 label = PROTOCOL_LABELS.get(c["type"], c["type"])
                 node_name = (c.get("node_name") or "").strip()

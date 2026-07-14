@@ -33,7 +33,9 @@ from .. import models
 logger = logging.getLogger("backup")
 
 BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "/app/data/backups"))
-KEEP_LAST = 40  # ~10 days of history at 4/day, plus manual ones in between
+# کاربر: "باید به صورت اوتوماتیک ۱۵ تا آخر سیو بماند" - قبلا ۴۰ تا نگه
+# داشته می‌شد (حجم و تعداد فایل‌های بکاپ زیاد می‌شد)، الان فقط ۱۵ فایل آخر.
+KEEP_LAST = 15
 
 
 def _db_path() -> str:

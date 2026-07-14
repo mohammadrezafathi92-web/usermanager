@@ -12,6 +12,7 @@ import Tutorials from "./pages/Tutorials.jsx";
 import Settings from "./pages/Settings.jsx";
 import Admins from "./pages/Admins.jsx";
 import RadiusLogs from "./pages/RadiusLogs.jsx";
+import DiscountCodes from "./pages/DiscountCodes.jsx";
 
 function Protected({ children }) {
   const { token, loading } = useAuth();
@@ -119,6 +120,14 @@ export default function App() {
           <Protected>
             <RadiusLogs />
           </Protected>
+        }
+      />
+      <Route
+        path="/discount-codes"
+        element={
+          <PermRoute perm="manage_settings">
+            <DiscountCodes />
+          </PermRoute>
         }
       />
       <Route path="/a/:slug" element={<Navigate to="/login" replace />} />

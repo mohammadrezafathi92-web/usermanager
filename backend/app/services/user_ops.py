@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import ipaddress
+import random
 import re
 import uuid
 from typing import Optional
@@ -28,6 +29,60 @@ from .link_builder import (
 
 def gb_to_bytes(gb: float) -> int:
     return int(round((gb or 0) * 1024 ** 3))
+
+
+# ---------------------------------------------------- referral & loyalty
+_REFERRAL_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I - avoids look-alike mistakes when typed by hand
+
+
+def _generate_referral_code(db: Session) -> str:
+    """Short, unique, easy-to-share code for User.referral_code - retries a
+    few times on the (very unlikely) chance of a collision rather than
+    trusting an 8-char keyspace is collision-free forever; falls back to a
+    longer uuid-derived code if it somehow still collides every time."""
+    for _ in range(20):
+        code = "".join(random.choice(_REFERRAL_CODE_ALPHABET) for _ in range(8))
+        if not db.query(models.User).filter(models.User.referral_code == code).first():
+            return code
+    return uuid.uuid4().hex[:12].upper()
+
+
+def _maybe_grant_loyalty_reward(db: Session, user: models.User) -> None:
+    """Called right after user.purchase_count is incremented (new purchase
+    or renewal - see create_user_record/renew_user/bulk_update_users) -
+    grants PanelSettings.loyalty_reward_credit/_gb once per
+    loyalty_purchase_threshold crossing. Comparing
+    `purchase_count // threshold` against `loyalty_rewards_given` (instead
+    of a plain `purchase_count % threshold == 0` check) means a jump of
+    more than one threshold in a single call (e.g. a bulk admin action)
+    still only grants exactly the rewards not already given, never more
+    than once for the same crossing. No-ops entirely while
+    loyalty_purchase_threshold is unset/0 (feature disabled by default -
+    see models.PanelSettings).
+
+    When a reward IS granted, stashes the (credit, gb) amounts on a
+    transient (non-persisted) `user._loyalty_reward_just_granted` attribute
+    so routers/bot.py's _user_response can surface a one-time "you just got
+    a loyalty reward!" notice to the bot without needing a whole separate
+    table/endpoint to track "has this reward been shown yet"."""
+    settings_row = db.get(models.PanelSettings, 1)
+    threshold = settings_row.loyalty_purchase_threshold if settings_row else None
+    if not threshold or threshold <= 0:
+        return
+    due = (user.purchase_count or 0) // threshold
+    already = user.loyalty_rewards_given or 0
+    if due <= already:
+        return
+    rewards_to_grant = due - already
+    credit = (settings_row.loyalty_reward_credit or 0) * rewards_to_grant
+    gb = (settings_row.loyalty_reward_gb or 0) * rewards_to_grant
+    if credit:
+        user.balance = (user.balance or 0) + credit
+    if gb:
+        user.total_quota_bytes = (user.total_quota_bytes or 0) + gb_to_bytes(gb)
+    user.loyalty_rewards_given = due
+    if credit or gb:
+        user._loyalty_reward_just_granted = (credit, gb)
 
 
 # --------------------------------------------------------------------- users
@@ -68,11 +123,124 @@ def create_user_record(
         # them even though it worked fine for users created from the web
         # panel's own create-user form (routers/users.py).
         package_id=package_id,
+        referral_code=_generate_referral_code(db),
+        # This user's own first purchase counts toward THEIR loyalty
+        # progress too (not just subsequent renewals) - see
+        # models.User.purchase_count.
+        purchase_count=1,
     )
     db.add(user)
+    db.flush()  # assigns user.id, still inside this same transaction
+    _maybe_grant_loyalty_reward(db, user)
     db.commit()
     db.refresh(user)
     return user
+
+
+def apply_referral_code(db: Session, user: models.User, referral_code: str) -> tuple[bool, str]:
+    """Called once, right after a brand-new customer's account is created
+    (routers/bot.py's apply_referral, itself called from
+    telegram_bot/handlers/admin_pending.py right after create_user
+    succeeds - see that module for why account creation is the one choke
+    point this can hook into). Rewards BOTH sides per the user's chosen
+    design (see PanelSettings.referral_referrer_reward_* /
+    referral_new_user_reward_*), never just the referrer. Returns
+    (ok, reason) - reason is a Persian message safe to show the customer
+    only when ok is False; silently no-ops (still returns True) when no
+    reward amounts are configured, since applying the code itself (linking
+    referred_by_id for future reporting) is still valid even with rewards
+    at zero."""
+    code = (referral_code or "").strip().upper()
+    if not code:
+        return False, "کد دعوت وارد نشده است"
+    if user.referred_by_id or user.referral_reward_granted:
+        return False, "قبلاً یک کد دعوت برای این حساب ثبت شده است"
+    referrer = (
+        db.query(models.User)
+        .filter(models.User.referral_code == code, models.User.id != user.id)
+        .first()
+    )
+    if not referrer:
+        return False, "کد دعوت نامعتبر است"
+    settings_row = db.get(models.PanelSettings, 1)
+    user.referred_by_id = referrer.id
+    user.referral_reward_granted = True
+    if settings_row:
+        ref_credit = settings_row.referral_referrer_reward_credit or 0
+        ref_gb = settings_row.referral_referrer_reward_gb or 0
+        new_credit = settings_row.referral_new_user_reward_credit or 0
+        new_gb = settings_row.referral_new_user_reward_gb or 0
+        if ref_credit:
+            referrer.balance = (referrer.balance or 0) + ref_credit
+        if ref_gb:
+            referrer.total_quota_bytes = (referrer.total_quota_bytes or 0) + gb_to_bytes(ref_gb)
+        if new_credit:
+            user.balance = (user.balance or 0) + new_credit
+        if new_gb:
+            user.total_quota_bytes = (user.total_quota_bytes or 0) + gb_to_bytes(new_gb)
+    db.commit()
+    return True, ""
+
+
+# ---------------------------------------------------- discount codes
+def validate_discount_code(
+    db: Session, code: str, package_price: int = 0, username: Optional[str] = None
+) -> tuple[bool, str, int]:
+    """Checks a promo code by its human-typed text (stored upper-cased -
+    see routers/discount_codes.py's create) without recording anything -
+    see redeem_discount_code for the version called once an order is
+    actually confirmed. Returns (valid, reason, discount_amount); reason is
+    a Persian message ready to show the customer as-is when invalid,
+    discount_amount is 0 when invalid. `username`, when given, also checks
+    the one-redemption-per-customer-per-code rule (see
+    models.DiscountCodeRedemption) - omitted for a brand-new customer whose
+    account doesn't exist yet."""
+    row = db.query(models.DiscountCode).filter(models.DiscountCode.code == (code or "").strip().upper()).first()
+    if not row:
+        return False, "کد تخفیف نامعتبر است", 0
+    if not row.enabled:
+        return False, "این کد تخفیف غیرفعال شده است", 0
+    if row.expires_at and row.expires_at < dt.datetime.utcnow():
+        return False, "این کد تخفیف منقضی شده است", 0
+    if row.max_uses is not None and (row.used_count or 0) >= row.max_uses:
+        return False, "ظرفیت استفاده از این کد تخفیف تمام شده است", 0
+    if username:
+        already = (
+            db.query(models.DiscountCodeRedemption)
+            .filter(models.DiscountCodeRedemption.code_id == row.id, models.DiscountCodeRedemption.username == username)
+            .first()
+        )
+        if already:
+            return False, "شما قبلاً از این کد تخفیف استفاده کرده‌اید", 0
+    if row.kind == "percent":
+        amount = int(round((package_price or 0) * (row.value / 100)))
+    else:
+        amount = int(round(row.value))
+    amount = max(0, min(amount, package_price or 0))
+    return True, "", amount
+
+
+def redeem_discount_code(db: Session, code: str, username: str, package_price: int = 0) -> tuple[bool, str, int]:
+    """Re-validates (a code can hit its cap/expire between the customer
+    typing it and confirming payment) then, if still valid, atomically
+    bumps DiscountCode.used_count and records a DiscountCodeRedemption row.
+    Call this only once, at the point a purchase is actually confirmed -
+    never from the validate-as-you-type step."""
+    valid, reason, amount = validate_discount_code(db, code, package_price, username=username)
+    if not valid:
+        return False, reason, 0
+    row = db.query(models.DiscountCode).filter(models.DiscountCode.code == code.strip().upper()).first()
+    row.used_count = (row.used_count or 0) + 1
+    user = db.query(models.User).filter(models.User.username == username).first()
+    db.add(models.DiscountCodeRedemption(
+        code_id=row.id,
+        user_id=user.id if user else None,
+        username=username,
+        package_price=package_price,
+        discount_amount=amount,
+    ))
+    db.commit()
+    return True, "", amount
 
 
 def renew_user(
@@ -98,6 +266,12 @@ def renew_user(
     # just at first creation.
     if package_id is not None:
         user.package_id = package_id
+    if add_gb or add_days:
+        # Only a REAL renewal (actual quota/time added) counts toward
+        # loyalty progress - a bare package re-tag or a reset-usage-only
+        # call shouldn't silently advance it. See _maybe_grant_loyalty_reward.
+        user.purchase_count = (user.purchase_count or 0) + 1
+        _maybe_grant_loyalty_reward(db, user)
     db.commit()
     db.refresh(user)
     return user
@@ -263,6 +437,12 @@ def bulk_update_users(
                 user.used_bytes = 0
             if user.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
                 user.status = models.UserStatus.active
+            # This bypasses renew_user() (it overwrites quota/expiry outright
+            # from the package instead of adding to it) so it needs its own
+            # loyalty-progress bump - same rule as renew_user: a real
+            # renewal-by-package counts.
+            user.purchase_count = (user.purchase_count or 0) + 1
+            _maybe_grant_loyalty_reward(db, user)
         elif add_gb or add_days or reset_usage:
             renew_user(db, user, add_gb=add_gb, add_days=add_days, reset_usage=reset_usage)
         if status is not None:

@@ -33,6 +33,22 @@ CREATE TABLE IF NOT EXISTS pending_purchases (
 );
 """
 
+# Columns added after the table already shipped - ALTER'd in on top of an
+# existing database in init_db() below (CREATE TABLE IF NOT EXISTS above is
+# a no-op once the table already exists, so these never get created any
+# other way on an upgrade). referral_code: invite code the customer typed
+# in at checkout (brand-new "new" purchases only - see customer.py).
+# discount_code/discount_amount: promo code applied, and how much it knocked
+# off (0 if none). final_price: price AFTER the discount - what the
+# card-to-card screen actually told the customer to pay; `price` above stays
+# the original package price for record-keeping.
+_NEW_COLUMNS = {
+    "referral_code": "TEXT",
+    "discount_code": "TEXT",
+    "discount_amount": "INTEGER NOT NULL DEFAULT 0",
+    "final_price": "INTEGER",
+}
+
 
 @contextmanager
 def _conn():
@@ -48,6 +64,11 @@ def _conn():
 def init_db():
     with _conn() as conn:
         conn.execute(_SCHEMA)
+        for col, coltype in _NEW_COLUMNS.items():
+            try:
+                conn.execute(f"ALTER TABLE pending_purchases ADD COLUMN {col} {coltype}")
+            except sqlite3.OperationalError:
+                pass  # column already exists - normal on every restart after the first
 
 
 def create_pending(
@@ -61,14 +82,18 @@ def create_pending(
     node_name: Optional[str] = None,
     protocol: Optional[str] = None,
     receipt_file_id: Optional[str] = None,
+    referral_code: Optional[str] = None,
+    discount_code: Optional[str] = None,
+    discount_amount: int = 0,
+    final_price: Optional[int] = None,
 ) -> int:
     with _conn() as conn:
         cur = conn.execute(
             """INSERT INTO pending_purchases
                (telegram_id, telegram_username, telegram_name, kind, package_id, package_name,
                 quota_gb, duration_days, price, node_id, node_name, protocol, target_username,
-                receipt_file_id, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                receipt_file_id, created_at, referral_code, discount_code, discount_amount, final_price)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 telegram_id,
                 telegram_username,
@@ -85,6 +110,10 @@ def create_pending(
                 target_username,
                 receipt_file_id,
                 dt.datetime.utcnow().isoformat(),
+                referral_code,
+                discount_code,
+                discount_amount or 0,
+                final_price if final_price is not None else package.get("price", 0),
             ),
         )
         return cur.lastrowid

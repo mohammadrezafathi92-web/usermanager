@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { KeyRound, Info, Plus, Trash2, Copy, Power, CreditCard, Bot, RefreshCw, DatabaseBackup, Download, Server, Eye, EyeOff, Upload, Repeat } from "lucide-react";
+import { KeyRound, Info, Plus, Trash2, Copy, Power, CreditCard, Bot, RefreshCw, DatabaseBackup, Download, Server, Eye, EyeOff, Upload, Repeat, ChevronDown } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
@@ -55,7 +55,13 @@ export default function Settings() {
     loadKeys();
   }, []);
 
-  const [payment, setPayment] = useState({ payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "" });
+  const [payment, setPayment] = useState({
+    payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "",
+    support_contact_text: "",
+    referral_referrer_reward_credit: 0, referral_referrer_reward_gb: 0,
+    referral_new_user_reward_credit: 0, referral_new_user_reward_gb: 0,
+    loyalty_purchase_threshold: 0, loyalty_reward_credit: 0, loyalty_reward_gb: 0,
+  });
   const [paymentMsg, setPaymentMsg] = useState(null);
   const [savingPayment, setSavingPayment] = useState(false);
 
@@ -76,16 +82,10 @@ export default function Settings() {
 
   const [portForm, setPortForm] = useState({
     panel_web_port: 80,
-    panel_ssh_host: "",
-    panel_ssh_port: 22,
-    panel_ssh_username: "root",
-    panel_project_dir: "/root/usermanager",
     panel_port_status: null,
     panel_port_changed_at: null,
   });
   const [newPort, setNewPort] = useState("");
-  const [sshPassword, setSshPassword] = useState("");
-  const [savingPortSettings, setSavingPortSettings] = useState(false);
   const [changingPort, setChangingPort] = useState(false);
   const [portMsg, setPortMsg] = useState(null);
 
@@ -103,7 +103,14 @@ export default function Settings() {
 
   useEffect(() => {
     fetchPanelSettings().then((res) => {
-      setPayment({ payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "", ...res.data });
+      setPayment({
+        payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "",
+        support_contact_text: "",
+        referral_referrer_reward_credit: 0, referral_referrer_reward_gb: 0,
+        referral_new_user_reward_credit: 0, referral_new_user_reward_gb: 0,
+        loyalty_purchase_threshold: 0, loyalty_reward_credit: 0, loyalty_reward_gb: 0,
+        ...res.data,
+      });
       setHa((h) => ({ ...h, ...res.data }));
       setPortForm((p) => ({ ...p, ...res.data }));
       setNewPort(String(res.data.panel_web_port || 80));
@@ -111,31 +118,7 @@ export default function Settings() {
     });
   }, []);
 
-  const submitPortSettings = async (e) => {
-    e.preventDefault();
-    setSavingPortSettings(true);
-    setPortMsg(null);
-    try {
-      const res = await updatePanelSettings({
-        panel_ssh_host: portForm.panel_ssh_host,
-        panel_ssh_port: Number(portForm.panel_ssh_port) || 22,
-        panel_ssh_username: portForm.panel_ssh_username,
-        panel_project_dir: portForm.panel_project_dir,
-      });
-      setPortForm((p) => ({ ...p, ...res.data }));
-      setPortMsg({ type: "ok", text: t("settings.msgSshSaved") });
-    } catch (err) {
-      setPortMsg({ type: "err", text: err?.response?.data?.detail || t("settings.msgSaveError") });
-    } finally {
-      setSavingPortSettings(false);
-    }
-  };
-
   const onChangePort = async () => {
-    if (!sshPassword) {
-      setPortMsg({ type: "err", text: t("settings.msgEnterSshPassword") });
-      return;
-    }
     if (
       !window.confirm(
         t("settings.confirmPortChange", { oldPort: portForm.panel_web_port || 80, newPort })
@@ -146,9 +129,8 @@ export default function Settings() {
     setChangingPort(true);
     setPortMsg(null);
     try {
-      const res = await changePanelPort(sshPassword, Number(newPort));
+      const res = await changePanelPort(Number(newPort));
       setPortForm((p) => ({ ...p, panel_web_port: Number(newPort), panel_port_status: res?.data?.message }));
-      setSshPassword("");
       setPortMsg({ type: "ok", text: res?.data?.message || t("settings.msgPortChanged") });
     } catch (err) {
       setPortMsg({ type: "err", text: err?.response?.data?.detail || t("settings.msgPortChangeError") });
@@ -366,6 +348,11 @@ export default function Settings() {
   const [backups, setBackups] = useState([]);
   const [backupMsg, setBackupMsg] = useState(null);
   const [runningBackup, setRunningBackup] = useState(false);
+  // Backup file list starts collapsed - the list can grow to 15 entries and
+  // most admins only care about it right after clicking "دریافت بک‌آپ فوری"
+  // or when they actually need to download/restore one, not on every visit
+  // to Settings.
+  const [backupsOpen, setBackupsOpen] = useState(false);
   const [downloadingFile, setDownloadingFile] = useState(null);
   const [restoring, setRestoring] = useState(false);
   const [restoreMsg, setRestoreMsg] = useState(null);
@@ -560,6 +547,98 @@ export default function Settings() {
               {paymentMsg.text}
             </div>
           )}
+          <div className="md:col-span-2">
+            <button type="submit" disabled={savingPayment} className="btn-primary">
+              {savingPayment ? t("settings.saving") : t("settings.savePaymentInfo")}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <div className="card mb-4">
+        <div className="flex items-center gap-2 mb-4">
+          <Info size={18} className="text-brand-600" />
+          <h3 className="font-bold text-gray-700">{t("settings.growthTitle")}</h3>
+        </div>
+        <p className="text-xs text-gray-400 mb-4">{t("settings.growthHint")}</p>
+        <form onSubmit={submitPayment} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="md:col-span-2">
+            <label className="block text-sm text-gray-600 mb-1">{t("settings.supportText")}</label>
+            <textarea
+              className="input"
+              rows={2}
+              placeholder={t("settings.supportTextPlaceholder")}
+              value={payment.support_contact_text || ""}
+              onChange={(e) => setPayment((p) => ({ ...p, support_contact_text: e.target.value }))}
+            />
+          </div>
+
+          <div className="md:col-span-2 border-t border-gray-100 dark:border-slate-800 pt-3 mt-1">
+            <p className="text-sm font-medium text-gray-600 mb-2">{t("settings.referralTitle")}</p>
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("settings.referralReferrerCredit")}</label>
+            <input
+              type="number" min="0" className="input" dir="ltr"
+              value={payment.referral_referrer_reward_credit ?? 0}
+              onChange={(e) => setPayment((p) => ({ ...p, referral_referrer_reward_credit: Number(e.target.value) }))}
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("settings.referralReferrerGb")}</label>
+            <input
+              type="number" min="0" step="0.1" className="input" dir="ltr"
+              value={payment.referral_referrer_reward_gb ?? 0}
+              onChange={(e) => setPayment((p) => ({ ...p, referral_referrer_reward_gb: Number(e.target.value) }))}
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("settings.referralNewUserCredit")}</label>
+            <input
+              type="number" min="0" className="input" dir="ltr"
+              value={payment.referral_new_user_reward_credit ?? 0}
+              onChange={(e) => setPayment((p) => ({ ...p, referral_new_user_reward_credit: Number(e.target.value) }))}
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("settings.referralNewUserGb")}</label>
+            <input
+              type="number" min="0" step="0.1" className="input" dir="ltr"
+              value={payment.referral_new_user_reward_gb ?? 0}
+              onChange={(e) => setPayment((p) => ({ ...p, referral_new_user_reward_gb: Number(e.target.value) }))}
+            />
+          </div>
+
+          <div className="md:col-span-2 border-t border-gray-100 dark:border-slate-800 pt-3 mt-1">
+            <p className="text-sm font-medium text-gray-600 mb-2">{t("settings.loyaltyTitle")}</p>
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("settings.loyaltyThreshold")}</label>
+            <input
+              type="number" min="0" className="input" dir="ltr"
+              placeholder={t("settings.loyaltyThresholdPlaceholder")}
+              value={payment.loyalty_purchase_threshold ?? 0}
+              onChange={(e) => setPayment((p) => ({ ...p, loyalty_purchase_threshold: Number(e.target.value) }))}
+            />
+          </div>
+          <div />
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("settings.loyaltyRewardCredit")}</label>
+            <input
+              type="number" min="0" className="input" dir="ltr"
+              value={payment.loyalty_reward_credit ?? 0}
+              onChange={(e) => setPayment((p) => ({ ...p, loyalty_reward_credit: Number(e.target.value) }))}
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("settings.loyaltyRewardGb")}</label>
+            <input
+              type="number" min="0" step="0.1" className="input" dir="ltr"
+              value={payment.loyalty_reward_gb ?? 0}
+              onChange={(e) => setPayment((p) => ({ ...p, loyalty_reward_gb: Number(e.target.value) }))}
+            />
+          </div>
+
           <div className="md:col-span-2">
             <button type="submit" disabled={savingPayment} className="btn-primary">
               {savingPayment ? t("settings.saving") : t("settings.savePaymentInfo")}
@@ -913,75 +992,16 @@ export default function Settings() {
             </div>
           )}
 
-          <form onSubmit={submitPortSettings} className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div className="bg-gray-50 rounded-lg p-3 space-y-3">
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.serverIpAddress")}</label>
-              <input
-                className="input"
-                dir="ltr"
-                placeholder={t("settings.serverIpPlaceholder")}
-                value={portForm.panel_ssh_host || ""}
-                onChange={(e) => setPortForm((p) => ({ ...p, panel_ssh_host: e.target.value }))}
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.sshPort")}</label>
+              <label className="block text-xs text-gray-500 mb-1">{t("settings.newPort")}</label>
               <input
                 type="number"
                 className="input"
                 dir="ltr"
-                value={portForm.panel_ssh_port || 22}
-                onChange={(e) => setPortForm((p) => ({ ...p, panel_ssh_port: e.target.value }))}
+                value={newPort}
+                onChange={(e) => setNewPort(e.target.value)}
               />
-            </div>
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.sshUsername")}</label>
-              <input
-                className="input"
-                dir="ltr"
-                value={portForm.panel_ssh_username || "root"}
-                onChange={(e) => setPortForm((p) => ({ ...p, panel_ssh_username: e.target.value }))}
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.projectPathOnServer")}</label>
-              <input
-                className="input"
-                dir="ltr"
-                placeholder="/root/usermanager"
-                value={portForm.panel_project_dir || ""}
-                onChange={(e) => setPortForm((p) => ({ ...p, panel_project_dir: e.target.value }))}
-              />
-            </div>
-            <div className="md:col-span-2">
-              <button type="submit" disabled={savingPortSettings} className="btn-secondary">
-                {savingPortSettings ? t("settings.saving") : t("settings.saveSshSettings")}
-              </button>
-            </div>
-          </form>
-
-          <div className="bg-gray-50 rounded-lg p-3 space-y-3">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">{t("settings.newPort")}</label>
-                <input
-                  type="number"
-                  className="input"
-                  dir="ltr"
-                  value={newPort}
-                  onChange={(e) => setNewPort(e.target.value)}
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">{t("settings.sshPasswordNotSaved")}</label>
-                <input
-                  type="password"
-                  className="input"
-                  dir="ltr"
-                  value={sshPassword}
-                  onChange={(e) => setSshPassword(e.target.value)}
-                />
-              </div>
             </div>
             <button type="button" className="btn-primary w-full" disabled={changingPort} onClick={onChangePort}>
               {changingPort ? t("settings.applyingPort") : t("settings.changePanelPort")}
@@ -1015,26 +1035,36 @@ export default function Settings() {
             {backupMsg.text}
           </div>
         )}
-        <div className="space-y-2">
-          {backups.map((b) => (
-            <div key={b.filename} className="flex items-center justify-between border border-gray-100 rounded-xl px-4 py-3">
-              <div>
-                <div className="font-mono text-sm text-gray-800">{b.filename}</div>
-                <div className="text-xs text-gray-400 mt-1">
-                  {formatDateTime(b.created_at, language)} — {formatBytes(b.size_bytes)}
+        <button
+          type="button"
+          className="w-full flex items-center justify-between border border-gray-100 rounded-xl px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 transition"
+          onClick={() => setBackupsOpen((v) => !v)}
+        >
+          <span className="font-bold">{t("settings.backupListToggle", { count: backups.length })}</span>
+          <ChevronDown size={16} className={`transition-transform ${backupsOpen ? "rotate-180" : ""}`} />
+        </button>
+        {backupsOpen && (
+          <div className="space-y-2 mt-2">
+            {backups.map((b) => (
+              <div key={b.filename} className="flex items-center justify-between border border-gray-100 rounded-xl px-4 py-3">
+                <div>
+                  <div className="font-mono text-sm text-gray-800">{b.filename}</div>
+                  <div className="text-xs text-gray-400 mt-1">
+                    {formatDateTime(b.created_at, language)} — {formatBytes(b.size_bytes)}
+                  </div>
                 </div>
+                <button
+                  className="btn-secondary"
+                  disabled={downloadingFile === b.filename}
+                  onClick={() => onDownloadBackup(b.filename)}
+                >
+                  <Download size={14} /> {downloadingFile === b.filename ? "..." : t("settings.download")}
+                </button>
               </div>
-              <button
-                className="btn-secondary"
-                disabled={downloadingFile === b.filename}
-                onClick={() => onDownloadBackup(b.filename)}
-              >
-                <Download size={14} /> {downloadingFile === b.filename ? "..." : t("settings.download")}
-              </button>
-            </div>
-          ))}
-          {backups.length === 0 && <div className="text-center text-gray-400 py-6 text-sm">{t("settings.noBackupsYet")}</div>}
-        </div>
+            ))}
+            {backups.length === 0 && <div className="text-center text-gray-400 py-6 text-sm">{t("settings.noBackupsYet")}</div>}
+          </div>
+        )}
 
         {isSuperadmin && (
           <div className="mt-6 pt-5 border-t border-gray-100">

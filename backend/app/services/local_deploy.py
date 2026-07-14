@@ -11,28 +11,48 @@ backend container:
     like Portainer/Watchtower/Traefik)
   - the project directory itself, bind-mounted at the SAME absolute path
     inside the container as it has on the host (HOST_PROJECT_DIR, default
-    /root/usermanager) - this matters because when the `docker compose`
-    CLI (installed in this image - see Dockerfile) submits a container-create
-    request over the socket, the DAEMON resolves any relative bind-mount
-    paths in docker-compose.yml (like "./backend/data:/app/data") against
-    the path passed via `-f`, and the daemon looks for that path on the
-    REAL host filesystem - not through this container's mount namespace. So
-    the path only works if it's the actual host path, which is exactly why
-    the mount destination and HOST_PROJECT_DIR must agree.
+    /root/usermanager) - this matters because when the docker-compose CLI
+    submits a container-create request over the socket, the DAEMON resolves
+    any relative bind-mount paths in docker-compose.yml (like
+    "./backend/data:/app/data") against the path passed via `-f`, and the
+    daemon looks for that path on the REAL host filesystem - not through
+    this container's mount namespace. So the path only works if it's the
+    actual host path, which is exactly why the mount destination and
+    HOST_PROJECT_DIR must agree.
 
 If the admin's install lives somewhere other than /root/usermanager, they
 can override it via the HOST_PROJECT_DIR env var in backend/.env - but the
 docker-compose.yml bind-mount destination has to be edited to match too, so
-in practice this stays a fixed convention for a normal install."""
+in practice this stays a fixed convention for a normal install.
+
+The docker-compose static binary itself is NOT baked into the backend
+image (it used to be - see git history of backend/Dockerfile - but that
+cost ~370s and ~100MB+ on EVERY single image build for a feature almost
+nobody uses on any given day). Instead ensure_docker_compose_cli() below
+downloads it once, lazily, the first time this feature actually runs, and
+caches it under the persistent ./backend/data bind mount so it survives
+image rebuilds and is never re-downloaded after that. The v2 compose
+binary works standalone (it doesn't need the separate `docker` CLI - it
+talks to the daemon directly over DOCKER_HOST / the mounted socket), so we
+only ever need this one binary, not two."""
 from __future__ import annotations
 
 import logging
 import os
+import platform
+import stat
 import subprocess
+
+import requests
 
 logger = logging.getLogger("local_deploy")
 
 HOST_PROJECT_DIR = os.environ.get("HOST_PROJECT_DIR", "/root/usermanager")
+
+DOCKER_CLI_VERSION = "25.0.3"
+DOCKER_COMPOSE_VERSION = "2.24.6"
+_CLI_CACHE_DIR = os.path.join(os.environ.get("APP_DATA_DIR", "/app/data"), ".docker-cli")
+_COMPOSE_BIN = os.path.join(_CLI_CACHE_DIR, "docker-compose")
 
 
 class DeployError(Exception):
@@ -49,6 +69,41 @@ def _run(cmd: list[str], timeout: int = 60) -> tuple[int, str, str]:
         return 127, "", str(exc)
     except subprocess.TimeoutExpired as exc:
         return 124, "", str(exc)
+
+
+def _compose_arch() -> str:
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64"):
+        return "x86_64"
+    if machine in ("aarch64", "arm64"):
+        return "aarch64"
+    raise DeployError(f"معماری پشتیبانی‌نشده برای دانلود docker-compose: {machine}")
+
+
+def ensure_docker_compose_cli() -> str:
+    """Downloads the docker-compose v2 static binary into the persistent
+    cache on first use only. Returns the binary path to invoke."""
+    if os.path.isfile(_COMPOSE_BIN) and os.access(_COMPOSE_BIN, os.X_OK):
+        return _COMPOSE_BIN
+
+    os.makedirs(_CLI_CACHE_DIR, exist_ok=True)
+    arch = _compose_arch()
+    url = (
+        f"https://github.com/docker/compose/releases/download/"
+        f"v{DOCKER_COMPOSE_VERSION}/docker-compose-linux-{arch}"
+    )
+    try:
+        resp = requests.get(url, timeout=60)
+        resp.raise_for_status()
+        tmp_path = _COMPOSE_BIN + ".tmp"
+        with open(tmp_path, "wb") as f:
+            f.write(resp.content)
+        os.chmod(tmp_path, os.stat(tmp_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        os.replace(tmp_path, _COMPOSE_BIN)
+    except Exception as exc:  # noqa: BLE001 - surfaced as a DeployError below
+        raise DeployError(f"دانلود ابزار docker-compose ناموفق بود: {exc}") from exc
+
+    return _COMPOSE_BIN
 
 
 def change_panel_port_local(current_port: int, new_port: int) -> str:
@@ -96,10 +151,15 @@ def change_panel_port_local(current_port: int, new_port: int) -> str:
         raise DeployError(f"نوشتن docker-compose.yml ناموفق بود: {exc}", "\n".join(log_lines))
     log("فایل docker-compose.yml بروزرسانی شد.")
 
+    try:
+        compose_bin = ensure_docker_compose_cli()
+    except DeployError:
+        with open(compose_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        log("(فایل docker-compose.yml به حالت قبل بازگردانده شد.)")
+        raise
     log("در حال بازسازی کانتینر frontend ...")
-    code, out, err = _run(
-        ["docker", "compose", "-f", compose_path, "up", "-d", "frontend"], timeout=120
-    )
+    code, out, err = _run([compose_bin, "-f", compose_path, "up", "-d", "frontend"], timeout=120)
     if code != 0:
         # Roll the file back to the old mapping so a failed attempt doesn't
         # leave docker-compose.yml pointing at a port that isn't actually

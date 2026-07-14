@@ -1,55 +1,38 @@
-# Multi-stage build - keeps the final image (what actually sits on disk and
-# runs) free of gcc/libffi-dev/binutils, which was previously baked in
-# permanently just to compile pip's C-extension packages. On small-disk VPS
-# boxes that gcc toolchain alone (~200MB+, incl. cc1/lto1) was enough to
-# blow the disk during "docker compose up --build". None of that is needed
-# at RUNTIME - only while pip is resolving/building wheels.
+# Two things used to be baked into EVERY backend image build and were the
+# main reason builds were slow/heavy (fatal on small-disk VPS boxes):
+#   1) gcc/libffi-dev, installed unconditionally "just in case" a pip package
+#      needed to compile a C extension. In practice cryptography/bcrypt/
+#      paramiko's transitive deps (PyNaCl) all ship prebuilt manylinux
+#      wheels for this base image's platform (glibc x86_64/arm64), so no
+#      compiler is normally needed at all. Below we try a wheels-only
+#      install first; gcc is only installed (and then purged again, in the
+#      SAME layer so it never actually lands on disk) as a fallback if some
+#      future dependency genuinely lacks a wheel.
+#   2) The docker CLI + compose plugin static binaries, downloaded on every
+#      single build even though they're only used by one rarely-used admin
+#      feature ("تنظیمات > پورت پنل وب" - see services/local_deploy.py).
+#      That's now downloaded lazily at runtime, once, into the persistent
+#      ./backend/data bind mount - not part of the image at all anymore.
 
-# ---- stage 1: build/install python deps (gcc available here only) ----
+# ---- stage 1: install python deps (wheels-only, gcc fallback purged in-layer) ----
 FROM python:3.11-slim AS pydeps
 
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libffi-dev && rm -rf /var/lib/apt/lists/*
-
 COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+RUN pip install --no-cache-dir --only-binary=:all: --prefix=/install -r requirements.txt \
+    || (apt-get update \
+        && apt-get install -y --no-install-recommends gcc libffi-dev \
+        && pip install --no-cache-dir --prefix=/install -r requirements.txt \
+        && apt-get purge -y gcc libffi-dev \
+        && apt-get autoremove -y \
+        && rm -rf /var/lib/apt/lists/*)
 
-# ---- stage 2: fetch docker CLI + compose plugin static binaries (no gcc needed) ----
-FROM python:3.11-slim AS dockercli
-
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
-# Docker CLI + compose plugin (client-only, static binaries - no engine, no
-# daemon) so the panel's own "تغییر پورت پنل وب" feature can talk to the
-# HOST's docker daemon over the socket mounted in at /var/run/docker.sock
-# (docker-compose.yml) - see services/local_deploy.py's module docstring.
-RUN set -eux; \
-    arch="$(dpkg --print-architecture)"; \
-    case "$arch" in \
-        amd64) docker_arch="x86_64" ;; \
-        arm64) docker_arch="aarch64" ;; \
-        *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL "https://download.docker.com/linux/static/stable/${docker_arch}/docker-25.0.3.tgz" -o /tmp/docker.tgz; \
-    mkdir -p /out/bin; \
-    tar xzf /tmp/docker.tgz --strip-components=1 -C /out/bin docker/docker; \
-    rm /tmp/docker.tgz; \
-    mkdir -p /out/cli-plugins; \
-    compose_arch="$([ "$arch" = "arm64" ] && echo aarch64 || echo x86_64)"; \
-    curl -fsSL "https://github.com/docker/compose/releases/download/v2.24.6/docker-compose-linux-${compose_arch}" -o /out/cli-plugins/docker-compose; \
-    chmod +x /out/bin/docker /out/cli-plugins/docker-compose
-
-# ---- stage 3: final runtime image - only what's actually needed to run ----
+# ---- stage 2: final runtime image - only what's actually needed to run ----
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# curl stays (used at runtime by the panel's own health checks / HA sync,
-# not just at build time) - gcc/libffi-dev do NOT come along.
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
-
 COPY --from=pydeps /install /usr/local
-COPY --from=dockercli /out/bin/docker /usr/local/bin/docker
-COPY --from=dockercli /out/cli-plugins/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
 
 COPY app ./app
 

@@ -4,6 +4,7 @@ import logging
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import inspect
 
 from .config import settings
 from .database import Base, engine, SessionLocal
@@ -84,10 +85,86 @@ def _warn_if_insecure_defaults() -> None:
         )
 
 
+def _auto_migrate_missing_columns() -> None:
+    """Adds any columns/indexes that exist in the ORM models (models.py)
+    but not yet in the actual database file, so a fresh `git pull` +
+    rebuild can never crash the app on a stale schema again.
+
+    Until now this project relied on the admin manually running a
+    migrate_*.sql (or migrate_*.py) file by hand after certain deploys -
+    easy to forget, and exactly what happened on 2026-07-14: a server
+    that had been updated to the new code crashed on every startup with
+    "no such column: panel_settings.support_contact_text" because nobody
+    had run that day's .sql file on it yet. This makes that whole class of
+    bug impossible: every startup compares the ORM's expected columns
+    against what's actually in the database and adds whatever's missing,
+    automatically, before the app starts serving requests.
+
+    Deliberately ADDITIVE ONLY - never drops/renames/alters an existing
+    column, never touches existing data. Runs after
+    Base.metadata.create_all() (which handles brand-new TABLES on its
+    own) and only fills in columns/indexes on tables that already exist.
+    Any single column/index that fails to add is logged and skipped
+    rather than aborting startup - a missing index is not worth crashing
+    over, and a column ALTER failure will surface clearly the first time
+    something actually queries that column, same as before this existed."""
+    if engine.dialect.name != "sqlite":
+        # The ADD COLUMN DDL/default-value handling below is written and
+        # tested against SQLite specifically, which is the only database
+        # this project has ever run against (see database.py) - skip
+        # rather than risk an incorrect ALTER on a dialect nobody uses.
+        return
+
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue  # brand-new table - create_all() above already made it
+
+            existing_cols = {c["name"] for c in inspector.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in existing_cols:
+                    continue
+                try:
+                    col_type = column.type.compile(dialect=engine.dialect)
+                except Exception:
+                    col_type = "TEXT"
+
+                default_sql = ""
+                default = getattr(column, "default", None)
+                if default is not None and getattr(default, "is_scalar", False):
+                    arg = default.arg
+                    if isinstance(arg, bool):
+                        default_sql = f" DEFAULT {1 if arg else 0}"
+                    elif isinstance(arg, (int, float)):
+                        default_sql = f" DEFAULT {arg}"
+                    elif isinstance(arg, str):
+                        default_sql = f" DEFAULT '{arg}'"
+
+                ddl = f"ALTER TABLE {table.name} ADD COLUMN {column.name} {col_type}{default_sql}"
+                try:
+                    conn.exec_driver_sql(ddl)
+                    logging.info("auto-migrate: added missing column %s.%s", table.name, column.name)
+                except Exception as exc:
+                    logging.warning(
+                        "auto-migrate: could not add column %s.%s (%s) - skipping",
+                        table.name, column.name, exc,
+                    )
+
+            for index in table.indexes:
+                try:
+                    index.create(bind=conn, checkfirst=True)
+                except Exception as exc:
+                    logging.warning("auto-migrate: could not create index %s (%s) - skipping", index.name, exc)
+
+
 @app.on_event("startup")
 def on_startup():
     _warn_if_insecure_defaults()
     Base.metadata.create_all(bind=engine)
+    _auto_migrate_missing_columns()
 
     db = SessionLocal()
     try:

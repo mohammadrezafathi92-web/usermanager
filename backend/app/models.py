@@ -489,6 +489,73 @@ class User(Base):
         return self.owner_admin.username if self.owner_admin else None
 
 
+class Purchase(Base):
+    """One individually-tracked package purchase/allotment for a user, with
+    its OWN quota/usage/expiry - completely independent of anything else
+    the same user has. Introduced to fix a real bug: an admin could give an
+    existing user (e.g. one already on an unlimited plan) an ADDITIONAL
+    package via the "افزودن پکیج" button, but that package's own quota/
+    duration was never actually enforced anywhere - the new connections
+    just rode along under whatever the user's own combined
+    total_quota_bytes/expire_at already happened to be (see User's
+    docstring), so a "1GB test package" could download far past 1GB with
+    nothing to stop it.
+
+    User.total_quota_bytes/used_bytes/expire_at/status remain exactly as
+    before and are STILL the ONLY thing that governs any connection NOT
+    linked to a Purchase (Connection.purchase_id is NULL) - i.e. every
+    connection created before this feature existed, and every connection
+    from the normal "create user with package" / bulk-create flows, which
+    already correctly map one package to one user's combined quota with no
+    ambiguity. Purchase only comes into play for connections created via
+    the "افزودن پکیج" (apply-package) endpoint from here on, so existing
+    behavior for every other flow is completely unchanged."""
+
+    __tablename__ = "purchases"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    package_id = Column(Integer, ForeignKey("packages.id"), nullable=True, index=True)
+    # Same "snapshot, not a live FK" idea as Connection.package_name_snapshot -
+    # survives the package later being renamed/deleted.
+    package_name_snapshot = Column(String(255), nullable=True)
+
+    quota_bytes = Column(BigInteger, default=0)  # 0 == unlimited
+    used_bytes = Column(BigInteger, default=0)
+    expire_at = Column(DateTime, nullable=True)  # null == never expires
+    expire_days_after_first_use = Column(Integer, nullable=True)
+    # Concurrent-session cap for JUST this purchase's own connections - NULL
+    # falls back to each Connection's own max_concurrent_sessions (same
+    # fallback rule as User.max_concurrent_sessions).
+    max_concurrent_sessions = Column(Integer, nullable=True)
+
+    status = Column(Enum(UserStatus), default=UserStatus.active, nullable=False)
+
+    # Same queued-renewal idea as User.reserved_quota_bytes (see that
+    # docstring) - but scoped to just this one purchase.
+    reserved_quota_bytes = Column(BigInteger, nullable=True)
+    reserved_duration_days = Column(Integer, nullable=True)
+    reserved_package_id = Column(Integer, ForeignKey("packages.id"), nullable=True)
+    reserved_created_at = Column(DateTime, nullable=True)
+
+    notified_quota_80 = Column(Boolean, default=False)
+    notified_expiry_soon = Column(Boolean, default=False)
+
+    created_at = Column(DateTime, default=now)
+    updated_at = Column(DateTime, default=now, onupdate=now)
+
+    user = relationship("User", foreign_keys=[user_id], backref="purchases")
+    package = relationship("Package", foreign_keys=[package_id])
+    reserved_package = relationship("Package", foreign_keys=[reserved_package_id])
+    connections = relationship("Connection", back_populates="purchase")
+
+    @property
+    def remaining_bytes(self):
+        if not self.quota_bytes:
+            return None
+        return max(self.quota_bytes - self.used_bytes, 0)
+
+
 class Connection(Base):
     """One protocol-specific credential belonging to a user, living on a
     specific node. A user may have several (e.g. one WireGuard peer + one
@@ -572,8 +639,21 @@ class Connection(Base):
     # purchase history. NULL for connections not created from a package.
     package_name_snapshot = Column(String(255), nullable=True)
 
+    # Real, independently-enforced quota/expiry link - see Purchase's own
+    # docstring for why this is separate from purchase_batch above (which is
+    # ONLY a display-grouping string, with no quota semantics at all). NULL
+    # means this connection's quota/expiry/status comes from the owning
+    # User's own combined fields instead (every connection created before
+    # this feature existed, plus every "create user with package"/bulk-create
+    # connection, which already correctly map 1 package -> 1 user's combined
+    # quota with no ambiguity - see services/quota_manager.py's
+    # _enforce_user_limits and _enforce_purchase_limits for how the two paths
+    # split).
+    purchase_id = Column(Integer, ForeignKey("purchases.id"), nullable=True, index=True)
+
     user = relationship("User", back_populates="connections")
     node = relationship("Node", back_populates="connections")
+    purchase = relationship("Purchase", back_populates="connections")
 
 
 class UsageLog(Base):

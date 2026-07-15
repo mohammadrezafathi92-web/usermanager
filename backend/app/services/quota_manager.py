@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..database import SessionLocal
 from .mikrotik_client import MikrotikClient, MikrotikError, parse_ros_duration_seconds
-from .user_ops import _maybe_activate_reserved_renewal
+from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
 from .xray_client import XrayError, client_for_node
 
 logger = logging.getLogger("quota_manager")
@@ -30,7 +30,11 @@ WIREGUARD_ONLINE_THRESHOLD_SECONDS = 180
 
 def _apply_delta(db: Session, connection: models.Connection, rx: int, tx: int):
     """Given fresh cumulative rx/tx from the node, compute the delta since
-    last poll (handling counter resets) and add it to the user's usage."""
+    last poll (handling counter resets) and add it to the owning
+    allotment's usage - the connection's OWN Purchase (see
+    models.Purchase's docstring) if it has one, or the owning User's
+    combined used_bytes otherwise (the original, still-default behavior for
+    every connection not created via the "افزودن پکیج" flow)."""
     prev_total = (connection.last_rx_bytes or 0) + (connection.last_tx_bytes or 0)
     new_total = (rx or 0) + (tx or 0)
 
@@ -51,7 +55,10 @@ def _apply_delta(db: Session, connection: models.Connection, rx: int, tx: int):
     connection.total_bytes = (connection.total_bytes or 0) + delta
 
     user: models.User = connection.user
-    user.used_bytes = (user.used_bytes or 0) + delta
+    if connection.purchase_id:
+        connection.purchase.used_bytes = (connection.purchase.used_bytes or 0) + delta
+    else:
+        user.used_bytes = (user.used_bytes or 0) + delta
 
     db.add(models.UsageLog(user_id=user.id, connection_id=connection.id, delta_bytes=delta))
 
@@ -67,6 +74,11 @@ def _apply_delta(db: Session, connection: models.Connection, rx: int, tx: int):
 
 
 def _enforce_user_limits(db: Session, user: models.User):
+    """Enforces the user's own COMBINED quota/expiry - only ever governs
+    connections with no purchase_id (see Connection.purchase_id's
+    docstring); connections linked to an independent Purchase are enforced
+    separately by _enforce_purchase_limits below, regardless of what this
+    user-level check decides."""
     if user.status == models.UserStatus.disabled:
         return  # manually disabled by admin - do not touch
 
@@ -92,6 +104,39 @@ def _enforce_user_limits(db: Session, user: models.User):
 
     user.status = target_status
     for conn in user.connections:
+        if conn.purchase_id:
+            continue  # governed independently by _enforce_purchase_limits
+        _set_connection_enabled(db, conn, enabled=(target_status == models.UserStatus.active))
+
+
+def _enforce_purchase_limits(db: Session, purchase: models.Purchase):
+    """Per-Purchase counterpart to _enforce_user_limits above - the same
+    exceeded/expired/reserved-renewal logic, but scoped to just ONE
+    independent package purchase (see models.Purchase's docstring) instead
+    of the user's combined fields. Only ever touches connections with
+    connection.purchase_id == purchase.id."""
+    if purchase.status == models.UserStatus.disabled:
+        return  # manually disabled - do not touch
+
+    exceeded = purchase.quota_bytes and purchase.used_bytes >= purchase.quota_bytes
+    expired = purchase.expire_at and purchase.expire_at < dt.datetime.utcnow()
+
+    if (exceeded or expired) and _maybe_activate_reserved_purchase_renewal(db, purchase):
+        exceeded = purchase.quota_bytes and purchase.used_bytes >= purchase.quota_bytes
+        expired = purchase.expire_at and purchase.expire_at < dt.datetime.utcnow()
+
+    if exceeded:
+        target_status = models.UserStatus.quota_exceeded
+    elif expired:
+        target_status = models.UserStatus.expired
+    else:
+        target_status = models.UserStatus.active
+
+    if target_status == purchase.status:
+        return
+
+    purchase.status = target_status
+    for conn in purchase.connections:
         _set_connection_enabled(db, conn, enabled=(target_status == models.UserStatus.active))
 
 
@@ -227,6 +272,9 @@ def poll_all():
         users = db.query(models.User).all()
         for user in users:
             _enforce_user_limits(db, user)
+
+        for purchase in db.query(models.Purchase).all():
+            _enforce_purchase_limits(db, purchase)
 
         db.commit()
     except Exception:

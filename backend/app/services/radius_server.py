@@ -32,8 +32,8 @@ from pyrad.server import Server, RemoteHost
 from .. import models
 from ..config import settings
 from ..database import SessionLocal
-from .quota_manager import _apply_delta, _enforce_user_limits
-from .user_ops import _maybe_activate_reserved_renewal
+from .quota_manager import _apply_delta, _enforce_user_limits, _enforce_purchase_limits
+from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
 from . import mschapv2
 
 logger = logging.getLogger("radius_server")
@@ -264,20 +264,47 @@ class UserManagerRadiusServer(Server):
                 reason = "connection disabled"
             else:
                 user = conn.user
-                quota_ok = not user.total_quota_bytes or user.used_bytes < user.total_quota_bytes
-                expiry_ok = not user.expire_at or user.expire_at > dt.datetime.utcnow()
-                if (not quota_ok or not expiry_ok) and _maybe_activate_reserved_renewal(db, user):
-                    # A reserved renewal (see User.reserved_quota_bytes's
-                    # docstring) just kicked in - this login attempt should
-                    # be judged against the fresh quota/expiry it just set,
-                    # not the exhausted ones that triggered it, so this
-                    # customer isn't needlessly rejected right at the
-                    # boundary until the next poll cycle catches up.
+                # A connection created via "افزودن پکیج" carries its own
+                # independent Purchase (see models.Purchase's docstring) -
+                # its quota/expiry/status is checked INSTEAD of the user's
+                # combined fields, exactly the same split
+                # quota_manager.py's _enforce_purchase_limits/
+                # _enforce_user_limits make. Every other connection (the
+                # vast majority - anything from before this feature, or
+                # from the normal create/bulk-create-with-package flows)
+                # keeps checking the user's own fields, unchanged.
+                purchase = conn.purchase if conn.purchase_id else None
+                if purchase is not None:
+                    quota_ok = not purchase.quota_bytes or purchase.used_bytes < purchase.quota_bytes
+                    expiry_ok = not purchase.expire_at or purchase.expire_at > dt.datetime.utcnow()
+                    if (not quota_ok or not expiry_ok) and _maybe_activate_reserved_purchase_renewal(db, purchase):
+                        quota_ok = not purchase.quota_bytes or purchase.used_bytes < purchase.quota_bytes
+                        expiry_ok = not purchase.expire_at or purchase.expire_at > dt.datetime.utcnow()
+                    status_ok = purchase.status == models.UserStatus.active
+                    reason_prefix = "purchase"
+                else:
                     quota_ok = not user.total_quota_bytes or user.used_bytes < user.total_quota_bytes
                     expiry_ok = not user.expire_at or user.expire_at > dt.datetime.utcnow()
-                status_ok = user.status == models.UserStatus.active
+                    if (not quota_ok or not expiry_ok) and _maybe_activate_reserved_renewal(db, user):
+                        # A reserved renewal (see User.reserved_quota_bytes's
+                        # docstring) just kicked in - this login attempt should
+                        # be judged against the fresh quota/expiry it just set,
+                        # not the exhausted ones that triggered it, so this
+                        # customer isn't needlessly rejected right at the
+                        # boundary until the next poll cycle catches up.
+                        quota_ok = not user.total_quota_bytes or user.used_bytes < user.total_quota_bytes
+                        expiry_ok = not user.expire_at or user.expire_at > dt.datetime.utcnow()
+                    status_ok = user.status == models.UserStatus.active
+                    reason_prefix = "user"
+                # A manual account-wide disable always applies regardless of
+                # purchase - mirrors quota_manager.py's own
+                # `if user.status == disabled: return` short-circuit.
+                if user.status == models.UserStatus.disabled:
+                    status_ok = False
+                    reason_prefix = "user"
                 if not status_ok:
-                    reason = f"user status={user.status}"
+                    effective_status = purchase.status if reason_prefix == "purchase" else user.status
+                    reason = f"{reason_prefix} status={effective_status}"
                 elif not quota_ok:
                     reason = "quota exceeded"
                 elif not expiry_ok:
@@ -483,6 +510,12 @@ class UserManagerRadiusServer(Server):
                 user = conn.user
                 if user:
                     _enforce_user_limits(db, user)
+                if conn.purchase_id:
+                    # This connection's usage was just added to its OWN
+                    # Purchase's used_bytes (see _apply_delta) - check that
+                    # purchase's own exhaustion right away too, instead of
+                    # waiting for the next periodic poll cycle.
+                    _enforce_purchase_limits(db, conn.purchase)
                 db.commit()
                 logger.info("RADIUS Acct-Request user=%r status=%s session=%s", username, status, session_id)
             else:

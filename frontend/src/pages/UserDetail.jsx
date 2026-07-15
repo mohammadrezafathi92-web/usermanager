@@ -25,6 +25,8 @@ import {
   fetchRadiusLimitLogs,
   fetchPackages,
   applyPackage,
+  resetPurchaseUsage,
+  renewPurchase,
 } from "../api/client.js";
 import { statusLabel, STATUS_STYLES, gbToBytes, bytesToGb, formatBytes, formatDateTime, copyText, downloadTextFile } from "../utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
@@ -67,11 +69,17 @@ function groupConnectionsByPurchase(connections) {
         connections: [],
         packageName: c.purchase_batch ? c.package_name_snapshot : null,
         createdAt: c.created_at || "",
+        // Real, independently-enforced quota link (see models.Purchase) -
+        // set only for groups created via "افزودن پکیج". Every connection in
+        // the same group shares the same purchase_id (stamped once, at
+        // provisioning time), so the first non-null one found is enough.
+        purchaseId: c.purchase_id || null,
       });
       order.push(key);
     }
     const g = groups.get(key);
     g.connections.push(c);
+    if (!g.purchaseId && c.purchase_id) g.purchaseId = c.purchase_id;
     if (c.created_at && (!g.createdAt || c.created_at < g.createdAt)) {
       g.createdAt = c.created_at;
     }
@@ -126,6 +134,11 @@ export default function UserDetail() {
   const [editConnForm, setEditConnForm] = useState({ wg_peer_name: "", ppp_username: "", ppp_password: "" });
   const [limitValue, setLimitValue] = useState(1);
   const [limitLogs, setLimitLogs] = useState([]);
+  const [resettingPurchaseId, setResettingPurchaseId] = useState(null);
+  const [purchaseRenewTarget, setPurchaseRenewTarget] = useState(null); // the Purchase object being renewed
+  const [purchaseRenewForm, setPurchaseRenewForm] = useState({ add_gb: "", add_days: "", reset_usage: true });
+  const [purchaseRenewSaving, setPurchaseRenewSaving] = useState(false);
+  const [purchaseRenewError, setPurchaseRenewError] = useState("");
 
   const load = () => fetchUser(id).then((res) => {
     setUser(res.data);
@@ -326,6 +339,53 @@ export default function UserDetail() {
     }
   };
 
+  const resetPurchase = async (purchase) => {
+    if (!confirm(t("userDetail.resetPurchaseConfirm"))) return;
+    setResettingPurchaseId(purchase.id);
+    try {
+      await resetPurchaseUsage(user.id, purchase.id);
+      load();
+    } catch (err) {
+      setError(err?.response?.data?.detail || t("userDetail.saveError"));
+    } finally {
+      setResettingPurchaseId(null);
+    }
+  };
+
+  const openRenewPurchase = (purchase) => {
+    setPurchaseRenewTarget(purchase);
+    setPurchaseRenewForm({
+      add_gb: purchase.quota_bytes ? String(bytesToGb(purchase.quota_bytes)) : "",
+      add_days: "",
+      reset_usage: true,
+    });
+    setPurchaseRenewError("");
+  };
+
+  const submitRenewPurchase = async (e) => {
+    e.preventDefault();
+    if (!purchaseRenewTarget) return;
+    if (!purchaseRenewForm.add_gb && !purchaseRenewForm.add_days) {
+      setPurchaseRenewError(t("userDetail.renewMissingFields"));
+      return;
+    }
+    setPurchaseRenewSaving(true);
+    setPurchaseRenewError("");
+    try {
+      await renewPurchase(user.id, purchaseRenewTarget.id, {
+        add_gb: purchaseRenewForm.add_gb ? Number(purchaseRenewForm.add_gb) : 0,
+        add_days: purchaseRenewForm.add_days ? Number(purchaseRenewForm.add_days) : 0,
+        reset_usage: purchaseRenewForm.reset_usage,
+      });
+      setPurchaseRenewTarget(null);
+      load();
+    } catch (err) {
+      setPurchaseRenewError(err?.response?.data?.detail || t("userDetail.renewError"));
+    } finally {
+      setPurchaseRenewSaving(false);
+    }
+  };
+
   const removeConnection = async (connId) => {
     if (!confirm(t("userDetail.deleteConnConfirm"))) return;
     await deleteConnection(user.id, connId);
@@ -498,7 +558,15 @@ export default function UserDetail() {
       </div>
 
       <div className="space-y-5">
-        {groupConnectionsByPurchase(user.connections).map((group) => (
+        {groupConnectionsByPurchase(user.connections).map((group) => {
+          // Real, independently-enforced quota/usage/expiry for this
+          // specific purchase (see models.Purchase) - only present for
+          // groups created via "افزودن پکیج"; every other group (the
+          // original single combined plan, or connections added one at a
+          // time) has no matching entry here and keeps showing only the
+          // package-name header, exactly as before.
+          const purchase = group.purchaseId ? (user.purchases || []).find((p) => p.id === group.purchaseId) : null;
+          return (
           <div key={group.key}>
             {group.packageName && (
               <div className="flex items-center gap-2 mb-2 px-1">
@@ -509,6 +577,53 @@ export default function UserDetail() {
                     {t("userDetail.purchasedAt", { value: formatDateTime(group.createdAt, language) })}
                   </span>
                 )}
+              </div>
+            )}
+            {purchase && (
+              <div className="card mb-3">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-semibold text-gray-700">{t("userDetail.purchaseUsageHeading")}</h4>
+                  <span className={`badge ${STATUS_STYLES[purchase.status]}`}>{statusLabel(purchase.status, language)}</span>
+                </div>
+                <QuotaBar used={purchase.used_bytes} total={purchase.quota_bytes} />
+                <div className="text-xs text-gray-400 mt-2">
+                  {t("userDetail.remaining", {
+                    value: purchase.quota_bytes
+                      ? formatBytes(Math.max(purchase.quota_bytes - purchase.used_bytes, 0))
+                      : t("userDetail.unlimited"),
+                  })}
+                </div>
+                <div className="text-xs text-gray-400 mt-1">
+                  {t("userDetail.expiry", {
+                    value: purchase.expire_days_after_first_use
+                      ? t("userDetail.expiryFirstUse", { days: purchase.expire_days_after_first_use })
+                      : purchase.expire_at
+                      ? formatDateTime(purchase.expire_at, language)
+                      : t("userDetail.noExpiry"),
+                  })}
+                </div>
+                {(purchase.reserved_quota_bytes || purchase.reserved_duration_days) && (
+                  <div className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mt-2">
+                    ⏳ {t("userDetail.reservedRenewal", {
+                      value: [
+                        purchase.reserved_quota_bytes ? formatBytes(purchase.reserved_quota_bytes) : null,
+                        purchase.reserved_duration_days ? t("userDetail.reservedDays", { days: purchase.reserved_duration_days }) : null,
+                      ].filter(Boolean).join(" + "),
+                    })}
+                  </div>
+                )}
+                <div className="flex gap-2 mt-3">
+                  <button
+                    className="btn-secondary flex-1"
+                    disabled={resettingPurchaseId === purchase.id}
+                    onClick={() => resetPurchase(purchase)}
+                  >
+                    {resettingPurchaseId === purchase.id ? "..." : t("userDetail.resetPurchaseUsage")}
+                  </button>
+                  <button className="btn-primary flex-1" onClick={() => openRenewPurchase(purchase)}>
+                    <RefreshCw size={14} /> {t("userDetail.renewPurchase")}
+                  </button>
+                </div>
               </div>
             )}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -594,7 +709,8 @@ export default function UserDetail() {
               })}
             </div>
           </div>
-        ))}
+          );
+        })}
         {user.connections.length === 0 && (
           <div className="card text-center text-gray-400 py-10">{t("userDetail.noConnections")}</div>
         )}
@@ -850,6 +966,59 @@ export default function UserDetail() {
             </button>
             <button type="submit" disabled={renewSaving} className="btn-primary">
               <RefreshCw size={16} /> {renewSaving ? "..." : t("userDetail.renew")}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Renew ONE independent purchase (see models.Purchase) - separate
+          from the user-level renew modal above, doesn't touch anything else
+          the user has. */}
+      <Modal open={!!purchaseRenewTarget} onClose={() => setPurchaseRenewTarget(null)} title={t("userDetail.renewPurchaseModalTitle")}>
+        <form onSubmit={submitRenewPurchase} className="space-y-4">
+          <p className="text-xs text-gray-400">{t("userDetail.renewPurchaseNote")}</p>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldAddGb")}</label>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                step="any"
+                value={purchaseRenewForm.add_gb}
+                onChange={(e) => setPurchaseRenewForm((f) => ({ ...f, add_gb: e.target.value }))}
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldAddDays")}</label>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                placeholder={t("userDetail.daysPlaceholder")}
+                value={purchaseRenewForm.add_days}
+                onChange={(e) => setPurchaseRenewForm((f) => ({ ...f, add_days: e.target.value }))}
+              />
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="purchase_renew_reset_usage"
+              checked={purchaseRenewForm.reset_usage}
+              onChange={(e) => setPurchaseRenewForm((f) => ({ ...f, reset_usage: e.target.checked }))}
+            />
+            <label htmlFor="purchase_renew_reset_usage" className="text-sm text-gray-600">
+              {t("userDetail.resetUsageLabel")}
+            </label>
+          </div>
+          {purchaseRenewError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{purchaseRenewError}</div>}
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" className="btn-secondary" onClick={() => setPurchaseRenewTarget(null)}>
+              {t("common.cancel")}
+            </button>
+            <button type="submit" disabled={purchaseRenewSaving} className="btn-primary">
+              <RefreshCw size={16} /> {purchaseRenewSaving ? "..." : t("userDetail.renew")}
             </button>
           </div>
         </form>

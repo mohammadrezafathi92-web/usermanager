@@ -177,10 +177,10 @@ class ApplyPackageRequest(BaseModel):
     # creation time) - see routers/users.py's apply_package. Used for both
     # "this user has no package/services yet, give them one" and "give this
     # user an ADDITIONAL package on top of what they already have" - the new
-    # services always land in their own freshly-stamped purchase_batch (see
-    # models.Connection.purchase_batch) so they show up as a distinct,
-    # clearly-separated group on UserDetail.jsx instead of mixing in with
-    # whatever the user already had.
+    # services land in their own real, independently-enforced Purchase (see
+    # models.Purchase's docstring) with its OWN quota/usage/expiry, so it
+    # never rides along under (or gets silently swallowed by) whatever quota
+    # the user already had from before.
     package_id: int
 
 
@@ -196,6 +196,40 @@ class ConnectionUpdate(BaseModel):
     wg_peer_name: Optional[str] = None
     ppp_username: Optional[str] = None
     ppp_password: Optional[str] = None
+
+
+class PurchaseOut(BaseModel):
+    """A single independently-enforced package purchase - see
+    models.Purchase's docstring. Only ever present for connections added via
+    the "افزودن پکیج" (apply-package) flow; every other connection has
+    purchase_id=None and is governed by the owning User's own combined
+    quota fields instead."""
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    package_id: Optional[int] = None
+    package_name_snapshot: Optional[str] = None
+    quota_bytes: int = 0  # 0 == unlimited
+    used_bytes: int = 0
+    remaining_bytes: Optional[int] = None
+    expire_at: Optional[dt.datetime] = None
+    expire_days_after_first_use: Optional[int] = None
+    max_concurrent_sessions: Optional[int] = None
+    status: UserStatus
+    reserved_quota_bytes: Optional[int] = None
+    reserved_duration_days: Optional[int] = None
+    reserved_package_id: Optional[int] = None
+    reserved_created_at: Optional[dt.datetime] = None
+    created_at: dt.datetime
+
+
+class PurchaseRenewRequest(BaseModel):
+    add_gb: float = 0
+    add_days: int = 0
+    reset_usage: bool = False
+    # Optional - lets a renewal also switch this purchase to a different
+    # package's quota/duration instead of just adding gb/days to the
+    # current one (mirrors user_ops.renew_user's package_id parameter).
+    package_id: Optional[int] = None
 
 
 class ConnectionOut(BaseModel):
@@ -232,6 +266,10 @@ class ConnectionOut(BaseModel):
     # group a user's connections by purchase in the bot's "اکانت من" screen.
     purchase_batch: Optional[str] = None
     package_name_snapshot: Optional[str] = None
+    # See models.Connection.purchase_id/models.Purchase - set only for
+    # connections added via "افزودن پکیج", where quota/expiry is tracked
+    # independently instead of through the owning user's combined fields.
+    purchase_id: Optional[int] = None
 
 
 class ConnectionShareLink(BaseModel):
@@ -314,6 +352,9 @@ class UserOut(UserBase):
     reserved_duration_days: Optional[int] = None
     reserved_package_id: Optional[int] = None
     reserved_created_at: Optional[dt.datetime] = None
+    # Independently-tracked package purchases added via "افزودن پکیج" - see
+    # models.Purchase. Empty for users who have never used that feature.
+    purchases: List[PurchaseOut] = []
 
 
 class UserListItem(BaseModel):

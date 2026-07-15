@@ -372,10 +372,23 @@ def reconcile_user_connections(db: Session, user: models.User):
     Xray client, so the "renewed" user still had no working V2Ray account.
 
     Lazy import to dodge a circular import: quota_manager.py already
-    imports from this module (user_ops.py) at the top of the file."""
+    imports from this module (user_ops.py) at the top of the file.
+
+    Connections linked to an independent Purchase (see
+    models.Purchase/Connection.purchase_id) need special handling: a manual
+    account-wide DISABLE is an absolute override and force-disables them
+    too, but a manual account-wide ENABLE must NOT blindly force them back
+    on - that purchase might be separately quota_exceeded/expired on its
+    own, and re-enabling the whole account shouldn't silently undo that
+    independent state. So on enable, a purchase-linked connection only
+    actually turns on if its OWN purchase is currently "active"."""
     from .quota_manager import _set_connection_enabled
-    enabled = user.status == models.UserStatus.active
+    user_enabled = user.status == models.UserStatus.active
     for conn in user.connections:
+        if conn.purchase_id and user_enabled:
+            enabled = conn.purchase.status == models.UserStatus.active
+        else:
+            enabled = user_enabled
         _set_connection_enabled(db, conn, enabled=enabled)
 
 
@@ -854,6 +867,150 @@ def provision_package_connections(db: Session, user: models.User, package: model
         except HTTPException as exc:
             skipped.append({"node_id": pc.node_id, "reason": str(exc.detail)})
     return {"created": created, "skipped": skipped}
+
+
+def apply_package_as_purchase(db: Session, user: models.User, package: models.Package) -> models.Purchase:
+    """The real, independently-enforced counterpart to
+    provision_package_connections above - used by routers/users.py's
+    apply_package endpoint (the "افزودن پکیج" admin action, for giving an
+    EXISTING user an extra package on top of whatever they already have).
+
+    Before this existed, that action only ever created connections and left
+    the user's own combined total_quota_bytes/used_bytes/expire_at
+    untouched - which meant the new package's own quota/duration was never
+    actually enforced anywhere: a user already on an unlimited plan (or one
+    whose combined quota simply had room left) could blow straight past the
+    new package's own limit with nothing to stop it (the exact bug this
+    fixes). Every connection created here is linked via Connection.purchase_id
+    to a brand-new Purchase row with its OWN quota_bytes/used_bytes/expire_at
+    - see models.Purchase's docstring and services/quota_manager.py's
+    _enforce_purchase_limits for how that gets enforced independently of the
+    user's own fields."""
+    purchase = models.Purchase(
+        user_id=user.id,
+        package_id=package.id,
+        package_name_snapshot=package.name,
+        quota_bytes=gb_to_bytes(package.quota_gb) if package.quota_gb else 0,
+        expire_at=(
+            dt.datetime.utcnow() + dt.timedelta(days=package.duration_days) if package.duration_days else None
+        ),
+        max_concurrent_sessions=package.max_concurrent_sessions,
+        status=models.UserStatus.active,
+    )
+    db.add(purchase)
+    db.flush()  # assigns purchase.id inside this same transaction
+
+    # Keeps the existing purchase_batch string grouping too (still what the
+    # bot's "اکانت من" screen and UserDetail.jsx's display grouping key off
+    # of) - purchase_id is the NEW, separate thing that actually carries
+    # quota semantics.
+    batch = uuid.uuid4().hex
+    for pc in package.connections:
+        node = db.get(models.Node, pc.node_id)
+        if not node:
+            continue
+        try:
+            conn = provision_connection(
+                db, user, node, pc.protocol, pc.flow or "", 1,
+                purchase_batch=batch, package_name=package.name,
+            )
+            conn.purchase_id = purchase.id
+        except HTTPException:
+            continue
+
+    user.purchase_count = (user.purchase_count or 0) + 1
+    _maybe_grant_loyalty_reward(db, user)
+    db.commit()
+    db.refresh(purchase)
+    return purchase
+
+
+def renew_purchase(
+    db: Session,
+    purchase: models.Purchase,
+    add_gb: float = 0,
+    add_days: int = 0,
+    reset_usage: bool = False,
+    package_id: Optional[int] = None,
+) -> models.Purchase:
+    """Same reservation-queue renewal behavior as renew_user above (see its
+    docstring), but scoped to just ONE independent Purchase instead of the
+    user's combined fields - lets an admin renew/reset a single package a
+    user bought without touching anything else they have."""
+    now = dt.datetime.utcnow()
+    is_real_renewal = bool(add_gb or add_days)
+
+    if is_real_renewal:
+        quota_ok = not purchase.quota_bytes or purchase.used_bytes < purchase.quota_bytes
+        expiry_ok = not purchase.expire_at or purchase.expire_at > now
+        has_existing_limits = bool(purchase.quota_bytes or purchase.expire_at)
+        if has_existing_limits and quota_ok and expiry_ok:
+            purchase.reserved_quota_bytes = (purchase.reserved_quota_bytes or 0) + (gb_to_bytes(add_gb) if add_gb else 0)
+            purchase.reserved_duration_days = (purchase.reserved_duration_days or 0) + add_days
+            if package_id is not None:
+                purchase.reserved_package_id = package_id
+            if purchase.reserved_created_at is None:
+                purchase.reserved_created_at = now
+            db.commit()
+            db.refresh(purchase)
+            return purchase
+        purchase.used_bytes = 0
+        if add_gb:
+            purchase.quota_bytes = gb_to_bytes(add_gb)
+        if add_days:
+            purchase.expire_at = now + dt.timedelta(days=add_days)
+    elif reset_usage:
+        purchase.used_bytes = 0
+
+    if purchase.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
+        purchase.status = models.UserStatus.active
+        # Same reconciliation-gap fix as reconcile_user_connections above -
+        # without this, quota_manager.py's own change-detection would see no
+        # transition on the next poll (since purchase.status is already
+        # "active" by the time it looks) and never re-enable this purchase's
+        # connections.
+        reconcile_purchase_connections(db, purchase)
+    if package_id is not None:
+        purchase.package_id = package_id
+    db.commit()
+    db.refresh(purchase)
+    return purchase
+
+
+def _maybe_activate_reserved_purchase_renewal(db: Session, purchase: models.Purchase) -> bool:
+    """Per-purchase counterpart to _maybe_activate_reserved_renewal above -
+    called from quota_manager.py's _enforce_purchase_limits and
+    radius_server.py's live login check when THIS purchase (not the user
+    overall) is about to be marked exhausted."""
+    if not (purchase.reserved_quota_bytes or purchase.reserved_duration_days or purchase.reserved_package_id):
+        return False
+    now = dt.datetime.utcnow()
+    purchase.used_bytes = 0
+    if purchase.reserved_quota_bytes:
+        purchase.quota_bytes = purchase.reserved_quota_bytes
+    if purchase.reserved_duration_days:
+        purchase.expire_at = now + dt.timedelta(days=purchase.reserved_duration_days)
+    if purchase.reserved_package_id is not None:
+        purchase.package_id = purchase.reserved_package_id
+    purchase.reserved_quota_bytes = None
+    purchase.reserved_duration_days = None
+    purchase.reserved_package_id = None
+    purchase.reserved_created_at = None
+    if purchase.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
+        purchase.status = models.UserStatus.active
+        reconcile_purchase_connections(db, purchase)
+    return True
+
+
+def reconcile_purchase_connections(db: Session, purchase: models.Purchase):
+    """Per-purchase counterpart to reconcile_user_connections above - pushes
+    JUST this purchase's connections' enabled-state out to the real nodes,
+    without touching any of the user's other (legacy or other-purchase)
+    connections."""
+    from .quota_manager import _set_connection_enabled
+    enabled = purchase.status == models.UserStatus.active
+    for conn in purchase.connections:
+        _set_connection_enabled(db, conn, enabled=enabled)
 
 
 def provision_connection(

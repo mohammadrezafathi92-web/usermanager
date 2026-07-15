@@ -660,20 +660,18 @@ def apply_package(
     """Gives an EXISTING user a package's bundled services - "افزودن پکیج"
     next to "افزودن اتصال" on UserDetail.jsx. Works whether the user
     currently has no services at all, or already has one or more packages -
-    every call provisions a brand-new set of connections stamped with a
-    fresh purchase_batch (see user_ops.provision_package_connections), so
-    each package purchase stays visually grouped and distinguishable on the
-    user's page instead of all of a user's connections blurring into one
-    flat list (see models.Connection.purchase_batch's docstring).
+    every call creates a brand-new, independently-enforced Purchase (see
+    models.Purchase's docstring and user_ops.apply_package_as_purchase) with
+    its OWN quota/usage/expiry, so each package purchase stays visually
+    grouped AND actually quota-limited on its own, instead of either
+    blurring into one flat list or silently riding along under whatever
+    quota the user already had (the bug this used to have - see
+    models.Purchase's docstring for the full story).
 
     Deliberately does NOT touch the user's own total_quota_bytes/expire_at/
     max_concurrent_sessions - those stay exactly as they already are (edited
-    separately via "ویرایش سهمیه" / "تمدید سریع"). Unlike UserCreate's
-    package_id (which sets the brand-new user's quota/expiry FROM the
-    package since there's nothing to preserve yet), overwriting an existing
-    user's quota/expiry as a side effect here would be destructive and
-    surprising - this endpoint only ever ADDS services, same spirit as
-    "افزودن اتصال" one protocol at a time, just bundled.
+    separately via "ویرایش سهمیه" / "تمدید سریع") and continue to govern
+    only the user's own pre-existing (non-purchase) connections.
 
     Same wallet-charge rule as creating a user with a package: a
     non-superadmin admin pays the package's cooperation price out of their
@@ -685,10 +683,55 @@ def apply_package(
         raise HTTPException(400, "پکیج پیدا نشد")
 
     _charge_admin_for_package(db, admin, package, units=1)
-    user_ops.provision_package_connections(db, user, package)
+    user_ops.apply_package_as_purchase(db, user, package)
     db.commit()
     db.refresh(user)
     return user
+
+
+@router.post("/{user_id}/purchases/{purchase_id}/reset-usage", response_model=schemas.PurchaseOut)
+def reset_purchase_usage(
+    user_id: int,
+    purchase_id: int,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+):
+    """Resets usage for ONE independent purchase (see models.Purchase) -
+    the per-purchase counterpart to reset_usage below, which only ever
+    touches the user's own combined fields."""
+    user = _get_owned_user(db, admin, user_id)
+    purchase = db.get(models.Purchase, purchase_id)
+    if not purchase or purchase.user_id != user.id:
+        raise HTTPException(404, "خرید پیدا نشد")
+    purchase.used_bytes = 0
+    if purchase.status == models.UserStatus.quota_exceeded:
+        purchase.status = models.UserStatus.active
+        user_ops.reconcile_purchase_connections(db, purchase)
+    db.commit()
+    db.refresh(purchase)
+    return purchase
+
+
+@router.post("/{user_id}/purchases/{purchase_id}/renew", response_model=schemas.PurchaseOut)
+def renew_purchase_endpoint(
+    user_id: int,
+    purchase_id: int,
+    payload: schemas.PurchaseRenewRequest,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+):
+    """Renews/extends ONE independent purchase - the per-purchase
+    counterpart to the user-level renew action, without touching anything
+    else the user has (see user_ops.renew_purchase)."""
+    user = _get_owned_user(db, admin, user_id)
+    purchase = db.get(models.Purchase, purchase_id)
+    if not purchase or purchase.user_id != user.id:
+        raise HTTPException(404, "خرید پیدا نشد")
+    return user_ops.renew_purchase(
+        db, purchase,
+        add_gb=payload.add_gb, add_days=payload.add_days,
+        reset_usage=payload.reset_usage, package_id=payload.package_id,
+    )
 
 
 @router.put("/{user_id}/connections/{connection_id}", response_model=schemas.ConnectionOut)

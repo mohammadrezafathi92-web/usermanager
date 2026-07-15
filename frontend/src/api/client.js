@@ -91,6 +91,10 @@ export const unbanConnection = (userId, connectionId) =>
   client.post(`/users/${userId}/connections/${connectionId}/unban`);
 export const applyPackage = (userId, packageId) =>
   client.post(`/users/${userId}/apply-package`, { package_id: packageId });
+export const resetPurchaseUsage = (userId, purchaseId) =>
+  client.post(`/users/${userId}/purchases/${purchaseId}/reset-usage`);
+export const renewPurchase = (userId, purchaseId, data) =>
+  client.post(`/users/${userId}/purchases/${purchaseId}/renew`, data);
 
 export const addWireguardConnection = (userId, nodeId, maxConcurrentSessions = 1) =>
   client.post(`/users/${userId}/connections/wireguard`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });

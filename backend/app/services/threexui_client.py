@@ -366,18 +366,39 @@ class ThreeXUIClient:
         self._post(f"/panel/api/inbounds/{self.inbound_id}/delClient/{client_uuid}", {})
 
     def set_client_enabled(self, inbound_tag: str, email: str, uuid_: str, flow: str, enabled: bool):
+        """Toggles a client's `enable` flag WITHOUT ever deleting it.
+
+        This used to fall back to remove_client() on the classic API when
+        disabling - a real delete, not a disable. That meant a client
+        quota-cut-off on an older/classic-API panel was gone for good: when
+        the user later renewed, nothing in the codebase ever recreated it,
+        so the "renew" silently did nothing on the Xray side (confirmed bug:
+        user's V2Ray/Xray client vanished on quota exhaustion and stayed
+        missing after renewal). Fixed by using the classic API's own
+        single-client update route (documented in this module's docstring)
+        instead of add/remove."""
         # newer API: update the existing client's `enable` flag in place
         fields = self._client_fields(email, uuid_, flow, enabled=enabled)
         ok, _ = self._try_post(f"/panel/api/clients/update/{email}", fields)
         if ok:
             return
 
-        # classic API has no per-client enable flag over this route - mirror
-        # the SSH client's approach of adding/removing the whole entry
+        # classic API: it has its own real single-client update endpoint -
+        # use it to flip `enable` in place instead of deleting the client.
+        ok, _ = self._try_post(
+            f"/panel/api/inbounds/updateClient/{uuid_}",
+            {"id": self.inbound_id, "settings": json.dumps({"clients": [fields]})},
+        )
+        if ok:
+            return
+
+        # Last resort: the client doesn't exist on this panel at all (e.g.
+        # it was deleted by the old buggy code path before this fix, or an
+        # earlier add_client call failed). Only self-heal by (re)creating it
+        # when ENABLING - never delete-to-disable, since that's exactly the
+        # destructive behavior this fix removes.
         if enabled:
             self.add_client(inbound_tag, email, uuid_, flow)
-        else:
-            self.remove_client(inbound_tag, email, uuid_)
 
     # ------------------------------------------------------------------
     def query_all_user_stats(self) -> dict[str, dict[str, int]]:

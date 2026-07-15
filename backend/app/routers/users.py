@@ -534,8 +534,16 @@ def update_user(
     # max_concurrent_sessions is a real column on User now (a combined cap
     # across all of their connections - see models.py) so it just flows
     # through the generic setattr loop below like everything else.
+    status_changed = "status" in data and data["status"] != user.status
     for k, v in data.items():
         setattr(user, k, v)
+
+    if status_changed:
+        # An admin directly flipping status from the edit-user form (e.g.
+        # "غیرفعال" -> "فعال") needs the same push-to-connections step as
+        # every other status-changing path, or a previously
+        # disabled/deleted Xray client never comes back.
+        user_ops.reconcile_user_connections(db, user)
 
     db.commit()
     db.refresh(user)
@@ -548,6 +556,11 @@ def reset_usage(user_id: int, db: Session = Depends(get_db), admin: models.Admin
     user.used_bytes = 0
     if user.status == models.UserStatus.quota_exceeded:
         user.status = models.UserStatus.active
+        # Without this, a user whose Xray/3X-UI client got disabled/deleted
+        # on quota cutoff would come back "active" in the DB but their
+        # actual connection would stay dead until the next poll cycle
+        # happened to notice a status transition that already occurred here.
+        user_ops.reconcile_user_connections(db, user)
     db.commit()
     db.refresh(user)
     return user

@@ -293,6 +293,15 @@ def renew_user(
 
     if user.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
         user.status = models.UserStatus.active
+        # Renewing a previously cut-off user must also push the "enabled"
+        # state back out to their actual connections (MikroTik peer/RADIUS
+        # flag, Xray/3X-UI client) - just flipping the DB column here is not
+        # enough, since quota_manager.py's own reconciliation only fires on
+        # a status TRANSITION it detects itself; because we already set
+        # user.status = active above, it would see no transition on the
+        # next poll and never notice the connections are still
+        # disabled/deleted from before. See reconcile_user_connections.
+        reconcile_user_connections(db, user)
     # Same package_id gap as create_user_record above - a bot renewal from a
     # package purchase (or an admin re-tagging an existing user with a
     # package via routers/bot.py) should keep package_id in sync too, not
@@ -336,9 +345,38 @@ def _maybe_activate_reserved_renewal(db: Session, user: models.User) -> bool:
     user.reserved_created_at = None
     if user.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
         user.status = models.UserStatus.active
+        # Same reconciliation-gap fix as renew_user above - this function is
+        # also called directly from radius_server.py's live login check, so
+        # without this the customer's PPP login would be let back in while
+        # their Xray/other connections stay deleted/disabled from before.
+        reconcile_user_connections(db, user)
     user.purchase_count = (user.purchase_count or 0) + 1
     _maybe_grant_loyalty_reward(db, user)
     return True
+
+
+def reconcile_user_connections(db: Session, user: models.User):
+    """Pushes the user's CURRENT `status` out to every real connection they
+    own (MikroTik WireGuard peer, RADIUS-checked PPP flag, Xray/3X-UI
+    client). Call this any time `user.status` is set directly - renewal,
+    reset-usage, manual enable/disable, bulk actions, reserved-renewal
+    activation - from anywhere OTHER than quota_manager.py's own
+    _enforce_user_limits, which already reconciles the transitions IT
+    computes itself.
+
+    Skipping this after a direct status write is exactly what caused a
+    real bug: a user's Xray client got deleted on quota exhaustion, and
+    renewing them only flipped `user.status` back to "active" in the DB -
+    the next poll cycle's _enforce_user_limits saw target_status already
+    equal to user.status (no transition) and silently never recreated the
+    Xray client, so the "renewed" user still had no working V2Ray account.
+
+    Lazy import to dodge a circular import: quota_manager.py already
+    imports from this module (user_ops.py) at the top of the file."""
+    from .quota_manager import _set_connection_enabled
+    enabled = user.status == models.UserStatus.active
+    for conn in user.connections:
+        _set_connection_enabled(db, conn, enabled=enabled)
 
 
 def delete_user_cascade(db: Session, user: models.User):
@@ -501,6 +539,7 @@ def bulk_update_users(
                 user.used_bytes = 0
             if user.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
                 user.status = models.UserStatus.active
+                reconcile_user_connections(db, user)
             # This bypasses renew_user() (it overwrites quota/expiry outright
             # from the package instead of adding to it) so it needs its own
             # loyalty-progress bump - same rule as renew_user: a real
@@ -509,8 +548,11 @@ def bulk_update_users(
             _maybe_grant_loyalty_reward(db, user)
         elif add_gb or add_days or reset_usage:
             renew_user(db, user, add_gb=add_gb, add_days=add_days, reset_usage=reset_usage)
-        if status is not None:
+        if status is not None and status != user.status:
             user.status = status
+            # Explicit bulk enable/disable (e.g. "غیرفعال‌سازی گروهی") - push
+            # it out to the real connections too, both directions.
+            reconcile_user_connections(db, user)
         if max_concurrent_sessions is not None and package is None:
             # combined cap across all of the user's connections together -
             # see models.User.max_concurrent_sessions (skipped when a

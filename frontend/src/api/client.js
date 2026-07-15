@@ -87,6 +87,8 @@ export const bulkUpdateUsers = (data) => client.put("/users/bulk", data);
 export const bulkDeleteUsers = (userIds) => client.delete("/users/bulk", { data: { user_ids: userIds } });
 export const updateConnection = (userId, connectionId, data) =>
   client.put(`/users/${userId}/connections/${connectionId}`, data);
+export const unbanConnection = (userId, connectionId) =>
+  client.post(`/users/${userId}/connections/${connectionId}/unban`);
 
 export const addWireguardConnection = (userId, nodeId, maxConcurrentSessions = 1) =>
   client.post(`/users/${userId}/connections/wireguard`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });

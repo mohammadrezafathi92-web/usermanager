@@ -681,6 +681,60 @@ def update_connection(
     return out
 
 
+@router.post("/{user_id}/connections/{connection_id}/unban", response_model=schemas.ConnectionOut)
+def unban_connection(
+    user_id: int,
+    connection_id: int,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+):
+    """Manual/instant unban - clears a connection's temporary ban right away,
+    for cases where the admin doesn't want to wait for BAN_DURATION_MINUTES
+    to elapse on its own (services/radius_server.py's _record_overlimit_attempt
+    is the only thing that ever SETS banned_until). Unlike the generic
+    update_connection PUT above (which can also clear banned_until as a side
+    effect of an arbitrary field update with no trace left behind), this
+    dedicated endpoint always writes a models.RadiusLimitEventLog row with
+    event_type="unban" so the lift itself shows up in the same log the
+    ban/reject events already appear in - both the dedicated لاگ محدودیت
+    اتصال page (RadiusLogs.jsx) and the per-user log section on
+    UserDetail.jsx - instead of a ban silently disappearing with no record of
+    who lifted it or when. Idempotent: safe to call even if the connection
+    isn't currently banned (e.g. the admin clicks it just to be sure)."""
+    user = _get_owned_user(db, admin, user_id)
+    conn = db.get(models.Connection, connection_id)
+    if not conn or conn.user_id != user_id:
+        raise HTTPException(404, "کانکشن پیدا نشد")
+
+    active_count = db.query(models.RadiusActiveSession).filter(
+        models.RadiusActiveSession.connection_id == conn.id
+    ).count()
+
+    conn.banned_until = None
+    db.add(
+        models.RadiusLimitEventLog(
+            connection_id=conn.id,
+            user_id=user.id,
+            owner_admin_id=user.owner_admin_id,
+            username=user.username,
+            connection_type=conn.type.value if hasattr(conn.type, "value") else str(conn.type),
+            event_type="unban",
+            active_count=active_count,
+            limit_value=conn.max_concurrent_sessions,
+            banned_until=None,
+            client_ip=None,
+        )
+    )
+    db.commit()
+    db.refresh(conn)
+
+    out = schemas.ConnectionOut.model_validate(conn)
+    out.active_session_count = active_count
+    if conn.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp):
+        out.online = active_count > 0
+    return out
+
+
 @router.delete("/{user_id}/connections/{connection_id}")
 def delete_connection(
     user_id: int,

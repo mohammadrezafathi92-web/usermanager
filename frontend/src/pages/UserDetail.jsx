@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import QRCode from "qrcode";
-import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, ShieldCheck, Lock, Save, KeyRound, Power, ShieldEllipsis, RefreshCw, Pencil } from "lucide-react";
+import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, ShieldCheck, Lock, Save, KeyRound, Power, ShieldEllipsis, RefreshCw, Pencil, Package } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
@@ -20,6 +20,7 @@ import {
   deleteConnection,
   getShareLink,
   updateConnection,
+  unbanConnection,
   fetchAdmins,
   fetchRadiusLimitLogs,
 } from "../api/client.js";
@@ -41,6 +42,40 @@ function buildTypeMeta(t) {
 }
 
 const FILE_EXT = { wireguard: "conf", openvpn: "txt", l2tp: "txt", ikev2: "txt", sstp: "txt" };
+
+// Groups a user's connections by which purchase created them together
+// (Connection.purchase_batch, stamped once at provisioning time when several
+// services are bundled into one package purchase - see
+// services/user_ops.py). Without this, buying a second package just dumps
+// its services into the same flat grid as everything the user already had,
+// with no way to tell "this account is from the new purchase" apart from
+// the old ones. Mirrors the exact same grouping the bot already does for
+// "اکانت من" (telegram_bot/keyboards.group_connections_by_purchase):
+// newest purchase first, connections with no batch (added one at a time, or
+// created before this feature existed) each become their own single-item
+// group with no package header, unchanged from the old flat-list look.
+function groupConnectionsByPurchase(connections) {
+  const groups = new Map();
+  const order = [];
+  for (const c of connections) {
+    const key = c.purchase_batch || `c${c.id}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        connections: [],
+        packageName: c.purchase_batch ? c.package_name_snapshot : null,
+        createdAt: c.created_at || "",
+      });
+      order.push(key);
+    }
+    const g = groups.get(key);
+    g.connections.push(c);
+    if (c.created_at && (!g.createdAt || c.created_at < g.createdAt)) {
+      g.createdAt = c.created_at;
+    }
+  }
+  return order.map((k) => groups.get(k)).sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+}
 
 export default function UserDetail() {
   const { id } = useParams();
@@ -343,7 +378,11 @@ export default function UserDetail() {
   };
 
   const unban = async (c) => {
-    await updateConnection(user.id, c.id, { banned_until: null });
+    // Dedicated endpoint (not the generic updateConnection PUT) so the lift
+    // itself gets written into radius_limit_event_logs as an "unban" event -
+    // see routers/users.py's unban_connection - instead of silently clearing
+    // banned_until with no trace of who/when in the log below.
+    await unbanConnection(user.id, c.id);
     load();
   };
 
@@ -421,89 +460,106 @@ export default function UserDetail() {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {user.connections.map((c) => {
-          const meta = TYPE_META[c.type] || TYPE_META.xray;
-          const Icon = meta.icon;
-          return (
-            <div key={c.id} className="card">
-              <div className="flex items-start justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${meta.color}`}>
-                    <Icon size={18} />
-                  </div>
-                  <div>
-                    <div className="font-medium text-gray-800">{meta.label}</div>
-                    <div className="text-xs text-gray-400">{nodeName(c.node_id)}</div>
-                  </div>
-                </div>
-                <div className="flex flex-col items-end gap-1">
-                  <span className={`badge ${c.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
-                    {c.enabled ? t("status.active") : t("status.disabled")}
+      <div className="space-y-5">
+        {groupConnectionsByPurchase(user.connections).map((group) => (
+          <div key={group.key}>
+            {group.packageName && (
+              <div className="flex items-center gap-2 mb-2 px-1">
+                <Package size={14} className="text-brand-500" />
+                <span className="text-sm font-semibold text-gray-700">{group.packageName}</span>
+                {group.createdAt && (
+                  <span className="text-xs text-gray-400">
+                    {t("userDetail.purchasedAt", { value: formatDateTime(group.createdAt, language) })}
                   </span>
-                  <span className={`badge ${c.online ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-400"}`}>
-                    <span className={`inline-block w-1.5 h-1.5 rounded-full ml-1 ${c.online ? "bg-emerald-500" : "bg-gray-300"}`} />
-                    {c.online ? t("users.online") : t("users.offline")}
-                  </span>
-                </div>
+                )}
               </div>
-
-              <div className="text-xs text-gray-500 space-y-1 mb-3">
-                <div>{t("userDetail.thisConnUsage", { value: formatBytes(c.total_bytes) })}</div>
-                {c.type === "xray" && <div className="truncate">{t("userDetail.identifier", { value: c.xr_email })}</div>}
-                {c.type === "wireguard" && <div>{t("userDetail.internalAddress", { value: c.wg_client_address })}</div>}
-                {(c.type === "openvpn" || c.type === "l2tp" || c.type === "ikev2" || c.type === "sstp") && (
-                  <>
-                    <div>{t("userDetail.username", { value: c.ppp_username })}</div>
-                    <div>
-                      {t("userDetail.concurrentConn", {
-                        used: c.active_session_count ?? 0,
-                        max: c.max_concurrent_sessions ? c.max_concurrent_sessions : t("userDetail.unlimited"),
-                      })}
-                    </div>
-                    {c.banned_until && new Date(c.banned_until) > new Date() && (
-                      <div className="text-red-500">
-                        {t("userDetail.tempBanUntil", { value: formatDateTime(c.banned_until, language) })}{" "}
-                        <button className="underline" onClick={() => unban(c)}>
-                          {t("userDetail.unban")}
-                        </button>
+            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {group.connections.map((c) => {
+                const meta = TYPE_META[c.type] || TYPE_META.xray;
+                const Icon = meta.icon;
+                return (
+                  <div key={c.id} className="card">
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${meta.color}`}>
+                          <Icon size={18} />
+                        </div>
+                        <div>
+                          <div className="font-medium text-gray-800">{meta.label}</div>
+                          <div className="text-xs text-gray-400">{nodeName(c.node_id)}</div>
+                        </div>
                       </div>
-                    )}
-                  </>
-                )}
-                <div>{t("userDetail.createdAt", { value: formatDateTime(c.created_at, language) })}</div>
-              </div>
+                      <div className="flex flex-col items-end gap-1">
+                        <span className={`badge ${c.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                          {c.enabled ? t("status.active") : t("status.disabled")}
+                        </span>
+                        <span className={`badge ${c.online ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-400"}`}>
+                          <span className={`inline-block w-1.5 h-1.5 rounded-full ml-1 ${c.online ? "bg-emerald-500" : "bg-gray-300"}`} />
+                          {c.online ? t("users.online") : t("users.offline")}
+                        </span>
+                      </div>
+                    </div>
 
-              <div className="flex gap-2">
-                <button className="btn-secondary flex-1" onClick={() => showShare(c.id)}>
-                  <QrCode size={14} /> {t("userDetail.getConfig")}
-                </button>
-                {(c.type === "openvpn" || c.type === "l2tp" || c.type === "ikev2" || c.type === "sstp") && (
-                  <button className="btn-secondary" title={t("userDetail.concurrentLimitTitle")} onClick={() => openLimit(c)}>
-                    <ShieldCheck size={14} />
-                  </button>
-                )}
-                {(c.type === "wireguard" || c.type === "openvpn" || c.type === "l2tp" || c.type === "ikev2" || c.type === "sstp") && (
-                  <button className="btn-secondary" title={t("userDetail.editConnTitle")} onClick={() => openEditConn(c)}>
-                    <Pencil size={14} />
-                  </button>
-                )}
-                <button
-                  className="btn-secondary"
-                  title={c.enabled ? t("userDetail.disableConn") : t("userDetail.enableConn")}
-                  onClick={() => toggleConnEnabled(c)}
-                >
-                  <Power size={14} className={c.enabled ? "text-emerald-600" : "text-gray-400"} />
-                </button>
-                <button className="btn-danger" onClick={() => removeConnection(c.id)}>
-                  <Trash2 size={14} />
-                </button>
-              </div>
+                    <div className="text-xs text-gray-500 space-y-1 mb-3">
+                      <div>{t("userDetail.thisConnUsage", { value: formatBytes(c.total_bytes) })}</div>
+                      {c.type === "xray" && <div className="truncate">{t("userDetail.identifier", { value: c.xr_email })}</div>}
+                      {c.type === "wireguard" && <div>{t("userDetail.internalAddress", { value: c.wg_client_address })}</div>}
+                      {(c.type === "openvpn" || c.type === "l2tp" || c.type === "ikev2" || c.type === "sstp") && (
+                        <>
+                          <div>{t("userDetail.username", { value: c.ppp_username })}</div>
+                          <div>
+                            {t("userDetail.concurrentConn", {
+                              used: c.active_session_count ?? 0,
+                              max: c.max_concurrent_sessions ? c.max_concurrent_sessions : t("userDetail.unlimited"),
+                            })}
+                          </div>
+                          {c.banned_until && new Date(c.banned_until) > new Date() && (
+                            <div className="text-red-500">
+                              {t("userDetail.tempBanUntil", { value: formatDateTime(c.banned_until, language) })}{" "}
+                              <button className="underline" onClick={() => unban(c)}>
+                                {t("userDetail.unban")}
+                              </button>
+                            </div>
+                          )}
+                        </>
+                      )}
+                      <div>{t("userDetail.createdAt", { value: formatDateTime(c.created_at, language) })}</div>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button className="btn-secondary flex-1" onClick={() => showShare(c.id)}>
+                        <QrCode size={14} /> {t("userDetail.getConfig")}
+                      </button>
+                      {(c.type === "openvpn" || c.type === "l2tp" || c.type === "ikev2" || c.type === "sstp") && (
+                        <button className="btn-secondary" title={t("userDetail.concurrentLimitTitle")} onClick={() => openLimit(c)}>
+                          <ShieldCheck size={14} />
+                        </button>
+                      )}
+                      {(c.type === "wireguard" || c.type === "openvpn" || c.type === "l2tp" || c.type === "ikev2" || c.type === "sstp") && (
+                        <button className="btn-secondary" title={t("userDetail.editConnTitle")} onClick={() => openEditConn(c)}>
+                          <Pencil size={14} />
+                        </button>
+                      )}
+                      <button
+                        className="btn-secondary"
+                        title={c.enabled ? t("userDetail.disableConn") : t("userDetail.enableConn")}
+                        onClick={() => toggleConnEnabled(c)}
+                      >
+                        <Power size={14} className={c.enabled ? "text-emerald-600" : "text-gray-400"} />
+                      </button>
+                      <button className="btn-danger" onClick={() => removeConnection(c.id)}>
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
+          </div>
+        ))}
         {user.connections.length === 0 && (
-          <div className="card text-center text-gray-400 col-span-2 py-10">{t("userDetail.noConnections")}</div>
+          <div className="card text-center text-gray-400 py-10">{t("userDetail.noConnections")}</div>
         )}
       </div>
 
@@ -520,25 +576,55 @@ export default function UserDetail() {
                   <th className="text-right font-medium py-2">{t("radiusLogs.colCount")}</th>
                   <th className="text-right font-medium py-2">{t("radiusLogs.colBannedUntil")}</th>
                   <th className="text-right font-medium py-2">{t("radiusLogs.colTime")}</th>
+                  <th className="text-right font-medium py-2">{t("radiusLogs.colAction")}</th>
                 </tr>
               </thead>
               <tbody>
-                {limitLogs.map((l) => (
-                  <tr key={l.id} className="border-t border-gray-50">
-                    <td className="py-2">
-                      <span className={`badge ${l.event_type === "ban" ? "bg-red-50 text-red-600" : "bg-amber-50 text-amber-600"}`}>
-                        {l.event_type === "ban" ? t("radiusLogs.eventBan") : t("radiusLogs.eventReject")}
-                      </span>
-                    </td>
-                    <td className="py-2 text-gray-500">{l.connection_type || "-"}</td>
-                    <td className="py-2 text-gray-500 font-mono" dir="ltr">{l.client_ip || "-"}</td>
-                    <td className="py-2 text-gray-500">
-                      {l.active_count ?? "-"}/{l.limit_value ?? "-"}
-                    </td>
-                    <td className="py-2 text-gray-500">{l.banned_until ? formatDateTime(l.banned_until, language) : "-"}</td>
-                    <td className="py-2 text-gray-500">{formatDateTime(l.created_at, language)}</td>
-                  </tr>
-                ))}
+                {limitLogs.map((l) => {
+                  // Look up the live connection behind this log row (may be
+                  // null if it was later deleted) purely to know whether a
+                  // "ban" event is STILL in effect right now, so the
+                  // فوری/instant manual-unban fallback button only shows up
+                  // when there's actually something left to lift - not on
+                  // every historical row forever.
+                  const relatedConn = user.connections.find((c) => c.id === l.connection_id);
+                  const stillBanned = relatedConn && relatedConn.banned_until && new Date(relatedConn.banned_until) > new Date();
+                  return (
+                    <tr key={l.id} className="border-t border-gray-50">
+                      <td className="py-2">
+                        <span
+                          className={`badge ${
+                            l.event_type === "ban"
+                              ? "bg-red-50 text-red-600"
+                              : l.event_type === "unban"
+                              ? "bg-emerald-50 text-emerald-600"
+                              : "bg-amber-50 text-amber-600"
+                          }`}
+                        >
+                          {l.event_type === "ban"
+                            ? t("radiusLogs.eventBan")
+                            : l.event_type === "unban"
+                            ? t("radiusLogs.eventUnban")
+                            : t("radiusLogs.eventReject")}
+                        </span>
+                      </td>
+                      <td className="py-2 text-gray-500">{l.connection_type || "-"}</td>
+                      <td className="py-2 text-gray-500 font-mono" dir="ltr">{l.client_ip || "-"}</td>
+                      <td className="py-2 text-gray-500">
+                        {l.active_count ?? "-"}/{l.limit_value ?? "-"}
+                      </td>
+                      <td className="py-2 text-gray-500">{l.banned_until ? formatDateTime(l.banned_until, language) : "-"}</td>
+                      <td className="py-2 text-gray-500">{formatDateTime(l.created_at, language)}</td>
+                      <td className="py-2">
+                        {stillBanned && (
+                          <button className="text-red-500 underline text-xs whitespace-nowrap" onClick={() => unban(relatedConn)}>
+                            {t("userDetail.forceUnban")}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

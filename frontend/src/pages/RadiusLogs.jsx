@@ -10,8 +10,21 @@ import { useLanguage } from "../context/LanguageContext.jsx";
 const EVENT_FILTER_OPTIONS = [
   { value: "", labelKey: "radiusLogs.filterAll" },
   { value: "ban", labelKey: "radiusLogs.eventBan" },
+  { value: "unban", labelKey: "radiusLogs.eventUnban" },
   { value: "reject", labelKey: "radiusLogs.eventReject" },
 ];
+
+function eventBadgeClass(eventType) {
+  if (eventType === "ban") return "bg-red-50 text-red-600";
+  if (eventType === "unban") return "bg-emerald-50 text-emerald-600";
+  return "bg-amber-50 text-amber-600";
+}
+
+function eventLabelKey(eventType) {
+  if (eventType === "ban") return "radiusLogs.eventBan";
+  if (eventType === "unban") return "radiusLogs.eventUnban";
+  return "radiusLogs.eventReject";
+}
 
 export default function RadiusLogs() {
   const { t, language } = useLanguage();
@@ -67,8 +80,8 @@ export default function RadiusLogs() {
               {logs.map((l) => (
                 <tr key={l.id} className="border-t border-gray-50 hover:bg-gray-50/60">
                   <td className="px-4 py-3">
-                    <span className={`badge ${l.event_type === "ban" ? "bg-red-50 text-red-600" : "bg-amber-50 text-amber-600"}`}>
-                      {l.event_type === "ban" ? t("radiusLogs.eventBan") : t("radiusLogs.eventReject")}
+                    <span className={`badge ${eventBadgeClass(l.event_type)}`}>
+                      {t(eventLabelKey(l.event_type))}
                     </span>
                   </td>
                   <td className="px-4 py-3">

@@ -450,6 +450,8 @@ async def cb_switch_account(call: CallbackQuery, callback_data: SwitchAccountCB,
         await cb_renew(call, state)
     elif action == "cust_topup":
         await cb_topup_start(call, state)
+    elif action == "cust_referral":
+        await cb_referral(call, state)
     else:
         await cb_account(call, state, bot)
 

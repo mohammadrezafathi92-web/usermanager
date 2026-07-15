@@ -376,6 +376,17 @@ class MikrotikClient:
                 "auth-method": "pre-shared-key",
                 "secret": psk,
                 "generate-policy": "port-strict",
+                # RouterOS's default remote-id ("auto") tries to match the
+                # client's declared identity (IDi) against a specific
+                # expected value/type, which native iOS/Android/Windows
+                # IKEv2 clients frequently fail (RouterOS logs "identity
+                # not found for responder: FQDN:... peer: ADDR4:..." and
+                # kills the SA right after phase 1, even though the PSK
+                # itself is correct). "ignore" makes RouterOS accept any
+                # identity the client presents and rely on the PSK alone
+                # for authentication - this is the standard fix for
+                # road-warrior PSK-based IKEv2 against RouterOS.
+                "remote-id": "ignore",
             }
             if existing_identity:
                 identity_path.update(**{".id": existing_identity[0][".id"]}, **identity_props)

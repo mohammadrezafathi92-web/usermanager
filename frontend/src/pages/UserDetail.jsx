@@ -23,6 +23,8 @@ import {
   unbanConnection,
   fetchAdmins,
   fetchRadiusLimitLogs,
+  fetchPackages,
+  applyPackage,
 } from "../api/client.js";
 import { statusLabel, STATUS_STYLES, gbToBytes, bytesToGb, formatBytes, formatDateTime, copyText, downloadTextFile } from "../utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
@@ -93,6 +95,11 @@ export default function UserDetail() {
   const [renewSaving, setRenewSaving] = useState(false);
   const [renewError, setRenewError] = useState("");
   const [addConnOpen, setAddConnOpen] = useState(false);
+  const [packages, setPackages] = useState([]);
+  const [addPackageOpen, setAddPackageOpen] = useState(false);
+  const [selectedPackageId, setSelectedPackageId] = useState("");
+  const [applyingPackage, setApplyingPackage] = useState(false);
+  const [applyPackageError, setApplyPackageError] = useState("");
   const [shareData, setShareData] = useState(null);
   const [qrUrl, setQrUrl] = useState(null);
   const [copiedKey, setCopiedKey] = useState(null);
@@ -142,6 +149,7 @@ export default function UserDetail() {
   useEffect(() => {
     load();
     fetchNodes().then((res) => setNodes(res.data));
+    fetchPackages().then((res) => setPackages(res.data.filter((p) => p.enabled)));
     if (isSuperadmin) fetchAdmins().then((res) => setAdmins(res.data));
     fetchRadiusLimitLogs({ user_id: id, limit: 50 })
       .then((res) => setLimitLogs(res.data))
@@ -291,6 +299,30 @@ export default function UserDetail() {
       setError(err?.response?.data?.detail || t("userDetail.addConnError"));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const openAddPackage = () => {
+    setSelectedPackageId("");
+    setApplyPackageError("");
+    setAddPackageOpen(true);
+  };
+
+  const submitAddPackage = async () => {
+    if (!selectedPackageId) {
+      setApplyPackageError(t("userDetail.selectPackageRequired"));
+      return;
+    }
+    setApplyingPackage(true);
+    setApplyPackageError("");
+    try {
+      await applyPackage(user.id, Number(selectedPackageId));
+      setAddPackageOpen(false);
+      load();
+    } catch (err) {
+      setApplyPackageError(err?.response?.data?.detail || t("userDetail.applyPackageError"));
+    } finally {
+      setApplyingPackage(false);
     }
   };
 
@@ -455,9 +487,14 @@ export default function UserDetail() {
 
       <div className="flex items-center justify-between mb-3">
         <h3 className="font-bold text-gray-700">{t("userDetail.connectionsHeading")}</h3>
-        <button className="btn-primary" onClick={openAddConn}>
-          <Plus size={16} /> {t("userDetail.addConnection")}
-        </button>
+        <div className="flex gap-2">
+          <button className="btn-secondary" onClick={openAddPackage}>
+            <Package size={16} /> {t("userDetail.addPackage")}
+          </button>
+          <button className="btn-primary" onClick={openAddConn}>
+            <Plus size={16} /> {t("userDetail.addConnection")}
+          </button>
+        </div>
       </div>
 
       <div className="space-y-5">
@@ -816,6 +853,34 @@ export default function UserDetail() {
             </button>
           </div>
         </form>
+      </Modal>
+
+      {/* Add package modal */}
+      <Modal open={addPackageOpen} onClose={() => setAddPackageOpen(false)} title={t("userDetail.addPackageModalTitle")}>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldPackage")}</label>
+            <select className="input" value={selectedPackageId} onChange={(e) => setSelectedPackageId(e.target.value)}>
+              <option value="">{t("userDetail.selectPlaceholder")}</option>
+              {packages.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} — {p.quota_gb ? `${p.quota_gb}GB` : t("userDetail.unlimited")} / {p.duration_days ? t("users.daysUnit", { days: p.duration_days }) : t("userDetail.noExpiry")}
+                  {p.connections?.length ? t("users.servicesCount", { count: p.connections.length }) : ""}
+                </option>
+              ))}
+            </select>
+            <div className="text-xs text-gray-400 mt-1">{t("userDetail.addPackageHint")}</div>
+          </div>
+          {applyPackageError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{applyPackageError}</div>}
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" className="btn-secondary" onClick={() => setAddPackageOpen(false)}>
+              {t("common.cancel")}
+            </button>
+            <button type="button" disabled={applyingPackage} className="btn-primary" onClick={submitAddPackage}>
+              <Package size={16} /> {applyingPackage ? "..." : t("userDetail.addPackageConfirm")}
+            </button>
+          </div>
+        </div>
       </Modal>
 
       {/* Add connection modal */}

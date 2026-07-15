@@ -637,6 +637,47 @@ def add_xray_connection(
     return user_ops.provision_xray(db, user, node, payload.flow or "")
 
 
+@router.post("/{user_id}/apply-package", response_model=schemas.UserOut)
+def apply_package(
+    user_id: int,
+    payload: schemas.ApplyPackageRequest,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+):
+    """Gives an EXISTING user a package's bundled services - "افزودن پکیج"
+    next to "افزودن اتصال" on UserDetail.jsx. Works whether the user
+    currently has no services at all, or already has one or more packages -
+    every call provisions a brand-new set of connections stamped with a
+    fresh purchase_batch (see user_ops.provision_package_connections), so
+    each package purchase stays visually grouped and distinguishable on the
+    user's page instead of all of a user's connections blurring into one
+    flat list (see models.Connection.purchase_batch's docstring).
+
+    Deliberately does NOT touch the user's own total_quota_bytes/expire_at/
+    max_concurrent_sessions - those stay exactly as they already are (edited
+    separately via "ویرایش سهمیه" / "تمدید سریع"). Unlike UserCreate's
+    package_id (which sets the brand-new user's quota/expiry FROM the
+    package since there's nothing to preserve yet), overwriting an existing
+    user's quota/expiry as a side effect here would be destructive and
+    surprising - this endpoint only ever ADDS services, same spirit as
+    "افزودن اتصال" one protocol at a time, just bundled.
+
+    Same wallet-charge rule as creating a user with a package: a
+    non-superadmin admin pays the package's cooperation price out of their
+    own balance (skipped entirely for usage-billed admins - see
+    _charge_admin_for_package)."""
+    user = _get_owned_user(db, admin, user_id)
+    package = db.get(models.Package, payload.package_id)
+    if not package:
+        raise HTTPException(400, "پکیج پیدا نشد")
+
+    _charge_admin_for_package(db, admin, package, units=1)
+    user_ops.provision_package_connections(db, user, package)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
 @router.put("/{user_id}/connections/{connection_id}", response_model=schemas.ConnectionOut)
 def update_connection(
     user_id: int,

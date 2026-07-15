@@ -171,6 +171,19 @@ class ConnectionCreateXray(BaseModel):
     flow: Optional[str] = ""
 
 
+class ApplyPackageRequest(BaseModel):
+    # Applies an EXISTING package's bundled services to a user who already
+    # exists (as opposed to package_id on UserCreate, which only applies at
+    # creation time) - see routers/users.py's apply_package. Used for both
+    # "this user has no package/services yet, give them one" and "give this
+    # user an ADDITIONAL package on top of what they already have" - the new
+    # services always land in their own freshly-stamped purchase_batch (see
+    # models.Connection.purchase_batch) so they show up as a distinct,
+    # clearly-separated group on UserDetail.jsx instead of mixing in with
+    # whatever the user already had.
+    package_id: int
+
+
 class ConnectionUpdate(BaseModel):
     enabled: Optional[bool] = None
     max_concurrent_sessions: Optional[int] = None

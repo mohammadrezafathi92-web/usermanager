@@ -89,6 +89,8 @@ export const updateConnection = (userId, connectionId, data) =>
   client.put(`/users/${userId}/connections/${connectionId}`, data);
 export const unbanConnection = (userId, connectionId) =>
   client.post(`/users/${userId}/connections/${connectionId}/unban`);
+export const applyPackage = (userId, packageId) =>
+  client.post(`/users/${userId}/apply-package`, { package_id: packageId });
 
 export const addWireguardConnection = (userId, nodeId, maxConcurrentSessions = 1) =>
   client.post(`/users/${userId}/connections/wireguard`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });

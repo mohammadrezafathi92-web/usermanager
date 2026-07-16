@@ -228,6 +228,31 @@ class MikrotikClient:
             return rows[0].get("public-key")
         return None
 
+    # --------------------------------------------------------- kick session
+    def kick_ppp_session(self, ppp_username: str) -> bool:
+        """Force-closes a currently-open OpenVPN/L2TP/IKEv2/SSTP session by
+        removing its entry from RouterOS's own `/ppp/active` table - this is
+        the live list of sessions the router itself is holding, independent
+        of anything in this panel's database. Works without any extra
+        RADIUS CoA/Disconnect-Request setup on the router (which would need
+        `/radius incoming accept=yes` and isn't assumed to be configured).
+        Returns True if a matching active session was found and removed,
+        False if the user simply wasn't connected right now (not an error -
+        the caller should treat this as a no-op, not a failure)."""
+        path = self._api.path("ppp", "active")
+        try:
+            rows = list(path.select(Key(".id"), Key("name")).where(Key("name") == ppp_username))
+        except Exception as exc:
+            raise MikrotikError(f"خواندن سشن‌های فعال PPP ناموفق بود: {exc}") from exc
+        if not rows:
+            return False
+        try:
+            for row in rows:
+                path.remove(row[".id"])
+        except Exception as exc:
+            raise MikrotikError(f"قطع سشن ناموفق بود: {exc}") from exc
+        return True
+
     # ------------------------------------------------------------- RADIUS
     # OpenVPN/L2TP users are now authenticated via RADIUS (this panel runs
     # its own RADIUS server - see app/services/radius_server.py) instead of

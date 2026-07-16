@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import QRCode from "qrcode";
-import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, ShieldCheck, Lock, Save, KeyRound, Power, ShieldEllipsis, RefreshCw, Pencil, Package } from "lucide-react";
+import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, ShieldCheck, Lock, Save, KeyRound, Power, ShieldEllipsis, RefreshCw, Pencil, Package, LogOut } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
@@ -21,6 +21,7 @@ import {
   getShareLink,
   updateConnection,
   unbanConnection,
+  kickConnection,
   fetchAdmins,
   fetchRadiusLimitLogs,
   fetchPackages,
@@ -135,6 +136,7 @@ export default function UserDetail() {
   const [limitValue, setLimitValue] = useState(1);
   const [limitLogs, setLimitLogs] = useState([]);
   const [resettingPurchaseId, setResettingPurchaseId] = useState(null);
+  const [kickingId, setKickingId] = useState(null);
   const [purchaseRenewTarget, setPurchaseRenewTarget] = useState(null); // the Purchase object being renewed
   const [purchaseRenewForm, setPurchaseRenewForm] = useState({ add_gb: "", add_days: "", reset_usage: true });
   const [purchaseRenewSaving, setPurchaseRenewSaving] = useState(false);
@@ -478,6 +480,26 @@ export default function UserDetail() {
     load();
   };
 
+  const kick = async (c) => {
+    // Live disconnect only - does NOT disable the connection or touch
+    // quota/expiry, so the client can reconnect right away if their
+    // credential is still valid (use the enable/disable toggle instead for
+    // an actual cutoff). See routers/users.py's kick_connection_endpoint /
+    // services/user_ops.kick_connection for how each protocol is kicked.
+    setKickingId(c.id);
+    try {
+      const res = await kickConnection(user.id, c.id);
+      if (!res.data?.kicked) {
+        setError(t("userDetail.kickNotOnline"));
+      }
+      load();
+    } catch (err) {
+      setError(err?.response?.data?.detail || t("userDetail.kickError"));
+    } finally {
+      setKickingId(null);
+    }
+  };
+
   const toggleConnEnabled = async (c) => {
     const next = !c.enabled;
     if (!next && !confirm(t("userDetail.disableConnConfirm"))) return;
@@ -650,6 +672,24 @@ export default function UserDetail() {
                           <span className={`inline-block w-1.5 h-1.5 rounded-full ml-1 ${c.online ? "bg-emerald-500" : "bg-gray-300"}`} />
                           {c.online ? t("users.online") : t("users.offline")}
                         </span>
+                        {c.online && (
+                          <span className="text-[11px] text-gray-400 whitespace-nowrap">
+                            {meta.label}
+                            {c.client_ip ? ` · ${c.client_ip}` : ""}
+                          </span>
+                        )}
+                        {c.online && (
+                          <button
+                            type="button"
+                            className="text-[11px] text-red-500 hover:text-red-600 inline-flex items-center gap-0.5 disabled:opacity-50"
+                            disabled={kickingId === c.id}
+                            onClick={() => kick(c)}
+                            title={t("userDetail.kickSession")}
+                          >
+                            <LogOut size={11} />
+                            {kickingId === c.id ? "..." : t("userDetail.kickSession")}
+                          </button>
+                        )}
                       </div>
                     </div>
 

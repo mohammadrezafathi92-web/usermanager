@@ -619,6 +619,15 @@ class Connection(Base):
     # count across ALL of a user's services - see radius_server.py.
     online = Column(Boolean, default=False)
 
+    # Last known client IP for this connection - for wireguard, filled from
+    # the peer's current-endpoint-address on the router (poll_mikrotik_node);
+    # for xray this stays NULL (3X-UI's online-clients API doesn't expose a
+    # per-client IP). For openvpn/l2tp/ikev2/sstp, the live IP instead lives
+    # on RadiusActiveSession.client_ip (see that model), since those
+    # protocols have no persistent per-connection "online" state of their
+    # own to begin with. Shown next to the آنلاین badge in UserDetail.jsx.
+    last_client_ip = Column(String(64), nullable=True)
+
     created_at = Column(DateTime, default=now)
 
     # Groups connections that were provisioned together as ONE purchase
@@ -682,6 +691,11 @@ class RadiusActiveSession(Base):
     connection_id = Column(Integer, ForeignKey("connections.id"), nullable=False, index=True)
     session_id = Column(String(128), nullable=False)
     nas_ip = Column(String(64), nullable=True)
+    # The client's own remote IP for this session (from RADIUS
+    # Calling-Station-Id, when the NAS sends it) - shown next to the
+    # آنلاین badge in UserDetail.jsx alongside the protocol. NULL if the
+    # NAS never sent Calling-Station-Id for this session.
+    client_ip = Column(String(64), nullable=True)
     started_at = Column(DateTime, default=now)
     last_seen_at = Column(DateTime, default=now, index=True)
 

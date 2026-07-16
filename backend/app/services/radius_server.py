@@ -32,6 +32,7 @@ from pyrad.server import Server, RemoteHost
 from .. import models
 from ..config import settings
 from ..database import SessionLocal
+from ..telegram_bot import runner as telegram_bot_runner
 from .quota_manager import _apply_delta, _enforce_user_limits, _enforce_purchase_limits
 from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
 from . import mschapv2
@@ -89,6 +90,41 @@ def _gigaword_total(pkt, octets_attr: str, gigawords_attr: str) -> int:
     except Exception:
         gigawords = 0
     return octets + gigawords * (2 ** 32)
+
+
+def _ban_notification_text(username: str, minutes: int, banned_until: dt.datetime) -> str:
+    return (
+        f"🚫 حساب <b>{username}</b> شما به‌طور موقت مسدود شد.\n\n"
+        f"دلیل: استفاده هم‌زمان بیش از حد مجاز (تعداد اتصال فعال بیشتر از سقفی که برای این اکانت "
+        f"تعیین شده است) - معمولاً یعنی از این اشتراک روی دستگاه‌های بیشتری از حد مجاز استفاده "
+        f"می‌شود.\n\n"
+        f"مدت مسدودیت: {minutes} دقیقه (تا ساعت {banned_until.strftime('%H:%M')})\n\n"
+        "پس از پایان این مدت اتصال به‌صورت خودکار دوباره ممکن می‌شود. اگر این اتفاق تکرار شود، "
+        "لطفاً تعداد دستگاه‌های متصل را کاهش دهید یا برای افزایش سقف اتصال هم‌زمان با پشتیبانی در "
+        "تماس باشید."
+    )
+
+
+def _notify_ban_async(telegram_id: int, username: str, minutes: int, banned_until: dt.datetime) -> None:
+    """Fires the ban-notification Telegram message on its own background
+    thread rather than calling telegram_bot_runner.send_message_sync
+    directly here - that call is a blocking HTTP round-trip (up to 10s
+    timeout), and this function is invoked from inside HandleAuthPacket,
+    the live RADIUS auth path. Blocking that thread for a Telegram request
+    would delay/risk-timeout the Access-Reject this packet is about to send
+    back to the router, and this server processes RADIUS packets one at a
+    time - so it would stall every OTHER connection's auth attempts too
+    while it waits. Best-effort/fire-and-forget: failures (bot not
+    configured, customer blocked the bot, etc.) are swallowed exactly like
+    every other send_message_sync caller in this project (see
+    services/notify.py)."""
+    def _run():
+        try:
+            telegram_bot_runner.send_message_sync(telegram_id, _ban_notification_text(username, minutes, banned_until))
+        except Exception:
+            logger.exception("failed to send ban notification to telegram_id=%s", telegram_id)
+
+    threading.Thread(target=_run, name="ban-notify", daemon=True).start()
 
 
 class UserManagerRadiusServer(Server):
@@ -388,6 +424,8 @@ class UserManagerRadiusServer(Server):
                                     client_ip=client_ip,
                                 )
                             )
+                            if just_banned and user.telegram_id:
+                                _notify_ban_async(user.telegram_id, username, BAN_DURATION_MINUTES, conn.banned_until)
                         if ok and user.expire_at is None and user.expire_days_after_first_use:
                             # This is the user's first-ever successful login
                             # and their plan is set to "count validity from
@@ -414,7 +452,7 @@ class UserManagerRadiusServer(Server):
 
     # ------------------------------------------------ active session bookkeeping
     @staticmethod
-    def _open_active_session(db, connection_id: int, session_id: str, nas_ip) -> None:
+    def _open_active_session(db, connection_id: int, session_id: str, nas_ip, client_ip=None) -> None:
         existing = (
             db.query(models.RadiusActiveSession)
             .filter(
@@ -426,17 +464,19 @@ class UserManagerRadiusServer(Server):
         if existing:
             existing.last_seen_at = dt.datetime.utcnow()
             existing.nas_ip = _to_str(nas_ip) or existing.nas_ip
+            existing.client_ip = _to_str(client_ip) or existing.client_ip
             return
         db.add(
             models.RadiusActiveSession(
                 connection_id=connection_id,
                 session_id=session_id,
                 nas_ip=_to_str(nas_ip) or None,
+                client_ip=_to_str(client_ip) or None,
             )
         )
 
     @staticmethod
-    def _touch_active_session(db, connection_id: int, session_id: str, nas_ip) -> None:
+    def _touch_active_session(db, connection_id: int, session_id: str, nas_ip, client_ip=None) -> None:
         existing = (
             db.query(models.RadiusActiveSession)
             .filter(
@@ -447,6 +487,7 @@ class UserManagerRadiusServer(Server):
         )
         if existing:
             existing.last_seen_at = dt.datetime.utcnow()
+            existing.client_ip = _to_str(client_ip) or existing.client_ip
         else:
             # Missed the Start packet - create it now so the concurrent-limit
             # count stays accurate.
@@ -455,6 +496,7 @@ class UserManagerRadiusServer(Server):
                     connection_id=connection_id,
                     session_id=session_id,
                     nas_ip=_to_str(nas_ip) or None,
+                    client_ip=_to_str(client_ip) or None,
                 )
             )
 
@@ -484,13 +526,18 @@ class UserManagerRadiusServer(Server):
                 .first()
             )
             nas_ip = pkt.source[0] if getattr(pkt, "source", None) else None
+            # The client's real remote IP, when the NAS sends it - same
+            # attribute HandleAuthPacket already reads for the ban-log's
+            # client_ip, reused here so it can also be shown live next to
+            # the آنلاین badge (see RadiusActiveSession.client_ip).
+            client_ip = _to_str(pkt.get("Calling-Station-Id", [None])[0])
 
             if conn:
                 if status == "Start":
                     conn.radius_session_id = session_id
                     conn.last_rx_bytes = 0
                     conn.last_tx_bytes = 0
-                    self._open_active_session(db, conn.id, session_id, nas_ip)
+                    self._open_active_session(db, conn.id, session_id, nas_ip, client_ip)
                 elif status in ("Interim-Update", "Stop"):
                     if conn.radius_session_id != session_id:
                         # We missed the Start (e.g. server restarted) - treat
@@ -505,7 +552,7 @@ class UserManagerRadiusServer(Server):
                         conn.radius_session_id = None
                         self._close_active_session(db, conn.id, session_id)
                     else:
-                        self._touch_active_session(db, conn.id, session_id, nas_ip)
+                        self._touch_active_session(db, conn.id, session_id, nas_ip, client_ip)
 
                 user = conn.user
                 if user:

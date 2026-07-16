@@ -89,6 +89,8 @@ export const updateConnection = (userId, connectionId, data) =>
   client.put(`/users/${userId}/connections/${connectionId}`, data);
 export const unbanConnection = (userId, connectionId) =>
   client.post(`/users/${userId}/connections/${connectionId}/unban`);
+export const kickConnection = (userId, connectionId) =>
+  client.post(`/users/${userId}/connections/${connectionId}/kick`);
 export const applyPackage = (userId, packageId) =>
   client.post(`/users/${userId}/apply-package`, { package_id: packageId });
 export const resetPurchaseUsage = (userId, purchaseId) =>

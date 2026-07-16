@@ -258,6 +258,15 @@ class ConnectionOut(BaseModel):
     # cycle from the node's online-clients API (3X-UI only - see
     # ThreeXUIClient.get_online_emails).
     online: bool = False
+    # Client's live remote IP, when known - openvpn/l2tp/ikev2/sstp get this
+    # from the open RadiusActiveSession's client_ip (routers/users.py fills
+    # it in next to `online` for these types); wireguard comes straight from
+    # last_client_ip below (refreshed each poll from the router's peer
+    # endpoint - see quota_manager.poll_mikrotik_node); xray has no source
+    # for this and stays None. Shown next to the آنلاین badge in
+    # UserDetail.jsx.
+    client_ip: Optional[str] = None
+    last_client_ip: Optional[str] = None
     last_rx_bytes: int = 0
     last_tx_bytes: int = 0
     total_bytes: int = 0

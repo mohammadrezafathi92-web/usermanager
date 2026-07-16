@@ -197,6 +197,15 @@ def poll_mikrotik_node(db: Session, node: models.Node):
                     rx = int(peer.get("rx", 0) or 0)
                     tx = int(peer.get("tx", 0) or 0)
                     _apply_delta(db, conn, rx, tx)
+                    # RouterOS reports the peer's live UDP endpoint (address
+                    # only, without :port) here while a handshake is fresh -
+                    # this is the closest thing WireGuard has to a "client
+                    # IP" (there's no separate tunnel-internal login event
+                    # like PPP/RADIUS). Cleared to None once the peer goes
+                    # stale below so a disconnected peer doesn't keep
+                    # showing a stale IP.
+                    endpoint = peer.get("current-endpoint-address") or None
+                    conn.last_client_ip = endpoint.split(":")[0] if endpoint else None
                     # RouterOS has no explicit online/offline flag for
                     # WireGuard - only a "how long since last handshake"
                     # duration, which we treat as "currently connected" if

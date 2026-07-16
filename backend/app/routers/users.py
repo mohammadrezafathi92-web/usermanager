@@ -480,6 +480,18 @@ def get_user(user_id: int, db: Session = Depends(get_db), admin: models.AdminUse
             .group_by(models.RadiusActiveSession.connection_id)
             .all()
         )
+        # Most-recently-seen client_ip per connection (a connection can have
+        # more than one open session when max_concurrent_sessions > 1 - the
+        # freshest one is the most useful to show next to the badge).
+        ip_by_connection: dict[int, str] = {}
+        for session in (
+            db.query(models.RadiusActiveSession)
+            .filter(models.RadiusActiveSession.connection_id.in_([c.id for c in out.connections]))
+            .order_by(models.RadiusActiveSession.last_seen_at.desc())
+            .all()
+        ):
+            if session.client_ip and session.connection_id not in ip_by_connection:
+                ip_by_connection[session.connection_id] = session.client_ip
         for c in out.connections:
             c.active_session_count = counts.get(c.id, 0)
             if c.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp):
@@ -487,6 +499,9 @@ def get_user(user_id: int, db: Session = Depends(get_db), admin: models.AdminUse
                 # (that column only means anything for xray) - their live
                 # state is whether a RADIUS session is currently open.
                 c.online = c.active_session_count > 0
+                c.client_ip = ip_by_connection.get(c.id)
+            elif c.type == models.ConnectionType.wireguard:
+                c.client_ip = c.last_client_ip
     return out
 
 
@@ -830,6 +845,29 @@ def unban_connection(
     if conn.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp):
         out.online = active_count > 0
     return out
+
+
+@router.post("/{user_id}/connections/{connection_id}/kick")
+def kick_connection_endpoint(
+    user_id: int,
+    connection_id: int,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+):
+    """Manually force-closes whatever session is currently open on this one
+    connection - see services/user_ops.kick_connection for exactly how each
+    protocol is kicked. Does not disable the connection or touch its
+    quota/expiry - the client is free to immediately reconnect (and will,
+    if their credential is still valid); this is a live disconnect only,
+    not a ban. Use the existing "غیرفعال" toggle instead if the intent is
+    to actually keep them cut off."""
+    user = _get_owned_user(db, admin, user_id)
+    conn = db.get(models.Connection, connection_id)
+    if not conn or conn.user_id != user_id:
+        raise HTTPException(404, "کانکشن پیدا نشد")
+
+    kicked = user_ops.kick_connection(db, conn)
+    return {"kicked": kicked}
 
 
 @router.delete("/{user_id}/connections/{connection_id}")

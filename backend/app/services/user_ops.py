@@ -734,7 +734,7 @@ def _provision_ppp(
     if node.type != models.NodeType.mikrotik:
         raise HTTPException(400, "نود میکروتیک معتبر نیست")
 
-    username = f"{user.username}-{service}-{uuid.uuid4().hex[:5]}"
+    username = f"{user.username[:12]}-{service}{uuid.uuid4().hex[:4]}"
     password = generate_password()
 
     conn_type = {
@@ -815,7 +815,7 @@ def provision_xray(
     if node.type != models.NodeType.xray:
         raise HTTPException(400, "نود Xray معتبر نیست")
 
-    email = f"{user.username}-{uuid.uuid4().hex[:6]}@usermanager.local"
+    email = f"{user.username[:12]}{uuid.uuid4().hex[:4]}@usermanager.local"
     try:
         with client_for_node(node) as xc:
             client_uuid = xc.add_client(node.xr_inbound_tag, email, flow=flow or "")
@@ -1068,6 +1068,77 @@ def delete_connection(db: Session, connection: models.Connection):
     deprovision_connection(connection)
     db.delete(connection)
     db.commit()
+
+
+# ------------------------------------------------------------- manual kick
+def kick_connection(db: Session, connection: models.Connection) -> bool:
+    """Force-closes whatever session is CURRENTLY open on this connection,
+    without touching enabled/quota/expiry - the admin's "دکمه کیک" for when
+    a leaked/shared credential needs cutting off right now instead of
+    waiting for it to disconnect on its own. Returns True if a live session
+    was actually found and closed, False if the connection simply wasn't
+    online (a no-op, not an error - the caller shows a different message).
+
+    - openvpn/l2tp/ikev2/sstp: removes the matching row from RouterOS's own
+      `/ppp/active` table (see MikrotikClient.kick_ppp_session) - this is
+      the router's live session list, independent of anything in this
+      panel's DB, and needs no RADIUS CoA/Disconnect-Request setup on the
+      router. The panel's own RadiusActiveSession row for it is cleared
+      right away too rather than waiting for the router's Acct-Stop, so the
+      آنلاین badge flips immediately.
+    - wireguard: RouterOS has no "kick" of an established WireGuard session
+      (there's no real session state to close, just a key + allowed-address
+      entry) - the closest equivalent is bouncing the peer (disable then
+      re-enable), which drops it from routing immediately and forces the
+      client to re-handshake from scratch.
+    - xray: same idea - briefly disabling then re-enabling the client
+      revokes its access at xray-core, forcing the live connection to drop
+      and the client to reconnect."""
+    node = connection.node
+    if connection.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp):
+        try:
+            with MikrotikClient.for_node(node) as mt:
+                found = mt.kick_ppp_session(connection.ppp_username)
+        except MikrotikError as exc:
+            raise HTTPException(400, str(exc))
+        db.query(models.RadiusActiveSession).filter(
+            models.RadiusActiveSession.connection_id == connection.id
+        ).delete(synchronize_session=False)
+        connection.radius_session_id = None
+        db.commit()
+        return found
+
+    if connection.type == models.ConnectionType.wireguard:
+        if not connection.online:
+            return False
+        try:
+            with MikrotikClient.for_node(node) as mt:
+                peers = mt.list_peers(node.mt_wireguard_interface)
+                match = next((p for p in peers if p.get("comment") == connection.wg_peer_name), None)
+                if not match:
+                    return False
+                mt.set_peer_disabled(match[".id"], disabled=True)
+                mt.set_peer_disabled(match[".id"], disabled=False)
+        except MikrotikError as exc:
+            raise HTTPException(400, str(exc))
+        connection.online = False
+        db.commit()
+        return True
+
+    if connection.type == models.ConnectionType.xray:
+        if not connection.online:
+            return False
+        try:
+            with client_for_node(node) as xc:
+                xc.set_client_enabled(node.xr_inbound_tag, connection.xr_email, connection.xr_uuid, connection.xr_flow or "", False)
+                xc.set_client_enabled(node.xr_inbound_tag, connection.xr_email, connection.xr_uuid, connection.xr_flow or "", True)
+        except XrayError as exc:
+            raise HTTPException(400, str(exc))
+        connection.online = False
+        db.commit()
+        return True
+
+    return False
 
 
 # -------------------------------------------------------- import PPP secrets

@@ -170,6 +170,47 @@ def _set_connection_enabled(db: Session, connection: models.Connection, enabled:
         logger.warning("failed to toggle connection %s: %s", connection.id, exc)
 
 
+def _reconcile_ppp_sessions(db: Session, node: models.Node, mt: MikrotikClient) -> None:
+    """RADIUS accounting alone (see radius_server.py) can leave a
+    RadiusActiveSession row open for a user who isn't really connected
+    anymore - most commonly right after a MikroTik import, when a PPP
+    secret was already connected on the router *before* it existed as a
+    Connection row here: the very first Interim-Update/Stop packet the
+    panel then sees for it has no matching session, gets treated as
+    "missed the Start" (see _touch_active_session), and is recorded as a
+    fresh live session even though the router may have already dropped it
+    long before. The same drift can happen any time a Stop packet is lost
+    (crash, brief accounting hiccup) rather than only after an import.
+
+    RouterOS's own `/ppp/active` table is the actual ground truth for who's
+    connected right now, so cross-checking against it on every poll cycle -
+    cheap, one extra API call per node - closes any RadiusActiveSession row
+    accounting alone left dangling, instead of waiting on the 15-minute
+    staleness reaper (cleanup_stale_radius_sessions) or never closing it at
+    all if the router keeps sending periodic Interim-Updates for a session
+    that isn't actually there."""
+    ppp_conns = [c for c in node.connections if c.type in PPP_TYPES and c.ppp_username]
+    if not ppp_conns:
+        return
+    try:
+        live_usernames = mt.list_active_ppp_usernames()
+    except MikrotikError as exc:
+        logger.warning("mikrotik node %s: failed to read /ppp/active for reconciliation: %s", node.id, exc)
+        return
+    by_id = {c.id: c for c in ppp_conns}
+    stale_rows = (
+        db.query(models.RadiusActiveSession)
+        .filter(models.RadiusActiveSession.connection_id.in_(list(by_id.keys())))
+        .all()
+    )
+    for row in stale_rows:
+        conn = by_id.get(row.connection_id)
+        if conn and conn.ppp_username not in live_usernames:
+            if conn.radius_session_id == row.session_id:
+                conn.radius_session_id = None
+            db.delete(row)
+
+
 def poll_mikrotik_node(db: Session, node: models.Node):
     """Polls WireGuard peer counters. OpenVPN/L2TP (PPP) usage is no longer
     polled here - it now arrives in real time via RADIUS accounting packets
@@ -186,6 +227,7 @@ def poll_mikrotik_node(db: Session, node: models.Node):
     wg_conns = [c for c in node.connections if c.type == models.ConnectionType.wireguard]
     try:
         with MikrotikClient.for_node(node) as mt:
+            _reconcile_ppp_sessions(db, node, mt)
             peers = mt.list_peers(node.mt_wireguard_interface if wg_conns else None)
             if wg_conns:
                 by_comment = {p.get("comment"): p for p in peers if p.get("comment")}

@@ -253,6 +253,24 @@ class MikrotikClient:
             raise MikrotikError(f"قطع سشن ناموفق بود: {exc}") from exc
         return True
 
+    def list_active_ppp_usernames(self) -> set[str]:
+        """Returns the set of usernames RouterOS itself currently lists in
+        `/ppp/active` - the router's own ground truth for who's really
+        connected right now, independent of anything RADIUS accounting has
+        told this panel. Used by quota_manager's poll cycle to close out any
+        RadiusActiveSession row that accounting alone left dangling (e.g. a
+        missed Stop packet, or a session that was already open on the
+        router before its user was ever imported into the panel - see
+        radius_server.py's `_touch_active_session` "missed the Start"
+        fallback, which has no way to know on its own whether the session
+        it just recorded is still actually up)."""
+        path = self._api.path("ppp", "active")
+        try:
+            rows = list(path.select(Key("name")))
+        except Exception as exc:
+            raise MikrotikError(f"خواندن سشن‌های فعال PPP ناموفق بود: {exc}") from exc
+        return {row.get("name") for row in rows if row.get("name")}
+
     # ------------------------------------------------------------- RADIUS
     # OpenVPN/L2TP users are now authenticated via RADIUS (this panel runs
     # its own RADIUS server - see app/services/radius_server.py) instead of

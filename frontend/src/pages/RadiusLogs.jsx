@@ -14,6 +14,12 @@ const EVENT_FILTER_OPTIONS = [
   { value: "reject", labelKey: "radiusLogs.eventReject" },
 ];
 
+// How many of the most-recent (already newest-first from the API) log rows
+// to show - a plain number rather than real pagination, since this page is
+// mostly used to eyeball "what just happened" rather than dig through full
+// history (تاریخچه کامل still exists via the API for anyone who needs more).
+const LIMIT_OPTIONS = [10, 20, 50, 100, 300];
+
 function eventBadgeClass(eventType) {
   if (eventType === "ban") return "bg-red-50 text-red-600";
   if (eventType === "unban") return "bg-emerald-50 text-emerald-600";
@@ -31,10 +37,11 @@ export default function RadiusLogs() {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [eventType, setEventType] = useState("");
+  const [limit, setLimit] = useState(50);
 
   const load = () => {
     setLoading(true);
-    fetchRadiusLimitLogs({ event_type: eventType || undefined, limit: 300 })
+    fetchRadiusLimitLogs({ event_type: eventType || undefined, limit })
       .then((res) => setLogs(res.data))
       .catch(() => setLogs([]))
       .finally(() => setLoading(false));
@@ -43,7 +50,7 @@ export default function RadiusLogs() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eventType]);
+  }, [eventType, limit]);
 
   return (
     <Layout>
@@ -56,6 +63,13 @@ export default function RadiusLogs() {
             {EVENT_FILTER_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
                 {t(o.labelKey)}
+              </option>
+            ))}
+          </select>
+          <select className="input !w-auto min-w-[8rem] cursor-pointer" value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
+            {LIMIT_OPTIONS.map((n) => (
+              <option key={n} value={n}>
+                {t("radiusLogs.filterLastN", { count: n })}
               </option>
             ))}
           </select>

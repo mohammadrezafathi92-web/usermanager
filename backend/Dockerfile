@@ -34,6 +34,14 @@ WORKDIR /app
 
 COPY --from=pydeps /install /usr/local
 
+# Small text file, negligible size - kept in the final image (not just the
+# pydeps build stage) because services/remote_deploy.py re-reads THIS exact
+# file at runtime to upload it to a second server when deploying the remote
+# bot ("نصب ربات روی سرور دیگر" in Settings). Without it here, that feature
+# fails with FileNotFoundError: /app/requirements.txt the moment it tries to
+# read it, since app.tar.gz containing the source is not the same as this.
+COPY requirements.txt .
+
 COPY app ./app
 
 EXPOSE 8000

@@ -194,7 +194,12 @@ export const downloadBackup = (filename) =>
   client.get(`/backup/download/${encodeURIComponent(filename)}`, { responseType: "blob" });
 
 export const fetchRemoteBotStatus = () => client.get("/remote-bot/status");
-export const deployRemoteBot = (data) => client.post("/remote-bot/deploy", data, { timeout: 320000 });
+// Must stay ABOVE nginx.conf's proxy_read_timeout (660s) for this route -
+// otherwise nginx cuts the connection with a bare 504 before this timeout
+// ever fires, and axios's OWN timeout error (no err.response at all) hides
+// whatever real progress/error the backend had, leaving only the generic
+// "خطا در نصب ربات روی سرور دوم" fallback with no detail.
+export const deployRemoteBot = (data) => client.post("/remote-bot/deploy", data, { timeout: 720000 });
 export const stopRemoteBot = (sshPassword) =>
   client.post("/remote-bot/stop", { ssh_password: sshPassword }, { timeout: 60000 });
 

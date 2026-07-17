@@ -1,18 +1,38 @@
-"""Admin-only settings for the built-in Telegram bot (token, admin ids) -
-lets the admin fully configure and run the bot from the web UI, with no
-.env file or SSH access needed. Saving restarts the bot's in-process
-polling loop (see app/telegram_bot/runner.py) with the new settings right
-away."""
-from fastapi import APIRouter, Depends
+"""Settings for the built-in Telegram bot(s).
+
+Two independent things live here now (3-tier hierarchy feature):
+  1. The SINGLE shared/global bot (token, admin ids) - panel-wide
+     infrastructure, superadmin only (see require_superadmin below) - a
+     level-2 Admin managing their own tree has no business touching the
+     one bot every OTHER Admin's customers might also be relying on.
+  2. Each level-2 Admin's OWN dedicated bot (own_bot_token on their
+     AdminUser row - see /my-bot endpoints at the bottom) - fully private
+     to that Admin, runs concurrently with the shared bot and every other
+     Admin's own bot (see telegram_bot/runner.py's multi-instance
+     registry).
+No .env file or SSH access needed for either - saving restarts the
+relevant bot's in-process polling loop right away."""
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import require_permission
+from ..deps import get_current_admin, require_superadmin
+from ..services import hierarchy
 from ..telegram_bot import runner
 from ..telegram_bot.config import parse_id_set
 
-router = APIRouter(prefix="/api/telegram-bot", tags=["telegram-bot"], dependencies=[Depends(require_permission("manage_bot_settings"))])
+router = APIRouter(prefix="/api/telegram-bot", tags=["telegram-bot"], dependencies=[Depends(get_current_admin)])
+_superadmin = Depends(require_superadmin)
+
+
+def _require_admin_tier(admin: models.AdminUser) -> None:
+    """Gate for the /my-bot endpoints below - only a level-2 Admin has a
+    tree of their own worth giving a dedicated bot to; a Seller works
+    entirely inside their parent Admin's packages/bot, and a superadmin
+    already has the shared/global bot above."""
+    if hierarchy.role(admin) != hierarchy.ROLE_ADMIN:
+        raise HTTPException(403, "این بخش فقط برای ادمین‌های سطح ۲ در دسترس است")
 
 
 def _get_or_create(db: Session) -> models.BotSettings:
@@ -47,12 +67,12 @@ def _response(row: models.BotSettings) -> schemas.BotSettingsOut:
 
 
 @router.get("", response_model=schemas.BotSettingsOut)
-def get_settings(db: Session = Depends(get_db)):
+def get_settings(db: Session = Depends(get_db), _s=_superadmin):
     return _response(_get_or_create(db))
 
 
 @router.put("", response_model=schemas.BotSettingsOut)
-def update_settings(payload: schemas.BotSettingsUpdate, db: Session = Depends(get_db)):
+def update_settings(payload: schemas.BotSettingsUpdate, db: Session = Depends(get_db), _s=_superadmin):
     row = _get_or_create(db)
     for k, v in payload.model_dump(exclude_unset=True).items():
         setattr(row, k, v)
@@ -77,7 +97,7 @@ def update_settings(payload: schemas.BotSettingsUpdate, db: Session = Depends(ge
 
 
 @router.post("/restart", response_model=schemas.BotSettingsOut)
-def restart(db: Session = Depends(get_db)):
+def restart(db: Session = Depends(get_db), _s=_superadmin):
     """Re-applies the currently saved settings - handy to force a restart
     without changing anything (e.g. after a Telegram network hiccup)."""
     row = _get_or_create(db)
@@ -90,3 +110,52 @@ def restart(db: Session = Depends(get_db)):
             customer_bot_enabled=row.customer_bot_enabled if row.customer_bot_enabled is not None else True,
         )
     return _response(row)
+
+
+# ------------------------------------------------------- per-admin own bot
+def _own_bot_response(admin: models.AdminUser) -> schemas.OwnBotSettingsOut:
+    status = runner.get_admin_bot_status(admin.id)
+    return schemas.OwnBotSettingsOut(
+        bot_token=admin.own_bot_token or "",
+        enabled=bool(admin.own_bot_enabled),
+        running=bool(status.get("running")),
+        last_error=status.get("last_error"),
+        bot_username=status.get("bot_username"),
+        telegram_id_linked=admin.telegram_id is not None,
+    )
+
+
+@router.get("/my-bot", response_model=schemas.OwnBotSettingsOut)
+def get_my_bot(admin: models.AdminUser = Depends(get_current_admin)):
+    _require_admin_tier(admin)
+    return _own_bot_response(admin)
+
+
+@router.put("/my-bot", response_model=schemas.OwnBotSettingsOut)
+def update_my_bot(
+    payload: schemas.OwnBotSettingsUpdate,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+):
+    """Saves this Admin's OWN bot token/enabled flag and (re)starts their
+    dedicated bot instance right away - see telegram_bot/runner.py's
+    start_admin_bot/restart_admin_bot. Fully independent of the shared/
+    global bot above; nothing here ever touches the BotSettings row."""
+    _require_admin_tier(admin)
+    data = payload.model_dump(exclude_unset=True)
+    if "bot_token" in data:
+        admin.own_bot_token = data["bot_token"] or None
+    if "enabled" in data:
+        admin.own_bot_enabled = bool(data["enabled"])
+    db.commit()
+    db.refresh(admin)
+
+    runner.restart_admin_bot(admin.id, admin.own_bot_token or "", admin.telegram_id, bool(admin.own_bot_enabled))
+    return _own_bot_response(admin)
+
+
+@router.post("/my-bot/restart", response_model=schemas.OwnBotSettingsOut)
+def restart_my_bot(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    _require_admin_tier(admin)
+    runner.restart_admin_bot(admin.id, admin.own_bot_token or "", admin.telegram_id, bool(admin.own_bot_enabled))
+    return _own_bot_response(admin)

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_admin
+from ..services import hierarchy
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"], dependencies=[Depends(get_current_admin)])
 
@@ -18,17 +19,21 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
     # into Python - this endpoint is polled repeatedly by the dashboard
     # page and previously did O(users) work in Python on every call.
     #
-    # Non-superadmins only see stats for their own group's users - nodes/
-    # online-node counts stay global (servers aren't owned by a group, they
-    # can be shared across admins via package/connection assignment).
-    user_q = db.query(models.User.status, func.count(models.User.id))
+    # Every user-related figure below is scoped through hierarchy.
+    # owned_admin_ids - which, per the 3-tier hierarchy's isolation rule
+    # (see that function's docstring), is NOT unrestricted for a
+    # superadmin either: a superadmin's dashboard only reflects users they
+    # personally created themselves, never any Admin's or Seller's own
+    # customer base. An Admin (level 2) sees their own tree's combined
+    # stats (themself + their Sellers). Node/online-node counts stay
+    # global regardless of tier - servers aren't customer data, they're
+    # shared infrastructure a superadmin configures and grants out.
+    owned = hierarchy.owned_admin_ids(db, admin)
+    user_q = db.query(models.User.status, func.count(models.User.id)).filter(models.User.owner_admin_id.in_(owned))
     usage_q = db.query(
         func.coalesce(func.sum(models.User.used_bytes), 0),
         func.coalesce(func.sum(models.User.total_quota_bytes), 0),
-    )
-    if not admin.is_superadmin:
-        user_q = user_q.filter(models.User.owner_admin_id == admin.id)
-        usage_q = usage_q.filter(models.User.owner_admin_id == admin.id)
+    ).filter(models.User.owner_admin_id.in_(owned))
 
     user_counts = user_q.group_by(models.User.status).all()
     counts_by_status = {status: count for status, count in user_counts}
@@ -45,13 +50,11 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
     )
 
     since = dt.datetime.utcnow() - dt.timedelta(hours=24)
-    logs_q = db.query(models.UsageLog.created_at, models.UsageLog.delta_bytes).filter(
-        models.UsageLog.created_at >= since
+    logs_q = (
+        db.query(models.UsageLog.created_at, models.UsageLog.delta_bytes)
+        .join(models.User, models.User.id == models.UsageLog.user_id)
+        .filter(models.UsageLog.created_at >= since, models.User.owner_admin_id.in_(owned))
     )
-    if not admin.is_superadmin:
-        logs_q = logs_q.join(models.User, models.User.id == models.UsageLog.user_id).filter(
-            models.User.owner_admin_id == admin.id
-        )
     logs = logs_q.all()
 
     # Bucket in Python so this works identically on sqlite/postgres/mysql.
@@ -72,12 +75,12 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
     online_users_q = (
         db.query(models.Connection.user_id)
         .outerjoin(models.RadiusActiveSession, models.RadiusActiveSession.connection_id == models.Connection.id)
-        .filter(or_(models.RadiusActiveSession.id.isnot(None), models.Connection.online.is_(True)))
-    )
-    if not admin.is_superadmin:
-        online_users_q = online_users_q.join(models.User, models.User.id == models.Connection.user_id).filter(
-            models.User.owner_admin_id == admin.id
+        .join(models.User, models.User.id == models.Connection.user_id)
+        .filter(
+            or_(models.RadiusActiveSession.id.isnot(None), models.Connection.online.is_(True)),
+            models.User.owner_admin_id.in_(owned),
         )
+    )
     online_users_now = online_users_q.distinct().count()
 
     # Rough live-speed gauge: sum of usage deltas recorded in the last 60
@@ -85,13 +88,11 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
     # rows poll_all() already writes every POLL_INTERVAL_SECONDS (30s by
     # default), so this needs no new polling/sampling of its own.
     speed_since = dt.datetime.utcnow() - dt.timedelta(seconds=60)
-    speed_q = db.query(func.coalesce(func.sum(models.UsageLog.delta_bytes), 0)).filter(
-        models.UsageLog.created_at >= speed_since
+    speed_q = (
+        db.query(func.coalesce(func.sum(models.UsageLog.delta_bytes), 0))
+        .join(models.User, models.User.id == models.UsageLog.user_id)
+        .filter(models.UsageLog.created_at >= speed_since, models.User.owner_admin_id.in_(owned))
     )
-    if not admin.is_superadmin:
-        speed_q = speed_q.join(models.User, models.User.id == models.UsageLog.user_id).filter(
-            models.User.owner_admin_id == admin.id
-        )
     bytes_last_minute = speed_q.scalar() or 0
     avg_speed_bps = bytes_last_minute / 60
 

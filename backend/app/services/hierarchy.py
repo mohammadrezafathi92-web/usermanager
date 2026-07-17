@@ -48,15 +48,26 @@ def can_create_sub_admin(admin: models.AdminUser) -> bool:
 
 
 def owned_admin_ids(db: Session, admin: models.AdminUser) -> set[int] | None:
-    """Which AdminUser ids' USERS this account may see/manage.
-    None = unrestricted (superadmin - sees everyone).
+    """Which AdminUser ids' end-CUSTOMER users (models.User, never to be
+    confused with AdminUser accounts themselves) this account may see/
+    manage. Always returns a concrete set now, never None/unrestricted -
+    NOT EVEN for a superadmin: each Admin's customer base is fully private
+    to that Admin's own tree, on purpose (the whole point of "هر ادمین
+    یوزرمنیجر شخصی خودش رو داشته باشه" - superadmin provisions/oversees the
+    ADMINS and NODES, not their end customers). A superadmin only ever sees
+    users they personally created themselves (owner_admin_id == their own
+    id - rare, but possible via the "ساخت کاربر" form same as anyone else).
     An Admin (level 2) sees their own users AND every one of their
-    Sellers' users (roll-up oversight of their whole tree).
-    A Seller (level 3) only ever sees their own."""
+    Sellers' users (roll-up oversight of their own tree only).
+    A Seller (level 3) only ever sees their own.
+
+    NOTE: this is deliberately DIFFERENT from accessible_node_ids/
+    accessible_package_owner_ids below, which stay unrestricted (None) for
+    a superadmin - infrastructure (nodes) and catalog (packages) are still
+    superadmin-administered; only the actual customer roster is walled
+    off."""
     r = role(admin)
-    if r == ROLE_SUPERADMIN:
-        return None
-    if r == ROLE_SELLER:
+    if r == ROLE_SUPERADMIN or r == ROLE_SELLER:
         return {admin.id}
     seller_ids = [
         row.id

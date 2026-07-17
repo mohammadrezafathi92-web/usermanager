@@ -14,10 +14,15 @@ import {
   fetchTelegramBotSettings,
   updateTelegramBotSettings,
   restartTelegramBot,
+  fetchMyBot,
+  updateMyBot,
   fetchBackups,
   runBackup,
   downloadBackup,
   restoreBackup,
+  fetchMyBackups,
+  runMyBackup,
+  downloadMyBackup,
   deployRemoteBot,
   stopRemoteBot,
   resolveHaFailover,
@@ -43,7 +48,7 @@ const CUSTOMER_MENU_ITEM_KEYS = [
 ];
 
 export default function Settings() {
-  const { isSuperadmin, can, canAny } = useAuth();
+  const { isSuperadmin, can, canAny, role } = useAuth();
   const { t, language } = useLanguage();
 
   // Each tab requires its own permission (task #230's granular settings
@@ -286,7 +291,11 @@ export default function Settings() {
     });
 
   useEffect(() => {
-    loadBotSettings();
+    // The shared/global bot's GET is now superadmin-only server-side (3-tier
+    // hierarchy - a level-2 Admin gets their OWN bot instead, see
+    // OwnBotCard) - calling this as a non-superadmin would just 403.
+    if (isSuperadmin) loadBotSettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const submitBot = async (e) => {
@@ -387,7 +396,10 @@ export default function Settings() {
 
   const loadBackups = () => fetchBackups().then((res) => setBackups(res.data));
   useEffect(() => {
-    loadBackups();
+    // Full-DB backup list is superadmin-only server-side now - a
+    // non-superadmin gets OwnBackupCard's scoped list instead.
+    if (isSuperadmin) loadBackups();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const onRunBackup = async () => {
@@ -679,6 +691,8 @@ export default function Settings() {
 
       {activeTab === "bot" && (
         <>
+      {isSuperadmin && (
+        <>
       <div className="card mb-4">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
@@ -913,6 +927,10 @@ export default function Settings() {
         </>
       )}
 
+      {!isSuperadmin && role === "admin" && <OwnBotCard t={t} />}
+        </>
+      )}
+
       {activeTab === "server" && (
         <>
       {isSuperadmin && (
@@ -1069,7 +1087,8 @@ export default function Settings() {
 
       {activeTab === "data" && (
         <>
-      {can("manage_backup") && (
+      {!isSuperadmin && <OwnBackupCard t={t} />}
+      {isSuperadmin && can("manage_backup") && (
       <div className="card mb-4">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
@@ -1214,5 +1233,178 @@ export default function Settings() {
         </form>
       </Modal>
     </Layout>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Self-contained (own fetch/state) so they can be dropped into the "bot"/
+// "data" tabs above without wiring their state into the giant Settings()
+// component - a level-2 Admin's OWN dedicated bot and OWN scoped backup
+// (3-tier hierarchy feature, see routers/telegram_bot_settings.py's
+// /my-bot and routers/backup.py's my_router).
+
+function OwnBotCard({ t }) {
+  const [status, setStatus] = useState(null);
+  const [token, setToken] = useState("");
+  const [showToken, setShowToken] = useState(false);
+  const [enabled, setEnabled] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  const load = () =>
+    fetchMyBot().then((res) => {
+      setStatus(res.data);
+      setToken(res.data.bot_token || "");
+      setEnabled(res.data.enabled);
+    });
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setMsg(null);
+    try {
+      const res = await updateMyBot({ bot_token: token, enabled });
+      setStatus(res.data);
+      setMsg({ type: "ok", text: t("settings.myBotSaved") });
+    } catch (err) {
+      setMsg({ type: "err", text: err?.response?.data?.detail || t("settings.myBotSaveError") });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!status) return null;
+
+  return (
+    <div className="card mb-4">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <Bot size={18} className="text-brand-600" />
+          <h3 className="font-bold text-gray-700">{t("settings.myBotTitle")}</h3>
+        </div>
+        <span className={`badge ${status.running ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+          {status.running ? t("settings.botActiveStatus", { username: status.bot_username || "" }) : t("settings.botInactiveStatus")}
+        </span>
+      </div>
+      <p className="text-xs text-gray-400 mb-4">{t("settings.myBotDescription")}</p>
+      {!status.telegram_id_linked && (
+        <div className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mb-4">{t("settings.myBotNoTelegramLinked")}</div>
+      )}
+      {status.last_error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2 mb-4">{status.last_error}</div>}
+      <div className="space-y-3">
+        <div>
+          <label className="block text-sm text-gray-600 mb-1">{t("settings.botToken")}</label>
+          <div className="relative">
+            <input
+              className="input pl-10"
+              dir="ltr"
+              type={showToken ? "text" : "password"}
+              placeholder="123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+            />
+            <button
+              type="button"
+              className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-brand-600"
+              onClick={() => setShowToken((v) => !v)}
+            >
+              {showToken ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+        </div>
+        <label className="flex items-center gap-2 text-sm text-gray-600">
+          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+          {t("settings.myBotEnabled")}
+        </label>
+        {msg && (
+          <div className={`text-sm rounded-lg px-3 py-2 ${msg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+            {msg.text}
+          </div>
+        )}
+        <button type="button" className="btn-primary" disabled={saving} onClick={save}>
+          {saving ? t("common.saving") : t("settings.saveAndRestartMyBot")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function OwnBackupCard({ t }) {
+  const [backups, setBackups] = useState([]);
+  const [running, setRunning] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [open, setOpen] = useState(false);
+
+  const load = () => fetchMyBackups().then((res) => setBackups(res.data));
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const onRun = async () => {
+    setRunning(true);
+    setMsg(null);
+    try {
+      const res = await runMyBackup();
+      downloadBlob(`mybackup_${Date.now()}.json.gz`, res.data);
+      setMsg({ type: "ok", text: t("settings.myBackupCreated") });
+      load();
+    } catch (err) {
+      setMsg({ type: "err", text: err?.response?.data?.detail || t("settings.myBackupError") });
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const onDownload = async (filename) => {
+    const res = await downloadMyBackup(filename);
+    downloadBlob(filename, res.data);
+  };
+
+  return (
+    <div className="card mb-4">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <DatabaseBackup size={18} className="text-brand-600" />
+          <h3 className="font-bold text-gray-700">{t("settings.myBackupTitle")}</h3>
+        </div>
+        <button className="btn-primary" disabled={running} onClick={onRun}>
+          {running ? t("settings.creatingBackup") : t("settings.getInstantBackup")}
+        </button>
+      </div>
+      <p className="text-xs text-gray-400 mb-4">{t("settings.myBackupDescription")}</p>
+      {msg && (
+        <div className={`text-sm rounded-lg px-3 py-2 mb-4 ${msg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+          {msg.text}
+        </div>
+      )}
+      <button
+        type="button"
+        className="w-full flex items-center justify-between border border-gray-100 rounded-xl px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 transition"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="font-bold">{t("settings.backupListToggle", { count: backups.length })}</span>
+        <ChevronDown size={16} className={`transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="space-y-2 mt-2">
+          {backups.map((b) => (
+            <div key={b.filename} className="flex items-center justify-between border border-gray-100 rounded-xl px-4 py-3">
+              <div>
+                <div className="text-sm text-gray-700" dir="ltr">{b.filename}</div>
+                <div className="text-xs text-gray-400">{formatBytes(b.size_bytes)} · {formatDateTime(b.created_at)}</div>
+              </div>
+              <button type="button" className="text-gray-400 hover:text-brand-600" onClick={() => onDownload(b.filename)}>
+                <Download size={16} />
+              </button>
+            </div>
+          ))}
+          {backups.length === 0 && <div className="text-sm text-gray-400 text-center py-4">{t("settings.noBackupsYet")}</div>}
+        </div>
+      )}
+    </div>
   );
 }

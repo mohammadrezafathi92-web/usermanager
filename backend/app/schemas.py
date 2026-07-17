@@ -775,6 +775,24 @@ class BotSettingsUpdate(BaseModel):
     customer_menu_disabled_items: Optional[str] = None
 
 
+# ---------- Per-admin dedicated bot (3-tier hierarchy - see AdminUser.own_bot_token) ----------
+class OwnBotSettingsOut(BaseModel):
+    bot_token: Optional[str] = ""
+    enabled: bool = True
+    running: bool = False
+    last_error: Optional[str] = None
+    bot_username: Optional[str] = None
+    # Whether this Admin has linked their own numeric Telegram id yet (see
+    # AdminUser.telegram_id) - without it, their bot still runs for
+    # customers but nobody gets the admin command menu on it.
+    telegram_id_linked: bool = False
+
+
+class OwnBotSettingsUpdate(BaseModel):
+    bot_token: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
 # ---------- Remote bot deployment (install the interactive bot on a 2nd server) ----------
 class RemoteBotDeployRequest(BaseModel):
     host: str

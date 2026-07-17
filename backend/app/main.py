@@ -41,6 +41,7 @@ app.include_router(panel_settings.router)
 app.include_router(telegram_bot_settings.router)
 app.include_router(tutorials.router)
 app.include_router(backup.router)
+app.include_router(backup.my_router)
 app.include_router(remote_bot.router)
 app.include_router(admins.router)
 app.include_router(radius_logs.router)
@@ -318,6 +319,21 @@ def _start_full_services() -> None:
                 parse_id_set(bot_row.approval_chat_ids or ""),
                 bot_row.customer_bot_enabled if bot_row.customer_bot_enabled is not None else True,
             )
+
+        # Per-admin dedicated bots (3-tier hierarchy - see
+        # AdminUser.own_bot_token/own_bot_enabled and telegram_bot/runner.py's
+        # multi-instance registry) - every level-2 Admin who's configured
+        # and enabled their own bot gets it started here too, running
+        # concurrently with the shared bot above and every other admin's.
+        own_bot_admins = (
+            db.query(models.AdminUser)
+            .filter(models.AdminUser.own_bot_token.isnot(None), models.AdminUser.own_bot_enabled == True)  # noqa: E712
+            .all()
+        )
+        for admin in own_bot_admins:
+            telegram_bot_runner.start_admin_bot(admin.id, admin.own_bot_token, admin.telegram_id)
+        if own_bot_admins:
+            logging.info("started %d per-admin dedicated telegram bot(s)", len(own_bot_admins))
     finally:
         db.close()
 

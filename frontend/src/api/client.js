@@ -183,6 +183,12 @@ export const fetchTelegramBotSettings = () => client.get("/telegram-bot");
 export const updateTelegramBotSettings = (data) => client.put("/telegram-bot", data);
 export const restartTelegramBot = () => client.post("/telegram-bot/restart");
 
+// Level-2 Admin's OWN dedicated bot (3-tier hierarchy - separate from the
+// shared/global bot above, superadmin-only) - see routers/telegram_bot_settings.py's /my-bot.
+export const fetchMyBot = () => client.get("/telegram-bot/my-bot");
+export const updateMyBot = (data) => client.put("/telegram-bot/my-bot", data);
+export const restartMyBot = () => client.post("/telegram-bot/my-bot/restart");
+
 export const fetchBackups = () => client.get("/backup/list");
 export const runBackup = () => client.post("/backup/run", null, { responseType: "blob" });
 export const restoreBackup = (file) => {
@@ -192,6 +198,13 @@ export const restoreBackup = (file) => {
 };
 export const downloadBackup = (filename) =>
   client.get(`/backup/download/${encodeURIComponent(filename)}`, { responseType: "blob" });
+
+// Non-superadmin's OWN scoped backup (their tree only) - see
+// routers/backup.py's my_router.
+export const fetchMyBackups = () => client.get("/backup/my-backup/list");
+export const runMyBackup = () => client.post("/backup/my-backup/run", null, { responseType: "blob" });
+export const downloadMyBackup = (filename) =>
+  client.get(`/backup/my-backup/download/${encodeURIComponent(filename)}`, { responseType: "blob" });
 
 export const fetchRemoteBotStatus = () => client.get("/remote-bot/status");
 // Must stay ABOVE nginx.conf's proxy_read_timeout (660s) for this route -

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime as dt
 import gzip
+import json
 import logging
 import os
 import shutil
@@ -25,6 +26,7 @@ import tempfile
 from pathlib import Path
 
 import requests
+from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..database import SessionLocal
@@ -36,6 +38,13 @@ BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "/app/data/backups"))
 # کاربر: "باید به صورت اوتوماتیک ۱۵ تا آخر سیو بماند" - قبلا ۴۰ تا نگه
 # داشته می‌شد (حجم و تعداد فایل‌های بکاپ زیاد می‌شد)، الان فقط ۱۵ فایل آخر.
 KEEP_LAST = 15
+
+# Separate directory (and much smaller KEEP_LAST) for per-admin SCOPED
+# backups (3-tier hierarchy feature - see create_admin_scoped_backup below)
+# - deliberately never mixed into BACKUP_DIR/list_backups above, which is
+# the superadmin-only FULL database backup.
+ADMIN_BACKUP_DIR = Path(os.environ.get("ADMIN_BACKUP_DIR", "/app/data/admin_backups"))
+ADMIN_KEEP_LAST = 5
 
 
 def _db_path() -> str:
@@ -96,6 +105,128 @@ def list_backups() -> list[dict]:
         }
         for p in files
     ]
+
+
+# ------------------------------------------------- per-admin scoped backup
+def _admin_dir(admin_id: int) -> Path:
+    return ADMIN_BACKUP_DIR / str(admin_id)
+
+
+def create_admin_scoped_backup(db: Session, admin: models.AdminUser) -> Path:
+    """Creates a backup containing ONLY this Admin's own tree (see
+    services/hierarchy.py's owned_admin_ids) - their own AdminUser profile,
+    their Sellers, every one of their own customer Users (with connections
+    and purchases), and their own Packages. Deliberately a plain gzipped
+    JSON file, not a sqlite sub-database - slicing a real foreign-key-
+    correct SQLite file down to one Admin's rows across a dozen tables
+    (users, connections, purchases, usage_logs, radius_active_sessions,
+    discount redemptions, ...) would be fragile and easy to get subtly
+    wrong; a flat JSON export of exactly what this Admin owns is simple,
+    always internally consistent, and is what "این فقط دیتای خودشه" (this
+    is just their own data) actually means to the person asking for it.
+    NOT meant to be restored via the superadmin's full-database restore
+    flow (routers/backup.py's /restore) - this is an export for the
+    Admin's own records/migration purposes, not a disaster-recovery
+    snapshot."""
+    from . import hierarchy
+
+    ADMIN_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    admin_dir = _admin_dir(admin.id)
+    admin_dir.mkdir(parents=True, exist_ok=True)
+
+    owned = hierarchy.owned_admin_ids(db, admin)  # {self} or {self, *sellers}
+
+    sellers = (
+        db.query(models.AdminUser)
+        .filter(models.AdminUser.parent_admin_id == admin.id)
+        .all()
+    )
+    users = db.query(models.User).filter(models.User.owner_admin_id.in_(owned)).all()
+    packages = db.query(models.Package).filter(models.Package.owner_admin_id == admin.id).all()
+
+    def _user_dict(u: models.User) -> dict:
+        return {
+            "id": u.id,
+            "username": u.username,
+            "full_name": u.full_name,
+            "status": u.status.value if hasattr(u.status, "value") else u.status,
+            "used_bytes": u.used_bytes,
+            "total_quota_bytes": u.total_quota_bytes,
+            "expire_at": u.expire_at.isoformat() if u.expire_at else None,
+            "balance": u.balance,
+            "telegram_id": u.telegram_id,
+            "package_id": u.package_id,
+            "owner_admin_id": u.owner_admin_id,
+            "created_at": u.created_at.isoformat() if u.created_at else None,
+            "connections": [
+                {
+                    "id": c.id,
+                    "node_id": c.node_id,
+                    "type": c.type.value if hasattr(c.type, "value") else c.type,
+                    "username": getattr(c, "username", None),
+                    "created_at": c.created_at.isoformat() if getattr(c, "created_at", None) else None,
+                }
+                for c in u.connections
+            ],
+        }
+
+    payload = {
+        "exported_at": dt.datetime.utcnow().isoformat(),
+        "admin": {"id": admin.id, "username": admin.username, "balance": admin.balance},
+        "sellers": [{"id": s.id, "username": s.username} for s in sellers],
+        "users": [_user_dict(u) for u in users],
+        "packages": [
+            {"id": p.id, "name": p.name, "quota_gb": p.quota_gb, "duration_days": p.duration_days, "price": p.price}
+            for p in packages
+        ],
+    }
+
+    stamp = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    final_path = admin_dir / f"mybackup_{stamp}.json.gz"
+    with gzip.open(final_path, "wt", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    _cleanup_old_admin_backups(admin.id)
+    return final_path
+
+
+def _cleanup_old_admin_backups(admin_id: int) -> None:
+    admin_dir = _admin_dir(admin_id)
+    if not admin_dir.exists():
+        return
+    files = sorted(admin_dir.glob("mybackup_*.json.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in files[ADMIN_KEEP_LAST:]:
+        old.unlink(missing_ok=True)
+
+
+def list_admin_backups(admin_id: int) -> list[dict]:
+    admin_dir = _admin_dir(admin_id)
+    if not admin_dir.exists():
+        return []
+    files = sorted(admin_dir.glob("mybackup_*.json.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return [
+        {
+            "filename": p.name,
+            "size_bytes": p.stat().st_size,
+            "created_at": dt.datetime.utcfromtimestamp(p.stat().st_mtime).isoformat(),
+        }
+        for p in files
+    ]
+
+
+def send_admin_backup_to_telegram(path: Path, admin: models.AdminUser) -> bool:
+    """Best-effort delivery of a scoped backup through the Admin's OWN
+    dedicated bot (see AdminUser.own_bot_token) straight to their own
+    linked Telegram id - never through the shared/global bot (which would
+    mean the panel-wide bot admins get a copy of this one Admin's private
+    export, exactly the leak this whole feature exists to prevent).
+    Silently does nothing if either isn't configured."""
+    if not admin.own_bot_token or not admin.telegram_id:
+        return False
+    from ..telegram_bot import runner as telegram_bot_runner  # local import: avoids import cycle at module load
+
+    caption = f"💾 بک‌آپ اختصاصی شما — {dt.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
+    return telegram_bot_runner.send_document_sync(admin.telegram_id, str(path), caption=caption, token=admin.own_bot_token)
 
 
 def _admin_telegram_ids() -> list[int]:

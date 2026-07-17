@@ -2,12 +2,26 @@
 asyncio event loop - the same pattern app/services/radius_server.py uses
 for the RADIUS server - so it doesn't share/block FastAPI's own event loop
 and can be cleanly stopped/restarted whenever the admin changes the bot
-settings from the web UI. No process restart, no .env file, no SSH."""
+settings from the web UI. No process restart, no .env file, no SSH.
+
+Multi-bot note (3-tier hierarchy feature): this module now runs a
+REGISTRY of bot instances, not just one. Every function below takes an
+optional `instance_key` - omitted (the default, `_MAIN`), it behaves
+exactly as it always did (the single shared/global bot, backed by the
+BotSettings DB row). Pass a level-2 Admin's own id instead to start/stop/
+query THAT Admin's own dedicated bot (see AdminUser.own_bot_token) -
+several instances run concurrently, each on its own thread with its own
+Bot/Dispatcher/event loop, completely independent of one another. What
+makes the REST of this file's code (and every handler in handlers/*.py)
+not need to know or care which instance it's running under is
+config.py's RuntimeConfig being a threading.local - see that module's
+docstring."""
 from __future__ import annotations
 
 import asyncio
 import logging
 import threading
+from dataclasses import dataclass, field
 
 from aiogram import BaseMiddleware, Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -22,6 +36,11 @@ from . import storage as bot_storage
 logger = logging.getLogger("telegram_bot")
 
 MAINTENANCE_TEXT = "🔧 ربات موقتاً در دسترس نیست، لطفاً بعداً دوباره تلاش کنید."
+
+# Sentinel instance_key for the single shared/global bot - every existing
+# caller (routers/telegram_bot_settings.py) that doesn't pass instance_key
+# at all lands here, so pre-hierarchy behavior is completely unchanged.
+_MAIN = "__main__"
 
 
 class MaintenanceModeMiddleware(BaseMiddleware):
@@ -114,29 +133,41 @@ async def _set_bot_commands(bot: Bot, admin_ids: set) -> None:
             logger.warning("failed to set bot commands menu for admin chat %s", admin_id, exc_info=True)
 
 
-_lock = threading.Lock()
-_thread: threading.Thread | None = None
-_stop_event: threading.Event | None = None
-_status: dict = {"running": False, "last_error": None, "bot_username": None}
+@dataclass
+class _Instance:
+    """Everything runner.py used to keep as loose module-level globals
+    (_thread/_stop_event/_bot/_loop/_status), now one bundle per running
+    bot so any number of these can coexist - see the registry below."""
 
-# Set while the bot is actually polling for updates - currently only read
-# by get_status() for the Settings page's "فعال / غیرفعال" badge.
-# send_message_sync/send_document_sync below deliberately do NOT use these
-# (see their docstrings) so outbound sends keep working even when nothing
-# is polling in-process (e.g. the interactive bot is running on a remote
-# server instead - see telegram_bot/remote_bridge.py).
-_bot = None
-_loop: asyncio.AbstractEventLoop | None = None
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    thread: threading.Thread | None = None
+    stop_event: threading.Event | None = None
+    status: dict = field(default_factory=lambda: {"running": False, "last_error": None, "bot_username": None})
+    bot: Bot | None = None
+    loop: asyncio.AbstractEventLoop | None = None
 
 
-def get_status() -> dict:
-    return dict(_status)
+_registry_lock = threading.Lock()
+_instances: dict[object, _Instance] = {}
+
+
+def _get_instance(instance_key) -> _Instance:
+    with _registry_lock:
+        inst = _instances.get(instance_key)
+        if inst is None:
+            inst = _Instance()
+            _instances[instance_key] = inst
+        return inst
+
+
+def get_status(instance_key=_MAIN) -> dict:
+    return dict(_get_instance(instance_key).status)
 
 
 def _lookup_bot_token() -> str | None:
-    """Reads the bot token straight from the BotSettings DB row - a local
-    import to avoid a hard circular-import dependency between this module
-    and the main app package at load time."""
+    """Reads the SHARED/global bot's token straight from the BotSettings DB
+    row - a local import to avoid a hard circular-import dependency between
+    this module and the main app package at load time."""
     from ..database import SessionLocal
     from .. import models
 
@@ -148,23 +179,27 @@ def _lookup_bot_token() -> str | None:
         db.close()
 
 
-def send_message_sync(chat_id: int, text: str, timeout: float = 10.0) -> bool:
+def send_message_sync(chat_id: int, text: str, timeout: float = 10.0, token: str | None = None) -> bool:
     """Thread-safe, best-effort message send for callers running OUTSIDE
     the bot's own event loop/thread (aiogram's Bot is not thread-safe to
     call directly) - e.g. the daily quota/expiry reminder job and the 4x/day
     backup job, both running synchronously on APScheduler's own thread.
 
-    Deliberately does NOT reuse the actively-polling bot's _bot/_loop -
-    spins up its own short-lived Bot(token) instead. This matters once the
-    admin can move the INTERACTIVE bot (the one doing getUpdates polling)
-    to a remote server: Telegram only allows one poller per token, but
-    sending messages via the Bot API has no such restriction, so this
+    Deliberately does NOT reuse an actively-polling bot's Bot/loop - spins
+    up its own short-lived Bot(token) instance instead. This matters once
+    the admin can move the INTERACTIVE bot (the one doing getUpdates
+    polling) to a remote server: Telegram only allows one poller per token,
+    but sending messages via the Bot API has no such restriction, so this
     server can always push notifications/backups through the same token
-    regardless of where the polling bot currently lives. Returns False
-    (never raises) if no token is configured or the send failed - e.g. the
-    customer blocked the bot, which is expected often enough that it
-    shouldn't be treated as an error by callers."""
-    token = _lookup_bot_token()
+    regardless of where the polling bot currently lives.
+
+    `token`, when given, sends through THAT token instead of the shared/
+    global BotSettings one - used for a level-2 Admin's own scoped backup
+    delivered through their own dedicated bot (see services/backup.py).
+    Returns False (never raises) if no token is configured/given or the
+    send failed - e.g. the customer blocked the bot, which is expected
+    often enough that it shouldn't be treated as an error by callers."""
+    token = token or _lookup_bot_token()
     if not token:
         return False
 
@@ -182,11 +217,12 @@ def send_message_sync(chat_id: int, text: str, timeout: float = 10.0) -> bool:
         return False
 
 
-def send_document_sync(chat_id: int, file_path: str, caption: str = "", timeout: float = 30.0) -> bool:
+def send_document_sync(chat_id: int, file_path: str, caption: str = "", timeout: float = 30.0, token: str | None = None) -> bool:
     """Same idea as send_message_sync but for a file on disk - used by
     services/backup.py to deliver database backups to the bot admins.
-    Longer default timeout since backup files can be a few MB."""
-    token = _lookup_bot_token()
+    Longer default timeout since backup files can be a few MB. `token` -
+    see send_message_sync's docstring."""
+    token = token or _lookup_bot_token()
     if not token:
         return False
 
@@ -207,40 +243,45 @@ def send_document_sync(chat_id: int, file_path: str, caption: str = "", timeout:
 
 
 def _run_loop(
-    token: str, admin_ids: set, approval_chat_ids: set, stop_event: threading.Event,
-    customer_bot_enabled: bool = True,
+    inst: _Instance, token: str, admin_ids: set, approval_chat_ids: set, stop_event: threading.Event,
+    customer_bot_enabled: bool, bot_owner_admin_id: int | None,
 ) -> None:
-    global _loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    _loop = loop
+    inst.loop = loop
     try:
-        loop.run_until_complete(_main(token, admin_ids, approval_chat_ids, stop_event, customer_bot_enabled))
+        loop.run_until_complete(
+            _main(inst, token, admin_ids, approval_chat_ids, stop_event, customer_bot_enabled, bot_owner_admin_id)
+        )
     finally:
-        _loop = None
+        inst.loop = None
         loop.close()
 
 
 async def _main(
-    token: str, admin_ids: set, approval_chat_ids: set, stop_event: threading.Event,
-    customer_bot_enabled: bool = True,
+    inst: _Instance, token: str, admin_ids: set, approval_chat_ids: set, stop_event: threading.Event,
+    customer_bot_enabled: bool, bot_owner_admin_id: int | None,
 ) -> None:
-    global _bot
-    config.configure(token, admin_ids, approval_chat_ids, customer_bot_enabled)
+    # This thread's OWN isolated copy of RuntimeConfig (see config.py's
+    # threading.local docstring) - every handler this bot instance ever
+    # invokes reads back exactly these values via `from .config import
+    # config`, regardless of how many OTHER bot instances are concurrently
+    # doing the same thing on their own threads.
+    config.configure(token, admin_ids, approval_chat_ids, customer_bot_enabled, bot_owner_admin_id)
     bot_storage.init_db()
 
     bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     try:
         me = await bot.get_me()
     except Exception as exc:
-        _status.update(running=False, last_error=f"توکن نامعتبر است یا تلگرام در دسترس نیست: {exc}")
-        logger.exception("failed to start telegram bot")
+        inst.status.update(running=False, last_error=f"توکن نامعتبر است یا تلگرام در دسترس نیست: {exc}")
+        logger.exception("failed to start telegram bot (owner_admin_id=%s)", bot_owner_admin_id)
         await bot.session.close()
         return
 
-    _bot = bot
-    _status.update(running=True, last_error=None, bot_username=me.username)
-    logger.info("Telegram bot started: @%s", me.username)
+    inst.bot = bot
+    inst.status.update(running=True, last_error=None, bot_username=me.username)
+    logger.info("Telegram bot started: @%s (owner_admin_id=%s)", me.username, bot_owner_admin_id)
     await _set_bot_commands(bot, admin_ids)
 
     dp = Dispatcher(storage=MemoryStorage())
@@ -256,8 +297,8 @@ async def _main(
                 # polling died on its own (network issue etc.) - surface it
                 exc = polling_task.exception()
                 if exc:
-                    _status.update(running=False, last_error=str(exc))
-                    logger.exception("telegram bot polling stopped unexpectedly", exc_info=exc)
+                    inst.status.update(running=False, last_error=str(exc))
+                    logger.exception("telegram bot polling stopped unexpectedly (owner_admin_id=%s)", bot_owner_admin_id, exc_info=exc)
                 break
             await asyncio.sleep(0.5)
     finally:
@@ -268,52 +309,93 @@ async def _main(
             except (asyncio.CancelledError, Exception):
                 pass
         await bot.session.close()
-        _bot = None
-        _status.update(running=False)
-        logger.info("Telegram bot stopped")
+        inst.bot = None
+        inst.status.update(running=False)
+        logger.info("Telegram bot stopped (owner_admin_id=%s)", bot_owner_admin_id)
 
 
-def start_bot(token: str, admin_ids: set, approval_chat_ids: set, customer_bot_enabled: bool = True) -> None:
-    """Starts the bot on a background thread. No-op if already running -
-    call restart_bot() to apply changed settings to a running bot."""
-    global _thread, _stop_event
-    with _lock:
-        if _thread and _thread.is_alive():
+def start_bot(
+    token: str, admin_ids: set, approval_chat_ids: set, customer_bot_enabled: bool = True,
+    instance_key=_MAIN, bot_owner_admin_id: int | None = None,
+) -> None:
+    """Starts a bot instance on a background thread. No-op if that
+    instance_key is already running - call restart_bot() to apply changed
+    settings to a running bot. Omit instance_key for the shared/global bot
+    (unchanged pre-hierarchy behavior); pass a level-2 Admin's id (and set
+    bot_owner_admin_id to that same id) to start THEIR dedicated bot."""
+    inst = _get_instance(instance_key)
+    with inst.lock:
+        if inst.thread and inst.thread.is_alive():
             return
         if not token or not admin_ids:
-            _status.update(running=False, last_error="توکن ربات یا آیدی عددی ادمین تنظیم نشده است")
+            inst.status.update(running=False, last_error="توکن ربات یا آیدی عددی ادمین تنظیم نشده است")
             return
-        _stop_event = threading.Event()
-        _thread = threading.Thread(
+        inst.stop_event = threading.Event()
+        inst.thread = threading.Thread(
             target=_run_loop,
-            args=(token, set(admin_ids), set(approval_chat_ids), _stop_event, customer_bot_enabled),
-            name="telegram-bot",
+            args=(inst, token, set(admin_ids), set(approval_chat_ids), inst.stop_event, customer_bot_enabled, bot_owner_admin_id),
+            name=f"telegram-bot-{instance_key}",
             daemon=True,
         )
-        _thread.start()
+        inst.thread.start()
 
 
-def stop_bot(timeout: float = 10.0) -> None:
-    global _thread
-    with _lock:
-        if _stop_event:
-            _stop_event.set()
-        thread = _thread
-        _thread = None
+def stop_bot(timeout: float = 10.0, instance_key=_MAIN) -> None:
+    inst = _get_instance(instance_key)
+    with inst.lock:
+        if inst.stop_event:
+            inst.stop_event.set()
+        thread = inst.thread
+        inst.thread = None
     if thread:
         thread.join(timeout=timeout)
-    _status.update(running=False)
+    inst.status.update(running=False)
 
 
 def restart_bot(
     token: str, admin_ids: set, approval_chat_ids: set, enabled: bool, customer_bot_enabled: bool = True,
+    instance_key=_MAIN, bot_owner_admin_id: int | None = None,
 ) -> None:
-    """Stops whatever is currently running (if anything) and starts fresh
-    with the new settings - called every time the admin saves the bot
-    settings page, so changes take effect immediately without a container
-    restart."""
-    stop_bot()
+    """Stops whatever is currently running under this instance_key (if
+    anything) and starts fresh with the new settings - called every time
+    the admin saves the bot settings page, so changes take effect
+    immediately without a container restart."""
+    stop_bot(instance_key=instance_key)
     if enabled and token and admin_ids:
-        start_bot(token, admin_ids, approval_chat_ids, customer_bot_enabled)
+        start_bot(token, admin_ids, approval_chat_ids, customer_bot_enabled, instance_key=instance_key, bot_owner_admin_id=bot_owner_admin_id)
     else:
-        _status.update(running=False, last_error=None if enabled else None)
+        _get_instance(instance_key).status.update(running=False, last_error=None if enabled else None)
+
+
+# ------------------------------------------------------- per-admin bots
+def _admin_instance_key(admin_id: int):
+    return ("admin", admin_id)
+
+
+def start_admin_bot(admin_id: int, token: str, telegram_id: int | None) -> None:
+    """Starts (or is a no-op if already running) a level-2 Admin's own
+    dedicated bot - see AdminUser.own_bot_token/own_bot_enabled and
+    routers/telegram_bot_settings.py's admin-facing endpoints. admin_ids
+    here is ONLY this admin's own linked telegram_id (not the shared bot's
+    global admin_ids list) - nobody else gets the admin command menu on
+    THIS bot. If telegram_id isn't linked yet, the bot still starts (so
+    customers can use it right away) but nobody gets the admin menu until
+    they link their id from the ادمین‌ها page."""
+    admin_ids = {telegram_id} if telegram_id else set()
+    start_bot(token, admin_ids or {0}, set(), True, instance_key=_admin_instance_key(admin_id), bot_owner_admin_id=admin_id)
+
+
+def stop_admin_bot(admin_id: int) -> None:
+    stop_bot(instance_key=_admin_instance_key(admin_id))
+
+
+def restart_admin_bot(admin_id: int, token: str, telegram_id: int | None, enabled: bool) -> None:
+    admin_ids = {telegram_id} if telegram_id else set()
+    restart_bot(
+        token, admin_ids or {0}, set(), enabled, True,
+        instance_key=_admin_instance_key(admin_id), bot_owner_admin_id=admin_id,
+    )
+
+
+def get_admin_bot_status(admin_id: int) -> dict:
+    return get_status(instance_key=_admin_instance_key(admin_id))

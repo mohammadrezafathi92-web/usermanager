@@ -26,10 +26,27 @@ from fastapi import HTTPException
 from ..database import SessionLocal
 from .. import models, schemas
 from ..routers import bot as bot_router
+from .config import config
 
 
 class ApiError(Exception):
     pass
+
+
+def _scope(owner_admin_id: Optional[int]) -> Optional[int]:
+    """Fills in the CALLING bot's own scope (config.bot_owner_admin_id -
+    see config.py's threading.local docstring) whenever a handler doesn't
+    already pass an explicit owner_admin_id of its own. This is the ONE
+    place a per-admin dedicated bot (see AdminUser.own_bot_token) actually
+    becomes scoped: every handler file keeps calling api.create_user(...),
+    api.list_users(...), etc. exactly as before (most never pass
+    owner_admin_id at all - see handlers/admin_pending.py's create_user
+    call, "the ONE choke point new customers are created through"), and
+    this quietly makes those calls land under the right Admin's tree
+    instead of touching the whole panel. For the shared/global bot,
+    config.bot_owner_admin_id is None, so this is a complete no-op and
+    every call behaves exactly as it always has."""
+    return owner_admin_id if owner_admin_id is not None else config.bot_owner_admin_id
 
 
 async def _call(fn, *args, **kwargs):
@@ -215,25 +232,25 @@ class PanelBridge:
             expire_days=expire_days,
             telegram_id=telegram_id,
             connections=[schemas.BotCreateConnectionSpec(**c) for c in (connections or [])],
-            owner_admin_id=owner_admin_id,
+            owner_admin_id=_scope(owner_admin_id),
             package_name=package_name,
             package_id=package_id,
         )
         return _dump(await _call(bot_router.create_user, payload))
 
     async def get_user(self, username: str, owner_admin_id: Optional[int] = None) -> dict:
-        return _dump(await _call(bot_router.get_user, username, owner_admin_id=owner_admin_id))
+        return _dump(await _call(bot_router.get_user, username, owner_admin_id=_scope(owner_admin_id)))
 
     async def get_user_by_telegram(self, telegram_id: int) -> Optional[dict]:
         try:
-            return _dump(await _call(bot_router.get_user_by_telegram, telegram_id))
+            return _dump(await _call(bot_router.get_user_by_telegram, telegram_id, owner_admin_id=_scope(None)))
         except ApiError:
             return None
 
     async def list_users_by_telegram(self, telegram_id: int) -> list[dict]:
         """Every account linked to this telegram id - see the account-picker
         logic in telegram_bot/handlers/customer.py's _resolve_account."""
-        return _dump(await _call(bot_router.list_users_by_telegram, telegram_id)) or []
+        return _dump(await _call(bot_router.list_users_by_telegram, telegram_id, owner_admin_id=_scope(None))) or []
 
     async def get_admin_by_telegram(self, telegram_id: int) -> Optional[dict]:
         """Used by the built-in bot to recognize a linked group-admin (see
@@ -248,7 +265,7 @@ class PanelBridge:
         self, page: int = 1, page_size: int = 8, search: Optional[str] = None, owner_admin_id: Optional[int] = None
     ) -> dict:
         result = await _call(
-            bot_router.list_users, page=page, page_size=page_size, search=search, owner_admin_id=owner_admin_id
+            bot_router.list_users, page=page, page_size=page_size, search=search, owner_admin_id=_scope(owner_admin_id)
         )
         return _dump(schemas.BotUserListPage.model_validate(result))
 
@@ -264,27 +281,27 @@ class PanelBridge:
             node_id=node_id, protocol=protocol, flow=flow,
             purchase_batch=purchase_batch, package_name=package_name,
         )
-        return _dump(await _call(bot_router.add_connection, username, spec, owner_admin_id=owner_admin_id))
+        return _dump(await _call(bot_router.add_connection, username, spec, owner_admin_id=_scope(owner_admin_id)))
 
     async def renew(
         self, username: str, add_gb: float = 0, add_days: int = 0, reset_usage: bool = False,
         owner_admin_id: Optional[int] = None, package_id: Optional[int] = None,
     ) -> dict:
         payload = schemas.BotRenewRequest(add_gb=add_gb, add_days=add_days, reset_usage=reset_usage, package_id=package_id)
-        return _dump(await _call(bot_router.renew, username, payload, owner_admin_id=owner_admin_id))
+        return _dump(await _call(bot_router.renew, username, payload, owner_admin_id=_scope(owner_admin_id)))
 
     async def reset_usage(self, username: str, owner_admin_id: Optional[int] = None) -> dict:
-        return _dump(await _call(bot_router.reset_usage, username, owner_admin_id=owner_admin_id))
+        return _dump(await _call(bot_router.reset_usage, username, owner_admin_id=_scope(owner_admin_id)))
 
     async def set_enabled(self, username: str, enabled: bool, owner_admin_id: Optional[int] = None) -> dict:
-        return _dump(await _call(bot_router.set_user_enabled, username, enabled, owner_admin_id=owner_admin_id))
+        return _dump(await _call(bot_router.set_user_enabled, username, enabled, owner_admin_id=_scope(owner_admin_id)))
 
     async def add_balance(self, username: str, amount: int) -> dict:
         payload = schemas.BotAddBalanceRequest(amount=amount)
         return _dump(await _call(bot_router.add_balance, username, payload))
 
     async def delete_user(self, username: str, owner_admin_id: Optional[int] = None) -> None:
-        await _call(bot_router.delete_user, username, owner_admin_id=owner_admin_id)
+        await _call(bot_router.delete_user, username, owner_admin_id=_scope(owner_admin_id))
 
     # ------------------------------------------------ referral & discount
     async def apply_referral(self, username: str, referral_code: str) -> dict:

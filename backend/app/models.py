@@ -133,6 +133,20 @@ class AdminUser(Base):
     # tops it up the same way as money, just in GB instead of tomans.
     volume_balance_gb = Column(Float, nullable=True, default=0)
 
+    # ---------- Per-admin dedicated Telegram bot (3-tier hierarchy) ----------
+    # A level-2 Admin's OWN separate bot (their own @username, their own
+    # token from @BotFather) - distinct from the panel's single shared/
+    # global bot (BotSettings row) that every admin's customers could
+    # otherwise be lumped into. NULL = this admin has no dedicated bot of
+    # their own (the normal case for a fresh Admin, and always NULL for
+    # Sellers - only level-2 Admins get this, see routers/telegram_bot_settings.py).
+    # Runs concurrently with the shared bot AND every other admin's own bot
+    # on the SAME panel server/container - see telegram_bot/runner.py's
+    # multi-instance registry and config.py's thread-local RuntimeConfig for
+    # how that isolation actually works.
+    own_bot_token = Column(String(255), nullable=True)
+    own_bot_enabled = Column(Boolean, nullable=False, default=True)
+
 
 class AdminPermissionGroup(Base):
     """A reusable, named set of permissions (see app/permissions.py) that

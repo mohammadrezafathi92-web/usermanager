@@ -323,36 +323,42 @@ def list_users(
 
 
 @router.get("/users/by-telegram/{telegram_id}", response_model=schemas.BotUserResponse)
-def get_user_by_telegram(telegram_id: int, db: Session = Depends(get_db)):
+def get_user_by_telegram(telegram_id: int, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None):
     """Single-account lookup - kept for callers that only ever cared about
     "the" account for this telegram id (e.g. the daily notify job, the
     /start greeting). Now that telegram_id can point at more than one User,
     this returns the most-recently-linked one; anything customer-facing
     that needs to let the person pick among several should use
-    list_users_by_telegram below instead."""
-    user = (
-        db.query(models.User)
-        .filter(models.User.telegram_id == telegram_id)
-        .order_by(models.User.id.desc())
-        .first()
-    )
+    list_users_by_telegram below instead.
+
+    owner_admin_id, when given (a per-admin dedicated bot - see
+    panel_bridge.py's _scope()), only considers accounts already inside
+    that Admin's own tree - a customer's account under a DIFFERENT Admin's
+    bot should never surface here, same isolation as the rest of the
+    3-tier hierarchy."""
+    query = db.query(models.User).filter(models.User.telegram_id == telegram_id)
+    if owner_admin_id is not None:
+        query = query.filter(models.User.owner_admin_id == owner_admin_id)
+    user = query.order_by(models.User.id.desc()).first()
     if not user:
         raise HTTPException(404, "کاربری با این حساب تلگرام پیدا نشد")
     return _user_response(user)
 
 
 @router.get("/users/by-telegram/{telegram_id}/all", response_model=list[schemas.BotUserResponse])
-def list_users_by_telegram(telegram_id: int, db: Session = Depends(get_db)):
+def list_users_by_telegram(telegram_id: int, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None):
     """Every account linked to this telegram id (could be 0, 1, or several -
     see the big comment on User.telegram_id in models.py). The bot uses
     this to decide whether to act directly (0 or 1 result) or show an
-    account picker (2+ results) - see telegram_bot's _resolve_account."""
-    users = (
-        db.query(models.User)
-        .filter(models.User.telegram_id == telegram_id)
-        .order_by(models.User.id.desc())
-        .all()
-    )
+    account picker (2+ results) - see telegram_bot's _resolve_account.
+
+    owner_admin_id scopes this to one Admin's own tree, same rationale as
+    get_user_by_telegram above - a per-admin bot's account-picker should
+    never surface someone else's customer accounts from another Admin."""
+    query = db.query(models.User).filter(models.User.telegram_id == telegram_id)
+    if owner_admin_id is not None:
+        query = query.filter(models.User.owner_admin_id == owner_admin_id)
+    users = query.order_by(models.User.id.desc()).all()
     return [_user_response(u) for u in users]
 
 

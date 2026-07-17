@@ -52,6 +52,19 @@ class AdminUser(Base):
     hashed_password = Column(String(255), nullable=False)
     created_at = Column(DateTime, default=now)
 
+    # ---------------------------------------------------------------------
+    # 3-tier reseller hierarchy (superadmin -> admin -> seller), fixed at
+    # exactly 3 levels - see services/hierarchy.py for the actual rules.
+    # NULL = superadmin (top level, no parent - matches is_superadmin=True).
+    # Points at a superadmin for a level-2 "admin" (created BY a superadmin
+    # via /api/admins), or at a level-2 admin for a level-3 "seller"
+    # (created BY that admin via the same endpoint, scoped to their own
+    # tree). A seller can never itself be a parent - enforced in the
+    # create-admin endpoint, not by a DB constraint, since SQLite has no
+    # clean way to check "my parent's parent is NULL" at the schema level.
+    parent_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True, index=True)
+    parent_admin = relationship("AdminUser", remote_side="AdminUser.id", foreign_keys=[parent_admin_id])
+
     # True for the main/original admin (and any admin explicitly promoted) -
     # sees/manages every group's users and every panel section regardless
     # of `permissions` below, and is the only role allowed to manage other
@@ -329,6 +342,29 @@ class Node(Base):
     last_error = Column(Text, nullable=True)
 
     connections = relationship("Connection", back_populates="node")
+    admin_access = relationship("AdminNodeAccess", back_populates="node", cascade="all, delete-orphan")
+
+
+class AdminNodeAccess(Base):
+    """Grants ONE level-2 Admin visibility into ONE Node (server). Nodes are
+    always created/configured by a superadmin (see routers/nodes.py) - this
+    table is the many-to-many "who else can see/use this node" list a
+    superadmin manages from the Admins page, NOT node ownership itself.
+    Level-3 Sellers never get rows here directly; they work through their
+    parent Admin's own Packages (which already reference only nodes that
+    admin has been granted here) instead of picking a node by hand - see
+    AdminUser.parent_admin_id's docstring for the 3-tier shape this
+    supports."""
+
+    __tablename__ = "admin_node_access"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    node_id = Column(Integer, ForeignKey("nodes.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime, default=now)
+
+    admin = relationship("AdminUser", foreign_keys=[admin_id])
+    node = relationship("Node", back_populates="admin_access")
 
 
 class User(Base):
@@ -755,6 +791,20 @@ class Package(Base):
     __tablename__ = "packages"
 
     id = Column(Integer, primary_key=True, index=True)
+
+    # Which level-2 Admin built this package - NULL means it was created by
+    # a superadmin (every package that existed before the 3-tier hierarchy
+    # feature, or one a superadmin makes directly), visible to everyone.
+    # A non-NULL owner's package is only visible to: that same Admin, their
+    # own level-3 Sellers (read-only, to provision users - they can't create
+    # packages themselves), and superadmins (full oversight). Enforced in
+    # routers/packages.py, not at the DB layer. PackageConnection rows on an
+    # owned package may only reference nodes the owning Admin has been
+    # granted via AdminNodeAccess - checked at creation time, not a DB
+    # constraint (SQLite can't express a cross-table conditional FK).
+    owner_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True, index=True)
+    owner_admin = relationship("AdminUser", foreign_keys=[owner_admin_id])
+
     name = Column(String(128), nullable=False)
     quota_gb = Column(Float, default=0)  # 0 = unlimited
     duration_days = Column(Integer, default=30)  # 0/None = never expires

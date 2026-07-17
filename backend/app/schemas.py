@@ -584,6 +584,12 @@ class PackageOut(PackageBase):
     created_at: dt.datetime
     connections: List[PackageConnectionOut] = []
     files: List[PackageFileOut] = []
+    # Which level-2 Admin owns this package - None means superadmin-made/
+    # global (see models.Package.owner_admin_id's docstring). Read-only,
+    # always derived server-side from the creating admin, never accepted
+    # from the client (not on PackageBase/PackageCreate).
+    owner_admin_id: Optional[int] = None
+    owner_admin_username: Optional[str] = None
 
 
 # ---------- Discount codes (کد تخفیف) ----------
@@ -1061,6 +1067,21 @@ class AdminOut(BaseModel):
     group_name: Optional[str] = None
     billing_mode: str = "flat"
     volume_balance_gb: Optional[float] = None
+    # 3-tier hierarchy (see services/hierarchy.py) - "superadmin"/"admin"/"seller".
+    role: str = "admin"
+    parent_admin_id: Optional[int] = None
+    parent_admin_username: Optional[str] = None
+    # Node ids explicitly granted to this admin (see models.AdminNodeAccess) -
+    # only ever meaningful for role="admin"; always empty for superadmin
+    # (unrestricted - doesn't need a grant list) and seller (no direct node
+    # access at all, see hierarchy.accessible_node_ids).
+    accessible_node_ids: List[int] = []
+
+
+class AdminNodeAccessUpdate(BaseModel):
+    """Full-replace list of node ids granted to a level-2 Admin - superadmin
+    only (see routers/admins.py's set_admin_nodes)."""
+    node_ids: List[int] = []
 
 
 class AdminGroupCreate(BaseModel):

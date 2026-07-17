@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from .database import get_db
 from .security import decode_access_token
 from .permissions import effective_permissions
+from .services import hierarchy
 from . import models
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
@@ -42,14 +43,33 @@ def require_superadmin(admin: models.AdminUser = Depends(get_current_admin)) -> 
 def require_permission(perm: str):
     """Returns a FastAPI dependency gating an endpoint behind one of
     permissions.PERMISSION_CHOICES - superadmins always pass regardless of
-    their stored `permissions` value."""
+    their stored `permissions` value. Level-2 Admins (see services/
+    hierarchy.py) ALSO always pass, full stop: the 3-tier hierarchy feature
+    gives them full menu access within their own tree by design (that's the
+    whole point of "هر ادمین یه پنل کامل داره") - only level-3 Sellers are
+    ever actually gated by the granular permissions.PERMISSION_CHOICES
+    checkboxes, same as how every non-superadmin admin worked before this
+    feature existed."""
 
     def _checker(admin: models.AdminUser = Depends(get_current_admin)) -> models.AdminUser:
-        if admin.is_superadmin or perm in effective_permissions(admin):
+        if admin.is_superadmin or hierarchy.role(admin) == hierarchy.ROLE_ADMIN or perm in effective_permissions(admin):
             return admin
         raise HTTPException(status.HTTP_403_FORBIDDEN, "شما به این بخش دسترسی ندارید")
 
     return _checker
+
+
+def require_admin_or_above(admin: models.AdminUser = Depends(get_current_admin)) -> models.AdminUser:
+    """Gate for the (now hierarchy-aware) /api/admins router: superadmins
+    manage level-2 Admins, and level-2 Admins manage their OWN level-3
+    Sellers - both roles reach this router, each endpoint inside further
+    scopes what they're actually allowed to see/touch (see routers/
+    admins.py). Sellers can never reach this router at all - they're never
+    allowed to create/manage anyone (services/hierarchy.py's
+    can_create_sub_admin)."""
+    if admin.is_superadmin or hierarchy.role(admin) == hierarchy.ROLE_ADMIN:
+        return admin
+    raise HTTPException(status.HTTP_403_FORBIDDEN, "این بخش برای شما در دسترس نیست")
 
 
 def get_bot_api_key(

@@ -43,6 +43,17 @@ def deploy(payload: schemas.RemoteBotDeployRequest, db: Session = Depends(get_db
                 "آدرسی از این پنل که از سرور دوم قابل دسترسی باشد وارد کنید (مثلا http://IP-همین-سرور:8000)",
             )
         panel_api_url = f"http://{host}:8000"
+    # remote_bridge.py's RemoteBridge appends bare paths like "/nodes",
+    # "/users" etc. straight onto this base URL with no prefix of its own -
+    # it expects PANEL_API_URL to already point AT routers/bot.py's mount
+    # point (prefix="/api/bot"), not just the panel's host:port. The admin
+    # only ever types/sees "http://IP:8000" (that's what the Settings UI's
+    # placeholder shows), so without this, every single call the remote bot
+    # makes 404s ("Not Found") and it looks like it can't see the database
+    # at all even though SSH/deploy itself succeeded fine.
+    panel_api_url = panel_api_url.rstrip("/")
+    if not panel_api_url.endswith("/api/bot"):
+        panel_api_url += "/api/bot"
 
     # Dedicated API key for this remote bot, created fresh on every deploy
     # so re-deploying (e.g. moving to a different server) doesn't reuse an

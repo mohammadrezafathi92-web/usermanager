@@ -399,9 +399,10 @@ def delete_user_cascade(db: Session, user: models.User):
     db.commit()
 
 
-def bulk_delete_users(db: Session, user_ids: list[int], owner_admin_id: Optional[int] = None) -> dict:
-    """owner_admin_id, when given (i.e. the caller is a non-superadmin - see
-    routers/users.py), restricts this to only ids that admin actually owns -
+def bulk_delete_users(db: Session, user_ids: list[int], owner_admin_ids: Optional[set] = None) -> dict:
+    """owner_admin_ids, when given (i.e. the caller is a non-superadmin -
+    see routers/users.py's hierarchy.owned_admin_ids), restricts this to
+    only ids owned by that admin OR any of their own level-3 Sellers -
     anything else is silently skipped, same as a plain missing id, so a
     non-superadmin can never delete another group's users by guessing ids."""
     deleted_count = 0
@@ -409,7 +410,7 @@ def bulk_delete_users(db: Session, user_ids: list[int], owner_admin_id: Optional
         user = db.get(models.User, uid)
         if not user:
             continue
-        if owner_admin_id is not None and user.owner_admin_id != owner_admin_id:
+        if owner_admin_ids is not None and user.owner_admin_id not in owner_admin_ids:
             continue
         delete_user_cascade(db, user)
         deleted_count += 1
@@ -519,12 +520,13 @@ def bulk_update_users(
     status: Optional[models.UserStatus] = None,
     max_concurrent_sessions: Optional[int] = None,
     package: Optional[models.Package] = None,
-    owner_admin_id: Optional[int] = None,
+    owner_admin_ids: Optional[set] = None,
 ) -> dict:
     """Applies the same renewal/status/limit change to every user in
     user_ids. Silently skips ids that don't exist - and, when
-    owner_admin_id is given (non-superadmin caller), ids belonging to a
-    different admin's group too.
+    owner_admin_ids is given (non-superadmin caller - see
+    hierarchy.owned_admin_ids), ids outside that admin's own tree (self +
+    their level-3 Sellers) too.
 
     If `package` is given, it takes priority over add_gb/add_days: each
     user's quota/expiry/concurrent-session-cap is overwritten outright from
@@ -538,7 +540,7 @@ def bulk_update_users(
         user = db.get(models.User, uid)
         if not user:
             continue
-        if owner_admin_id is not None and user.owner_admin_id != owner_admin_id:
+        if owner_admin_ids is not None and user.owner_admin_id not in owner_admin_ids:
             continue
         if package is not None:
             user.total_quota_bytes = gb_to_bytes(package.quota_gb) if package.quota_gb else 0

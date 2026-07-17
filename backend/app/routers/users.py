@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, joinedload
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_admin
-from ..services import user_ops
+from ..services import user_ops, hierarchy
 
 router = APIRouter(prefix="/api/users", tags=["users"], dependencies=[Depends(get_current_admin)])
 
@@ -89,15 +89,37 @@ def _refund_admin_for_package(db: Session, admin: models.AdminUser, package: mod
     db.commit()
 
 
+def _get_scoped_package(db: Session, admin: models.AdminUser, package_id: int) -> models.Package:
+    """Fetches a package AND checks it's inside this admin's hierarchy scope
+    (see services/hierarchy.py's accessible_package_owner_ids and
+    routers/packages.py's identical _get_scoped_package) - without this, a
+    Seller/Admin could provision a user off another Admin's private package
+    just by guessing its id, bypassing both the cooperation-price wallet
+    charge that package's real owner set and the node-access boundary its
+    bundled connections rely on."""
+    package = db.get(models.Package, package_id)
+    if not package:
+        raise HTTPException(400, "پکیج پیدا نشد")
+    allowed = hierarchy.accessible_package_owner_ids(admin)
+    if allowed is not None and package.owner_admin_id not in allowed:
+        raise HTTPException(400, "پکیج پیدا نشد")
+    return package
+
+
 def _get_owned_user(db: Session, admin: models.AdminUser, user_id: int) -> models.User:
-    """Fetches a user and enforces group ownership: a non-superadmin gets a
-    plain 404 (not 403 - deliberately doesn't confirm/deny whether the id
-    belongs to someone else's group) for any user outside their own group.
-    Superadmins bypass this entirely."""
+    """Fetches a user and enforces hierarchy scope (see services/
+    hierarchy.py's owned_admin_ids): a non-superadmin gets a plain 404 (not
+    403 - deliberately doesn't confirm/deny whether the id belongs to
+    someone else's tree) for any user outside their own scope - which for a
+    level-2 Admin is themself PLUS their own level-3 Sellers (their whole
+    tree, same "پنل کامل" oversight a superadmin has over everyone), and
+    for a level-3 Seller is only their own users. Superadmins bypass this
+    entirely."""
     user = db.get(models.User, user_id)
     if not user:
         raise HTTPException(404, "کاربر پیدا نشد")
-    if not admin.is_superadmin and user.owner_admin_id != admin.id:
+    owned = hierarchy.owned_admin_ids(db, admin)
+    if owned is not None and user.owner_admin_id not in owned:
         raise HTTPException(404, "کاربر پیدا نشد")
     return user
 
@@ -114,11 +136,20 @@ def _build_user_query(
     """Shared filter-building for list_users and export_users below, so the
     Excel export always matches exactly what's on screen for the same
     search/status/online/group filters instead of drifting apart over
-    time. Scoped to the caller's own group unless they're a superadmin -
+    time. Scoped to the caller's hierarchy tree unless they're a superadmin -
     see list_users' docstring for the full rationale."""
     query = db.query(models.User)
-    if not admin.is_superadmin:
-        query = query.filter(models.User.owner_admin_id == admin.id)
+    owned = hierarchy.owned_admin_ids(db, admin)
+    if owned is not None:
+        # Non-superadmin: always constrained to their own tree. A specific
+        # owner_admin_id filter (e.g. a level-2 Admin drilling into one
+        # particular Seller's users) is only honored if it's actually
+        # inside their scope - otherwise ignored, same as a superadmin
+        # passing a bogus id would just see nothing.
+        if owner_admin_id is not None and owner_admin_id in owned:
+            query = query.filter(models.User.owner_admin_id == owner_admin_id)
+        else:
+            query = query.filter(models.User.owner_admin_id.in_(owned))
     elif owner_admin_id is not None:
         query = query.filter(models.User.owner_admin_id == owner_admin_id)
     if search:
@@ -273,9 +304,7 @@ def bulk_create_users(
 
     package = None
     if payload.package_id:
-        package = db.get(models.Package, payload.package_id)
-        if not package:
-            raise HTTPException(400, "پکیج پیدا نشد")
+        package = _get_scoped_package(db, admin, payload.package_id)
         # Reserve the worst case (every one of `count` succeeds) upfront -
         # refunded below for any that don't actually get created (fully, if
         # user_ops.bulk_create_users itself raises partway through).
@@ -310,9 +339,7 @@ def bulk_update_users(
 ):
     package = None
     if payload.package_id:
-        package = db.get(models.Package, payload.package_id)
-        if not package:
-            raise HTTPException(400, "پکیج پیدا نشد")
+        package = _get_scoped_package(db, admin, payload.package_id)
 
     return user_ops.bulk_update_users(
         db,
@@ -323,7 +350,7 @@ def bulk_update_users(
         status=payload.status,
         max_concurrent_sessions=payload.max_concurrent_sessions,
         package=package,
-        owner_admin_id=None if admin.is_superadmin else admin.id,
+        owner_admin_ids=hierarchy.owned_admin_ids(db, admin),
     )
 
 
@@ -334,7 +361,7 @@ def bulk_delete_users(
     admin: models.AdminUser = Depends(get_current_admin),
 ):
     return user_ops.bulk_delete_users(
-        db, user_ids=payload.user_ids, owner_admin_id=None if admin.is_superadmin else admin.id
+        db, user_ids=payload.user_ids, owner_admin_ids=hierarchy.owned_admin_ids(db, admin)
     )
 
 
@@ -353,11 +380,16 @@ def create_user(
     if not admin.is_superadmin and not payload.package_id:
         raise HTTPException(400, "ساخت کاربر بدون پکیج مجاز نیست - یک پکیج انتخاب کنید")
 
-    # Only a superadmin may hand a new user to a DIFFERENT admin's group -
-    # everyone else's users always land in their own group, regardless of
-    # what owner_admin_id they send.
+    # A superadmin may hand a new user to ANY admin's group. A level-2 Admin
+    # may hand it to any admin inside their OWN tree (themself or one of
+    # their level-3 Sellers - see hierarchy.owned_admin_ids), so they can
+    # provision an account directly under a specific Seller if needed. A
+    # Seller can't reassign at all - always lands under themself.
     owner_admin_id = admin.id
-    if admin.is_superadmin and payload.owner_admin_id is not None:
+    if payload.owner_admin_id is not None:
+        owned = hierarchy.owned_admin_ids(db, admin)
+        if owned is not None and payload.owner_admin_id not in owned:
+            raise HTTPException(400, "ادمین مقصد در دسترس شما نیست")
         if not db.get(models.AdminUser, payload.owner_admin_id):
             raise HTTPException(400, "ادمین مقصد پیدا نشد")
         owner_admin_id = payload.owner_admin_id
@@ -366,9 +398,7 @@ def create_user(
     data["owner_admin_id"] = owner_admin_id
     package = None
     if payload.package_id:
-        package = db.get(models.Package, payload.package_id)
-        if not package:
-            raise HTTPException(400, "پکیج پیدا نشد")
+        package = _get_scoped_package(db, admin, payload.package_id)
         _charge_admin_for_package(db, admin, package, units=1)
         # the package's own quota/duration/concurrent-session cap win over
         # whatever was in the manual fields above
@@ -520,12 +550,15 @@ def update_user(
     clear_trigger = data.pop("clear_expire_days_trigger", None)
 
     if "owner_admin_id" in data:
-        if not admin.is_superadmin:
-            # Non-superadmins can't reassign a user to another group at
-            # all - silently drop the field rather than error, so the same
-            # request body works regardless of who sends it.
+        target = data["owner_admin_id"]
+        owned = hierarchy.owned_admin_ids(db, admin)
+        if owned is not None and (target is None or target not in owned):
+            # Non-superadmins can only reassign within their own tree
+            # (themself or their own level-3 Sellers) - anything else is
+            # silently dropped rather than erroring, so the same request
+            # body works regardless of who sends it.
             data.pop("owner_admin_id")
-        elif data["owner_admin_id"] is not None and not db.get(models.AdminUser, data["owner_admin_id"]):
+        elif target is not None and not db.get(models.AdminUser, target):
             raise HTTPException(400, "ادمین مقصد پیدا نشد")
 
     # NOTE: telegram_id is intentionally allowed on more than one User - a
@@ -595,6 +628,15 @@ def _get_user_and_node(
     user = _get_owned_user(db, admin, user_id)
     node = db.get(models.Node, node_id)
     if not node:
+        raise HTTPException(400, "نود پیدا نشد")
+    # Same hierarchy scope check as routers/nodes.py's _get_scoped_node -
+    # an admin can only provision a connection on a node they've actually
+    # been granted (see AdminNodeAccess); a Seller can't provision manual
+    # connections on any node directly (accessible_node_ids returns an
+    # empty set for them - they only ever get services bundled into a
+    # Package their parent Admin built and shared).
+    allowed = hierarchy.accessible_node_ids(db, admin)
+    if allowed is not None and node.id not in allowed:
         raise HTTPException(400, "نود پیدا نشد")
     return user, node
 
@@ -693,9 +735,7 @@ def apply_package(
     own balance (skipped entirely for usage-billed admins - see
     _charge_admin_for_package)."""
     user = _get_owned_user(db, admin, user_id)
-    package = db.get(models.Package, payload.package_id)
-    if not package:
-        raise HTTPException(400, "پکیج پیدا نشد")
+    package = _get_scoped_package(db, admin, payload.package_id)
 
     _charge_admin_for_package(db, admin, package, units=1)
     user_ops.apply_package_as_purchase(db, user, package)
@@ -742,6 +782,8 @@ def renew_purchase_endpoint(
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "خرید پیدا نشد")
+    if payload.package_id:
+        _get_scoped_package(db, admin, payload.package_id)  # scope check only
     return user_ops.renew_purchase(
         db, purchase,
         add_gb=payload.add_gb, add_days=payload.add_days,

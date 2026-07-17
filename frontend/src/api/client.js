@@ -222,6 +222,12 @@ export const fetchAdminVolumeLogs = (id) => client.get(`/admins/${id}/volume-log
 
 export const fetchAdminLoginLogs = (params) => client.get("/admins/login-logs", { params });
 
+// 3-tier hierarchy node grants (superadmin only - see routers/admins.py's
+// available-nodes/{id}/nodes): which servers a level-2 Admin's own tree
+// (themself + their Sellers) is allowed to see/use.
+export const fetchAvailableNodesForGrant = () => client.get("/admins/available-nodes");
+export const setAdminNodes = (id, nodeIds) => client.put(`/admins/${id}/nodes`, { node_ids: nodeIds });
+
 // RADIUS concurrent-session-limit reject/ban history - either the whole
 // panel-wide page (no user_id) or scoped to one user (UserDetail.jsx).
 export const fetchRadiusLimitLogs = (params) => client.get("/radius-logs", { params });

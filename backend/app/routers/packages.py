@@ -9,16 +9,49 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_admin, require_permission
+from ..services import hierarchy
 
 # Router-level dependency is just "logged in" - listing packages is
 # available to every admin (needed to pick a package while creating a
-# user, even for an admin without the "edit_packages" permission). Mutating
-# endpoints split into "edit_packages" (create/update/files) and
-# "delete_packages" (package delete only) - see permissions.py.
+# user, even for an admin without the "edit_packages" permission), further
+# narrowed to hierarchy-visible packages below (see Package.owner_admin_id's
+# docstring in models.py: NULL/global + your own scope). Mutating endpoints
+# split into "edit_packages" (create/update/files) and "delete_packages"
+# (package delete only) - see permissions.py - AND restricted to superadmin
+# or level-2 Admin only: level-3 Sellers can see/use packages to provision
+# users but never create/edit/delete them themselves (they only have
+# whatever their parent Admin built and shared).
 router = APIRouter(prefix="/api/packages", tags=["packages"], dependencies=[Depends(get_current_admin)])
 _edit = Depends(require_permission("edit_packages"))
 _delete = Depends(require_permission("delete_packages"))
 _manage = _edit  # legacy alias
+
+
+def _require_package_manager(admin: models.AdminUser) -> None:
+    if hierarchy.is_seller(admin):
+        raise HTTPException(403, "فروشنده‌ها اجازه ساخت یا ویرایش پکیج را ندارند")
+
+
+def _out(pkg: models.Package) -> models.Package:
+    """Bolts the owner's username onto the ORM object as a plain attribute
+    right before returning it, since owner_admin_username isn't a real
+    column - PackageOut.model_validate reads it straight off via
+    from_attributes, same trick as routers/admins.py's _out()."""
+    pkg.owner_admin_username = pkg.owner_admin.username if pkg.owner_admin else None
+    return pkg
+
+
+def _get_scoped_package(db: Session, package_id: int, admin: models.AdminUser) -> models.Package:
+    """Fetches a package AND checks it's in this admin's hierarchy scope -
+    404s (not 403) for an out-of-scope package, same pattern as
+    routers/nodes.py's _get_scoped_node."""
+    pkg = db.get(models.Package, package_id)
+    if not pkg:
+        raise HTTPException(404, "پکیج پیدا نشد")
+    allowed = hierarchy.accessible_package_owner_ids(admin)
+    if allowed is not None and pkg.owner_admin_id not in allowed:
+        raise HTTPException(404, "پکیج پیدا نشد")
+    return pkg
 
 # Same persistent /app/data volume the sqlite DB itself lives on (see
 # docker-compose.yml: ./backend/data:/app/data), so uploaded files survive
@@ -47,42 +80,53 @@ def _sync_connections(db: Session, pkg: models.Package, specs: list[schemas.Pack
 
 
 @router.get("", response_model=list[schemas.PackageOut])
-def list_packages(db: Session = Depends(get_db)):
-    return db.query(models.Package).order_by(models.Package.sort_order, models.Package.id).all()
+def list_packages(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    allowed = hierarchy.accessible_package_owner_ids(admin)
+    q = db.query(models.Package)
+    if allowed is not None:
+        q = q.filter(models.Package.owner_admin_id.in_(allowed))
+    pkgs = q.order_by(models.Package.sort_order, models.Package.id).all()
+    return [_out(p) for p in pkgs]
 
 
 @router.post("", response_model=schemas.PackageOut)
-def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db), _perm=_edit):
+def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+    _require_package_manager(admin)
     data = payload.model_dump(exclude={"connections"})
+    # owner_admin_id is always derived from who's creating it, never taken
+    # from the payload - a superadmin's packages stay global (NULL), a
+    # level-2 Admin's packages are scoped to themselves (see
+    # hierarchy.parent_admin_scope_id - a Seller can never reach here at
+    # all thanks to _require_package_manager above).
+    data["owner_admin_id"] = None if admin.is_superadmin else hierarchy.parent_admin_scope_id(admin)
     pkg = models.Package(**data)
     db.add(pkg)
     db.flush()  # assign pkg.id before adding child rows
     _sync_connections(db, pkg, payload.connections)
     db.commit()
     db.refresh(pkg)
-    return pkg
+    return _out(pkg)
 
 
 @router.put("/{package_id}", response_model=schemas.PackageOut)
-def update_package(package_id: int, payload: schemas.PackageUpdate, db: Session = Depends(get_db), _perm=_edit):
-    pkg = db.get(models.Package, package_id)
-    if not pkg:
-        raise HTTPException(404, "پکیج پیدا نشد")
+def update_package(package_id: int, payload: schemas.PackageUpdate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+    _require_package_manager(admin)
+    pkg = _get_scoped_package(db, package_id, admin)
     data = payload.model_dump(exclude_unset=True, exclude={"connections"})
+    data.pop("owner_admin_id", None)  # ownership never changes via this endpoint
     for k, v in data.items():
         setattr(pkg, k, v)
     if payload.connections is not None:
         _sync_connections(db, pkg, payload.connections)
     db.commit()
     db.refresh(pkg)
-    return pkg
+    return _out(pkg)
 
 
 @router.delete("/{package_id}")
-def delete_package(package_id: int, db: Session = Depends(get_db), _perm=_delete):
-    pkg = db.get(models.Package, package_id)
-    if not pkg:
-        raise HTTPException(404, "پکیج پیدا نشد")
+def delete_package(package_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_delete):
+    _require_package_manager(admin)
+    pkg = _get_scoped_package(db, package_id, admin)
     for f in pkg.files:
         _unlink_quiet(f.stored_path)
     db.delete(pkg)
@@ -99,14 +143,13 @@ def _unlink_quiet(path: str) -> None:
 
 
 @router.post("/{package_id}/files", response_model=schemas.PackageFileOut)
-def upload_package_file(package_id: int, file: UploadFile = File(...), db: Session = Depends(get_db), _perm=_edit):
+def upload_package_file(package_id: int, file: UploadFile = File(...), db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
     """Attaches a file (VPN config, setup guide, installer, ...) to a
     package - the built-in sales bot sends every attached file to the
     customer automatically right after they buy/renew this package (see
     telegram_bot/handlers/customer.py and admin_pending.py)."""
-    pkg = db.get(models.Package, package_id)
-    if not pkg:
-        raise HTTPException(404, "پکیج پیدا نشد")
+    _require_package_manager(admin)
+    pkg = _get_scoped_package(db, package_id, admin)
 
     pkg_dir = os.path.join(PACKAGE_FILES_DIR, str(package_id))
     os.makedirs(pkg_dir, exist_ok=True)
@@ -145,7 +188,9 @@ def upload_package_file(package_id: int, file: UploadFile = File(...), db: Sessi
 
 
 @router.delete("/{package_id}/files/{file_id}")
-def delete_package_file(package_id: int, file_id: int, db: Session = Depends(get_db), _perm=_edit):
+def delete_package_file(package_id: int, file_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+    _require_package_manager(admin)
+    _get_scoped_package(db, package_id, admin)  # scope check, 404s if out of reach
     pf = db.get(models.PackageFile, file_id)
     if not pf or pf.package_id != package_id:
         raise HTTPException(404, "فایل پیدا نشد")

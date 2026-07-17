@@ -160,11 +160,53 @@ def _auto_migrate_missing_columns() -> None:
                     logging.warning("auto-migrate: could not create index %s (%s) - skipping", index.name, exc)
 
 
+def _backfill_hierarchy_node_access(admin_node_access_table_is_new: bool) -> None:
+    """One-time backfill for the 3-tier reseller hierarchy feature (see
+    services/hierarchy.py): before this feature existed, EVERY logged-in
+    admin (superadmin or not) could see EVERY node - node visibility was
+    never scoped. Now routers/nodes.py's list_nodes/_get_scoped_node
+    restrict a non-superadmin ("level-2 Admin", since parent_admin_id also
+    defaults NULL for every admin row that existed before this feature) to
+    only nodes explicitly granted via AdminNodeAccess. Without this
+    backfill, EVERY existing non-superadmin admin would silently lose
+    access to every node the moment this update is deployed - a real
+    production outage for whoever's already running the panel, not just a
+    theoretical gap.
+
+    Only runs the ONE time admin_node_access is first created (detected via
+    admin_node_access_table_is_new, checked in on_startup BEFORE
+    create_all() runs) - on every later startup the table already exists,
+    so this is skipped entirely and whatever grants/revocations a
+    superadmin has since made through the UI are left alone."""
+    if not admin_node_access_table_is_new:
+        return
+    db = SessionLocal()
+    try:
+        existing_admin_ids = [
+            row.id for row in db.query(models.AdminUser.id).filter(models.AdminUser.is_superadmin == False).all()  # noqa: E712
+        ]
+        existing_node_ids = [row.id for row in db.query(models.Node.id).all()]
+        if not existing_admin_ids or not existing_node_ids:
+            return
+        for admin_id in existing_admin_ids:
+            for node_id in existing_node_ids:
+                db.add(models.AdminNodeAccess(admin_id=admin_id, node_id=node_id))
+        db.commit()
+        logging.info(
+            "hierarchy backfill: granted %d pre-existing admin(s) access to all %d pre-existing node(s)",
+            len(existing_admin_ids), len(existing_node_ids),
+        )
+    finally:
+        db.close()
+
+
 @app.on_event("startup")
 def on_startup():
     _warn_if_insecure_defaults()
+    _admin_node_access_is_new = "admin_node_access" not in set(inspect(engine).get_table_names())
     Base.metadata.create_all(bind=engine)
     _auto_migrate_missing_columns()
+    _backfill_hierarchy_node_access(_admin_node_access_is_new)
 
     db = SessionLocal()
     try:

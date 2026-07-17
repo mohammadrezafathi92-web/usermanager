@@ -9,8 +9,22 @@ from ..database import get_db
 from ..deps import get_current_admin, require_permission
 from ..services.mikrotik_client import MikrotikClient, MikrotikError
 from ..services.xray_client import XrayError, client_for_node
-from ..services import user_ops
+from ..services import user_ops, hierarchy
 from ..services.keys import generate_password
+
+
+def _get_scoped_node(db: Session, node_id: int, admin: models.AdminUser) -> models.Node:
+    """Fetches a node AND checks it's in this admin's hierarchy scope (see
+    services/hierarchy.py) - 404s (not 403) for an out-of-scope node, same
+    as a genuinely missing one, so a restricted Admin/Seller can't probe
+    which node ids exist elsewhere in the system."""
+    node = db.get(models.Node, node_id)
+    if not node:
+        raise HTTPException(404, "نود پیدا نشد")
+    allowed = hierarchy.accessible_node_ids(db, admin)
+    if allowed is not None and node.id not in allowed:
+        raise HTTPException(404, "نود پیدا نشد")
+    return node
 
 
 def _resolve_panel_host(payload_host: Optional[str]) -> str:
@@ -25,11 +39,17 @@ def _resolve_panel_host(payload_host: Optional[str]) -> str:
 # Router-level dependency is just "logged in" - listing/reading nodes is
 # available to every admin regardless of permissions (a restricted admin
 # still needs to see which servers exist to provision a connection for
-# their own users - see routers/users.py's connection endpoints). The
-# mutating endpoints below are split into "edit_nodes" (create/update/test/
-# import/RADIUS+protocol pushes) and "delete_nodes" (delete only) - see
-# permissions.py's docstring on why this used to be one broad "manage_nodes"
-# and was split into granular per-action permissions.
+# their own users - see routers/users.py's connection endpoints), further
+# narrowed to their own hierarchy.accessible_node_ids scope below. The
+# mutating endpoints are split into "edit_nodes" (update/test/import/
+# RADIUS+protocol pushes on a node already in scope) and "delete_nodes" -
+# see permissions.py's docstring on why this used to be one broad
+# "manage_nodes" and was split into granular per-action permissions.
+# create_node/delete_node are superadmin-only regardless of permissions -
+# nodes are real server infrastructure a superadmin creates/configures and
+# then GRANTS to specific level-2 Admins (see services/hierarchy.py,
+# routers/admins.py's set_admin_nodes) - an Admin never creates/removes the
+# infrastructure itself, only uses whatever's been granted to them.
 router = APIRouter(prefix="/api/nodes", tags=["nodes"], dependencies=[Depends(get_current_admin)])
 _edit = Depends(require_permission("edit_nodes"))
 _delete = Depends(require_permission("delete_nodes"))
@@ -37,12 +57,18 @@ _manage = _edit  # legacy alias, in case any other module still imports it
 
 
 @router.get("", response_model=list[schemas.NodeOut])
-def list_nodes(db: Session = Depends(get_db)):
-    return db.query(models.Node).all()
+def list_nodes(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    allowed = hierarchy.accessible_node_ids(db, admin)
+    q = db.query(models.Node)
+    if allowed is not None:
+        q = q.filter(models.Node.id.in_(allowed)) if allowed else q.filter(False)
+    return q.all()
 
 
 @router.post("", response_model=schemas.NodeOut)
-def create_node(payload: schemas.NodeCreate, db: Session = Depends(get_db), _perm=_edit):
+def create_node(payload: schemas.NodeCreate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    if not admin.is_superadmin:
+        raise HTTPException(403, "فقط ادمین اصلی می‌تواند سرور جدید بسازد")
     node = models.Node(**payload.model_dump())
     db.add(node)
     db.commit()
@@ -51,18 +77,13 @@ def create_node(payload: schemas.NodeCreate, db: Session = Depends(get_db), _per
 
 
 @router.get("/{node_id}", response_model=schemas.NodeOut)
-def get_node(node_id: int, db: Session = Depends(get_db)):
-    node = db.get(models.Node, node_id)
-    if not node:
-        raise HTTPException(404, "نود پیدا نشد")
-    return node
+def get_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    return _get_scoped_node(db, node_id, admin)
 
 
 @router.put("/{node_id}", response_model=schemas.NodeOut)
-def update_node(node_id: int, payload: schemas.NodeUpdate, db: Session = Depends(get_db), _perm=_edit):
-    node = db.get(models.Node, node_id)
-    if not node:
-        raise HTTPException(404, "نود پیدا نشد")
+def update_node(node_id: int, payload: schemas.NodeUpdate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+    node = _get_scoped_node(db, node_id, admin)
     for k, v in payload.model_dump(exclude_unset=True).items():
         setattr(node, k, v)
     db.commit()
@@ -71,7 +92,9 @@ def update_node(node_id: int, payload: schemas.NodeUpdate, db: Session = Depends
 
 
 @router.delete("/{node_id}")
-def delete_node(node_id: int, db: Session = Depends(get_db), _perm=_delete):
+def delete_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    if not admin.is_superadmin:
+        raise HTTPException(403, "فقط ادمین اصلی می‌تواند سرور را حذف کند")
     node = db.get(models.Node, node_id)
     if not node:
         raise HTTPException(404, "نود پیدا نشد")
@@ -83,10 +106,8 @@ def delete_node(node_id: int, db: Session = Depends(get_db), _perm=_delete):
 
 
 @router.post("/{node_id}/test")
-def test_node(node_id: int, db: Session = Depends(get_db), _perm=_edit):
-    node = db.get(models.Node, node_id)
-    if not node:
-        raise HTTPException(404, "نود پیدا نشد")
+def test_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+    node = _get_scoped_node(db, node_id, admin)
     try:
         if node.type == models.NodeType.mikrotik:
             with MikrotikClient.for_node(node) as mt:
@@ -117,16 +138,14 @@ def test_node(node_id: int, db: Session = Depends(get_db), _perm=_edit):
 
 
 @router.post("/{node_id}/push-radius-config", response_model=schemas.RadiusPushResult)
-def push_radius_config(node_id: int, payload: schemas.RadiusPushRequest, db: Session = Depends(get_db), _perm=_edit):
+def push_radius_config(node_id: int, payload: schemas.RadiusPushRequest, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
     """One-click alternative to typing the RouterOS commands by hand: uses
     the panel's existing RouterOS API connection to this node to register
     the panel as a /radius client (service=ppp) and switch `ppp aaa` to use
     it. Does NOT touch anything else (IP pool, OpenVPN/L2TP server,
     certificates, IPsec) - those remain fully manual, as with everything
     else in the OpenVPN/L2TP flow."""
-    node = db.get(models.Node, node_id)
-    if not node:
-        raise HTTPException(404, "نود پیدا نشد")
+    node = _get_scoped_node(db, node_id, admin)
     if node.type != models.NodeType.mikrotik:
         raise HTTPException(400, "این عملیات فقط برای نود میکروتیک است")
     if not node.mt_radius_secret:
@@ -155,15 +174,13 @@ def push_radius_config(node_id: int, payload: schemas.RadiusPushRequest, db: Ses
 
 
 @router.post("/{node_id}/push-sstp-config", response_model=schemas.ProtocolPushResult)
-def push_sstp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), _perm=_edit):
+def push_sstp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
     """One-click SSTP setup: registers the panel as a /radius client
     (service=ppp, same as push-radius-config) if not already done, creates+
     self-signs a server certificate if none exists yet, and enables the
     SSTP server with authentication=mschap2. Does NOT touch IP pools or PPP
     profiles - same minimal-touch scope as push-radius-config."""
-    node = db.get(models.Node, node_id)
-    if not node:
-        raise HTTPException(404, "نود پیدا نشد")
+    node = _get_scoped_node(db, node_id, admin)
     if node.type != models.NodeType.mikrotik:
         raise HTTPException(400, "این عملیات فقط برای نود میکروتیک است")
     if not node.mt_radius_secret:
@@ -191,15 +208,13 @@ def push_sstp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Ses
 
 
 @router.post("/{node_id}/push-l2tp-config", response_model=schemas.ProtocolPushResult)
-def push_l2tp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), _perm=_edit):
+def push_l2tp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
     """One-click L2TP/IPsec setup: registers the panel as a /radius client
     (service=ppp) and enables the L2TP server with use-ipsec + a shared
     pre-shared key. Generates and saves a random IPsec secret onto this
     node if one isn't already set (mt_l2tp_ipsec_secret), so repeat pushes
     are idempotent and the same key can be shown to clients afterwards."""
-    node = db.get(models.Node, node_id)
-    if not node:
-        raise HTTPException(404, "نود پیدا نشد")
+    node = _get_scoped_node(db, node_id, admin)
     if node.type != models.NodeType.mikrotik:
         raise HTTPException(400, "این عملیات فقط برای نود میکروتیک است")
     if not node.mt_radius_secret:
@@ -227,7 +242,7 @@ def push_l2tp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Ses
 
 
 @router.post("/{node_id}/push-ikev2-config", response_model=schemas.ProtocolPushResult)
-def push_ikev2_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), _perm=_edit):
+def push_ikev2_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
     """One-click IKEv2 setup: registers the panel as a /radius client for
     BOTH service=ppp (per-user login) and service=ipsec (IKEv2's own
     RADIUS/EAP relay), then sets up an /ip/ipsec peer+identity pinned to
@@ -238,9 +253,7 @@ def push_ikev2_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Se
     ipsec-secret shortcut) - pushing both on the same router may conflict;
     pick one PSK-based protocol per router unless you know what you're
     combining."""
-    node = db.get(models.Node, node_id)
-    if not node:
-        raise HTTPException(404, "نود پیدا نشد")
+    node = _get_scoped_node(db, node_id, admin)
     if node.type != models.NodeType.mikrotik:
         raise HTTPException(400, "این عملیات فقط برای نود میکروتیک است")
     if not node.mt_radius_secret:
@@ -275,36 +288,30 @@ def push_ikev2_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Se
 
 
 @router.post("/{node_id}/import-ppp-users", response_model=schemas.PppImportResult)
-def import_ppp_users(node_id: int, db: Session = Depends(get_db), _perm=_edit):
+def import_ppp_users(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
     """Reads /ppp/secret directly from the router (read-only) and imports
     any OpenVPN/L2TP account not already known to the panel as a new
     User+Connection, copying the same username/password so RADIUS auth
     keeps working for them without touching anything on the router."""
-    node = db.get(models.Node, node_id)
-    if not node:
-        raise HTTPException(404, "نود پیدا نشد")
+    node = _get_scoped_node(db, node_id, admin)
     return user_ops.import_ppp_secrets(db, node)
 
 
 @router.post("/{node_id}/import-usermanager-users", response_model=schemas.PppImportResult)
-def import_usermanager_users(node_id: int, db: Session = Depends(get_db), _perm=_edit):
+def import_usermanager_users(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
     """Reads accounts from MikroTik's own built-in User Manager
     (/user-manager/...) - a separate, protocol-agnostic RADIUS user database
     with its own quotas/expiry - and imports any not already known to the
     panel. Read-only on the router side."""
-    node = db.get(models.Node, node_id)
-    if not node:
-        raise HTTPException(404, "نود پیدا نشد")
+    node = _get_scoped_node(db, node_id, admin)
     return user_ops.import_usermanager_accounts(db, node)
 
 
 @router.post("/{node_id}/import-3xui-clients", response_model=schemas.PppImportResult)
-def import_3xui_clients(node_id: int, db: Session = Depends(get_db), _perm=_edit):
+def import_3xui_clients(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
     """Reads clients that already exist on the 3X-UI panel's configured
     inbound (created there before this node was connected) and imports any
     not already known to the panel as a new User+Connection, preserving
     their uuid/email/flow. Read-only on the 3X-UI panel side."""
-    node = db.get(models.Node, node_id)
-    if not node:
-        raise HTTPException(404, "نود پیدا نشد")
+    node = _get_scoped_node(db, node_id, admin)
     return user_ops.import_threexui_clients(db, node)

@@ -1,19 +1,24 @@
-"""Superadmin-only CRUD for other admin accounts - creating restricted
-sub-admins, editing their checkbox permissions/login link, resetting their
-password, and removing them. Every endpoint here is gated behind
-require_superadmin (see deps.py) - a sub-admin can never reach this router
-at all, regardless of what `permissions` they're granted, so they can never
-escalate their own or anyone else's access through the regular API."""
+"""CRUD for other admin accounts, hierarchy-aware (see services/
+hierarchy.py): a superadmin creates/manages level-2 Admins, and a level-2
+Admin creates/manages their OWN level-3 Sellers through this SAME router -
+gated behind require_admin_or_above (see deps.py) instead of the old
+superadmin-only require_superadmin. Every mutating endpoint additionally
+checks `_scope_or_403` so a level-2 Admin can only ever touch their own
+Sellers, never another Admin's, and can never create/edit anyone but a
+Seller (their own tier). A Seller can never reach this router at all -
+require_admin_or_above rejects them outright, so they can never escalate
+their own or anyone else's access through the regular API."""
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import require_superadmin
+from ..deps import require_admin_or_above, require_superadmin
 from ..security import hash_password
+from ..services import hierarchy
 from ..permissions import PERMISSION_CHOICES, PERMISSION_GROUPS, parse_permissions, format_permissions, effective_permissions
 
-router = APIRouter(prefix="/api/admins", tags=["admins"], dependencies=[Depends(require_superadmin)])
+router = APIRouter(prefix="/api/admins", tags=["admins"], dependencies=[Depends(require_admin_or_above)])
 
 
 def _validate_permissions(perms: list[str]) -> str:
@@ -23,8 +28,24 @@ def _validate_permissions(perms: list[str]) -> str:
     return format_permissions(set(perms))
 
 
+def _scope_or_403(current: models.AdminUser, target: models.AdminUser) -> None:
+    """A superadmin may touch any level-2 Admin or level-3 Seller. A
+    level-2 Admin may only touch their OWN Sellers (target.parent_admin_id
+    == current.id) - never another Admin, another Admin's Sellers, or a
+    superadmin. Sellers never reach this router at all (require_admin_or_above)."""
+    if current.is_superadmin:
+        return
+    if target.parent_admin_id == current.id and hierarchy.is_seller(target):
+        return
+    raise HTTPException(403, "شما دسترسی به این حساب را ندارید")
+
+
 def _out(db: Session, admin: models.AdminUser) -> schemas.AdminOut:
     users_count = db.query(models.User).filter(models.User.owner_admin_id == admin.id).count()
+    node_ids = [
+        row.node_id
+        for row in db.query(models.AdminNodeAccess.node_id).filter(models.AdminNodeAccess.admin_id == admin.id).all()
+    ]
     return schemas.AdminOut(
         id=admin.id,
         username=admin.username,
@@ -41,6 +62,10 @@ def _out(db: Session, admin: models.AdminUser) -> schemas.AdminOut:
         group_name=admin.group.name if admin.group else None,
         billing_mode=admin.billing_mode or "flat",
         volume_balance_gb=admin.volume_balance_gb,
+        role=hierarchy.role(admin),
+        parent_admin_id=admin.parent_admin_id,
+        parent_admin_username=admin.parent_admin.username if admin.parent_admin else None,
+        accessible_node_ids=node_ids,
     )
 
 
@@ -112,17 +137,22 @@ def _apply_balance_change(db: Session, admin: models.AdminUser, amount: int, not
 
 
 # ---------- Permission groups ----------
-# Registered before the "" (list admins) route below on purpose, but since
-# the path prefix differs ("/groups" vs plain "") there's no collision -
-# kept together here so groups management sits right next to admin CRUD.
+# Superadmin-only, deliberately not hierarchy-scoped like the rest of this
+# router (groups have no owner_admin_id - kept as one global, shared list
+# for simplicity). A level-2 Admin can still grant their own Sellers
+# individual per-page permissions directly (the `permissions` list on
+# AdminCreate/AdminUpdate) without needing a group. Registered before the
+# "" (list admins) route below on purpose, but since the path prefix
+# differs ("/groups" vs plain "") there's no collision - kept together here
+# so groups management sits right next to admin CRUD.
 @router.get("/groups", response_model=list[schemas.AdminGroupOut])
-def list_groups(db: Session = Depends(get_db)):
+def list_groups(db: Session = Depends(get_db), _s=Depends(require_superadmin)):
     groups = db.query(models.AdminPermissionGroup).order_by(models.AdminPermissionGroup.id).all()
     return [_group_out(db, g) for g in groups]
 
 
 @router.post("/groups", response_model=schemas.AdminGroupOut)
-def create_group(payload: schemas.AdminGroupCreate, db: Session = Depends(get_db)):
+def create_group(payload: schemas.AdminGroupCreate, db: Session = Depends(get_db), _s=Depends(require_superadmin)):
     name = payload.name.strip()
     if not name:
         raise HTTPException(400, "نام گروه نمی‌تواند خالی باشد")
@@ -136,7 +166,7 @@ def create_group(payload: schemas.AdminGroupCreate, db: Session = Depends(get_db
 
 
 @router.put("/groups/{group_id}", response_model=schemas.AdminGroupOut)
-def update_group(group_id: int, payload: schemas.AdminGroupUpdate, db: Session = Depends(get_db)):
+def update_group(group_id: int, payload: schemas.AdminGroupUpdate, db: Session = Depends(get_db), _s=Depends(require_superadmin)):
     group = db.get(models.AdminPermissionGroup, group_id)
     if not group:
         raise HTTPException(404, "گروه پیدا نشد")
@@ -158,7 +188,7 @@ def update_group(group_id: int, payload: schemas.AdminGroupUpdate, db: Session =
 
 
 @router.delete("/groups/{group_id}")
-def delete_group(group_id: int, db: Session = Depends(get_db)):
+def delete_group(group_id: int, db: Session = Depends(get_db), _s=Depends(require_superadmin)):
     group = db.get(models.AdminPermissionGroup, group_id)
     if not group:
         raise HTTPException(404, "گروه پیدا نشد")
@@ -174,9 +204,58 @@ def delete_group(group_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("", response_model=list[schemas.AdminOut])
-def list_admins(db: Session = Depends(get_db)):
-    admins = db.query(models.AdminUser).order_by(models.AdminUser.id).all()
+def list_admins(db: Session = Depends(get_db), current: models.AdminUser = Depends(require_admin_or_above)):
+    """Superadmin sees every level-2 Admin AND every level-3 Seller (full
+    oversight). A level-2 Admin sees ONLY their own Sellers - never other
+    Admins, other Admins' Sellers, or the superadmin itself."""
+    if current.is_superadmin:
+        admins = db.query(models.AdminUser).filter(models.AdminUser.id != current.id).order_by(models.AdminUser.id).all()
+    else:
+        admins = (
+            db.query(models.AdminUser)
+            .filter(models.AdminUser.parent_admin_id == current.id)
+            .order_by(models.AdminUser.id)
+            .all()
+        )
     return [_out(db, a) for a in admins]
+
+
+@router.get("/available-nodes", response_model=list[schemas.NodeOut])
+def list_available_nodes_for_assignment(db: Session = Depends(get_db), _s=Depends(require_superadmin)):
+    """Every node, for the superadmin's node-assignment UI (see
+    set_admin_nodes below) - a level-2 Admin's OWN node list (Nodes.jsx) is
+    already scoped separately in routers/nodes.py."""
+    return db.query(models.Node).order_by(models.Node.id).all()
+
+
+@router.put("/{admin_id}/nodes", response_model=schemas.AdminOut)
+def set_admin_nodes(
+    admin_id: int,
+    payload: schemas.AdminNodeAccessUpdate,
+    db: Session = Depends(get_db),
+    _s: models.AdminUser = Depends(require_superadmin),
+):
+    """Full-replace which nodes a level-2 Admin can see/use (see
+    models.AdminNodeAccess) - superadmin only, since nodes are always
+    created/configured by a superadmin (services/hierarchy.py's
+    accessible_node_ids docstring)."""
+    admin = db.get(models.AdminUser, admin_id)
+    if not admin:
+        raise HTTPException(404, "ادمین پیدا نشد")
+    if admin.is_superadmin or hierarchy.role(admin) != hierarchy.ROLE_ADMIN:
+        raise HTTPException(400, "اختصاص سرور فقط برای ادمین‌های سطح ۲ معنا دارد")
+    valid_ids = {
+        row.id for row in db.query(models.Node.id).filter(models.Node.id.in_(payload.node_ids)).all()
+    }
+    unknown = set(payload.node_ids) - valid_ids
+    if unknown:
+        raise HTTPException(400, f"سرور نامعتبر: {sorted(unknown)}")
+    db.query(models.AdminNodeAccess).filter(models.AdminNodeAccess.admin_id == admin_id).delete(synchronize_session=False)
+    for node_id in valid_ids:
+        db.add(models.AdminNodeAccess(admin_id=admin_id, node_id=node_id))
+    db.commit()
+    db.refresh(admin)
+    return _out(db, admin)
 
 
 @router.get("/permission-choices")
@@ -195,8 +274,13 @@ def permission_choices():
 def create_admin(
     payload: schemas.AdminCreate,
     db: Session = Depends(get_db),
-    current: models.AdminUser = Depends(require_superadmin),
+    current: models.AdminUser = Depends(require_admin_or_above),
 ):
+    """Who gets created is entirely derived from WHO's calling, never from
+    the payload (mirrors is_superadmin never being client-settable): a
+    superadmin creates a level-2 Admin (parent_admin_id=None); a level-2
+    Admin creates their own level-3 Seller (parent_admin_id=current.id).
+    Sellers can never reach this endpoint at all (require_admin_or_above)."""
     if db.query(models.AdminUser).filter(models.AdminUser.username == payload.username).first():
         raise HTTPException(400, "این نام کاربری قبلا ثبت شده است")
     if len(payload.password) < 6:
@@ -212,11 +296,13 @@ def create_admin(
     if group_id and not db.get(models.AdminPermissionGroup, group_id):
         raise HTTPException(400, "گروه انتخاب‌شده پیدا نشد")
     billing_mode = payload.billing_mode if payload.billing_mode in ("flat", "usage") else "flat"
+    parent_admin_id = None if current.is_superadmin else current.id
 
     admin = models.AdminUser(
         username=payload.username,
         hashed_password=hash_password(payload.password),
         is_superadmin=False,
+        parent_admin_id=parent_admin_id,
         permissions=_validate_permissions(payload.permissions),
         login_slug=slug,
         telegram_id=payload.telegram_id,
@@ -241,13 +327,14 @@ def update_admin(
     admin_id: int,
     payload: schemas.AdminUpdate,
     db: Session = Depends(get_db),
-    current: models.AdminUser = Depends(require_superadmin),
+    current: models.AdminUser = Depends(require_admin_or_above),
 ):
     admin = db.get(models.AdminUser, admin_id)
     if not admin:
         raise HTTPException(404, "ادمین پیدا نشد")
     if admin.is_superadmin:
         raise HTTPException(400, "دسترسی ادمین اصلی از این بخش قابل تغییر نیست")
+    _scope_or_403(current, admin)
 
     if payload.password is not None:
         if len(payload.password) < 6:
@@ -300,7 +387,7 @@ def update_admin(
 
 
 @router.post("/{admin_id}/topup", response_model=schemas.AdminOut)
-def topup_admin_balance(admin_id: int, payload: schemas.AdminTopupRequest, db: Session = Depends(get_db), current: models.AdminUser = Depends(require_superadmin)):
+def topup_admin_balance(admin_id: int, payload: schemas.AdminTopupRequest, db: Session = Depends(get_db), current: models.AdminUser = Depends(require_admin_or_above)):
     """The proper, always-logged way to change a reseller's wholesale
     credit balance - positive amount = افزایش اعتبار, negative = manual
     correction/deduction. Every call here creates exactly one
@@ -310,6 +397,7 @@ def topup_admin_balance(admin_id: int, payload: schemas.AdminTopupRequest, db: S
         raise HTTPException(404, "ادمین پیدا نشد")
     if admin.is_superadmin:
         raise HTTPException(400, "اعتبار برای ادمین اصلی معنا ندارد")
+    _scope_or_403(current, admin)
     if not payload.amount:
         raise HTTPException(400, "مبلغ نمی‌تواند صفر باشد")
     _apply_balance_change(db, admin, payload.amount, (payload.note or "").strip() or None, actor_id=current.id)
@@ -319,10 +407,11 @@ def topup_admin_balance(admin_id: int, payload: schemas.AdminTopupRequest, db: S
 
 
 @router.get("/{admin_id}/balance-logs", response_model=list[schemas.AdminBalanceLogOut])
-def list_admin_balance_logs(admin_id: int, db: Session = Depends(get_db)):
+def list_admin_balance_logs(admin_id: int, db: Session = Depends(get_db), current: models.AdminUser = Depends(require_admin_or_above)):
     admin = db.get(models.AdminUser, admin_id)
     if not admin:
         raise HTTPException(404, "ادمین پیدا نشد")
+    _scope_or_403(current, admin)
     logs = (
         db.query(models.AdminBalanceLog)
         .filter(models.AdminBalanceLog.admin_id == admin_id)
@@ -333,7 +422,7 @@ def list_admin_balance_logs(admin_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{admin_id}/volume-topup", response_model=schemas.AdminOut)
-def topup_admin_volume(admin_id: int, payload: schemas.AdminVolumeTopupRequest, db: Session = Depends(get_db), current: models.AdminUser = Depends(require_superadmin)):
+def topup_admin_volume(admin_id: int, payload: schemas.AdminVolumeTopupRequest, db: Session = Depends(get_db), current: models.AdminUser = Depends(require_admin_or_above)):
     """Volume-pool equivalent of /topup above - only meaningful for
     billing_mode="usage" admins, but not hard-blocked for "flat" admins
     (a superadmin may top up the volume pool in advance of switching an
@@ -343,6 +432,7 @@ def topup_admin_volume(admin_id: int, payload: schemas.AdminVolumeTopupRequest, 
         raise HTTPException(404, "ادمین پیدا نشد")
     if admin.is_superadmin:
         raise HTTPException(400, "حجم برای ادمین اصلی معنا ندارد")
+    _scope_or_403(current, admin)
     if not payload.amount_gb:
         raise HTTPException(400, "مقدار حجم نمی‌تواند صفر باشد")
     _apply_volume_change(db, admin, payload.amount_gb, (payload.note or "").strip() or None, actor_id=current.id)
@@ -352,10 +442,11 @@ def topup_admin_volume(admin_id: int, payload: schemas.AdminVolumeTopupRequest, 
 
 
 @router.get("/{admin_id}/volume-logs", response_model=list[schemas.AdminVolumeLogOut])
-def list_admin_volume_logs(admin_id: int, db: Session = Depends(get_db)):
+def list_admin_volume_logs(admin_id: int, db: Session = Depends(get_db), current: models.AdminUser = Depends(require_admin_or_above)):
     admin = db.get(models.AdminUser, admin_id)
     if not admin:
         raise HTTPException(404, "ادمین پیدا نشد")
+    _scope_or_403(current, admin)
     logs = (
         db.query(models.AdminVolumeLog)
         .filter(models.AdminVolumeLog.admin_id == admin_id)
@@ -371,12 +462,15 @@ def list_login_logs(
     only_failed: bool = False,
     limit: int = 200,
     db: Session = Depends(get_db),
+    _s: models.AdminUser = Depends(require_superadmin),
 ):
     """Superadmin-only IP-based login report (مورد ۵) - every login
     attempt against the panel, success or fail, including the superadmin's
-    own logins. `admin_id` filters to one admin; `only_failed` narrows to
-    rejected attempts (wrong password/unknown username) for spotting
-    brute-force noise."""
+    own logins. Deliberately NOT opened up to level-2 Admins even for their
+    own Sellers - this is a security/audit surface, kept superadmin-only
+    same as before the hierarchy feature. `admin_id` filters to one admin;
+    `only_failed` narrows to rejected attempts (wrong password/unknown
+    username) for spotting brute-force noise."""
     q = db.query(models.AdminLoginLog)
     if admin_id:
         q = q.filter(models.AdminLoginLog.admin_id == admin_id)
@@ -402,7 +496,7 @@ def list_login_logs(
 def delete_admin(
     admin_id: int,
     db: Session = Depends(get_db),
-    current: models.AdminUser = Depends(require_superadmin),
+    current: models.AdminUser = Depends(require_admin_or_above),
 ):
     admin = db.get(models.AdminUser, admin_id)
     if not admin:
@@ -411,7 +505,20 @@ def delete_admin(
         raise HTTPException(400, "نمی‌توانید حساب خودتان را حذف کنید")
     if admin.is_superadmin:
         raise HTTPException(400, "ادمین اصلی قابل حذف نیست")
+    _scope_or_403(current, admin)
 
+    # If this is a level-2 Admin (superadmin deleting one), their own
+    # Sellers aren't deleted either - clearing parent_admin_id promotes
+    # them to level-2 Admins in their own right (see services/hierarchy.py's
+    # role()) rather than leaving them orphaned with no scope at all. Not
+    # ideal (they gain full access they didn't have before), but keeps
+    # their accounts/users working instead of being silently cut off; a
+    # superadmin can review/reassign them by hand afterward. Same
+    # "unassign, don't destroy" philosophy as the users.owner_admin_id
+    # handling below.
+    db.query(models.AdminUser).filter(models.AdminUser.parent_admin_id == admin.id).update(
+        {"parent_admin_id": None}, synchronize_session=False
+    )
     # Users this admin owned aren't deleted - just unassigned (visible to
     # superadmins only, like any never-assigned user) so nobody's VPN
     # service is silently destroyed just because the admin managing them

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Plus, Pencil, Trash2, ShieldCheck, Users as UsersIcon, Link2, Wallet, Send, Wand2, Eye, EyeOff, UsersRound, History, TrendingUp, TrendingDown, MapPin, CheckCircle2, XCircle, Database } from "lucide-react";
+import { Plus, Pencil, Trash2, ShieldCheck, Users as UsersIcon, Link2, Wallet, Send, Wand2, Eye, EyeOff, UsersRound, History, TrendingUp, TrendingDown, MapPin, CheckCircle2, XCircle, Database, Server } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
@@ -18,9 +18,12 @@ import {
   fetchAdminLoginLogs,
   topupAdminVolume,
   fetchAdminVolumeLogs,
+  fetchAvailableNodesForGrant,
+  setAdminNodes,
 } from "../api/client.js";
 import { formatDateTime } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
+import { useAuth } from "../context/AuthContext.jsx";
 
 function formatToman(n) {
   return new Intl.NumberFormat("fa-IR").format(n || 0);
@@ -68,15 +71,24 @@ const emptyGroupForm = { name: "", permissions: [] };
 
 export default function Admins() {
   const { t, language } = useLanguage();
+  const { isSuperadmin } = useAuth();
   const [items, setItems] = useState([]);
   const [choices, setChoices] = useState({});
   const [permGroups, setPermGroups] = useState({});
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  const [editingRole, setEditingRole] = useState(null); // "admin" | "seller" - which tier the modal is currently editing
   const [form, setForm] = useState(emptyForm);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+
+  // ---------- Node access assignment (سوپر ادمین -> ادمین سطح ۲، مورد ۳/۷ لیست تسک‌ها) ----------
+  const [availableNodes, setAvailableNodes] = useState(null); // null = not loaded yet
+  const [selectedNodeIds, setSelectedNodeIds] = useState([]);
+  const [nodesSaving, setNodesSaving] = useState(false);
+  const [nodesError, setNodesError] = useState("");
+  const [nodesSaved, setNodesSaved] = useState(false);
 
   const [groups, setGroups] = useState([]);
   const [groupOpen, setGroupOpen] = useState(false);
@@ -164,17 +176,26 @@ export default function Admins() {
     setVolumeLogs([]);
   };
 
+  const resetNodeAssignState = () => {
+    setSelectedNodeIds([]);
+    setNodesError("");
+    setNodesSaved(false);
+  };
+
   const openCreate = () => {
     setEditingId(null);
+    setEditingRole(null);
     setForm(emptyForm);
     setError("");
     setShowPassword(false);
     resetTopupState();
+    resetNodeAssignState();
     setOpen(true);
   };
 
   const openEdit = (admin) => {
     setEditingId(admin.id);
+    setEditingRole(admin.role || (admin.is_superadmin ? "superadmin" : "seller"));
     setForm({
       username: admin.username,
       password: "",
@@ -190,7 +211,36 @@ export default function Admins() {
     });
     setError("");
     resetTopupState();
+    resetNodeAssignState();
+    // Node assignment only makes sense for a level-2 Admin, edited by a
+    // superadmin (see routers/admins.py's set_admin_nodes) - a Seller never
+    // gets direct node access (services/hierarchy.py), and a level-2 Admin
+    // editing their own Seller has no node-assignment power at all.
+    if (isSuperadmin && admin.role === "admin") {
+      setSelectedNodeIds(admin.accessible_node_ids || []);
+      if (availableNodes === null) {
+        fetchAvailableNodesForGrant().then((res) => setAvailableNodes(res.data));
+      }
+    }
     setOpen(true);
+  };
+
+  const toggleNodeSelected = (nodeId) =>
+    setSelectedNodeIds((ids) => (ids.includes(nodeId) ? ids.filter((id) => id !== nodeId) : [...ids, nodeId]));
+
+  const saveNodeAssignment = async () => {
+    setNodesSaving(true);
+    setNodesError("");
+    setNodesSaved(false);
+    try {
+      await setAdminNodes(editingId, selectedNodeIds);
+      setNodesSaved(true);
+      load();
+    } catch (err) {
+      setNodesError(err?.response?.data?.detail || t("admins.nodeAssignError"));
+    } finally {
+      setNodesSaving(false);
+    }
   };
 
   const doTopup = async () => {
@@ -422,8 +472,19 @@ export default function Admins() {
                     <span className="badge bg-brand-50 text-brand-600 flex items-center gap-1 w-fit">
                       <ShieldCheck size={12} /> {t("admins.mainAdmin")}
                     </span>
+                  ) : a.role === "admin" ? (
+                    <span className="badge bg-violet-50 text-violet-600 flex items-center gap-1 w-fit">
+                      <ShieldCheck size={12} /> {t("admins.roleAdmin")}
+                    </span>
                   ) : (
-                    <span className="badge bg-gray-100 text-gray-500 w-fit">{t("admins.subAdmin")}</span>
+                    <div className="flex flex-col gap-0.5 w-fit">
+                      <span className="badge bg-gray-100 text-gray-500 w-fit">{t("admins.roleSeller")}</span>
+                      {a.parent_admin_username && (
+                        <span className="text-[11px] text-gray-400">
+                          {t("admins.parentAdminLabel", { name: a.parent_admin_username })}
+                        </span>
+                      )}
+                    </div>
                   )}
                 </td>
                 <td className="px-4 py-3 text-xs text-gray-500">
@@ -647,6 +708,40 @@ export default function Admins() {
               {t("admins.groupHint")}
             </div>
           </div>
+
+          {editingId && isSuperadmin && editingRole === "admin" && (
+            <div>
+              <label className="flex items-center gap-1.5 text-sm text-gray-600 mb-2">
+                <Server size={14} className="text-brand-500" /> {t("admins.nodeAssignHeading")}
+              </label>
+              <div className="text-xs text-gray-400 mb-2">{t("admins.nodeAssignHint")}</div>
+              {availableNodes === null ? (
+                <div className="text-sm text-gray-400 text-center py-4">{t("common.loading")}</div>
+              ) : availableNodes.length === 0 ? (
+                <div className="text-sm text-gray-400 text-center py-4">{t("admins.noNodesAvailable")}</div>
+              ) : (
+                <div className="border border-gray-100 rounded-xl max-h-48 overflow-y-auto p-2 space-y-1">
+                  {availableNodes.map((node) => (
+                    <label key={node.id} className="flex items-center gap-2 text-sm text-gray-600 px-1 py-1">
+                      <input
+                        type="checkbox"
+                        checked={selectedNodeIds.includes(node.id)}
+                        onChange={() => toggleNodeSelected(node.id)}
+                      />
+                      {node.name}
+                    </label>
+                  ))}
+                </div>
+              )}
+              <div className="flex items-center gap-2 mt-2">
+                <button type="button" className="btn-secondary" disabled={nodesSaving} onClick={saveNodeAssignment}>
+                  {nodesSaving ? t("common.saving") : t("admins.saveNodeAssign")}
+                </button>
+                {nodesSaved && <span className="text-xs text-emerald-600">{t("admins.nodeAssignSaved")}</span>}
+              </div>
+              {nodesError && <div className="text-xs text-red-500 mt-1">{nodesError}</div>}
+            </div>
+          )}
 
           <div className={form.group_id ? "opacity-40 pointer-events-none" : ""}>
             <label className="block text-sm text-gray-600 mb-2">{t("admins.permissionsLabel")}</label>

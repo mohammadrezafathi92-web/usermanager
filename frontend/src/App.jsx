@@ -24,14 +24,17 @@ function Protected({ children }) {
   return children;
 }
 
-function SuperadminOnly({ children }) {
-  const { token, loading, isSuperadmin } = useAuth();
+// Gates /admins: superadmins manage level-2 Admins, level-2 Admins manage
+// their OWN level-3 Sellers through the same page (see routers/admins.py's
+// require_admin_or_above) - only a level-3 Seller is bounced to "/".
+function AdminOrAboveOnly({ children }) {
+  const { token, loading, isAdminOrAbove } = useAuth();
   const { t } = useLanguage();
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center text-gray-400">{t("common.loading")}</div>;
   }
   if (!token) return <Navigate to="/login" replace />;
-  if (!isSuperadmin) return <Navigate to="/" replace />;
+  if (!isAdminOrAbove) return <Navigate to="/" replace />;
   return children;
 }
 
@@ -115,9 +118,9 @@ export default function App() {
       <Route
         path="/admins"
         element={
-          <SuperadminOnly>
+          <AdminOrAboveOnly>
             <Admins />
-          </SuperadminOnly>
+          </AdminOrAboveOnly>
         }
       />
       <Route

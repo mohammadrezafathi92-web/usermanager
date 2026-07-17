@@ -10,6 +10,7 @@ from ..database import get_db
 from ..security import verify_password, create_access_token, hash_password
 from ..deps import get_current_admin
 from ..permissions import effective_permissions
+from ..services import hierarchy
 
 
 class ChangePasswordRequest(BaseModel):
@@ -89,9 +90,16 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db
 
 @router.get("/me")
 def me(admin: models.AdminUser = Depends(get_current_admin)):
+    # `role` (see services/hierarchy.py) tells the frontend which of the
+    # 3 tiers this admin is on - AuthContext.can() treats a level-2 Admin
+    # the same as a superadmin (full menu access within their own tree, no
+    # granular permission checks), mirroring deps.py's require_permission
+    # on the backend. Only a level-3 Seller is ever actually gated by the
+    # `permissions` list below.
     return {
         "username": admin.username,
         "is_superadmin": admin.is_superadmin,
+        "role": hierarchy.role(admin),
         "permissions": sorted(effective_permissions(admin)),
     }
 

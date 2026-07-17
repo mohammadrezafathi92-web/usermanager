@@ -21,11 +21,14 @@ const allLinks = [
     icon: Settings,
     perm: ["manage_payment_settings", "manage_bot_settings", "manage_api_keys", "manage_backup", "manage_discount_codes"],
   },
-  { to: "/admins", labelKey: "nav.admins", icon: ShieldCheck, perm: "__superadmin__" },
+  // Superadmins manage level-2 Admins here; level-2 Admins ALSO see this
+  // page (to manage their OWN level-3 Sellers - see routers/admins.py's
+  // require_admin_or_above) - only a level-3 Seller never sees it at all.
+  { to: "/admins", labelKey: "nav.admins", icon: ShieldCheck, perm: "__admin_or_above__" },
 ];
 
 export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
-  const { canAny, isSuperadmin } = useAuth();
+  const { canAny, isSuperadmin, isAdminOrAbove } = useAuth();
   const { t, toggleLanguage } = useLanguage();
   const [dark, setDark] = useState(() => {
     try {
@@ -47,6 +50,7 @@ export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
   const links = allLinks.filter((l) => {
     if (l.perm === null) return true;
     if (l.perm === "__superadmin__") return isSuperadmin;
+    if (l.perm === "__admin_or_above__") return isAdminOrAbove;
     return canAny(Array.isArray(l.perm) ? l.perm : [l.perm]);
   });
 

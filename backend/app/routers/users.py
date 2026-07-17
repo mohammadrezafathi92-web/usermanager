@@ -119,7 +119,7 @@ def _get_owned_user(db: Session, admin: models.AdminUser, user_id: int) -> model
     if not user:
         raise HTTPException(404, "کاربر پیدا نشد")
     owned = hierarchy.owned_admin_ids(db, admin)
-    if owned is not None and user.owner_admin_id not in owned:
+    if not hierarchy.can_see_user(admin, owned, user.owner_admin_id):
         raise HTTPException(404, "کاربر پیدا نشد")
     return user
 
@@ -140,18 +140,17 @@ def _build_user_query(
     see list_users' docstring for the full rationale."""
     query = db.query(models.User)
     owned = hierarchy.owned_admin_ids(db, admin)
-    if owned is not None:
-        # Non-superadmin: always constrained to their own tree. A specific
-        # owner_admin_id filter (e.g. a level-2 Admin drilling into one
-        # particular Seller's users) is only honored if it's actually
-        # inside their scope - otherwise ignored, same as a superadmin
-        # passing a bogus id would just see nothing.
-        if owner_admin_id is not None and owner_admin_id in owned:
-            query = query.filter(models.User.owner_admin_id == owner_admin_id)
-        else:
-            query = query.filter(models.User.owner_admin_id.in_(owned))
-    elif owner_admin_id is not None:
+    # A specific owner_admin_id filter (e.g. a level-2 Admin drilling into
+    # one particular Seller's users, or a superadmin picking one Admin) is
+    # only honored if it's actually inside this account's own scope -
+    # otherwise ignored, same as passing a bogus id would just see nothing.
+    # Without an explicit filter, fall back to the full visibility clause
+    # (which, for a superadmin, also includes orphaned/unassigned users -
+    # see hierarchy.user_visibility_clause).
+    if owner_admin_id is not None and owner_admin_id in owned:
         query = query.filter(models.User.owner_admin_id == owner_admin_id)
+    else:
+        query = query.filter(hierarchy.user_visibility_clause(db, admin))
     if search:
         like = f"%{search}%"
         query = query.filter(or_(models.User.username.ilike(like), models.User.full_name.ilike(like)))

@@ -1048,6 +1048,26 @@ class AdminCreate(BaseModel):
     # Recorded as the first AdminVolumeLog entry, same pattern as
     # initial_balance above.
     initial_volume_gb: Optional[float] = None
+    # Superadmin-only (silently ignored for a level-2 Admin creating their
+    # own Seller, who has no say in this - see routers/admins.py's
+    # create_admin): lets a superadmin create a brand-new account directly
+    # AS a level-3 Seller under a chosen existing level-2 Admin, instead of
+    # always landing as a fresh level-2 Admin. None (the default) means
+    # "level-2 Admin", same as every account created before this field
+    # existed.
+    parent_admin_id: Optional[int] = None
+
+
+class AdminReparentRequest(BaseModel):
+    """Superadmin-only (see routers/admins.py's reparent_admin): moves an
+    EXISTING account between tiers/parents - None = promote to (or keep
+    as) a level-2 Admin, or a level-2 Admin's id = make/move this account
+    into a level-3 Seller under that Admin. Needed because the accounts
+    created before this 3-tier feature existed were auto-migrated as
+    level-2 Admins with no way to reclassify them as someone's Seller
+    afterward - see hierarchy.py's docstrings for the fixed-3-levels rule
+    this endpoint still has to respect."""
+    parent_admin_id: Optional[int] = None
 
 
 class AdminUpdate(BaseModel):

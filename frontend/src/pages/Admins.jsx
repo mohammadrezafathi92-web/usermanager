@@ -20,6 +20,7 @@ import {
   fetchAdminVolumeLogs,
   fetchAvailableNodesForGrant,
   setAdminNodes,
+  reparentAdmin,
 } from "../api/client.js";
 import { formatDateTime } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
@@ -66,6 +67,11 @@ const emptyForm = {
   billing_mode: "flat",
   volume_balance_gb: 0,
   initial_volume_gb: "",
+  // Superadmin-only, only used at CREATE time - "" = level-2 Admin, or an
+  // existing level-2 Admin's id = create straight as their Seller (see
+  // schemas.AdminCreate.parent_admin_id). Existing-account role changes go
+  // through the separate reparent control instead (see roleParentId state).
+  parent_admin_id: "",
 };
 const emptyGroupForm = { name: "", permissions: [] };
 
@@ -89,6 +95,13 @@ export default function Admins() {
   const [nodesSaving, setNodesSaving] = useState(false);
   const [nodesError, setNodesError] = useState("");
   const [nodesSaved, setNodesSaved] = useState(false);
+
+  // ---------- Role reassignment: Admin <-> Seller (superadmin only) ----------
+  // "" = level-2 Admin, or an existing Admin's id = Seller under them.
+  const [roleParentId, setRoleParentId] = useState("");
+  const [roleSaving, setRoleSaving] = useState(false);
+  const [roleError, setRoleError] = useState("");
+  const [roleSaved, setRoleSaved] = useState(false);
 
   const [groups, setGroups] = useState([]);
   const [groupOpen, setGroupOpen] = useState(false);
@@ -222,6 +235,12 @@ export default function Admins() {
         fetchAvailableNodesForGrant().then((res) => setAvailableNodes(res.data));
       }
     }
+    // Role reassignment (superadmin editing anyone but themselves/another
+    // superadmin) - starts at this account's CURRENT parent, so "save" is
+    // a no-op unless something's actually changed.
+    setRoleParentId(admin.parent_admin_id || "");
+    setRoleError("");
+    setRoleSaved(false);
     setOpen(true);
   };
 
@@ -240,6 +259,21 @@ export default function Admins() {
       setNodesError(err?.response?.data?.detail || t("admins.nodeAssignError"));
     } finally {
       setNodesSaving(false);
+    }
+  };
+
+  const saveRole = async () => {
+    setRoleSaving(true);
+    setRoleError("");
+    setRoleSaved(false);
+    try {
+      await reparentAdmin(editingId, roleParentId ? Number(roleParentId) : null);
+      setRoleSaved(true);
+      load();
+    } catch (err) {
+      setRoleError(err?.response?.data?.detail || t("admins.roleChangeError"));
+    } finally {
+      setRoleSaving(false);
     }
   };
 
@@ -340,6 +374,7 @@ export default function Admins() {
           initial_balance: form.initial_balance === "" ? null : Number(form.initial_balance),
           billing_mode: form.billing_mode,
           initial_volume_gb: form.initial_volume_gb === "" ? null : Number(form.initial_volume_gb),
+          parent_admin_id: isSuperadmin && form.parent_admin_id ? Number(form.parent_admin_id) : null,
         });
       }
       setOpen(false);
@@ -693,6 +728,47 @@ export default function Admins() {
               </button>
             </div>
           </div>
+
+          {!editingId && isSuperadmin && (
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">{t("admins.fieldRole")}</label>
+              <select className="input" value={form.parent_admin_id} onChange={(e) => set("parent_admin_id", e.target.value)}>
+                <option value="">{t("admins.roleAdmin")}</option>
+                {items
+                  .filter((a) => a.role === "admin")
+                  .map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {t("admins.roleSellerUnder", { name: a.username })}
+                    </option>
+                  ))}
+              </select>
+              <div className="text-xs text-gray-400 mt-1">{t("admins.fieldRoleHint")}</div>
+            </div>
+          )}
+
+          {editingId && isSuperadmin && editingRole !== "superadmin" && (
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">{t("admins.changeRoleLabel")}</label>
+              <div className="flex gap-2">
+                <select className="input flex-1" value={roleParentId} onChange={(e) => setRoleParentId(e.target.value)}>
+                  <option value="">{t("admins.roleAdmin")}</option>
+                  {items
+                    .filter((a) => a.role === "admin" && a.id !== editingId)
+                    .map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {t("admins.roleSellerUnder", { name: a.username })}
+                      </option>
+                    ))}
+                </select>
+                <button type="button" className="btn-secondary shrink-0" disabled={roleSaving} onClick={saveRole}>
+                  {roleSaving ? t("common.saving") : t("admins.saveRole")}
+                </button>
+              </div>
+              <div className="text-xs text-gray-400 mt-1">{t("admins.changeRoleHint")}</div>
+              {roleSaved && <div className="text-xs text-emerald-600 mt-1">{t("admins.roleChangeSaved")}</div>}
+              {roleError && <div className="text-xs text-red-500 mt-1">{roleError}</div>}
+            </div>
+          )}
 
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("admins.fieldGroup")}</label>

@@ -8,6 +8,7 @@ same role/ownership logic locally, the same way permissions.py centralizes
 effective_permissions()."""
 from __future__ import annotations
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from .. import models
@@ -74,6 +75,32 @@ def owned_admin_ids(db: Session, admin: models.AdminUser) -> set[int] | None:
         for row in db.query(models.AdminUser.id).filter(models.AdminUser.parent_admin_id == admin.id).all()
     ]
     return {admin.id, *seller_ids}
+
+
+def user_visibility_clause(db: Session, admin: models.AdminUser):
+    """SQLAlchemy filter expression for models.User rows this account may
+    see - use this (not a raw `.in_(owned_admin_ids(...))`) for any actual
+    User query, since it also covers ORPHANED users (owner_admin_id IS
+    NULL - e.g. left behind by delete_admin's "unassign, don't destroy"
+    handling): those are only ever visible to a superadmin, who's the only
+    one who CAN reassign them (see routers/admins.py). A plain `.in_(...)`
+    can never match SQL NULL even if None were stuffed into the set, so
+    this needs the explicit IS NULL clause below rather than just folding
+    it into owned_admin_ids's returned set."""
+    owned = owned_admin_ids(db, admin)
+    clause = models.User.owner_admin_id.in_(owned)
+    if admin.is_superadmin:
+        clause = or_(clause, models.User.owner_admin_id.is_(None))
+    return clause
+
+
+def can_see_user(admin: models.AdminUser, owned: set[int], user_owner_admin_id: int | None) -> bool:
+    """Single-object counterpart to user_visibility_clause, for callers
+    that already have the User loaded (e.g. routers/users.py's
+    _get_owned_user) and just need a plain bool instead of a query filter."""
+    if user_owner_admin_id in owned:
+        return True
+    return admin.is_superadmin and user_owner_admin_id is None
 
 
 def accessible_node_ids(db: Session, admin: models.AdminUser) -> set[int] | None:

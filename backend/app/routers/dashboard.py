@@ -28,12 +28,14 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
     # stats (themself + their Sellers). Node/online-node counts stay
     # global regardless of tier - servers aren't customer data, they're
     # shared infrastructure a superadmin configures and grants out.
-    owned = hierarchy.owned_admin_ids(db, admin)
-    user_q = db.query(models.User.status, func.count(models.User.id)).filter(models.User.owner_admin_id.in_(owned))
+    # Superadmin's stats ALSO include never-assigned/orphaned users
+    # (owner_admin_id IS NULL) - see hierarchy.user_visibility_clause.
+    visibility = hierarchy.user_visibility_clause(db, admin)
+    user_q = db.query(models.User.status, func.count(models.User.id)).filter(visibility)
     usage_q = db.query(
         func.coalesce(func.sum(models.User.used_bytes), 0),
         func.coalesce(func.sum(models.User.total_quota_bytes), 0),
-    ).filter(models.User.owner_admin_id.in_(owned))
+    ).filter(visibility)
 
     user_counts = user_q.group_by(models.User.status).all()
     counts_by_status = {status: count for status, count in user_counts}
@@ -53,7 +55,7 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
     logs_q = (
         db.query(models.UsageLog.created_at, models.UsageLog.delta_bytes)
         .join(models.User, models.User.id == models.UsageLog.user_id)
-        .filter(models.UsageLog.created_at >= since, models.User.owner_admin_id.in_(owned))
+        .filter(models.UsageLog.created_at >= since, visibility)
     )
     logs = logs_q.all()
 
@@ -78,7 +80,7 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
         .join(models.User, models.User.id == models.Connection.user_id)
         .filter(
             or_(models.RadiusActiveSession.id.isnot(None), models.Connection.online.is_(True)),
-            models.User.owner_admin_id.in_(owned),
+            visibility,
         )
     )
     online_users_now = online_users_q.distinct().count()
@@ -91,7 +93,7 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
     speed_q = (
         db.query(func.coalesce(func.sum(models.UsageLog.delta_bytes), 0))
         .join(models.User, models.User.id == models.UsageLog.user_id)
-        .filter(models.UsageLog.created_at >= speed_since, models.User.owner_admin_id.in_(owned))
+        .filter(models.UsageLog.created_at >= speed_since, visibility)
     )
     bytes_last_minute = speed_q.scalar() or 0
     avg_speed_bps = bytes_last_minute / 60

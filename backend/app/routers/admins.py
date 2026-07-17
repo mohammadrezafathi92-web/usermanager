@@ -258,6 +258,60 @@ def set_admin_nodes(
     return _out(db, admin)
 
 
+@router.put("/{admin_id}/reparent", response_model=schemas.AdminOut)
+def reparent_admin(
+    admin_id: int,
+    payload: schemas.AdminReparentRequest,
+    db: Session = Depends(get_db),
+    _s: models.AdminUser = Depends(require_superadmin),
+):
+    """Superadmin-only: reclassifies an EXISTING account between tiers -
+    set parent_admin_id=None to make/keep it a level-2 Admin, or to an
+    existing level-2 Admin's id to make/move it into that Admin's level-3
+    Seller. This is exactly the "این ادمین‌های قبلی که ساختم در واقع باید
+    فروشنده بشن" gap: before this endpoint, every non-superadmin account
+    was permanently stuck as whatever tier auto-migration/creation gave
+    it, with no way to reclassify it afterward.
+
+    Fixed-3-levels rule (see services/hierarchy.py) still applies: the
+    target itself must not be a superadmin, and the new parent (if any)
+    must be an existing level-2 Admin - never a Seller (would create a
+    4th level) and never itself.
+
+    Demoting a level-2 Admin who already has their OWN Sellers into
+    someone else's Seller would leave those Sellers pointing at a
+    "grandparent" that no longer makes sense - so exactly like
+    delete_admin's existing "unassign, don't destroy" handling, their
+    Sellers are first promoted to level-2 Admins in their own right
+    (parent_admin_id=None) before the demotion itself is applied."""
+    admin = db.get(models.AdminUser, admin_id)
+    if not admin:
+        raise HTTPException(404, "ادمین پیدا نشد")
+    if admin.is_superadmin:
+        raise HTTPException(400, "نقش ادمین اصلی قابل تغییر نیست")
+
+    new_parent_id = payload.parent_admin_id
+    if new_parent_id is not None:
+        if new_parent_id == admin.id:
+            raise HTTPException(400, "یک ادمین نمی‌تواند والد خودش باشد")
+        parent = db.get(models.AdminUser, new_parent_id)
+        if not parent or parent.is_superadmin or hierarchy.role(parent) != hierarchy.ROLE_ADMIN:
+            raise HTTPException(400, "ادمین والد باید یک ادمین سطح ۲ معتبر باشد")
+
+    # This account currently has its own Sellers (i.e. it's a level-2
+    # Admin being demoted) - promote them first so nobody ends up 4 levels
+    # deep or pointing at a parent that just became a Seller itself.
+    if new_parent_id is not None:
+        db.query(models.AdminUser).filter(models.AdminUser.parent_admin_id == admin.id).update(
+            {"parent_admin_id": None}, synchronize_session=False
+        )
+
+    admin.parent_admin_id = new_parent_id
+    db.commit()
+    db.refresh(admin)
+    return _out(db, admin)
+
+
 @router.get("/permission-choices")
 def permission_choices():
     """Feeds the frontend's checkbox list - keeps the human-readable labels
@@ -276,10 +330,15 @@ def create_admin(
     db: Session = Depends(get_db),
     current: models.AdminUser = Depends(require_admin_or_above),
 ):
-    """Who gets created is entirely derived from WHO's calling, never from
-    the payload (mirrors is_superadmin never being client-settable): a
-    superadmin creates a level-2 Admin (parent_admin_id=None); a level-2
-    Admin creates their own level-3 Seller (parent_admin_id=current.id).
+    """Who gets created is mostly derived from WHO's calling, never freely
+    from the payload (mirrors is_superadmin never being client-settable):
+    a level-2 Admin ALWAYS creates their own level-3 Seller
+    (parent_admin_id=current.id) - payload.parent_admin_id is ignored for
+    them entirely. A superadmin creates a level-2 Admin by default
+    (parent_admin_id=None), OR may directly create a level-3 Seller under
+    an existing level-2 Admin by setting payload.parent_admin_id (see
+    schemas.AdminCreate) - handy for "این ادمینی که تازه ساختم در واقع
+    باید فروشنده‌ی فلان ادمین باشه" without a separate reparent step.
     Sellers can never reach this endpoint at all (require_admin_or_above)."""
     if db.query(models.AdminUser).filter(models.AdminUser.username == payload.username).first():
         raise HTTPException(400, "این نام کاربری قبلا ثبت شده است")
@@ -296,7 +355,15 @@ def create_admin(
     if group_id and not db.get(models.AdminPermissionGroup, group_id):
         raise HTTPException(400, "گروه انتخاب‌شده پیدا نشد")
     billing_mode = payload.billing_mode if payload.billing_mode in ("flat", "usage") else "flat"
-    parent_admin_id = None if current.is_superadmin else current.id
+    if current.is_superadmin:
+        parent_admin_id = None
+        if payload.parent_admin_id is not None:
+            parent = db.get(models.AdminUser, payload.parent_admin_id)
+            if not parent or parent.is_superadmin or hierarchy.role(parent) != hierarchy.ROLE_ADMIN:
+                raise HTTPException(400, "ادمین والد باید یک ادمین سطح ۲ معتبر باشد")
+            parent_admin_id = parent.id
+    else:
+        parent_admin_id = current.id
 
     admin = models.AdminUser(
         username=payload.username,

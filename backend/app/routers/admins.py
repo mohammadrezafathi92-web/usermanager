@@ -295,8 +295,11 @@ def reparent_admin(
         if new_parent_id == admin.id:
             raise HTTPException(400, "یک ادمین نمی‌تواند والد خودش باشد")
         parent = db.get(models.AdminUser, new_parent_id)
-        if not parent or parent.is_superadmin or hierarchy.role(parent) != hierarchy.ROLE_ADMIN:
-            raise HTTPException(400, "ادمین والد باید یک ادمین سطح ۲ معتبر باشد")
+        # Same "superadmin or a valid level-2 Admin" rule as create_admin
+        # above - never another Seller (4th level).
+        valid_parent = parent and (parent.is_superadmin or hierarchy.role(parent) == hierarchy.ROLE_ADMIN)
+        if not valid_parent:
+            raise HTTPException(400, "ادمین والد باید ادمین اصلی یا یک ادمین سطح ۲ معتبر باشد")
 
     # This account currently has its own Sellers (i.e. it's a level-2
     # Admin being demoted) - promote them first so nobody ends up 4 levels
@@ -359,8 +362,16 @@ def create_admin(
         parent_admin_id = None
         if payload.parent_admin_id is not None:
             parent = db.get(models.AdminUser, payload.parent_admin_id)
-            if not parent or parent.is_superadmin or hierarchy.role(parent) != hierarchy.ROLE_ADMIN:
-                raise HTTPException(400, "ادمین والد باید یک ادمین سطح ۲ معتبر باشد")
+            # A Seller's parent may be an existing level-2 Admin, OR the
+            # superadmin themself (parent.is_superadmin) - a low-trust
+            # reseller the superadmin wants to supervise directly, gated
+            # by the normal granular `permissions` checkboxes instead of a
+            # level-2 Admin's full-tree bypass. Never another Seller
+            # (would create a 4th level - fixed at exactly 3, see
+            # services/hierarchy.py).
+            valid_parent = parent and (parent.is_superadmin or hierarchy.role(parent) == hierarchy.ROLE_ADMIN)
+            if not valid_parent:
+                raise HTTPException(400, "ادمین والد باید ادمین اصلی یا یک ادمین سطح ۲ معتبر باشد")
             parent_admin_id = parent.id
     else:
         parent_admin_id = current.id

@@ -77,7 +77,7 @@ const emptyGroupForm = { name: "", permissions: [] };
 
 export default function Admins() {
   const { t, language } = useLanguage();
-  const { isSuperadmin } = useAuth();
+  const { isSuperadmin, adminId } = useAuth();
   const [items, setItems] = useState([]);
   const [choices, setChoices] = useState({});
   const [permGroups, setPermGroups] = useState({});
@@ -734,6 +734,7 @@ export default function Admins() {
               <label className="block text-sm text-gray-600 mb-1">{t("admins.fieldRole")}</label>
               <select className="input" value={form.parent_admin_id} onChange={(e) => set("parent_admin_id", e.target.value)}>
                 <option value="">{t("admins.roleAdmin")}</option>
+                {adminId && <option value={adminId}>{t("admins.roleSellerUnderSuperadmin")}</option>}
                 {items
                   .filter((a) => a.role === "admin")
                   .map((a) => (
@@ -752,6 +753,7 @@ export default function Admins() {
               <div className="flex gap-2">
                 <select className="input flex-1" value={roleParentId} onChange={(e) => setRoleParentId(e.target.value)}>
                   <option value="">{t("admins.roleAdmin")}</option>
+                  {adminId && <option value={adminId}>{t("admins.roleSellerUnderSuperadmin")}</option>}
                   {items
                     .filter((a) => a.role === "admin" && a.id !== editingId)
                     .map((a) => (

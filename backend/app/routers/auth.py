@@ -97,6 +97,7 @@ def me(admin: models.AdminUser = Depends(get_current_admin)):
     # on the backend. Only a level-3 Seller is ever actually gated by the
     # `permissions` list below.
     return {
+        "id": admin.id,
         "username": admin.username,
         "is_superadmin": admin.is_superadmin,
         "role": hierarchy.role(admin),

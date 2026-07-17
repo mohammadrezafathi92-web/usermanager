@@ -5,6 +5,7 @@ const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [token, setToken] = useState(() => localStorage.getItem("um_token"));
+  const [adminId, setAdminId] = useState(null);
   const [username, setUsername] = useState(null);
   const [isSuperadmin, setIsSuperadmin] = useState(false);
   // 3-tier hierarchy role ("superadmin" | "admin" | "seller" - see backend
@@ -16,6 +17,7 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   const applyMe = (data) => {
+    setAdminId(data.id ?? null);
     setUsername(data.username);
     setIsSuperadmin(!!data.is_superadmin);
     setRole(data.role || (data.is_superadmin ? "superadmin" : "seller"));
@@ -47,6 +49,7 @@ export function AuthProvider({ children }) {
   const logout = () => {
     localStorage.removeItem("um_token");
     setToken(null);
+    setAdminId(null);
     setUsername(null);
     setIsSuperadmin(false);
     setRole("seller");
@@ -72,7 +75,7 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider
-      value={{ token, username, isSuperadmin, role, isAdminOrAbove, permissions, can, canAny, loading, login, logout }}
+      value={{ token, adminId, username, isSuperadmin, role, isAdminOrAbove, permissions, can, canAny, loading, login, logout }}
     >
       {children}
     </AuthContext.Provider>

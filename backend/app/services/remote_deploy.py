@@ -161,16 +161,35 @@ def deploy(
 
     try:
         log("بررسی نصب Docker ...")
-        code, _, _ = _run(client, "command -v docker", timeout=15)
+        code, _, _ = _run(client, "command -v docker && docker compose version", timeout=15)
         if code != 0:
-            log("Docker پیدا نشد - در حال نصب (فقط سیستم‌عامل‌های مبتنی بر Debian/Ubuntu پشتیبانی می‌شود) ...")
+            # Same approach as install.sh's install_docker(): the official
+            # get.docker.com convenience script, NOT a plain `apt-get install
+            # docker.io docker-compose-plugin`. The latter only works when
+            # the target OS's default repos happen to ship that exact
+            # package name/version (many Debian/Ubuntu releases don't -
+            # docker-compose-plugin normally comes from Docker's own APT
+            # repo), so it used to fail with "Unable to locate package
+            # docker-compose-plugin" on anything but a handful of releases.
+            # get.docker.com adds Docker's official repo itself and is
+            # distro-version-agnostic, matching the mother server's own
+            # proven install path.
+            log("Docker پیدا نشد - در حال نصب (اسکریپت رسمی get.docker.com، فقط Debian/Ubuntu پشتیبانی می‌شود) ...")
             code, out, err = _run(
                 client,
-                "apt-get update -y && apt-get install -y docker.io docker-compose-plugin",
+                "curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && sh /tmp/get-docker.sh "
+                "&& (systemctl enable --now docker || service docker start || true)",
                 timeout=300,
             )
             if code != 0:
                 raise DeployError(f"نصب Docker ناموفق بود:\n{err or out}", "\n".join(log_lines))
+            code, _, _ = _run(client, "command -v docker && docker compose version", timeout=15)
+            if code != 0:
+                raise DeployError(
+                    "نصب Docker ظاهراً کامل شد ولی پلاگین docker compose هنوز در دسترس نیست - "
+                    "لطفاً به‌صورت دستی روی سرور بررسی/نصب کنید.",
+                    "\n".join(log_lines),
+                )
             log("Docker نصب شد.")
         else:
             log("Docker از قبل نصب است.")

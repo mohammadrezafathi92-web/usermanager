@@ -304,7 +304,7 @@ def import_usermanager_users(node_id: int, db: Session = Depends(get_db), admin:
     with its own quotas/expiry - and imports any not already known to the
     panel. Read-only on the router side."""
     node = _get_scoped_node(db, node_id, admin)
-    return user_ops.import_usermanager_accounts(db, node)
+    return user_ops.import_usermanager_accounts(db, node, admin)
 
 
 @router.post("/{node_id}/import-3xui-clients", response_model=schemas.PppImportResult)

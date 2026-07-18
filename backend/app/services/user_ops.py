@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models
+from . import hierarchy
 from .mikrotik_client import MikrotikClient, MikrotikError
 from .xray_client import XrayError, client_for_node
 from .keys import generate_wireguard_keypair, generate_password
@@ -1311,7 +1312,7 @@ def _parse_shared_users(value) -> int:
         return 1
 
 
-def import_usermanager_accounts(db: Session, node: models.Node) -> dict:
+def import_usermanager_accounts(db: Session, node: models.Node, admin: models.AdminUser) -> dict:
     """Reads accounts from MikroTik's own built-in User Manager
     (/user-manager/...), a separate RADIUS user database many admins already
     use - with its own quotas, expiry dates, and simultaneous-session
@@ -1325,20 +1326,32 @@ def import_usermanager_accounts(db: Session, node: models.Node) -> dict:
     logins through this panel's RADIUS server, since its lookup doesn't
     discriminate by protocol either) per User Manager account:
 
+    - A local Package is auto-created (or reused, if one imported from the
+      same profile name already exists in this admin's scope) for every
+      distinct MikroTik Profile referenced by the imported accounts, named
+      "MikroTik: <profile name>", with quota/duration copied from the
+      profile's linked Limitation/validity, and a PackageConnection bundling
+      this node+openvpn so the package is immediately usable for renewals.
+      Each imported User is linked to the package matching their currently
+      active profile via package_id - previously imported users were left
+      with package_id=NULL (a raw quota number with no package to renew
+      against), which is what this fixes.
     - total_quota_bytes is taken from the sum of download-limit/upload-limit
       (or transfer-limit if set) of all Limitations linked to the user's
       currently active/running Profile, via profile-limitation. 0 if none.
-    - used_bytes is seeded from RouterOS's own persistent per-user lifetime
-      counter, read via the "/user-manager/user monitor" command (NOT by
-      summing /user-manager/session, which only retains a rolling window of
-      recent sessions and badly undercounts anyone who has reconnected a
-      few times - confirmed on a live router: monitor's total-download/
-      total-upload matches exactly what Winbox's own User Manager > Users
-      view shows, while summing /session came out ~100x too low). NOTE: if
-      a user's real historical usage already exceeds the quota computed
-      above, they will show as quota_exceeded (and get disabled) on the
-      very next poll - check the numbers after import before relying on
-      this for active customers.
+    - used_bytes always starts at 0, NOT seeded from RouterOS's per-user
+      lifetime counter ("/user-manager/user monitor" total-download/
+      total-upload). That counter is cumulative across every Profile the
+      account has EVER had - so an account that used e.g. 80GB on an old/
+      larger profile before being switched (on the router) to a new 10GB
+      profile would import already "80GB used of 10GB", tripping
+      quota_exceeded and getting disabled on the very next poll, even
+      though none of that usage happened under the current profile. Going
+      forward, usage is tracked correctly and incrementally by this panel's
+      own RADIUS accounting (each Connection starts its own delta counters
+      at 0 - see services/quota_manager.py's _apply_delta), so nothing needs
+      to be seeded here. The real lifetime number (if any) is preserved in
+      the user's notes for reference only, never enforced.
     - expire_at is taken from the active Profile assignment's end-time
       (absent if the profile has no expiry / is not currently running).
     - max_concurrent_sessions is copied directly from the account's
@@ -1368,13 +1381,21 @@ def import_usermanager_accounts(db: Session, node: models.Node) -> dict:
     # end-time yet because that first login hasn't happened - see
     # MikrotikClient.read_um_user_profiles' docstring for why that happens.
     profile_first_use_days: dict[str, int] = {}
+    # profile -> validity in days regardless of starts-when - used only as
+    # the new local Package's duration_days below (a reasonable "how long
+    # this plan lasts" estimate for display/renewal purposes; unlike
+    # profile_first_use_days above, this is NOT used for computing any
+    # individual user's actual expire_at).
+    profile_validity_days: dict[str, int] = {}
     for p in profiles:
         name = p.get("name")
         if not name:
             continue
+        days = _parse_mikrotik_duration_days(p.get("validity"))
+        if days:
+            profile_validity_days[str(name)] = days
         if (p.get("starts-when") or "").strip().lower() != "first-auth":
             continue
-        days = _parse_mikrotik_duration_days(p.get("validity"))
         if days:
             profile_first_use_days[str(name)] = days
 
@@ -1428,6 +1449,15 @@ def import_usermanager_accounts(db: Session, node: models.Node) -> dict:
     user_quota: dict[str, int] = {}
     user_expiry: dict[str, dt.datetime] = {}
     user_expiry_days_after_first_use: dict[str, int] = {}
+    # user -> the single profile name to link their auto-created Package to.
+    # A user can technically have more than one active assignment (their
+    # quota above is the SUM of all of them), but a User only has one
+    # package_id - so pick the "best" one: prefer an actually-running
+    # assignment over a not-yet-started "waiting" one, then the one
+    # contributing the most quota (mirrors what a human would call "their
+    # plan"). _MT_STATE_PRIORITY here, higher wins.
+    _MT_STATE_PRIORITY = {"running-active": 2, "running": 2, "waiting": 1}
+    user_profile_choice: dict[str, tuple[int, int, str]] = {}  # username -> (state_priority, quota, profile_name)
     for up in user_profiles:
         state = (up.get("state") or "").strip().lower()
         if state == "used":
@@ -1443,6 +1473,11 @@ def import_usermanager_accounts(db: Session, node: models.Node) -> dict:
             user_expiry[username] = end_time
         elif not end_time and str(profile) in profile_first_use_days:
             user_expiry_days_after_first_use[username] = profile_first_use_days[str(profile)]
+        if profile:
+            candidate = (_MT_STATE_PRIORITY.get(state, 0), profile_quota_bytes.get(profile, 0), str(profile))
+            if username not in user_profile_choice or candidate > user_profile_choice[username]:
+                user_profile_choice[username] = candidate
+    user_profile_name: dict[str, str] = {u: choice[2] for u, choice in user_profile_choice.items()}
 
     # user -> true lifetime bytes used, from RouterOS's own per-user monitor
     # counter (keyed by the user's ".id", so join through um_users below).
@@ -1458,6 +1493,56 @@ def import_usermanager_accounts(db: Session, node: models.Node) -> dict:
         except (TypeError, ValueError):
             used = 0
         user_used[name] = used
+
+    # Which Admin owns any Package auto-created below - same rule as a
+    # manually-created package (routers/packages.py's create_package): NULL
+    # for a superadmin (visible to everyone), otherwise the level-2 Admin's
+    # own id, resolved through hierarchy in case `admin` here is themself a
+    # Seller importing on their parent's behalf.
+    owner_admin_id = None if admin.is_superadmin else hierarchy.parent_admin_scope_id(admin)
+
+    # profile name -> Package.id, resolved/created lazily below, only for
+    # profiles actually used by an imported (i.e. NOT already-known/skipped)
+    # account - avoids creating clutter packages for profiles nobody
+    # currently active in this batch actually uses.
+    package_by_profile: dict[str, int] = {}
+
+    def _package_for_profile(profile_name: str) -> Optional[int]:
+        if not profile_name:
+            return None
+        if profile_name in package_by_profile:
+            return package_by_profile[profile_name]
+        # Node name baked into the package name itself, not just the
+        # profile name: profile names aren't globally unique across
+        # different MikroTik routers (e.g. two nodes both happen to have a
+        # "vip" profile with completely different quotas) - without this,
+        # a second import from a different node could silently reuse the
+        # first node's package under the wrong quota instead of creating
+        # its own. Also makes the match trivially idempotent on re-import
+        # from the SAME node (same name -> same package, reused as-is).
+        pkg_name = f"MikroTik: {profile_name} ({node.name})"
+        pkg = (
+            db.query(models.Package)
+            .filter(models.Package.name == pkg_name, models.Package.owner_admin_id == owner_admin_id)
+            .first()
+        )
+        if not pkg:
+            quota_bytes = profile_quota_bytes.get(profile_name, 0)
+            pkg = models.Package(
+                owner_admin_id=owner_admin_id,
+                name=pkg_name,
+                quota_gb=round(quota_bytes / (1024 ** 3), 4) if quota_bytes else 0,
+                duration_days=profile_validity_days.get(profile_name) or 0,
+                price=0,
+                description="ایمپورت خودکار از پروفایل User Manager میکروتیک - قیمت/فعال‌بودن رو بعد از ایمپورت بررسی و تنظیم کن.",
+                enabled=True,
+                bot_enabled=False,
+            )
+            db.add(pkg)
+            db.flush()
+            db.add(models.PackageConnection(package_id=pkg.id, node_id=node.id, protocol=models.ConnectionType.openvpn))
+        package_by_profile[profile_name] = pkg.id
+        return pkg.id
 
     imported: list[str] = []
     skipped: list[dict] = []
@@ -1482,11 +1567,21 @@ def import_usermanager_accounts(db: Session, node: models.Node) -> dict:
 
         user = db.query(models.User).filter(models.User.username == name).first()
         if not user:
+            profile_name = user_profile_name.get(name)
+            lifetime_used = user_used.get(name, 0)
+            notes = "ایمپورت‌شده خودکار از User Manager میکروتیک"
+            if lifetime_used:
+                # Historical/lifetime usage from RouterOS (may include usage
+                # from a previous, different profile) - kept for reference
+                # only. NOT written into used_bytes (see docstring above) so
+                # it never counts against the current profile's quota.
+                notes += f" - مصرف قبلی طبق میکروتیک: {round(lifetime_used / (1024 ** 3), 2)} گیگابایت (در سهمیه فعلی اعمال نشده)"
             user = models.User(
                 username=name,
-                notes="ایمپورت‌شده خودکار از User Manager میکروتیک",
+                notes=notes,
+                package_id=_package_for_profile(profile_name) if profile_name else None,
                 total_quota_bytes=user_quota.get(name, 0),
-                used_bytes=user_used.get(name, 0),
+                used_bytes=0,
                 expire_at=user_expiry.get(name),
                 # Only meaningful when expire_at above is None - i.e. this
                 # account's profile counts validity from first login and

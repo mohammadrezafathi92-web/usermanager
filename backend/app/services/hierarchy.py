@@ -125,23 +125,31 @@ def accessible_node_ids(db: Session, admin: models.AdminUser) -> set[int] | None
 def accessible_package_owner_ids(admin: models.AdminUser) -> set[int | None] | None:
     """Which Package.owner_admin_id values this account may see/use.
     None = unrestricted (superadmin sees every package regardless of
-    owner). Everyone else sees global packages (owner_admin_id IS NULL,
-    made by a superadmin) plus their own tree's Admin-owned packages: an
-    Admin sees their own; a Seller sees their parent Admin's (Sellers never
-    own packages themselves - see models.Package's docstring).
+    owner). Everyone else sees ONLY their own tree's Admin-owned packages:
+    an Admin sees their own; a Seller sees their parent Admin's (Sellers
+    never own packages themselves - see models.Package's docstring).
 
-    NOTE: the None in this set means "owner_admin_id IS NULL" - callers
-    MUST turn that into the query filter via owner_id_in_clause() below
-    instead of a raw `.in_(...)`, because SQL's `IN (NULL, 1)` never
-    matches a NULL column value (same pitfall already hit once for
-    User.owner_admin_id - see user_visibility_clause). Using `.in_()`
-    directly here was exactly why global/superadmin-owned packages never
-    actually showed up for any Admin or Seller despite this function
-    correctly including None."""
+    Deliberately does NOT include None/global (superadmin-made,
+    owner_admin_id IS NULL) packages, even though those exist and Package's
+    own docstring still calls them "visible to everyone" - confirmed with
+    the panel owner that an Admin's/Seller's package list must never show
+    the superadmin's own packages, matching this whole feature's "هر ادمین
+    یوزرمنیجر شخصی خودش رو داشته باشه" isolation principle (same idea as
+    hiding customers/API keys/full backups from other tiers). A superadmin
+    still sees every package (including their own "global" ones) via the
+    None/unrestricted return above - only non-superadmin visibility is
+    scoped down here.
+
+    NOTE for any caller still building a raw query filter from this: even
+    though None is no longer in the returned set, keep using
+    owner_id_in_clause() below rather than a plain `.in_(...)` - if this
+    function's rule ever changes again to include None, `.in_()` would
+    silently never match it (SQL's `IN (NULL, 1)` never matches a NULL
+    column value - this already bit global packages once, see git history)."""
     r = role(admin)
     if r == ROLE_SUPERADMIN:
         return None
-    return {None, parent_admin_scope_id(admin)}
+    return {parent_admin_scope_id(admin)}
 
 
 def owner_id_in_clause(column, allowed: set):

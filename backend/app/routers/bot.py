@@ -105,11 +105,13 @@ def list_packages(owner_admin_id: Optional[int] = None, db: Session = Depends(ge
     telegram_bot/panel_bridge.py's _scope() - None for the shared/global
     bot, an AdminUser id for a per-Admin/per-Seller own bot). Two things
     happen when it's given:
-    - the result is scoped to that account's own tree (global packages +
-      their own/their parent's - same rule as routers/packages.py's
-      list_packages), instead of every bot_enabled package panel-wide
-      regardless of owner (which was the behavior for EVERY bot, including
-      a level-2 Admin's own one, until this scoping was added - a gap, not
+    - the result is scoped to that account's own tree ONLY - their own
+      packages for an Admin, their parent Admin's for a Seller, NEVER the
+      superadmin's global ones (same rule as routers/packages.py's
+      list_packages/accessible_package_owner_ids) - instead of every
+      bot_enabled package panel-wide regardless of owner (which was the
+      behavior for EVERY bot, including a level-2 Admin's own one, until
+      this scoping was added - a gap, not
       a deliberate choice).
     - if that account is a level-3 Seller, each package's `price` is
       replaced with their own resale override (models.PackageSellerPrice)
@@ -125,8 +127,12 @@ def list_packages(owner_admin_id: Optional[int] = None, db: Session = Depends(ge
     if owner_admin_id is not None:
         target = db.get(models.AdminUser, owner_admin_id)
         if target is not None and not target.is_superadmin:
-            scope_id = hierarchy.parent_admin_scope_id(target)
-            q = q.filter(hierarchy.owner_id_in_clause(models.Package.owner_admin_id, {None, scope_id}))
+            # Same source of truth as routers/packages.py's list_packages -
+            # an Admin/Seller's own bot never shows the superadmin's global
+            # packages, only their own tree's (see accessible_package_owner_ids's
+            # docstring).
+            allowed = hierarchy.accessible_package_owner_ids(target)
+            q = q.filter(hierarchy.owner_id_in_clause(models.Package.owner_admin_id, allowed))
             if hierarchy.role(target) == hierarchy.ROLE_SELLER:
                 seller_prices = {
                     row.package_id: row.price

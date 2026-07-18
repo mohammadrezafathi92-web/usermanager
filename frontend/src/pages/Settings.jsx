@@ -740,6 +740,17 @@ export default function Settings() {
               </button>
             </div>
           </div>
+          <div className="md:col-span-2">
+            <label className="block text-sm text-gray-600 mb-1">{t("settings.telegramProxyUrl")}</label>
+            <input
+              className="input"
+              dir="ltr"
+              placeholder="http://1.2.3.4:8081"
+              value={botForm.telegram_api_proxy_url || ""}
+              onChange={(e) => setBotForm((f) => ({ ...f, telegram_api_proxy_url: e.target.value }))}
+            />
+            <div className="text-xs text-gray-400 mt-1">{t("settings.telegramProxyUrlHint")}</div>
+          </div>
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("settings.adminIds")}</label>
             <input

@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 
 from aiogram import BaseMiddleware, Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, CallbackQuery, FSInputFile
@@ -179,6 +181,39 @@ def _lookup_bot_token() -> str | None:
         db.close()
 
 
+def _lookup_telegram_api_proxy_url() -> str | None:
+    """See models.BotSettings.telegram_api_proxy_url's docstring - a single
+    panel-wide setting (not per-instance) applied to EVERY bot this process
+    starts: the shared bot AND every level-2 Admin/level-3 Seller's own
+    bot. Read fresh every time a bot (re)starts, so saving a new proxy URL
+    in Settings takes effect on that instance's next start/restart with no
+    other code change needed. Empty/unset (the default) = None, meaning
+    "connect directly" - exactly today's behavior for every existing
+    deployment that doesn't need this."""
+    from ..database import SessionLocal
+    from .. import models
+
+    db = SessionLocal()
+    try:
+        row = db.get(models.BotSettings, 1)
+        url = (row.telegram_api_proxy_url or "").strip() if row else ""
+        return url or None
+    finally:
+        db.close()
+
+
+def _make_bot(token: str) -> Bot:
+    """Single choke point for constructing an aiogram Bot - every bot
+    instance (shared, every own-bot, and the one-off sends in
+    send_message_sync/send_document_sync below) goes through this so the
+    optional Telegram API reverse-proxy (see
+    _lookup_telegram_api_proxy_url) is applied uniformly everywhere,
+    instead of only some call sites remembering to check for it."""
+    proxy_base = _lookup_telegram_api_proxy_url()
+    session = AiohttpSession(api=TelegramAPIServer.from_base(proxy_base)) if proxy_base else None
+    return Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML), session=session)
+
+
 def send_message_sync(chat_id: int, text: str, timeout: float = 10.0, token: str | None = None) -> bool:
     """Thread-safe, best-effort message send for callers running OUTSIDE
     the bot's own event loop/thread (aiogram's Bot is not thread-safe to
@@ -204,7 +239,7 @@ def send_message_sync(chat_id: int, text: str, timeout: float = 10.0, token: str
         return False
 
     async def _send():
-        bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        bot = _make_bot(token)
         try:
             await asyncio.wait_for(bot.send_message(chat_id, text), timeout=timeout)
         finally:
@@ -227,7 +262,7 @@ def send_document_sync(chat_id: int, file_path: str, caption: str = "", timeout:
         return False
 
     async def _send():
-        bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        bot = _make_bot(token)
         try:
             await asyncio.wait_for(
                 bot.send_document(chat_id, FSInputFile(file_path), caption=caption or None), timeout=timeout
@@ -270,7 +305,7 @@ async def _main(
     config.configure(token, admin_ids, approval_chat_ids, customer_bot_enabled, bot_owner_admin_id)
     bot_storage.init_db()
 
-    bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    bot = _make_bot(token)
     try:
         me = await bot.get_me()
     except Exception as exc:

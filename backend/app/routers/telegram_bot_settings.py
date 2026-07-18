@@ -67,6 +67,7 @@ def _response(row: models.BotSettings) -> schemas.BotSettingsOut:
         remote_deployed_at=row.remote_deployed_at,
         customer_bot_enabled=row.customer_bot_enabled if row.customer_bot_enabled is not None else True,
         customer_menu_disabled_items=row.customer_menu_disabled_items or "",
+        telegram_api_proxy_url=row.telegram_api_proxy_url or "",
     )
 
 

@@ -1130,6 +1130,28 @@ class BotSettings(Base):
     # item, to avoid a wide migration every time a menu item is added later.
     customer_menu_disabled_items = Column(Text, nullable=True, default="")
 
+    # Optional base URL of a self-hosted reverse proxy that every bot
+    # instance - this shared one AND every level-2 Admin/level-3 Seller's
+    # own dedicated bot (see AdminUser.own_bot_token) - routes its Telegram
+    # Bot API calls through instead of connecting to api.telegram.org
+    # directly (see telegram_bot/runner.py's _lookup_telegram_api_proxy_url
+    # and its use in _main/send_message_sync/send_document_sync). Exists
+    # for deployments where the main panel server has no outbound network
+    # route to Telegram at all (confirmed on a live server:
+    # `socket.create_connection(('api.telegram.org', 443))` failing with
+    # "Network is unreachable") but some OTHER server they control does -
+    # rather than fully redeploying every single own-bot to that other
+    # server via the much heavier services/remote_deploy.py mechanism
+    # (hardcoded to exactly one bot instance), a lightweight nginx reverse
+    # proxy running there (`proxy_pass https://api.telegram.org;`) lets
+    # every bot on THIS server reach Telegram indirectly through it. Must
+    # implement Telegram's own path scheme unchanged (aiogram's
+    # TelegramAPIServer.from_base expects `{base}/bot<token>/<method>` and
+    # `{base}/file/bot<token>/<path>` - a plain reverse proxy with the path
+    # preserved satisfies this with zero rewriting). Empty/NULL = connect
+    # directly, unchanged default behavior.
+    telegram_api_proxy_url = Column(String(255), nullable=True)
+
 
 class Tutorial(Base):
     """An admin-authored help/tutorial entry (e.g. "نصب WireGuard روی

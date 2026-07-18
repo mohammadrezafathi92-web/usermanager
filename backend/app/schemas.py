@@ -778,6 +778,11 @@ class BotSettingsOut(BaseModel):
     remote_deployed_at: Optional[dt.datetime] = None
     customer_bot_enabled: bool = True
     customer_menu_disabled_items: Optional[str] = ""
+    # See models.BotSettings.telegram_api_proxy_url's docstring - base URL
+    # of a self-hosted reverse proxy to Telegram, applied to EVERY bot
+    # instance (this shared one + every Admin/Seller's own bot), for a main
+    # server with no direct outbound route to api.telegram.org.
+    telegram_api_proxy_url: Optional[str] = None
 
 
 class BotSettingsUpdate(BaseModel):
@@ -787,6 +792,7 @@ class BotSettingsUpdate(BaseModel):
     enabled: Optional[bool] = None
     customer_bot_enabled: Optional[bool] = None
     customer_menu_disabled_items: Optional[str] = None
+    telegram_api_proxy_url: Optional[str] = None
 
 
 # ---------- Per-admin dedicated bot (3-tier hierarchy - see AdminUser.own_bot_token) ----------

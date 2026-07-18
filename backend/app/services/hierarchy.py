@@ -128,8 +128,37 @@ def accessible_package_owner_ids(admin: models.AdminUser) -> set[int | None] | N
     owner). Everyone else sees global packages (owner_admin_id IS NULL,
     made by a superadmin) plus their own tree's Admin-owned packages: an
     Admin sees their own; a Seller sees their parent Admin's (Sellers never
-    own packages themselves - see models.Package's docstring)."""
+    own packages themselves - see models.Package's docstring).
+
+    NOTE: the None in this set means "owner_admin_id IS NULL" - callers
+    MUST turn that into the query filter via owner_id_in_clause() below
+    instead of a raw `.in_(...)`, because SQL's `IN (NULL, 1)` never
+    matches a NULL column value (same pitfall already hit once for
+    User.owner_admin_id - see user_visibility_clause). Using `.in_()`
+    directly here was exactly why global/superadmin-owned packages never
+    actually showed up for any Admin or Seller despite this function
+    correctly including None."""
     r = role(admin)
     if r == ROLE_SUPERADMIN:
         return None
     return {None, parent_admin_scope_id(admin)}
+
+
+def owner_id_in_clause(column, allowed: set):
+    """Correct SQLAlchemy translation of "column's value is one of `allowed`"
+    when `allowed` may contain None meaning "IS NULL" (e.g. the set returned
+    by accessible_package_owner_ids). Plain `column.in_(allowed)` silently
+    never matches NULL rows even with None literally in the Python set -
+    ANSI SQL's `IN (NULL, 1)` is never TRUE for `column IS NULL`."""
+    non_null = {v for v in allowed if v is not None}
+    parts = []
+    if non_null:
+        parts.append(column.in_(non_null))
+    if None in allowed:
+        parts.append(column.is_(None))
+    if not parts:
+        from sqlalchemy import false
+        return false()
+    if len(parts) == 1:
+        return parts[0]
+    return or_(*parts)

@@ -52,12 +52,20 @@ PERMISSION_GROUPS: dict[str, dict] = {
         "perms": {
             "manage_payment_settings": "تنظیمات پرداخت، دعوت/وفاداری، پشتیبانی و پورت پنل",
             "manage_bot_settings": "تنظیمات ربات تلگرام (محلی و دیپلوی روی سرور دوم)",
-            "manage_api_keys": "کلیدهای API",
             "manage_backup": "بک‌آپ و بازیابی",
             "manage_discount_codes": "کدهای تخفیف",
         },
     },
 }
+
+# manage_api_keys used to be a grantable checkbox here. routers/api_keys.py
+# is now hard-locked to require_superadmin instead (see its own docstring -
+# ApiKey has no owner/scope column at all, so a Seller or bypass-everything
+# level-2 Admin with this checkbox could see/toggle/delete every API key in
+# the system, not just their own). Removed from PERMISSION_CHOICES below on
+# purpose: parse_permissions simply stops recognizing the string, so any
+# admin/group that already had it stored silently loses that (already-dead)
+# entry - no migration needed.
 
 # Flat key -> label map, derived from PERMISSION_GROUPS - this is what
 # parse_permissions/format_permissions validate membership against.
@@ -78,7 +86,7 @@ _LEGACY_EXPANSION: dict[str, list[str]] = {
     "manage_tutorials": ["view_tutorials", "edit_tutorials", "delete_tutorials"],
     "manage_settings": [
         "manage_payment_settings", "manage_bot_settings",
-        "manage_api_keys", "manage_backup", "manage_discount_codes",
+        "manage_backup", "manage_discount_codes",
     ],
 }
 

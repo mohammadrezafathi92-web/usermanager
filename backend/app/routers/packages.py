@@ -49,6 +49,10 @@ def _get_scoped_package(db: Session, package_id: int, admin: models.AdminUser) -
     if not pkg:
         raise HTTPException(404, "پکیج پیدا نشد")
     allowed = hierarchy.accessible_package_owner_ids(admin)
+    # `None in allowed` legitimately means "owner_admin_id IS NULL is
+    # allowed" - a plain `pkg.owner_admin_id not in allowed` check works
+    # fine here (unlike the SQL .in_() pitfall below) since this is a
+    # regular Python set membership test, not a query filter.
     if allowed is not None and pkg.owner_admin_id not in allowed:
         raise HTTPException(404, "پکیج پیدا نشد")
     return pkg
@@ -84,7 +88,12 @@ def list_packages(db: Session = Depends(get_db), admin: models.AdminUser = Depen
     allowed = hierarchy.accessible_package_owner_ids(admin)
     q = db.query(models.Package)
     if allowed is not None:
-        q = q.filter(models.Package.owner_admin_id.in_(allowed))
+        # NOT a plain `.in_(allowed)` - that set legitimately contains None
+        # (global/superadmin-owned packages), and SQL's `IN (NULL, ...)`
+        # never matches a NULL column, so every non-superadmin Admin/Seller
+        # was silently seeing an empty package list whenever they only had
+        # access to global packages (see hierarchy.owner_id_in_clause).
+        q = q.filter(hierarchy.owner_id_in_clause(models.Package.owner_admin_id, allowed))
     pkgs = q.order_by(models.Package.sort_order, models.Package.id).all()
     return [_out(p) for p in pkgs]
 

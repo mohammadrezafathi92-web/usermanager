@@ -3,10 +3,24 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import require_permission
+from ..deps import require_superadmin
 from ..services.keys import generate_api_key
 
-router = APIRouter(prefix="/api/api-keys", tags=["api-keys"], dependencies=[Depends(require_permission("manage_api_keys"))])
+# Superadmin-only (like routers/backup.py's full-DB backup and
+# routers/telegram_bot_settings.py's global bot settings - see their
+# docstrings): models.ApiKey has NO owner_admin_id/scope at all, it's one
+# flat panel-wide credential list, and a key used against /api/bot/*
+# decides its OWN data scope via a caller-supplied owner_admin_id (see
+# deps.py's get_bot_api_key + routers/bot.py) rather than being bound to
+# whoever created it. The old `require_permission("manage_api_keys")` let
+# a level-2 Admin (who bypasses all permission checks) - and any Seller
+# explicitly granted the checkbox - see/toggle/delete every key in the
+# system, including ones that don't belong to them at all. Confirmed with
+# the panel owner that these keys are only ever created/used by the
+# superadmin themself, so this is a straight lockdown, not a missing
+# feature - a scoped-per-admin equivalent (like own_bot_token) would be a
+# separate, deliberately-designed feature if ever needed.
+router = APIRouter(prefix="/api/api-keys", tags=["api-keys"], dependencies=[Depends(require_superadmin)])
 
 
 @router.get("", response_model=list[schemas.ApiKeyOut])

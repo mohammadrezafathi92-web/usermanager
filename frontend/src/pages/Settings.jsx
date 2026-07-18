@@ -60,7 +60,12 @@ export default function Settings() {
     { id: "general", label: t("settings.tabGeneral"), icon: KeyRound, visible: true },
     { id: "bot", label: t("settings.tabBot"), icon: Bot, visible: can("manage_bot_settings") },
     { id: "server", label: t("settings.tabServer"), icon: Server, visible: can("manage_payment_settings") },
-    { id: "data", label: t("settings.tabData"), icon: DatabaseBackup, visible: canAny(["manage_backup", "manage_api_keys"]) },
+    // Always visible: a superadmin sees the full-DB backup + API keys
+    // cards, every non-superadmin sees their own scoped OwnBackupCard
+    // unconditionally (no permission checkbox gates it) - manage_api_keys
+    // is no longer a grantable checkbox at all (routers/api_keys.py is
+    // superadmin-only now, see its docstring).
+    { id: "data", label: t("settings.tabData"), icon: DatabaseBackup, visible: true },
   ];
   const SETTINGS_TABS = ALL_SETTINGS_TABS.filter((t) => t.visible);
   const [activeTab, setActiveTab] = useState("general");
@@ -85,8 +90,12 @@ export default function Settings() {
 
   const loadKeys = () => fetchApiKeys().then((res) => setKeys(res.data));
   useEffect(() => {
-    loadKeys();
-  }, []);
+    // Superadmin-only now (routers/api_keys.py) - ApiKey rows have no
+    // owner/scope, so this must never be fetched as a non-superadmin (would
+    // 403, and previously leaked every key in the system to anyone who
+    // reached this page as a level-2 Admin or a Seller with the checkbox).
+    if (isSuperadmin) loadKeys();
+  }, [isSuperadmin]);
 
   const [payment, setPayment] = useState({
     payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "",
@@ -1161,7 +1170,7 @@ export default function Settings() {
       </div>
       )}
 
-      {can("manage_api_keys") && (
+      {isSuperadmin && (
       <div className="card">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">

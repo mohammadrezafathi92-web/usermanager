@@ -176,6 +176,18 @@ export default function Admins() {
       permissions: f.permissions.includes(key) ? f.permissions.filter((p) => p !== key) : [...f.permissions, key],
     }));
 
+  // Whether the account this form is currently building/editing is (or
+  // will become) a level-3 Seller - a Seller's accessible_node_ids is
+  // ALWAYS empty regardless of any permission checkbox (see
+  // services/hierarchy.py), so the "nodes" permission group is real for
+  // Admins only and would just be a misleading no-op if shown/toggleable
+  // for a Seller. Editing an existing account: read straight off
+  // editingRole. Creating: a level-2 Admin's new account is always their
+  // own Seller; a superadmin's new account is a Seller only if they picked
+  // a parent (form.parent_admin_id).
+  const isTargetSeller = editingId ? editingRole === "seller" : !isSuperadmin || !!form.parent_admin_id;
+  const visiblePermGroups = Object.entries(permGroups).filter(([groupKey]) => !(isTargetSeller && groupKey === "nodes"));
+
   const resetTopupState = () => {
     setTopupAmount("");
     setTopupNote("");
@@ -823,8 +835,11 @@ export default function Admins() {
 
           <div className={form.group_id ? "opacity-40 pointer-events-none" : ""}>
             <label className="block text-sm text-gray-600 mb-2">{t("admins.permissionsLabel")}</label>
+            {isTargetSeller && (
+              <div className="text-xs text-gray-400 mb-2">{t("admins.sellerNoNodesHint")}</div>
+            )}
             <div className="space-y-3">
-              {Object.entries(permGroups).map(([groupKey, group]) => (
+              {visiblePermGroups.map(([groupKey, group]) => (
                 <div key={groupKey}>
                   <div className="text-xs font-medium text-gray-500 mb-1">{group.label}</div>
                   <div className="space-y-1.5">
@@ -1080,8 +1095,9 @@ export default function Admins() {
           </div>
           <div>
             <label className="block text-sm text-gray-600 mb-2">{t("admins.permissionsLabel")}</label>
+            <div className="text-xs text-gray-400 mb-2">{t("admins.sellerNoNodesHint")}</div>
             <div className="space-y-3">
-              {Object.entries(permGroups).map(([groupKey, group]) => (
+              {Object.entries(permGroups).filter(([groupKey]) => groupKey !== "nodes").map(([groupKey, group]) => (
                 <div key={groupKey}>
                   <div className="text-xs font-medium text-gray-500 mb-1">{group.label}</div>
                   <div className="space-y-1.5">

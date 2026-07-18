@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session, joinedload
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_bot_api_key
-from ..services import user_ops
+from ..services import user_ops, hierarchy
 from ..services.quota_manager import _set_connection_enabled
 from .panel_settings import _get_or_create as _get_or_create_settings
 
@@ -91,7 +91,7 @@ def list_nodes(db: Session = Depends(get_db)):
 
 
 @router.get("/packages", response_model=list[schemas.PackageOut])
-def list_packages(db: Session = Depends(get_db)):
+def list_packages(owner_admin_id: Optional[int] = None, db: Session = Depends(get_db)):
     """Active packages, in the order the admin arranged them - shown to
     customers by the sales bot at checkout. Eager-loads `connections` AND
     `files` - the built-in bot (app/telegram_bot/panel_bridge.py) closes
@@ -99,14 +99,50 @@ def list_packages(db: Session = Depends(get_db)):
     lazy-loaded relationship accessed at that point would raise a
     DetachedInstanceError and silently hang the "خرید اکانت جدید" button
     (this bit us once already with `connections` - `files` needs the same
-    treatment since it's read by PackageOut too)."""
-    return (
+    treatment since it's read by PackageOut too).
+
+    owner_admin_id identifies WHICH bot is asking (see
+    telegram_bot/panel_bridge.py's _scope() - None for the shared/global
+    bot, an AdminUser id for a per-Admin/per-Seller own bot). Two things
+    happen when it's given:
+    - the result is scoped to that account's own tree (global packages +
+      their own/their parent's - same rule as routers/packages.py's
+      list_packages), instead of every bot_enabled package panel-wide
+      regardless of owner (which was the behavior for EVERY bot, including
+      a level-2 Admin's own one, until this scoping was added - a gap, not
+      a deliberate choice).
+    - if that account is a level-3 Seller, each package's `price` is
+      replaced with their own resale override (models.PackageSellerPrice)
+      where one is set, so their bot shows/charges their own number instead
+      of their parent Admin's base price."""
+    q = (
         db.query(models.Package)
         .options(joinedload(models.Package.connections), joinedload(models.Package.files))
         .filter(models.Package.bot_enabled == True)  # noqa: E712
-        .order_by(models.Package.sort_order, models.Package.id)
-        .all()
     )
+
+    seller_prices: dict[int, int] = {}
+    if owner_admin_id is not None:
+        target = db.get(models.AdminUser, owner_admin_id)
+        if target is not None and not target.is_superadmin:
+            scope_id = hierarchy.parent_admin_scope_id(target)
+            q = q.filter(hierarchy.owner_id_in_clause(models.Package.owner_admin_id, {None, scope_id}))
+            if hierarchy.role(target) == hierarchy.ROLE_SELLER:
+                seller_prices = {
+                    row.package_id: row.price
+                    for row in db.query(models.PackageSellerPrice)
+                    .filter(models.PackageSellerPrice.seller_admin_id == target.id)
+                    .all()
+                }
+
+    pkgs = q.order_by(models.Package.sort_order, models.Package.id).all()
+    for p in pkgs:
+        if p.id in seller_prices:
+            # In-memory only, on this freshly-queried (never committed)
+            # object - the customer's bot sees their reseller's price
+            # without Package.price itself ever changing for anyone else.
+            p.price = seller_prices[p.id]
+    return pkgs
 
 
 @router.get("/payment-info", response_model=schemas.PanelSettingsOut)

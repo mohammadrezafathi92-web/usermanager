@@ -144,6 +144,10 @@ export const fetchPackages = () => client.get("/packages");
 export const createPackage = (data) => client.post("/packages", data);
 export const updatePackage = (id, data) => client.put(`/packages/${id}`, data);
 export const deletePackage = (id) => client.delete(`/packages/${id}`);
+// Seller-only: their own resale price override for a package they can see
+// but never edit themselves - price: null clears it (falls back to the
+// package's base price again).
+export const setMyPackagePrice = (id, price) => client.put(`/packages/${id}/my-price`, { price });
 
 export const uploadPackageFile = (id, file) => {
   const fd = new FormData();

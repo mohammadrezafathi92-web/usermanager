@@ -590,6 +590,20 @@ class PackageOut(PackageBase):
     # from the client (not on PackageBase/PackageCreate).
     owner_admin_id: Optional[int] = None
     owner_admin_username: Optional[str] = None
+    # This Seller's own custom resale price for this package (see
+    # models.PackageSellerPrice) - None means they haven't set one, so
+    # `price` above (the package's base price) is what applies. Only ever
+    # populated when the CALLER is a level-3 Seller (routers/packages.py's
+    # list_packages/_out); always None for a superadmin/Admin's own view,
+    # since only Sellers layer a resale price on top of someone else's
+    # package.
+    my_price: Optional[int] = None
+
+
+class SellerPackagePriceUpdate(BaseModel):
+    # None/omitted = clear the override, fall back to the package's own
+    # base price again.
+    price: Optional[int] = None
 
 
 # ---------- Discount codes (کد تخفیف) ----------

@@ -32,12 +32,15 @@ def _require_package_manager(admin: models.AdminUser) -> None:
         raise HTTPException(403, "فروشنده‌ها اجازه ساخت یا ویرایش پکیج را ندارند")
 
 
-def _out(pkg: models.Package) -> models.Package:
-    """Bolts the owner's username onto the ORM object as a plain attribute
-    right before returning it, since owner_admin_username isn't a real
-    column - PackageOut.model_validate reads it straight off via
-    from_attributes, same trick as routers/admins.py's _out()."""
+def _out(pkg: models.Package, my_price: int | None = None) -> models.Package:
+    """Bolts the owner's username (and, for a Seller caller, their own
+    resale price override - see models.PackageSellerPrice) onto the ORM
+    object as plain attributes right before returning it, since neither is
+    a real column on Package - PackageOut.model_validate reads them
+    straight off via from_attributes, same trick as routers/admins.py's
+    _out()."""
     pkg.owner_admin_username = pkg.owner_admin.username if pkg.owner_admin else None
+    pkg.my_price = my_price
     return pkg
 
 
@@ -95,7 +98,15 @@ def list_packages(db: Session = Depends(get_db), admin: models.AdminUser = Depen
         # access to global packages (see hierarchy.owner_id_in_clause).
         q = q.filter(hierarchy.owner_id_in_clause(models.Package.owner_admin_id, allowed))
     pkgs = q.order_by(models.Package.sort_order, models.Package.id).all()
-    return [_out(p) for p in pkgs]
+    # A Seller sees their own resale price override (if set) next to each
+    # package's base price - fetched in one query rather than N+1.
+    my_prices: dict[int, int] = {}
+    if hierarchy.is_seller(admin):
+        my_prices = {
+            row.package_id: row.price
+            for row in db.query(models.PackageSellerPrice).filter(models.PackageSellerPrice.seller_admin_id == admin.id).all()
+        }
+    return [_out(p, my_prices.get(p.id)) for p in pkgs]
 
 
 @router.post("", response_model=schemas.PackageOut)
@@ -141,6 +152,48 @@ def delete_package(package_id: int, db: Session = Depends(get_db), admin: models
     db.delete(pkg)
     db.commit()
     return {"ok": True}
+
+
+@router.put("/{package_id}/my-price", response_model=schemas.PackageOut)
+def set_my_package_price(
+    package_id: int,
+    payload: schemas.SellerPackagePriceUpdate,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+):
+    """A level-3 Seller's OWN resale price override for a package they can
+    already see/use (their parent Admin's, or a global one) - shown/charged
+    instead of the package's base `price` in the Seller's own Telegram bot
+    (see routers/bot.py's list_packages). Deliberately NOT gated behind
+    edit_packages/_require_package_manager - a Seller is never editing the
+    package itself (still entirely the parent Admin's), only recording
+    their own resale number, which is exactly what Sellers are supposed to
+    be able to do (unlike node/package management, which stays fully
+    Admin-only)."""
+    if not hierarchy.is_seller(admin):
+        raise HTTPException(403, "این قابلیت فقط برای فروشنده‌هاست")
+    pkg = _get_scoped_package(db, package_id, admin)  # 404s if out of this Seller's scope
+
+    row = (
+        db.query(models.PackageSellerPrice)
+        .filter(models.PackageSellerPrice.package_id == package_id, models.PackageSellerPrice.seller_admin_id == admin.id)
+        .first()
+    )
+    if payload.price is None:
+        if row:
+            db.delete(row)
+            db.commit()
+        return _out(pkg, None)
+
+    if payload.price < 0:
+        raise HTTPException(400, "قیمت نمی‌تواند منفی باشد")
+    if row:
+        row.price = payload.price
+    else:
+        row = models.PackageSellerPrice(package_id=package_id, seller_admin_id=admin.id, price=payload.price)
+        db.add(row)
+    db.commit()
+    return _out(pkg, payload.price)
 
 
 # ------------------------------------------------------------------- files

@@ -84,8 +84,8 @@ class PanelBridge:
         return _dump([schemas.BotNodeInfo.model_validate(n) for n in nodes])
 
     # ------------------------------------------------------------ packages
-    async def list_packages(self) -> list[dict]:
-        packages = await _call(bot_router.list_packages)
+    async def list_packages(self, owner_admin_id: Optional[int] = None) -> list[dict]:
+        packages = await _call(bot_router.list_packages, owner_admin_id=_scope(owner_admin_id))
         return _dump([schemas.PackageOut.model_validate(p) for p in packages])
 
     async def get_package_files(self, package_id: int) -> list[dict]:

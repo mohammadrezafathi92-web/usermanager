@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     BigInteger,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -902,6 +903,32 @@ class PackageConnection(Base):
 
     package = relationship("Package", back_populates="connections")
     node = relationship("Node")
+
+
+class PackageSellerPrice(Base):
+    """A level-3 Seller's own custom resale price for one of their parent
+    Admin's packages - shown to customers AND actually charged in the
+    Seller's OWN Telegram bot (see AdminUser.own_bot_token, routers/bot.py's
+    list_packages) instead of Package.price. The Package row itself
+    (quota/duration/cooperation_price/bundled servers) stays entirely
+    owned/edited by the parent Admin - a Seller can never touch it (see
+    routers/packages.py's _require_package_manager) - this only layers
+    their own sell price on top, per (package, seller) pair. No row for a
+    given pair = that Seller's bot falls back to the package's own base
+    price, same as before this feature existed."""
+
+    __tablename__ = "package_seller_prices"
+    __table_args__ = (UniqueConstraint("package_id", "seller_admin_id", name="uq_package_seller_price"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    package_id = Column(Integer, ForeignKey("packages.id", ondelete="CASCADE"), nullable=False, index=True)
+    seller_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    price = Column(BigInteger, nullable=False)
+    created_at = Column(DateTime, default=now)
+    updated_at = Column(DateTime, default=now, onupdate=now)
+
+    package = relationship("Package")
+    seller = relationship("AdminUser")
 
 
 class DiscountCode(Base):

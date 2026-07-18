@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Plus, Pencil, Trash2, Power, Package as PackageIcon, Server, Paperclip, Download } from "lucide-react";
+import { Plus, Pencil, Trash2, Power, Package as PackageIcon, Server, Paperclip, Download, Check, X, Tag } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
@@ -11,8 +11,10 @@ import {
   fetchNodes,
   uploadPackageFile,
   deletePackageFile,
+  setMyPackagePrice,
 } from "../api/client.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
+import { useAuth } from "../context/AuthContext.jsx";
 
 const emptyForm = {
   name: "",
@@ -46,6 +48,8 @@ function formatToman(n) {
 
 export default function Packages() {
   const { t } = useLanguage();
+  const { role } = useAuth();
+  const isSeller = role === "seller";
   const [items, setItems] = useState([]);
   const [nodes, setNodes] = useState([]);
   const [open, setOpen] = useState(false);
@@ -55,6 +59,14 @@ export default function Packages() {
   const [saving, setSaving] = useState(false);
   const [editingFiles, setEditingFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
+
+  // ---------- Seller's own resale price override (see backend
+  // models.PackageSellerPrice) - a Seller can never create/edit/delete a
+  // Package itself (still entirely the parent Admin's), only set what
+  // price THEIR OWN bot shows/charges for it instead of the base price.
+  const [editingPriceId, setEditingPriceId] = useState(null);
+  const [priceDraft, setPriceDraft] = useState("");
+  const [priceSaving, setPriceSaving] = useState(false);
 
   const load = () => fetchPackages().then((res) => setItems(res.data));
   useEffect(() => {
@@ -156,15 +168,49 @@ export default function Packages() {
     load();
   };
 
+  const startEditPrice = (pkg) => {
+    setEditingPriceId(pkg.id);
+    setPriceDraft(pkg.my_price != null ? String(pkg.my_price) : String(pkg.price));
+  };
+  const cancelEditPrice = () => {
+    setEditingPriceId(null);
+    setPriceDraft("");
+  };
+  const saveMyPrice = async (pkgId) => {
+    setPriceSaving(true);
+    try {
+      await setMyPackagePrice(pkgId, priceDraft === "" ? null : Number(priceDraft));
+      await load();
+      cancelEditPrice();
+    } finally {
+      setPriceSaving(false);
+    }
+  };
+  const clearMyPrice = async (pkgId) => {
+    setPriceSaving(true);
+    try {
+      await setMyPackagePrice(pkgId, null);
+      await load();
+      cancelEditPrice();
+    } finally {
+      setPriceSaving(false);
+    }
+  };
+
   return (
     <Layout>
       <Topbar title={t("packages.title")} subtitle={t("packages.subtitle")} />
 
-      <div className="flex justify-end mb-4">
-        <button className="btn-primary" onClick={openCreate}>
-          <Plus size={16} /> {t("packages.newPackage")}
-        </button>
-      </div>
+      {!isSeller && (
+        <div className="flex justify-end mb-4">
+          <button className="btn-primary" onClick={openCreate}>
+            <Plus size={16} /> {t("packages.newPackage")}
+          </button>
+        </div>
+      )}
+      {isSeller && (
+        <div className="text-xs text-gray-400 mb-4">{t("packages.sellerPriceHint")}</div>
+      )}
 
       <div className="card !p-0 overflow-hidden">
         <table className="w-full text-sm">
@@ -194,9 +240,51 @@ export default function Packages() {
                 <td className="px-4 py-3 text-gray-600">{p.quota_gb ? `${p.quota_gb} GB` : t("packages.unlimited")}</td>
                 <td className="px-4 py-3 text-gray-600">{p.duration_days ? t("packages.days", { count: p.duration_days }) : t("packages.noExpiry")}</td>
                 <td className="px-4 py-3 text-gray-600" dir="ltr">
-                  {formatToman(p.price)}
-                  {p.cooperation_price != null && (
-                    <div className="text-xs text-gray-400">{t("packages.cooperationLabel", { price: formatToman(p.cooperation_price) })}</div>
+                  {!isSeller && (
+                    <>
+                      {formatToman(p.price)}
+                      {p.cooperation_price != null && (
+                        <div className="text-xs text-gray-400">{t("packages.cooperationLabel", { price: formatToman(p.cooperation_price) })}</div>
+                      )}
+                    </>
+                  )}
+                  {isSeller && editingPriceId !== p.id && (
+                    <div className="flex items-center gap-2">
+                      <div>
+                        <div className={p.my_price != null ? "text-gray-400 line-through text-xs" : ""}>{formatToman(p.price)}</div>
+                        {p.my_price != null && (
+                          <div className="text-brand-600 font-medium flex items-center gap-1">
+                            <Tag size={12} /> {formatToman(p.my_price)}
+                          </div>
+                        )}
+                      </div>
+                      <button title={t("packages.editMyPrice")} onClick={() => startEditPrice(p)} className="text-gray-400 hover:text-brand-600">
+                        <Pencil size={14} />
+                      </button>
+                    </div>
+                  )}
+                  {isSeller && editingPriceId === p.id && (
+                    <div className="flex items-center gap-1" dir="ltr">
+                      <input
+                        type="number"
+                        min="0"
+                        autoFocus
+                        className="input !py-1 !px-2 w-28 text-sm"
+                        value={priceDraft}
+                        onChange={(e) => setPriceDraft(e.target.value)}
+                      />
+                      <button disabled={priceSaving} title={t("common.save")} onClick={() => saveMyPrice(p.id)} className="text-emerald-500 hover:text-emerald-600">
+                        <Check size={16} />
+                      </button>
+                      <button disabled={priceSaving} title={t("common.cancel")} onClick={cancelEditPrice} className="text-gray-400 hover:text-gray-600">
+                        <X size={16} />
+                      </button>
+                      {p.my_price != null && (
+                        <button disabled={priceSaving} title={t("packages.resetMyPrice")} onClick={() => clearMyPrice(p.id)} className="text-xs text-gray-400 hover:text-red-500 underline">
+                          {t("packages.resetMyPrice")}
+                        </button>
+                      )}
+                    </div>
                   )}
                 </td>
                 <td className="px-4 py-3">
@@ -210,17 +298,20 @@ export default function Packages() {
                   </div>
                 </td>
                 <td className="px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <button title={p.enabled ? t("packages.disable") : t("packages.enable")} onClick={() => onToggle(p)} className="text-gray-400 hover:text-brand-600">
-                      <Power size={16} />
-                    </button>
-                    <button title={t("packages.editTitle")} onClick={() => openEdit(p)} className="text-gray-400 hover:text-brand-600">
-                      <Pencil size={16} />
-                    </button>
-                    <button title={t("packages.deleteTitle")} onClick={() => onDelete(p.id)} className="text-gray-400 hover:text-red-600">
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
+                  {!isSeller && (
+                    <div className="flex items-center gap-2">
+                      <button title={p.enabled ? t("packages.disable") : t("packages.enable")} onClick={() => onToggle(p)} className="text-gray-400 hover:text-brand-600">
+                        <Power size={16} />
+                      </button>
+                      <button title={t("packages.editTitle")} onClick={() => openEdit(p)} className="text-gray-400 hover:text-brand-600">
+                        <Pencil size={16} />
+                      </button>
+                      <button title={t("packages.deleteTitle")} onClick={() => onDelete(p.id)} className="text-gray-400 hover:text-red-600">
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  )}
+                  {isSeller && <span className="text-gray-300 text-xs">—</span>}
                 </td>
               </tr>
             ))}

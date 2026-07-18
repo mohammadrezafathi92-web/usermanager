@@ -5,11 +5,14 @@ Two independent things live here now (3-tier hierarchy feature):
      infrastructure, superadmin only (see require_superadmin below) - a
      level-2 Admin managing their own tree has no business touching the
      one bot every OTHER Admin's customers might also be relying on.
-  2. Each level-2 Admin's OWN dedicated bot (own_bot_token on their
-     AdminUser row - see /my-bot endpoints at the bottom) - fully private
-     to that Admin, runs concurrently with the shared bot and every other
-     Admin's own bot (see telegram_bot/runner.py's multi-instance
-     registry).
+  2. Each level-2 Admin's OR level-3 Seller's OWN dedicated bot
+     (own_bot_token on their AdminUser row - see /my-bot endpoints at the
+     bottom) - fully private to that account, runs concurrently with the
+     shared bot and every other Admin/Seller's own bot (see
+     telegram_bot/runner.py's multi-instance registry). A Seller's own bot
+     scopes new customers to the Seller themself (not their parent Admin)
+     and shows/charges the Seller's own resale price per package (see
+     models.PackageSellerPrice, routers/bot.py's list_packages).
 No .env file or SSH access needed for either - saving restarts the
 relevant bot's in-process polling loop right away."""
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,12 +30,13 @@ _superadmin = Depends(require_superadmin)
 
 
 def _require_admin_tier(admin: models.AdminUser) -> None:
-    """Gate for the /my-bot endpoints below - only a level-2 Admin has a
-    tree of their own worth giving a dedicated bot to; a Seller works
-    entirely inside their parent Admin's packages/bot, and a superadmin
-    already has the shared/global bot above."""
-    if hierarchy.role(admin) != hierarchy.ROLE_ADMIN:
-        raise HTTPException(403, "این بخش فقط برای ادمین‌های سطح ۲ در دسترس است")
+    """Gate for the /my-bot endpoints below - a level-2 Admin OR a level-3
+    Seller can have their own dedicated bot (a Seller's customers connect
+    to THEIR bot and see THEIR own resale prices - see
+    models.PackageSellerPrice/routers/bot.py's list_packages); a superadmin
+    already has the shared/global bot above, so only they're excluded."""
+    if hierarchy.role(admin) == hierarchy.ROLE_SUPERADMIN:
+        raise HTTPException(403, "این بخش برای ادمین اصلی در دسترس نیست - از تنظیمات ربات مشترک استفاده کنید")
 
 
 def _get_or_create(db: Session) -> models.BotSettings:

@@ -936,7 +936,12 @@ export default function Settings() {
         </>
       )}
 
-      {!isSuperadmin && role === "admin" && <OwnBotCard t={t} />}
+      {/* A level-2 Admin OR a level-3 Seller can have their own dedicated
+          bot now (their customers connect to THEIR bot, and a Seller's own
+          bot shows/charges their own resale price per package - see
+          Packages.jsx's seller price editor) - only superadmin is excluded
+          (they have the shared/global bot instead). */}
+      {!isSuperadmin && <OwnBotCard t={t} />}
         </>
       )}
 

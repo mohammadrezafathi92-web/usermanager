@@ -152,10 +152,39 @@ def list_packages(owner_admin_id: Optional[int] = None, db: Session = Depends(ge
 
 
 @router.get("/payment-info", response_model=schemas.PanelSettingsOut)
-def get_payment_info(db: Session = Depends(get_db)):
-    """Card-to-card payment details configured by the admin - shown by the
-    sales bot right before it asks the customer for a receipt photo."""
-    return _get_or_create_settings(db)
+def get_payment_info(owner_admin_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """Card-to-card payment details - shown by the sales bot right before it
+    asks the customer for a receipt photo (also used for the top-up presets
+    and support-contact text elsewhere in the bot, see telegram_bot/
+    handlers/customer.py).
+
+    owner_admin_id identifies WHICH bot is asking (see
+    telegram_bot/panel_bridge.py's _scope() - None for the shared/global
+    bot, an AdminUser id for a per-Admin/per-Seller own bot) - same shape as
+    list_packages above. Every level-2 Admin and level-3 Seller now has
+    their own dedicated bot with their own customers, who need to deposit
+    into THAT reseller's card, not the superadmin's - so when owner_admin_id
+    identifies a non-superadmin, their own_payment_* fields (models.
+    AdminUser, set via PUT /api/settings/my-payment) overlay the global
+    PanelSettings row IN-MEMORY (never committed - same trick as
+    list_packages's per-seller price overlay), one field at a time: any
+    field they haven't set themselves still falls back to the panel-wide
+    default instead of showing the customer nothing. referral/loyalty/
+    support-contact-text/HA/port fields are untouched - still panel-wide
+    only, not part of this per-admin overlay."""
+    row = _get_or_create_settings(db)
+    if owner_admin_id is not None:
+        target = db.get(models.AdminUser, owner_admin_id)
+        if target is not None and not target.is_superadmin:
+            if target.own_payment_card_number:
+                row.payment_card_number = target.own_payment_card_number
+            if target.own_payment_card_holder:
+                row.payment_card_holder = target.own_payment_card_holder
+            if target.own_payment_instructions:
+                row.payment_instructions = target.own_payment_instructions
+            if target.own_topup_presets:
+                row.topup_presets = target.own_topup_presets
+    return row
 
 
 @router.get("/customer-menu-config")

@@ -18,9 +18,10 @@ import datetime as dt
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import require_admin_or_above, require_superadmin, get_bot_api_key
+from ..deps import require_admin_or_above, require_superadmin, get_bot_api_key, get_current_admin
 from ..services import backup as backup_service
 from ..services import local_deploy
+from ..services import hierarchy
 
 # Panel-wide (single PanelSettings row, id=1) - payment/checkout info,
 # support contact, referral/loyalty config, panel port, HA config all
@@ -91,6 +92,67 @@ def change_panel_port(payload: schemas.PanelPortChangeRequest, db: Session = Dep
     row.panel_port_changed_at = dt.datetime.utcnow()
     db.commit()
     return {"ok": True, "message": log}
+
+
+# ---------------------------------------------------------------------------
+# Per-admin own card-to-card payment info (3-tier hierarchy - see
+# AdminUser.own_payment_card_number's docstring in models.py). A SEPARATE
+# router (not more routes bolted onto `router` above) because it needs
+# different auth: `router`'s whole point is superadmin/level-2-Admin-only
+# since it edits the ONE shared PanelSettings row - but a level-3 Seller
+# absolutely must be able to set their OWN card here (their own bot shows
+# it to their own customers), so this is gated to any logged-in admin
+# EXCEPT superadmin instead (mirrors telegram_bot_settings.py's /my-bot
+# and _require_admin_tier - a superadmin edits the global row directly via
+# `router` above instead, which also backs the shared bot).
+my_payment_router = APIRouter(prefix="/api/settings/my-payment", tags=["settings"])
+
+
+def _require_not_superadmin(admin: models.AdminUser) -> None:
+    if hierarchy.role(admin) == hierarchy.ROLE_SUPERADMIN:
+        raise HTTPException(403, "این بخش برای ادمین اصلی در دسترس نیست - از تنظیمات پرداخت مشترک استفاده کنید")
+
+
+@my_payment_router.get("", response_model=schemas.OwnPaymentSettingsOut)
+def get_my_payment(admin: models.AdminUser = Depends(get_current_admin)):
+    _require_not_superadmin(admin)
+    return schemas.OwnPaymentSettingsOut(
+        payment_card_number=admin.own_payment_card_number or "",
+        payment_card_holder=admin.own_payment_card_holder or "",
+        payment_instructions=admin.own_payment_instructions or "",
+        topup_presets=admin.own_topup_presets or "",
+    )
+
+
+@my_payment_router.put("", response_model=schemas.OwnPaymentSettingsOut)
+def update_my_payment(
+    payload: schemas.OwnPaymentSettingsUpdate,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+):
+    """Blank/whitespace-only values are stored as NULL (not an empty
+    string) so get_payment_info's per-field fallback to the global
+    PanelSettings row (see routers/bot.py) actually kicks in - an empty
+    string would otherwise "win" over the fallback and show the customer
+    nothing at all instead of the panel-wide default."""
+    _require_not_superadmin(admin)
+    data = payload.model_dump(exclude_unset=True)
+    if "payment_card_number" in data:
+        admin.own_payment_card_number = (data["payment_card_number"] or "").strip() or None
+    if "payment_card_holder" in data:
+        admin.own_payment_card_holder = (data["payment_card_holder"] or "").strip() or None
+    if "payment_instructions" in data:
+        admin.own_payment_instructions = (data["payment_instructions"] or "").strip() or None
+    if "topup_presets" in data:
+        admin.own_topup_presets = (data["topup_presets"] or "").strip() or None
+    db.commit()
+    db.refresh(admin)
+    return schemas.OwnPaymentSettingsOut(
+        payment_card_number=admin.own_payment_card_number or "",
+        payment_card_holder=admin.own_payment_card_holder or "",
+        payment_instructions=admin.own_payment_instructions or "",
+        topup_presets=admin.own_topup_presets or "",
+    )
 
 
 # ---------------------------------------------------------------------------

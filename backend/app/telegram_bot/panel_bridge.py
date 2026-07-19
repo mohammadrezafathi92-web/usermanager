@@ -122,8 +122,15 @@ class PanelBridge:
 
         return await asyncio.to_thread(_run)
 
-    async def get_payment_info(self) -> dict:
-        row = await _call(bot_router.get_payment_info)
+    async def get_payment_info(self, owner_admin_id: Optional[int] = None) -> dict:
+        """Same owner-scoping shape as list_packages above: _scope() fills
+        in this bot's own owner from config.bot_owner_admin_id when a
+        handler doesn't pass one explicitly, so an Admin's or Seller's own
+        bot shows their own card-to-card info (see routers/bot.py's
+        get_payment_info and models.AdminUser.own_payment_card_number) -
+        the shared/global bot keeps showing the panel-wide default,
+        unchanged."""
+        row = await _call(bot_router.get_payment_info, owner_admin_id=_scope(owner_admin_id))
         return _dump(schemas.PanelSettingsOut.model_validate(row))
 
     async def get_customer_menu_disabled_items(self) -> list[str]:

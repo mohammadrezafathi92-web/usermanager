@@ -46,6 +46,7 @@ app.include_router(remote_bot.router)
 app.include_router(admins.router)
 app.include_router(radius_logs.router)
 app.include_router(discount_codes.router)
+app.include_router(panel_settings.my_payment_router)
 app.include_router(panel_settings.ha_router)
 
 scheduler = BackgroundScheduler()

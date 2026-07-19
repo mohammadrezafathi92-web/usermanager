@@ -16,6 +16,8 @@ import {
   restartTelegramBot,
   fetchMyBot,
   updateMyBot,
+  fetchMyPayment,
+  updateMyPayment,
   fetchBackups,
   runBackup,
   downloadBackup,
@@ -559,8 +561,14 @@ export default function Settings() {
         </div>
       </div>
 
-      {isAdminOrAbove && (
-      <>
+      {/* Every level-2 Admin AND level-3 Seller now has their own dedicated
+          bot with their own customers, who need to deposit into THAT
+          reseller's card - not the superadmin's global one. Superadmin
+          edits the global PanelSettings card below (also the fallback for
+          anyone who hasn't set their own, and what the shared bot shows);
+          everyone else gets OwnPaymentCard instead, which only ever
+          touches their own AdminUser.own_payment_* fields. */}
+      {isSuperadmin && (
       <div className="card mb-4">
         <div className="flex items-center gap-2 mb-4">
           <CreditCard size={18} className="text-brand-600" />
@@ -621,7 +629,11 @@ export default function Settings() {
           </div>
         </form>
       </div>
+      )}
 
+      {!isSuperadmin && <OwnPaymentCard t={t} />}
+
+      {isAdminOrAbove && (
       <div className="card mb-4">
         <div className="flex items-center gap-2 mb-4">
           <Info size={18} className="text-brand-600" />
@@ -713,7 +725,6 @@ export default function Settings() {
           </div>
         </form>
       </div>
-      </>
       )}
         </>
       )}
@@ -1372,6 +1383,108 @@ function OwnBotCard({ t }) {
         <button type="button" className="btn-primary" disabled={saving} onClick={save}>
           {saving ? t("common.saving") : t("settings.saveAndRestartMyBot")}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// This Admin's/Seller's OWN card-to-card payment info, shown to customers
+// in THEIR OWN bot instead of the superadmin's global card (see routers/
+// panel_settings.py's my_payment_router and models.AdminUser.
+// own_payment_card_number's docstring). Any field left blank here falls
+// back to the panel-wide default automatically - no need to duplicate the
+// support text or leave a field "wrong" just to have something in it.
+function OwnPaymentCard({ t }) {
+  const [form, setForm] = useState({ payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "" });
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  const load = () =>
+    fetchMyPayment().then((res) => {
+      setForm(res.data);
+      setLoaded(true);
+    });
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  const save = async () => {
+    setSaving(true);
+    setMsg(null);
+    try {
+      const res = await updateMyPayment(form);
+      setForm(res.data);
+      setMsg({ type: "ok", text: t("settings.myPaymentSaved") });
+    } catch (err) {
+      setMsg({ type: "err", text: err?.response?.data?.detail || t("settings.myPaymentSaveError") });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!loaded) return null;
+
+  return (
+    <div className="card mb-4">
+      <div className="flex items-center gap-2 mb-4">
+        <CreditCard size={18} className="text-brand-600" />
+        <h3 className="font-bold text-gray-700">{t("settings.myPaymentTitle")}</h3>
+      </div>
+      <p className="text-xs text-gray-400 mb-4">{t("settings.myPaymentDescription")}</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm text-gray-600 mb-1">{t("settings.cardNumber")}</label>
+          <input
+            className="input"
+            dir="ltr"
+            placeholder="6037-XXXX-XXXX-XXXX"
+            value={form.payment_card_number || ""}
+            onChange={(e) => set("payment_card_number", e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="block text-sm text-gray-600 mb-1">{t("settings.cardHolder")}</label>
+          <input
+            className="input"
+            value={form.payment_card_holder || ""}
+            onChange={(e) => set("payment_card_holder", e.target.value)}
+          />
+        </div>
+        <div className="md:col-span-2">
+          <label className="block text-sm text-gray-600 mb-1">{t("settings.extraInstructions")}</label>
+          <textarea
+            className="input"
+            rows={2}
+            placeholder={t("settings.extraInstructionsPlaceholder")}
+            value={form.payment_instructions || ""}
+            onChange={(e) => set("payment_instructions", e.target.value)}
+          />
+        </div>
+        <div className="md:col-span-2">
+          <label className="block text-sm text-gray-600 mb-1">{t("settings.topupPresets")}</label>
+          <input
+            className="input"
+            dir="ltr"
+            placeholder="50000, 100000, 200000"
+            value={form.topup_presets || ""}
+            onChange={(e) => set("topup_presets", e.target.value)}
+          />
+          <p className="text-xs text-gray-400 mt-1">{t("settings.topupPresetsHint")}</p>
+        </div>
+        {msg && (
+          <div className={`md:col-span-2 text-sm rounded-lg px-3 py-2 ${msg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+            {msg.text}
+          </div>
+        )}
+        <div className="md:col-span-2">
+          <button type="button" disabled={saving} className="btn-primary" onClick={save}>
+            {saving ? t("settings.saving") : t("settings.savePaymentInfo")}
+          </button>
+        </div>
       </div>
     </div>
   );

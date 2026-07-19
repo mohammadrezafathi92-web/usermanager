@@ -813,6 +813,22 @@ class OwnBotSettingsUpdate(BaseModel):
     enabled: Optional[bool] = None
 
 
+# ---------- Per-admin own card-to-card payment info (3-tier hierarchy - see
+# AdminUser.own_payment_card_number and its docstring) ----------
+class OwnPaymentSettingsOut(BaseModel):
+    payment_card_number: Optional[str] = ""
+    payment_card_holder: Optional[str] = ""
+    payment_instructions: Optional[str] = ""
+    topup_presets: Optional[str] = ""
+
+
+class OwnPaymentSettingsUpdate(BaseModel):
+    payment_card_number: Optional[str] = None
+    payment_card_holder: Optional[str] = None
+    payment_instructions: Optional[str] = None
+    topup_presets: Optional[str] = None
+
+
 # ---------- Remote bot deployment (install the interactive bot on a 2nd server) ----------
 class RemoteBotDeployRequest(BaseModel):
     host: str

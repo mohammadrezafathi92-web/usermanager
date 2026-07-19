@@ -135,18 +135,38 @@ class AdminUser(Base):
     volume_balance_gb = Column(Float, nullable=True, default=0)
 
     # ---------- Per-admin dedicated Telegram bot (3-tier hierarchy) ----------
-    # A level-2 Admin's OWN separate bot (their own @username, their own
-    # token from @BotFather) - distinct from the panel's single shared/
-    # global bot (BotSettings row) that every admin's customers could
-    # otherwise be lumped into. NULL = this admin has no dedicated bot of
-    # their own (the normal case for a fresh Admin, and always NULL for
-    # Sellers - only level-2 Admins get this, see routers/telegram_bot_settings.py).
-    # Runs concurrently with the shared bot AND every other admin's own bot
-    # on the SAME panel server/container - see telegram_bot/runner.py's
-    # multi-instance registry and config.py's thread-local RuntimeConfig for
-    # how that isolation actually works.
+    # A level-2 Admin's OR level-3 Seller's OWN separate bot (their own
+    # @username, their own token from @BotFather) - distinct from the
+    # panel's single shared/global bot (BotSettings row) that every admin's
+    # customers could otherwise be lumped into. NULL = this admin has no
+    # dedicated bot of their own (the normal case for a fresh Admin/Seller -
+    # see routers/telegram_bot_settings.py's _require_admin_tier, which
+    # excludes only the superadmin). Runs concurrently with the shared bot
+    # AND every other admin's own bot on the SAME panel server/container -
+    # see telegram_bot/runner.py's multi-instance registry and config.py's
+    # thread-local RuntimeConfig for how that isolation actually works.
     own_bot_token = Column(String(255), nullable=True)
     own_bot_enabled = Column(Boolean, nullable=False, default=True)
+
+    # ---------- Per-admin own card-to-card payment info (3-tier hierarchy) ----------
+    # A level-2 Admin's OR level-3 Seller's OWN "پرداخت کارت‌به‌کارت" info,
+    # shown to customers in THEIR OWN bot at checkout/top-up instead of the
+    # single global PanelSettings.payment_card_number/holder/instructions -
+    # added because every tier now has its own dedicated bot (own_bot_token
+    # above) and its own customers, who need to deposit into THAT reseller's
+    # card, not the superadmin's (see routers/bot.py's get_payment_info and
+    # panel_bridge.py's get_payment_info - same "own value overlays the
+    # global fallback, per field" shape as PackageSellerPrice does for
+    # package prices). NULL/empty on any individual field = that field
+    # falls back to the global PanelSettings row's value, so an Admin/
+    # Seller who's only set their card number but not custom instructions
+    # still gets the panel-wide default instructions text. Always NULL for
+    # a superadmin - they edit the global row directly instead (it backs
+    # the shared bot AND is everyone else's fallback).
+    own_payment_card_number = Column(String(64), nullable=True)
+    own_payment_card_holder = Column(String(128), nullable=True)
+    own_payment_instructions = Column(Text, nullable=True)
+    own_topup_presets = Column(String(255), nullable=True)
 
 
 class AdminPermissionGroup(Base):

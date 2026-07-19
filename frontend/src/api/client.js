@@ -183,6 +183,12 @@ export const resolveHaFailover = () => client.post("/ha/resolve");
 export const changePanelPort = (newPort) =>
   client.post("/settings/change-port", { new_port: newPort });
 
+// Level-2 Admin's OR level-3 Seller's OWN card-to-card payment info (3-tier
+// hierarchy - separate from the global card above, superadmin-excluded) -
+// see routers/panel_settings.py's my_payment_router.
+export const fetchMyPayment = () => client.get("/settings/my-payment");
+export const updateMyPayment = (data) => client.put("/settings/my-payment", data);
+
 export const fetchTelegramBotSettings = () => client.get("/telegram-bot");
 export const updateTelegramBotSettings = (data) => client.put("/telegram-bot", data);
 export const restartTelegramBot = () => client.post("/telegram-bot/restart");

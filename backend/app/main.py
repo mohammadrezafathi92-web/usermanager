@@ -201,6 +201,32 @@ def _backfill_hierarchy_node_access(admin_node_access_table_is_new: bool) -> Non
         db.close()
 
 
+def _seed_default_permission_groups() -> None:
+    """One-time seed of a couple of ready-made AdminPermissionGroup presets
+    (task #26's "چنتا گروه پیش فرض هم بزار" - add a few default groups) so
+    a superadmin creating their first level-3 Seller has something to pick
+    from immediately instead of an empty list. Only ever grantable thing
+    left in permissions.PERMISSION_CHOICES after this session's audit is
+    view_tutorials (see permissions.py's module docstring for the full
+    reasoning - every other former checkbox either did nothing for a
+    Seller or was a real cross-tenant risk, so it was removed rather than
+    kept as a confusing no-op checkbox) - so the only meaningful thing two
+    presets can differ on today is that one flag. Gated on "no groups
+    exist yet at all" (like _backfill_hierarchy_node_access's is-new
+    check) so this only ever runs once and never re-creates/overwrites a
+    group a superadmin has since renamed, edited, or deleted."""
+    db = SessionLocal()
+    try:
+        if db.query(models.AdminPermissionGroup).first():
+            return  # already seeded (or the superadmin made their own) - never touch it again
+        db.add(models.AdminPermissionGroup(name="فروشنده استاندارد", permissions="view_tutorials"))
+        db.add(models.AdminPermissionGroup(name="فروشنده محدود (بدون آموزش)", permissions=""))
+        db.commit()
+        logging.info("seeded 2 default AdminPermissionGroup presets")
+    finally:
+        db.close()
+
+
 @app.on_event("startup")
 def on_startup():
     _warn_if_insecure_defaults()
@@ -242,6 +268,8 @@ def on_startup():
             logging.info("ادمین موجود «%s» به‌صورت خودکار ادمین اصلی (superadmin) شد", oldest.username)
     finally:
         db.close()
+
+    _seed_default_permission_groups()
 
     if settings.bot_standalone_mode:
         # This container is a bot-only instance deployed on a second server

@@ -84,23 +84,23 @@ export default function App() {
       <Route
         path="/nodes"
         element={
-          <PermRoute perm={["view_nodes", "edit_nodes", "delete_nodes"]}>
+          <AdminOrAboveOnly>
             <Nodes />
-          </PermRoute>
+          </AdminOrAboveOnly>
         }
       />
       <Route
         path="/packages"
         element={
-          <PermRoute perm={["view_packages", "edit_packages", "delete_packages"]}>
+          <Protected>
             <Packages />
-          </PermRoute>
+          </Protected>
         }
       />
       <Route
         path="/tutorials"
         element={
-          <PermRoute perm={["view_tutorials", "edit_tutorials", "delete_tutorials"]}>
+          <PermRoute perm="view_tutorials">
             <Tutorials />
           </PermRoute>
         }
@@ -108,11 +108,9 @@ export default function App() {
       <Route
         path="/settings"
         element={
-          <PermRoute
-            perm={["manage_payment_settings", "manage_bot_settings", "manage_api_keys", "manage_backup", "manage_discount_codes"]}
-          >
+          <Protected>
             <Settings />
-          </PermRoute>
+          </Protected>
         }
       />
       <Route
@@ -134,9 +132,9 @@ export default function App() {
       <Route
         path="/discount-codes"
         element={
-          <PermRoute perm="manage_discount_codes">
+          <AdminOrAboveOnly>
             <DiscountCodes />
-          </PermRoute>
+          </AdminOrAboveOnly>
         }
       />
       <Route path="/a/:slug" element={<Navigate to="/login" replace />} />

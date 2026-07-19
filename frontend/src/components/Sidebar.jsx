@@ -5,22 +5,31 @@ import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
 // `perm` may be a single permission string or an array meaning "any one of
-// these is enough" (see AuthContext.jsx's canAny) - matches the same
-// granular per-page permissions used by App.jsx's routes (task #230).
+// these is enough" (see AuthContext.jsx's canAny). "__admin_or_above__"
+// means superadmin or level-2 Admin only - a level-3 Seller never sees it.
+//
+// Menu audit (3-tier hierarchy): Nodes and Discount codes are now
+// structurally Admin-tier-only on the backend too (see routers/nodes.py's
+// hierarchy.accessible_node_ids being unconditionally empty for a Seller,
+// and routers/discount_codes.py's router-level require_admin_or_above) -
+// so their sidebar entries are gated the same way instead of a permission
+// checkbox that could never actually grant a Seller anything real.
+// Packages and Settings are real, useful, and already internally
+// Seller-aware pages (Packages.jsx hides create/edit/delete and shows the
+// Seller's own resale-price editor instead; Settings.jsx hides the
+// superadmin-only/Admin-only cards and shows only password + own-bot +
+// own-backup for a Seller) - so their links are unconditionally visible
+// and each page does its own finer-grained gating internally, exactly
+// like Users/Dashboard already did.
 const allLinks = [
   { to: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, end: true, perm: null },
   { to: "/users", labelKey: "nav.users", icon: Users, perm: null },
-  { to: "/nodes", labelKey: "nav.nodes", icon: Server, perm: ["view_nodes", "edit_nodes", "delete_nodes"] },
-  { to: "/packages", labelKey: "nav.packages", icon: Package, perm: ["view_packages", "edit_packages", "delete_packages"] },
-  { to: "/tutorials", labelKey: "nav.tutorials", icon: GraduationCap, perm: ["view_tutorials", "edit_tutorials", "delete_tutorials"] },
+  { to: "/nodes", labelKey: "nav.nodes", icon: Server, perm: "__admin_or_above__" },
+  { to: "/packages", labelKey: "nav.packages", icon: Package, perm: null },
+  { to: "/tutorials", labelKey: "nav.tutorials", icon: GraduationCap, perm: "view_tutorials" },
   { to: "/radius-logs", labelKey: "nav.radiusLogs", icon: ShieldAlert, perm: null },
-  { to: "/discount-codes", labelKey: "nav.discountCodes", icon: Ticket, perm: "manage_discount_codes" },
-  {
-    to: "/settings",
-    labelKey: "nav.settings",
-    icon: Settings,
-    perm: ["manage_payment_settings", "manage_bot_settings", "manage_api_keys", "manage_backup", "manage_discount_codes"],
-  },
+  { to: "/discount-codes", labelKey: "nav.discountCodes", icon: Ticket, perm: "__admin_or_above__" },
+  { to: "/settings", labelKey: "nav.settings", icon: Settings, perm: null },
   // Superadmins manage level-2 Admins here; level-2 Admins ALSO see this
   // page (to manage their OWN level-3 Sellers - see routers/admins.py's
   // require_admin_or_above) - only a level-3 Seller never sees it at all.

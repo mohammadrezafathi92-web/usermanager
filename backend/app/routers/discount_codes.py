@@ -5,8 +5,13 @@ referral_code) - see routers/bot.py for the bot-facing validate/redeem
 endpoints the Telegram bot calls at checkout.
 
 Codes are panel-wide (like PanelSettings), not scoped per owner_admin_id -
-gated behind the same "manage_settings" permission as the rest of the
-payment/checkout configuration."""
+gated behind require_admin_or_above (superadmin or level-2 Admin only),
+same as the rest of the payment/checkout configuration. A level-3 Seller
+is structurally blocked from this whole router (not just a checkbox that
+happens to be unset) because a code isn't scoped to one Admin's tree -
+a Seller creating/editing/deleting one would affect every other Admin's
+and Seller's checkout too. See permissions.py's module docstring for the
+full reasoning, confirmed explicitly with the panel owner."""
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,12 +19,12 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import require_permission
+from ..deps import require_admin_or_above
 
 router = APIRouter(
     prefix="/api/discount-codes",
     tags=["discount-codes"],
-    dependencies=[Depends(require_permission("manage_discount_codes"))],
+    dependencies=[Depends(require_admin_or_above)],
 )
 
 

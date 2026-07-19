@@ -13,14 +13,23 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..config import settings
 from ..database import get_db
-from ..deps import require_permission
+from ..deps import require_superadmin
 from ..services import remote_deploy
 from ..services.keys import generate_api_key
 from ..telegram_bot import runner as telegram_bot_runner
 from ..telegram_bot.config import parse_id_set
 from .telegram_bot_settings import _get_or_create as _get_or_create_bot_settings, _response as _bot_settings_response
 
-router = APIRouter(prefix="/api/remote-bot", tags=["remote-bot"], dependencies=[Depends(require_permission("manage_bot_settings"))])
+# Deploying an interactive bot onto a SECOND server over SSH (with a
+# password typed into the request body) is exactly the kind of
+# infrastructure-level action that should never be Seller or even level-2
+# Admin reachable - it holds real SSH credentials to a machine outside
+# this panel entirely. Was previously gated by "manage_bot_settings",
+# a permission checkbox that (like manage_api_keys/manage_backup before
+# it) has been removed from permissions.py for granting no real per-tenant
+# isolation - locked to require_superadmin instead, matching api_keys.py's
+# and telegram_bot_settings.py's global-bot-settings gate.
+router = APIRouter(prefix="/api/remote-bot", tags=["remote-bot"], dependencies=[Depends(require_superadmin)])
 
 
 @router.get("/status", response_model=schemas.BotSettingsOut)

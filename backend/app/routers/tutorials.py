@@ -9,16 +9,21 @@ from sqlalchemy.orm import Session, joinedload
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import require_permission
+from ..deps import require_permission, require_admin_or_above
 
 # Router-level gate is "view_tutorials" (every endpoint at minimum needs
-# that, matching the panel's own /tutorials page being reachable at all) -
-# mutating endpoints additionally require "edit_tutorials" or
-# "delete_tutorials" per action, see permissions.py for why this used to be
-# one broad "manage_tutorials" toggle.
+# that, matching the panel's own /tutorials page being reachable at all;
+# a level-3 Seller can be granted this - it's read-only and harmless even
+# panel-wide). Every MUTATING endpoint additionally requires
+# require_admin_or_above (superadmin or level-2 Admin only) - Tutorial/
+# TutorialMedia/TutorialSoftware are panel-wide rows with no
+# owner_admin_id at all, so a Seller editing/deleting one would affect
+# every other Admin's and Seller's customers too, not just their own (see
+# permissions.py's module docstring - confirmed explicitly with the panel
+# owner that tutorial editing stays level-2-Admin-only).
 router = APIRouter(prefix="/api/tutorials", tags=["tutorials"], dependencies=[Depends(require_permission("view_tutorials"))])
-_edit = Depends(require_permission("edit_tutorials"))
-_delete = Depends(require_permission("delete_tutorials"))
+_edit = Depends(require_admin_or_above)
+_delete = Depends(require_admin_or_above)
 
 # Same persistent /app/data volume the sqlite DB and package files already
 # live on (see docker-compose.yml: ./backend/data:/app/data).

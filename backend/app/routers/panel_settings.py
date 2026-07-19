@@ -18,11 +18,17 @@ import datetime as dt
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import require_permission, require_superadmin, get_bot_api_key
+from ..deps import require_admin_or_above, require_superadmin, get_bot_api_key
 from ..services import backup as backup_service
 from ..services import local_deploy
 
-router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_permission("manage_payment_settings"))])
+# Panel-wide (single PanelSettings row, id=1) - payment/checkout info,
+# support contact, referral/loyalty config, panel port, HA config all
+# affect every Admin's and Seller's customers at once, so this whole
+# router is superadmin/level-2-Admin only (require_admin_or_above) - a
+# level-3 Seller is structurally blocked, not just checkbox-gated. See
+# permissions.py's module docstring for the full reasoning.
+router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_admin_or_above)])
 
 
 def _get_or_create(db: Session) -> models.PanelSettings:

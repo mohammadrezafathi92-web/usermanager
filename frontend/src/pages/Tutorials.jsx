@@ -15,6 +15,7 @@ import {
   deleteTutorialSoftware,
 } from "../api/client.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
+import { useAuth } from "../context/AuthContext.jsx";
 
 const emptyForm = { title: "", text: "", enabled: true, sort_order: 0 };
 
@@ -27,6 +28,14 @@ function formatFileSize(bytes) {
 
 export default function Tutorials() {
   const { t } = useLanguage();
+  // Menu audit (3-tier hierarchy, task #26): Tutorial/TutorialMedia/
+  // TutorialSoftware are panel-wide rows with no owner_admin_id - editing
+  // one affects every other Admin's and Seller's customers too, so
+  // creating/editing/deleting/toggling is superadmin/level-2-Admin only
+  // (see routers/tutorials.py's require_admin_or_above on every mutating
+  // endpoint). A level-3 Seller still reaches this page (view_tutorials)
+  // and sees the same read-only list their customers would in the bot.
+  const { isAdminOrAbove } = useAuth();
   const [items, setItems] = useState([]);
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -168,11 +177,13 @@ export default function Tutorials() {
     <Layout>
       <Topbar title={t("tutorials.title")} subtitle={t("tutorials.subtitle")} />
 
+      {isAdminOrAbove && (
       <div className="flex justify-end mb-4">
         <button className="btn-primary" onClick={openCreate}>
           <Plus size={16} /> {t("tutorials.newTutorial")}
         </button>
       </div>
+      )}
 
       <div className="card !p-0 overflow-hidden">
         <table className="w-full text-sm">
@@ -200,17 +211,21 @@ export default function Tutorials() {
                   </span>
                 </td>
                 <td className="px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <button title={item.enabled ? t("tutorials.disable") : t("tutorials.enable")} onClick={() => onToggle(item)} className="text-gray-400 hover:text-brand-600">
-                      <Power size={16} />
-                    </button>
-                    <button title={t("tutorials.editTitle")} onClick={() => openEdit(item)} className="text-gray-400 hover:text-brand-600">
-                      <Pencil size={16} />
-                    </button>
-                    <button title={t("tutorials.deleteTitle")} onClick={() => onDelete(item.id)} className="text-gray-400 hover:text-red-600">
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
+                  {isAdminOrAbove ? (
+                    <div className="flex items-center gap-2">
+                      <button title={item.enabled ? t("tutorials.disable") : t("tutorials.enable")} onClick={() => onToggle(item)} className="text-gray-400 hover:text-brand-600">
+                        <Power size={16} />
+                      </button>
+                      <button title={t("tutorials.editTitle")} onClick={() => openEdit(item)} className="text-gray-400 hover:text-brand-600">
+                        <Pencil size={16} />
+                      </button>
+                      <button title={t("tutorials.deleteTitle")} onClick={() => onDelete(item.id)} className="text-gray-400 hover:text-red-600">
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="text-gray-300">—</span>
+                  )}
                 </td>
               </tr>
             ))}

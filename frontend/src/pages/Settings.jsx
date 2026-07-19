@@ -48,18 +48,26 @@ const CUSTOMER_MENU_ITEM_KEYS = [
 ];
 
 export default function Settings() {
-  const { isSuperadmin, can, canAny, role } = useAuth();
+  const { isSuperadmin, isAdminOrAbove } = useAuth();
   const { t, language } = useLanguage();
 
-  // Each tab requires its own permission (task #230's granular settings
-  // split - see permissions.py's PERMISSION_GROUPS.settings) - "general"
-  // (password change) stays open to every admin since it's not
-  // permission-gated at all. "data" needs EITHER backup or API-key access
-  // since it holds both cards, each additionally self-gated below.
+  // Menu audit (3-tier hierarchy, task #26): tab visibility no longer
+  // depends on the now-removed manage_bot_settings/manage_payment_settings
+  // checkboxes (permissions.py) - "bot" is unconditionally visible because
+  // its content is internally split (superadmin: shared/global bot;
+  // everyone else: OwnBotCard, a real per-Admin/per-Seller feature - see
+  // routers/telegram_bot_settings.py's _require_admin_tier) - gating the
+  // TAB itself by an Admin-only check used to hide a Seller's own working
+  // bot settings behind a tab they could never even click into. "server"
+  // (HA replication + panel port) is 100% superadmin-only content with
+  // nothing for anyone else, so its tab is hidden outright for non-
+  // superadmins rather than showing an empty page. "general" stays
+  // unconditionally visible (password change is universal) - the
+  // payment/referral forms inside it are separately gated below.
   const ALL_SETTINGS_TABS = [
     { id: "general", label: t("settings.tabGeneral"), icon: KeyRound, visible: true },
-    { id: "bot", label: t("settings.tabBot"), icon: Bot, visible: can("manage_bot_settings") },
-    { id: "server", label: t("settings.tabServer"), icon: Server, visible: can("manage_payment_settings") },
+    { id: "bot", label: t("settings.tabBot"), icon: Bot, visible: true },
+    { id: "server", label: t("settings.tabServer"), icon: Server, visible: isSuperadmin },
     // Always visible: a superadmin sees the full-DB backup + API keys
     // cards, every non-superadmin sees their own scoped OwnBackupCard
     // unconditionally (no permission checkbox gates it) - manage_api_keys
@@ -144,6 +152,13 @@ export default function Settings() {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
 
   useEffect(() => {
+    // routers/panel_settings.py's whole router is now require_admin_or_above
+    // (task #26 - PanelSettings is one panel-wide row, editing it as a
+    // Seller could affect every other Admin's/Seller's checkout, HA, and
+    // panel port) - calling this as a Seller would just 403, so skip it
+    // entirely and leave payment/ha/port at their (unused-by-a-Seller)
+    // defaults instead of logging a console error on every page load.
+    if (!isAdminOrAbove) return;
     fetchPanelSettings().then((res) => {
       setPayment({
         payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "",
@@ -158,7 +173,8 @@ export default function Settings() {
       setNewPort(String(res.data.panel_web_port || 80));
       setSettingsLoaded(true);
     });
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdminOrAbove]);
 
   const onChangePort = async () => {
     if (
@@ -543,6 +559,8 @@ export default function Settings() {
         </div>
       </div>
 
+      {isAdminOrAbove && (
+      <>
       <div className="card mb-4">
         <div className="flex items-center gap-2 mb-4">
           <CreditCard size={18} className="text-brand-600" />
@@ -695,6 +713,8 @@ export default function Settings() {
           </div>
         </form>
       </div>
+      </>
+      )}
         </>
       )}
 
@@ -1113,7 +1133,7 @@ export default function Settings() {
       {activeTab === "data" && (
         <>
       {!isSuperadmin && <OwnBackupCard t={t} />}
-      {isSuperadmin && can("manage_backup") && (
+      {isSuperadmin && (
       <div className="card mb-4">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">

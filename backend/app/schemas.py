@@ -645,6 +645,13 @@ class DiscountCodeOut(DiscountCodeBase):
     id: int
     used_count: int = 0
     created_at: dt.datetime
+    # NULL = superadmin's own; an AdminUser id = that Admin's or Seller's
+    # own code (see models.DiscountCode.owner_admin_id). owner_admin_username
+    # is bolted on by routers/discount_codes.py for a level-2 Admin's
+    # roll-up view of their Sellers' codes, same trick as
+    # routers/packages.py's _out().
+    owner_admin_id: Optional[int] = None
+    owner_admin_username: Optional[str] = None
 
 
 class DiscountCodeRedemptionOut(BaseModel):
@@ -666,6 +673,11 @@ class DiscountValidateRequest(BaseModel):
     # brand-new customer whose account doesn't exist yet (their first
     # purchase can never collide with a past redemption anyway).
     username: Optional[str] = None
+    # Which bot is asking (see telegram_bot/panel_bridge.py's _scope()) -
+    # None for the shared/global bot. Each tier's own codes only ever
+    # redeem in THEIR OWN bot (see models.DiscountCode.owner_admin_id) -
+    # no roll-up here, unlike the panel's oversight list view.
+    owner_admin_id: Optional[int] = None
 
 
 class DiscountValidateResult(BaseModel):
@@ -679,6 +691,7 @@ class DiscountRedeemRequest(BaseModel):
     code: str
     username: str
     package_price: int = 0
+    owner_admin_id: Optional[int] = None
 
 
 class ReferralApplyRequest(BaseModel):
@@ -1064,6 +1077,9 @@ class TutorialOut(TutorialBase):
     created_at: dt.datetime
     media: List[TutorialMediaOut] = []
     software: List[TutorialSoftwareOut] = []
+    # NULL = superadmin's own; an AdminUser id = that Admin's own tutorial
+    # list (see models.Tutorial.owner_admin_id).
+    owner_admin_id: Optional[int] = None
 
 
 # ---------- Admin management (superadmin only) ----------

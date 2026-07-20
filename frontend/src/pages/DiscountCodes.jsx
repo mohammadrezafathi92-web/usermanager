@@ -6,11 +6,19 @@ import Modal from "../components/Modal.jsx";
 import { fetchDiscountCodes, createDiscountCode, updateDiscountCode, deleteDiscountCode } from "../api/client.js";
 import { formatDateTime } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
+import { useAuth } from "../context/AuthContext.jsx";
 
 const EMPTY_FORM = { code: "", kind: "percent", value: 0, max_uses: "", enabled: true, expires_at: "", note: "" };
 
 export default function DiscountCodes() {
   const { t, language } = useLanguage();
+  const { isSuperadmin, isAdminOrAbove, adminId } = useAuth();
+  // Roll-up: a level-2 Admin can see (but never edit/delete) their own
+  // Sellers' codes too - see routers/discount_codes.py's _get_viewable_code
+  // vs _get_owned_code. Superadmin's "own" scope is owner_admin_id===null;
+  // everyone else's own scope is their own adminId.
+  const isOwnRow = (c) => (isSuperadmin ? c.owner_admin_id == null : c.owner_admin_id === adminId);
+  const showOwnerColumn = isAdminOrAbove && !isSuperadmin;
   const [codes, setCodes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -104,6 +112,7 @@ export default function DiscountCodes() {
             <thead>
               <tr className="text-xs text-gray-400 border-b border-gray-50">
                 <th className="text-right font-medium px-4 py-3">{t("discountCodes.colCode")}</th>
+                {showOwnerColumn && <th className="text-right font-medium px-4 py-3">{t("discountCodes.colOwner")}</th>}
                 <th className="text-right font-medium px-4 py-3">{t("discountCodes.colValue")}</th>
                 <th className="text-right font-medium px-4 py-3">{t("discountCodes.colUsage")}</th>
                 <th className="text-right font-medium px-4 py-3">{t("discountCodes.colExpires")}</th>
@@ -120,6 +129,11 @@ export default function DiscountCodes() {
                       <Ticket size={14} className="text-brand-500" /> {c.code}
                     </span>
                   </td>
+                  {showOwnerColumn && (
+                    <td className="px-4 py-3 text-gray-500 text-xs">
+                      {isOwnRow(c) ? t("discountCodes.ownerMe") : (c.owner_admin_username || "-")}
+                    </td>
+                  )}
                   <td className="px-4 py-3 text-gray-600">
                     {c.kind === "percent" ? `${c.value}%` : `${c.value.toLocaleString()} ${t("discountCodes.toman")}`}
                   </td>
@@ -129,27 +143,35 @@ export default function DiscountCodes() {
                   </td>
                   <td className="px-4 py-3 text-gray-500">{c.expires_at ? formatDateTime(c.expires_at, language) : t("discountCodes.never")}</td>
                   <td className="px-4 py-3">
-                    <button onClick={() => toggleEnabled(c)} className={`badge ${c.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                    <button
+                      onClick={() => isOwnRow(c) && toggleEnabled(c)}
+                      disabled={!isOwnRow(c)}
+                      className={`badge ${c.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"} ${!isOwnRow(c) ? "cursor-default opacity-70" : ""}`}
+                    >
                       <Power size={12} className="inline ml-1" />
                       {c.enabled ? t("discountCodes.enabled") : t("discountCodes.disabled")}
                     </button>
                   </td>
                   <td className="px-4 py-3 text-gray-400 text-xs max-w-[12rem] truncate">{c.note || "-"}</td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-2">
-                      <button onClick={() => openEdit(c)} className="text-gray-400 hover:text-brand-600">
-                        <Pencil size={16} />
-                      </button>
-                      <button onClick={() => remove(c)} className="text-gray-400 hover:text-red-500">
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
+                    {isOwnRow(c) ? (
+                      <div className="flex items-center justify-end gap-2">
+                        <button onClick={() => openEdit(c)} className="text-gray-400 hover:text-brand-600">
+                          <Pencil size={16} />
+                        </button>
+                        <button onClick={() => remove(c)} className="text-gray-400 hover:text-red-500">
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-gray-300">{t("discountCodes.readOnly")}</span>
+                    )}
                   </td>
                 </tr>
               ))}
               {!loading && codes.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-gray-400">
+                  <td colSpan={showOwnerColumn ? 8 : 7} className="px-4 py-10 text-center text-gray-400">
                     {t("discountCodes.empty")}
                   </td>
                 </tr>

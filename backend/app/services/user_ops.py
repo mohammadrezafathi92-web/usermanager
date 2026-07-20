@@ -185,7 +185,8 @@ def apply_referral_code(db: Session, user: models.User, referral_code: str) -> t
 
 # ---------------------------------------------------- discount codes
 def validate_discount_code(
-    db: Session, code: str, package_price: int = 0, username: Optional[str] = None
+    db: Session, code: str, package_price: int = 0, username: Optional[str] = None,
+    owner_admin_id: Optional[int] = None,
 ) -> tuple[bool, str, int]:
     """Checks a promo code by its human-typed text (stored upper-cased -
     see routers/discount_codes.py's create) without recording anything -
@@ -195,8 +196,25 @@ def validate_discount_code(
     discount_amount is 0 when invalid. `username`, when given, also checks
     the one-redemption-per-customer-per-code rule (see
     models.DiscountCodeRedemption) - omitted for a brand-new customer whose
-    account doesn't exist yet."""
-    row = db.query(models.DiscountCode).filter(models.DiscountCode.code == (code or "").strip().upper()).first()
+    account doesn't exist yet.
+
+    owner_admin_id identifies WHICH bot is asking (see
+    telegram_bot/panel_bridge.py's _scope()) - each tier's own codes
+    (models.DiscountCode.owner_admin_id) only ever validate/redeem in
+    THEIR OWN bot, never a roll-up of a Seller's codes into their parent
+    Admin's bot or vice versa (that roll-up is panel-oversight-only, see
+    routers/discount_codes.py). None resolves to the superadmin's own
+    NULL-owned codes (the shared/global bot's scope)."""
+    target = db.get(models.AdminUser, owner_admin_id) if owner_admin_id is not None else None
+    code_owner_scope = target.id if (target is not None and not target.is_superadmin) else None
+    row = (
+        db.query(models.DiscountCode)
+        .filter(
+            models.DiscountCode.code == (code or "").strip().upper(),
+            models.DiscountCode.owner_admin_id == code_owner_scope,
+        )
+        .first()
+    )
     if not row:
         return False, "کد تخفیف نامعتبر است", 0
     if not row.enabled:
@@ -221,16 +239,31 @@ def validate_discount_code(
     return True, "", amount
 
 
-def redeem_discount_code(db: Session, code: str, username: str, package_price: int = 0) -> tuple[bool, str, int]:
+def redeem_discount_code(
+    db: Session, code: str, username: str, package_price: int = 0,
+    owner_admin_id: Optional[int] = None,
+) -> tuple[bool, str, int]:
     """Re-validates (a code can hit its cap/expire between the customer
     typing it and confirming payment) then, if still valid, atomically
     bumps DiscountCode.used_count and records a DiscountCodeRedemption row.
     Call this only once, at the point a purchase is actually confirmed -
-    never from the validate-as-you-type step."""
-    valid, reason, amount = validate_discount_code(db, code, package_price, username=username)
+    never from the validate-as-you-type step. owner_admin_id: see
+    validate_discount_code's docstring - same bot-owner scoping, re-applied
+    here so the code re-fetched for the actual redeem is the SAME row that
+    was just validated, not some other owner's code with the same text."""
+    valid, reason, amount = validate_discount_code(db, code, package_price, username=username, owner_admin_id=owner_admin_id)
     if not valid:
         return False, reason, 0
-    row = db.query(models.DiscountCode).filter(models.DiscountCode.code == code.strip().upper()).first()
+    target = db.get(models.AdminUser, owner_admin_id) if owner_admin_id is not None else None
+    code_owner_scope = target.id if (target is not None and not target.is_superadmin) else None
+    row = (
+        db.query(models.DiscountCode)
+        .filter(
+            models.DiscountCode.code == code.strip().upper(),
+            models.DiscountCode.owner_admin_id == code_owner_scope,
+        )
+        .first()
+    )
     row.used_count = (row.used_count or 0) + 1
     user = db.query(models.User).filter(models.User.username == username).first()
     db.add(models.DiscountCodeRedemption(

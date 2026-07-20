@@ -14,13 +14,15 @@ from ..services import hierarchy
 # Router-level dependency is just "logged in" - listing packages is
 # available to every admin (needed to pick a package while creating a
 # user, even for an admin without the "edit_packages" permission), further
-# narrowed to hierarchy-visible packages below (see Package.owner_admin_id's
-# docstring in models.py: NULL/global + your own scope). Mutating endpoints
-# split into "edit_packages" (create/update/files) and "delete_packages"
-# (package delete only) - see permissions.py - AND restricted to superadmin
-# or level-2 Admin only: level-3 Sellers can see/use packages to provision
-# users but never create/edit/delete them themselves (they only have
-# whatever their parent Admin built and shared).
+# narrowed to hierarchy-visible packages below (see
+# hierarchy.accessible_package_owner_ids's docstring: everyone, INCLUDING
+# a superadmin now, only ever sees their own scope - NULL/global packages
+# for a superadmin, their own tree for an Admin/Seller, never each other's).
+# Mutating endpoints split into "edit_packages" (create/update/files) and
+# "delete_packages" (package delete only) - see permissions.py - AND
+# restricted to superadmin or level-2 Admin only: level-3 Sellers can see/
+# use packages to provision users but never create/edit/delete them
+# themselves (they only have whatever their parent Admin built and shared).
 router = APIRouter(prefix="/api/packages", tags=["packages"], dependencies=[Depends(get_current_admin)])
 _edit = Depends(require_permission("edit_packages"))
 _delete = Depends(require_permission("delete_packages"))
@@ -55,8 +57,12 @@ def _get_scoped_package(db: Session, package_id: int, admin: models.AdminUser) -
     # `None in allowed` legitimately means "owner_admin_id IS NULL is
     # allowed" - a plain `pkg.owner_admin_id not in allowed` check works
     # fine here (unlike the SQL .in_() pitfall below) since this is a
-    # regular Python set membership test, not a query filter.
-    if allowed is not None and pkg.owner_admin_id not in allowed:
+    # regular Python set membership test, not a query filter. Also 404s a
+    # superadmin trying to reach an Admin's/Seller's own package by id
+    # directly (e.g. PUT/DELETE) now that accessible_package_owner_ids no
+    # longer returns "unrestricted" for a superadmin either - see its
+    # docstring for why.
+    if pkg.owner_admin_id not in allowed:
         raise HTTPException(404, "پکیج پیدا نشد")
     return pkg
 
@@ -89,14 +95,16 @@ def _sync_connections(db: Session, pkg: models.Package, specs: list[schemas.Pack
 @router.get("", response_model=list[schemas.PackageOut])
 def list_packages(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     allowed = hierarchy.accessible_package_owner_ids(admin)
-    q = db.query(models.Package)
-    if allowed is not None:
-        # NOT a plain `.in_(allowed)` - that set legitimately contains None
-        # (global/superadmin-owned packages), and SQL's `IN (NULL, ...)`
-        # never matches a NULL column, so every non-superadmin Admin/Seller
-        # was silently seeing an empty package list whenever they only had
-        # access to global packages (see hierarchy.owner_id_in_clause).
-        q = q.filter(hierarchy.owner_id_in_clause(models.Package.owner_admin_id, allowed))
+    # NOT a plain `.in_(allowed)` - that set legitimately contains None
+    # (global/superadmin-owned packages), and SQL's `IN (NULL, ...)` never
+    # matches a NULL column, so every non-superadmin Admin/Seller was
+    # silently seeing an empty package list whenever they only had access
+    # to global packages (see hierarchy.owner_id_in_clause). This filter now
+    # applies to a superadmin too (allowed = {None}) - see
+    # accessible_package_owner_ids's docstring for why: a superadmin only
+    # ever sees their own "global" packages here, never an Admin's/
+    # Seller's, matching every other per-tenant resource.
+    q = db.query(models.Package).filter(hierarchy.owner_id_in_clause(models.Package.owner_admin_id, allowed))
     pkgs = q.order_by(models.Package.sort_order, models.Package.id).all()
     # A Seller sees their own resale price override (if set) next to each
     # package's base price - fetched in one query rather than N+1.

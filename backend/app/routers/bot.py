@@ -103,43 +103,49 @@ def list_packages(owner_admin_id: Optional[int] = None, db: Session = Depends(ge
 
     owner_admin_id identifies WHICH bot is asking (see
     telegram_bot/panel_bridge.py's _scope() - None for the shared/global
-    bot, an AdminUser id for a per-Admin/per-Seller own bot). Two things
-    happen when it's given:
-    - the result is scoped to that account's own tree ONLY - their own
-      packages for an Admin, their parent Admin's for a Seller, NEVER the
-      superadmin's global ones (same rule as routers/packages.py's
-      list_packages/accessible_package_owner_ids) - instead of every
-      bot_enabled package panel-wide regardless of owner (which was the
-      behavior for EVERY bot, including a level-2 Admin's own one, until
-      this scoping was added - a gap, not
-      a deliberate choice).
-    - if that account is a level-3 Seller, each package's `price` is
-      replaced with their own resale override (models.PackageSellerPrice)
-      where one is set, so their bot shows/charges their own number instead
-      of their parent Admin's base price."""
+    bot, an AdminUser id for a per-Admin/per-Seller own bot). The result is
+    ALWAYS scoped to that account's own tree ONLY now (changed 2026-07-19,
+    same fix/reasoning as routers/packages.py's list_packages and
+    hierarchy.accessible_package_owner_ids's docstring): their own packages
+    for an Admin, their parent Admin's for a Seller, and - as of this fix -
+    the superadmin's own "global" (owner_admin_id IS NULL) packages for the
+    shared bot too (owner_admin_id=None case below), never anyone else's
+    tree either direction. Before this fix the shared bot showed every
+    single bot_enabled package panel-wide regardless of owner (a gap, not a
+    deliberate choice - same bug class as the panel's own Packages page
+    used to have for a superadmin).
+
+    Additionally, if the resolved account is a level-3 Seller, each
+    package's `price` is replaced with their own resale override (models.
+    PackageSellerPrice) where one is set, so their bot shows/charges their
+    own number instead of their parent Admin's base price."""
     q = (
         db.query(models.Package)
         .options(joinedload(models.Package.connections), joinedload(models.Package.files))
         .filter(models.Package.bot_enabled == True)  # noqa: E712
     )
 
+    target = db.get(models.AdminUser, owner_admin_id) if owner_admin_id is not None else None
     seller_prices: dict[int, int] = {}
-    if owner_admin_id is not None:
-        target = db.get(models.AdminUser, owner_admin_id)
-        if target is not None and not target.is_superadmin:
-            # Same source of truth as routers/packages.py's list_packages -
-            # an Admin/Seller's own bot never shows the superadmin's global
-            # packages, only their own tree's (see accessible_package_owner_ids's
-            # docstring).
-            allowed = hierarchy.accessible_package_owner_ids(target)
-            q = q.filter(hierarchy.owner_id_in_clause(models.Package.owner_admin_id, allowed))
-            if hierarchy.role(target) == hierarchy.ROLE_SELLER:
-                seller_prices = {
-                    row.package_id: row.price
-                    for row in db.query(models.PackageSellerPrice)
-                    .filter(models.PackageSellerPrice.seller_admin_id == target.id)
-                    .all()
-                }
+    if target is not None and not target.is_superadmin:
+        # An Admin's/Seller's own bot never shows the superadmin's global
+        # packages, only their own tree's (see accessible_package_owner_ids's
+        # docstring).
+        allowed = hierarchy.accessible_package_owner_ids(target)
+        q = q.filter(hierarchy.owner_id_in_clause(models.Package.owner_admin_id, allowed))
+        if hierarchy.role(target) == hierarchy.ROLE_SELLER:
+            seller_prices = {
+                row.package_id: row.price
+                for row in db.query(models.PackageSellerPrice)
+                .filter(models.PackageSellerPrice.seller_admin_id == target.id)
+                .all()
+            }
+    else:
+        # Shared/global bot (owner_admin_id was None), or an explicit
+        # owner_admin_id that resolved to the superadmin themself - only
+        # the superadmin's own NULL-owned packages, same rule as
+        # everywhere else now.
+        q = q.filter(models.Package.owner_admin_id.is_(None))
 
     pkgs = q.order_by(models.Package.sort_order, models.Package.id).all()
     for p in pkgs:

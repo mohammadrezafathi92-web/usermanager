@@ -6,6 +6,7 @@ import Modal from "../components/Modal.jsx";
 import { fetchNodes, createNode, updateNode, deleteNode, testNode, pushRadiusConfig, pushSstpConfig, pushL2tpConfig, pushIkev2Config, importPppUsers, importUserManagerUsers, import3xuiClients } from "../api/client.js";
 import { formatDateTime } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
+import { useAuth } from "../context/AuthContext.jsx";
 
 const emptyForm = {
   name: "",
@@ -52,6 +53,7 @@ const emptyForm = {
 
 export default function Nodes() {
   const { t, language } = useLanguage();
+  const { isSuperadmin, adminId } = useAuth();
   const [nodes, setNodes] = useState([]);
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -360,6 +362,11 @@ export default function Nodes() {
                     <span className={`badge ${n.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
                       {n.enabled ? t("status.active") : t("status.disabled")}
                     </span>
+                    {!isSuperadmin && (
+                      <span className={`badge ${n.owner_admin_id === adminId ? "bg-brand-50 text-brand-600" : "bg-gray-100 text-gray-500"}`}>
+                        {n.owner_admin_id === adminId ? t("nodes.myOwnServer") : t("nodes.grantedServer")}
+                      </span>
+                    )}
                   </div>
                   <div className="text-xs text-gray-400">{n.type === "mikrotik" ? t("nodes.mikrotikType") : t("nodes.xrayType")}</div>
                 </div>
@@ -391,9 +398,11 @@ export default function Nodes() {
               <button className="btn-secondary" onClick={() => openEdit(n)}>
                 <Pencil size={14} />
               </button>
-              <button className="btn-danger" onClick={() => onDelete(n.id)}>
-                <Trash2 size={14} />
-              </button>
+              {(isSuperadmin || n.owner_admin_id === adminId) && (
+                <button className="btn-danger" onClick={() => onDelete(n.id)}>
+                  <Trash2 size={14} />
+                </button>
+              )}
             </div>
             {testResult[n.id] && testResult[n.id] !== "loading" && (
               <div className={`flex items-center gap-1 text-xs mt-2 ${testResult[n.id] === "ok" ? "text-emerald-600" : "text-red-500"}`}>

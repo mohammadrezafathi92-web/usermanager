@@ -96,12 +96,16 @@ def _get_scoped_package(db: Session, admin: models.AdminUser, package_id: int) -
     Seller/Admin could provision a user off another Admin's private package
     just by guessing its id, bypassing both the cooperation-price wallet
     charge that package's real owner set and the node-access boundary its
-    bundled connections rely on."""
+    bundled connections rely on. Also applies to a superadmin now
+    (accessible_package_owner_ids no longer returns "unrestricted" for
+    them either) - a superadmin creating a user directly can only pick
+    their own "global" packages, never reach into an Admin's/Seller's tree
+    by package id, matching this session's full package isolation fix."""
     package = db.get(models.Package, package_id)
     if not package:
         raise HTTPException(400, "پکیج پیدا نشد")
     allowed = hierarchy.accessible_package_owner_ids(admin)
-    if allowed is not None and package.owner_admin_id not in allowed:
+    if package.owner_admin_id not in allowed:
         raise HTTPException(400, "پکیج پیدا نشد")
     return package
 

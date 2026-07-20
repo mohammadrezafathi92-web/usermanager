@@ -292,6 +292,23 @@ class Node(Base):
     type = Column(Enum(NodeType), nullable=False)
     enabled = Column(Boolean, default=True)
 
+    # Which level-2 Admin added this server themselves - NULL means a
+    # superadmin created it (every node that existed before this column, or
+    # one a superadmin makes directly). Added so an Admin can plug in their
+    # OWN server (their own IP/SSH credentials) without needing a
+    # superadmin to create it and then grant access via AdminNodeAccess -
+    # confirmed with the panel owner ("کامل - افزودن سرور با IP/SSH خودش").
+    # A superadmin still sees/manages EVERY node regardless of owner
+    # (accessible_node_ids stays unrestricted for them - unlike Package/
+    # Tutorial/DiscountCode, node infrastructure oversight was deliberately
+    # NOT isolated, see hierarchy.accessible_node_ids's docstring) - only
+    # DELETE is owner-restricted (an Admin can delete their own node, never
+    # one a superadmin granted them access to - see routers/nodes.py's
+    # delete_node). A Seller never owns or directly accesses a node at all,
+    # same as before this column existed.
+    owner_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True, index=True)
+    owner_admin = relationship("AdminUser", foreign_keys=[owner_admin_id])
+
     # --- MikroTik connection fields ---
     mt_host = Column(String(255), nullable=True)
     mt_port = Column(Integer, nullable=True, default=8728)  # plain API port
@@ -829,14 +846,20 @@ class Package(Base):
 
     # Which level-2 Admin built this package - NULL means it was created by
     # a superadmin (every package that existed before the 3-tier hierarchy
-    # feature, or one a superadmin makes directly), visible to everyone.
-    # A non-NULL owner's package is only visible to: that same Admin, their
-    # own level-3 Sellers (read-only, to provision users - they can't create
-    # packages themselves), and superadmins (full oversight). Enforced in
-    # routers/packages.py, not at the DB layer. PackageConnection rows on an
-    # owned package may only reference nodes the owning Admin has been
-    # granted via AdminNodeAccess - checked at creation time, not a DB
-    # constraint (SQLite can't express a cross-table conditional FK).
+    # feature, or one a superadmin makes directly). Despite the name
+    # "global" some earlier code/comments used for NULL-owned packages,
+    # these are NOT actually visible to everyone: every tier - including a
+    # superadmin - only ever sees their OWN scope (see hierarchy.
+    # accessible_package_owner_ids's docstring for the full history/
+    # reasoning behind this two-way isolation). A non-NULL owner's package
+    # is visible only to: that same Admin, and their own level-3 Sellers
+    # (read-only, to provision users - they can't create packages
+    # themselves) - never to the superadmin, never to a different Admin's
+    # tree. Enforced in routers/packages.py, not at the DB layer.
+    # PackageConnection rows on an owned package may only reference nodes
+    # the owning Admin has been granted via AdminNodeAccess - checked at
+    # creation time, not a DB constraint (SQLite can't express a
+    # cross-table conditional FK).
     owner_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True, index=True)
     owner_admin = relationship("AdminUser", foreign_keys=[owner_admin_id])
 
@@ -960,7 +983,22 @@ class DiscountCode(Base):
     across every customer (NULL = unlimited); per-customer reuse is
     prevented separately by DiscountCodeRedemption (one redemption row per
     user per code, checked before accepting a code a second time from the
-    same account)."""
+    same account).
+
+    Which level-2 Admin (or level-3 Seller) made this code - NULL means a
+    superadmin made it. Added (2026-07-19) so every tier can manage their
+    OWN codes, used only in THEIR OWN bot at checkout - confirmed with the
+    panel owner. A level-2 Admin additionally gets a READ-ONLY roll-up view
+    of their own Sellers' codes in the panel (oversight only, they can't
+    edit/delete a Seller's code - see routers/discount_codes.py); a
+    superadmin does NOT roll up to see Admins'/Sellers' codes at all, same
+    isolation as Package/Tutorial. `code` stays globally unique (not
+    per-owner) on purpose - dropping that would need migrating away the
+    existing UNIQUE index on an already-deployed column, for a feature
+    (reusing the same code text across two unrelated owners) nobody asked
+    for; the only actual requirement was WHO can manage/see which codes and
+    WHICH owner's codes a given bot honors at checkout, both handled purely
+    by owner_admin_id."""
 
     __tablename__ = "discount_codes"
 
@@ -974,6 +1012,8 @@ class DiscountCode(Base):
     expires_at = Column(DateTime, nullable=True)  # NULL = never expires
     note = Column(String(255), nullable=True)  # admin-only label, e.g. "کمپین نوروز"
     created_at = Column(DateTime, default=now)
+    owner_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True, index=True)
+    owner_admin = relationship("AdminUser", foreign_keys=[owner_admin_id])
 
     redemptions = relationship("DiscountCodeRedemption", back_populates="code", cascade="all, delete-orphan")
 
@@ -1186,6 +1226,20 @@ class Tutorial(Base):
     enabled = Column(Boolean, default=True)
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime, default=now)
+
+    # Which level-2 Admin authored this tutorial - NULL means a superadmin
+    # made it. Added (2026-07-19) because tutorials used to be one single
+    # panel-wide list shared by literally everyone - a level-2 Admin's own
+    # bot showed the exact same content as every other Admin's and the
+    # superadmin's. Confirmed with the panel owner that each superadmin/
+    # Admin should have a FULLY SEPARATE tutorial list ("لیست شخصی خودش"),
+    # shown only in their own bot - a level-3 Seller has no tutorials of
+    # their own (Sellers never author content) and instead sees their
+    # PARENT Admin's list, read-only (see routers/tutorials.py's
+    # list_tutorials and hierarchy.accessible_tutorial_owner_ids). Same
+    # NULL-means-superadmin convention as Package.owner_admin_id.
+    owner_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True, index=True)
+    owner_admin = relationship("AdminUser", foreign_keys=[owner_admin_id])
 
     media = relationship(
         "TutorialMedia", back_populates="tutorial", cascade="all, delete-orphan",

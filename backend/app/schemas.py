@@ -89,6 +89,9 @@ class NodeOut(NodeBase):
     id: int
     last_seen: Optional[dt.datetime] = None
     last_error: Optional[str] = None
+    # NULL = superadmin-created/global infrastructure; an AdminUser id =
+    # that level-2 Admin's own server (see models.Node.owner_admin_id).
+    owner_admin_id: Optional[int] = None
 
 
 # ---------- RADIUS auto-provisioning ----------

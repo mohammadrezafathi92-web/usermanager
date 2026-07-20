@@ -45,11 +45,20 @@ def _resolve_panel_host(payload_host: Optional[str]) -> str:
 # RADIUS+protocol pushes on a node already in scope) and "delete_nodes" -
 # see permissions.py's docstring on why this used to be one broad
 # "manage_nodes" and was split into granular per-action permissions.
-# create_node/delete_node are superadmin-only regardless of permissions -
-# nodes are real server infrastructure a superadmin creates/configures and
-# then GRANTS to specific level-2 Admins (see services/hierarchy.py,
-# routers/admins.py's set_admin_nodes) - an Admin never creates/removes the
-# infrastructure itself, only uses whatever's been granted to them.
+#
+# create_node: a superadmin can always create a node (owner_admin_id=NULL,
+# infrastructure they then optionally GRANT to specific level-2 Admins via
+# AdminNodeAccess - see routers/admins.py's set_admin_nodes). A level-2
+# Admin can ALSO create a node now (owner_admin_id=their own id) - their
+# OWN server, added with their own IP/SSH credentials, confirmed with the
+# panel owner ("کامل - افزودن سرور با IP/SSH خودش"). A level-3 Seller can
+# never create one - they only ever work through their parent Admin's
+# already-built Packages.
+# delete_node: a superadmin can delete any node; a level-2 Admin can only
+# delete a node THEY OWN (Node.owner_admin_id == their id) - never a
+# superadmin-granted one, since deleting shared infrastructure out from
+# under other Admins/customers using it isn't something an Admin should be
+# able to do unilaterally (see delete_node below).
 router = APIRouter(prefix="/api/nodes", tags=["nodes"], dependencies=[Depends(get_current_admin)])
 _edit = Depends(require_permission("edit_nodes"))
 _delete = Depends(require_permission("delete_nodes"))
@@ -67,9 +76,15 @@ def list_nodes(db: Session = Depends(get_db), admin: models.AdminUser = Depends(
 
 @router.post("", response_model=schemas.NodeOut)
 def create_node(payload: schemas.NodeCreate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
-    if not admin.is_superadmin:
-        raise HTTPException(403, "فقط ادمین اصلی می‌تواند سرور جدید بسازد")
-    node = models.Node(**payload.model_dump())
+    if hierarchy.is_seller(admin):
+        raise HTTPException(403, "فروشنده‌ها اجازه ساخت سرور را ندارند")
+    data = payload.model_dump()
+    # owner_admin_id is always derived from who's creating it, never taken
+    # from the payload - a superadmin's nodes stay global (NULL, still
+    # grantable to any Admin via AdminNodeAccess), a level-2 Admin's own
+    # node is scoped to themself (see hierarchy.accessible_node_ids).
+    data["owner_admin_id"] = None if admin.is_superadmin else admin.id
+    node = models.Node(**data)
     db.add(node)
     db.commit()
     db.refresh(node)
@@ -93,11 +108,15 @@ def update_node(node_id: int, payload: schemas.NodeUpdate, db: Session = Depends
 
 @router.delete("/{node_id}")
 def delete_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
-    if not admin.is_superadmin:
-        raise HTTPException(403, "فقط ادمین اصلی می‌تواند سرور را حذف کند")
     node = db.get(models.Node, node_id)
     if not node:
         raise HTTPException(404, "نود پیدا نشد")
+    if not admin.is_superadmin and node.owner_admin_id != admin.id:
+        # Covers both "out of scope entirely" (never even granted this
+        # node) and "granted but not owned" (a superadmin-owned node this
+        # Admin can USE, per AdminNodeAccess, but never delete) - same
+        # error either way, no need to distinguish for the caller.
+        raise HTTPException(403, "فقط سازنده این سرور یا ادمین اصلی می‌تواند آن را حذف کند")
     if node.connections:
         raise HTTPException(400, "ابتدا کانکشن‌های متصل به این نود را حذف کنید")
     db.delete(node)

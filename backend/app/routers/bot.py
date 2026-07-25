@@ -204,15 +204,30 @@ def get_customer_menu_config(db: Session = Depends(get_db)):
 
 
 @router.get("/tutorials", response_model=list[schemas.TutorialOut])
-def list_tutorials(db: Session = Depends(get_db)):
+def list_tutorials(owner_admin_id: Optional[int] = None, db: Session = Depends(get_db)):
     """Enabled tutorial entries, shown to customers from the bot's "📚
     آموزش" menu. Eager-loads `media` for the same reason list_packages
     eager-loads `connections`/`files` - the built-in bot converts this to a
-    schema after its DB session has already closed."""
+    schema after its DB session has already closed.
+
+    owner_admin_id identifies WHICH bot is asking (see
+    telegram_bot/panel_bridge.py's _scope() - same shape as list_packages/
+    get_payment_info above). Each superadmin/Admin has their own fully
+    separate tutorial list now (models.Tutorial.owner_admin_id) - a
+    Seller's own bot shows their PARENT Admin's list (see
+    hierarchy.accessible_tutorial_owner_ids); the shared/global bot (or any
+    owner_admin_id that resolves to the superadmin) shows only the
+    superadmin's own NULL-owned tutorials."""
+    target = db.get(models.AdminUser, owner_admin_id) if owner_admin_id is not None else None
+    if target is not None and not target.is_superadmin:
+        allowed = hierarchy.accessible_tutorial_owner_ids(target)
+        owner_filter = hierarchy.owner_id_in_clause(models.Tutorial.owner_admin_id, allowed)
+    else:
+        owner_filter = models.Tutorial.owner_admin_id.is_(None)
     return (
         db.query(models.Tutorial)
         .options(joinedload(models.Tutorial.media), joinedload(models.Tutorial.software))
-        .filter(models.Tutorial.enabled == True)  # noqa: E712
+        .filter(models.Tutorial.enabled == True, owner_filter)  # noqa: E712
         .order_by(models.Tutorial.sort_order, models.Tutorial.id)
         .all()
     )
@@ -344,7 +359,8 @@ def validate_discount(payload: schemas.DiscountValidateRequest, db: Session = De
     an account, also catches "you already used this code" before they get
     to the final confirm screen."""
     valid, reason, amount = user_ops.validate_discount_code(
-        db, payload.code, payload.package_price, username=payload.username
+        db, payload.code, payload.package_price, username=payload.username,
+        owner_admin_id=payload.owner_admin_id,
     )
     return schemas.DiscountValidateResult(
         valid=valid,
@@ -360,7 +376,10 @@ def redeem_discount(payload: schemas.DiscountRedeemRequest, db: Session = Depend
     atomically consumes the code (bumps used_count, records a
     DiscountCodeRedemption row). See services/user_ops.py's
     redeem_discount_code."""
-    ok, reason, amount = user_ops.redeem_discount_code(db, payload.code, payload.username, payload.package_price)
+    ok, reason, amount = user_ops.redeem_discount_code(
+        db, payload.code, payload.username, payload.package_price,
+        owner_admin_id=payload.owner_admin_id,
+    )
     return schemas.DiscountValidateResult(
         valid=ok,
         reason=reason or None,

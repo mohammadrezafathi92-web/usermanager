@@ -141,8 +141,12 @@ class PanelBridge:
         return row.get("disabled_items", [])
 
     # -------------------------------------------------------- tutorials
-    async def list_tutorials(self) -> list[dict]:
-        tutorials = await _call(bot_router.list_tutorials)
+    async def list_tutorials(self, owner_admin_id: Optional[int] = None) -> list[dict]:
+        """Same owner-scoping shape as list_packages/get_payment_info above
+        - each superadmin/Admin's own bot shows their own separate tutorial
+        list now (see routers/bot.py's list_tutorials and models.Tutorial.
+        owner_admin_id)."""
+        tutorials = await _call(bot_router.list_tutorials, owner_admin_id=_scope(owner_admin_id))
         return _dump([schemas.TutorialOut.model_validate(t) for t in tutorials])
 
     async def get_tutorial_media(self, tutorial_id: int) -> list[dict]:
@@ -319,15 +323,17 @@ class PanelBridge:
         payload = schemas.ReferralApplyRequest(username=username, referral_code=referral_code)
         return _dump(await _call(bot_router.apply_referral, payload))
 
-    async def validate_discount(self, code: str, package_price: int = 0, username: Optional[str] = None) -> dict:
-        """Check-as-you-type - does not consume the code."""
-        payload = schemas.DiscountValidateRequest(code=code, package_price=package_price, username=username)
+    async def validate_discount(self, code: str, package_price: int = 0, username: Optional[str] = None, owner_admin_id: Optional[int] = None) -> dict:
+        """Check-as-you-type - does not consume the code. owner_admin_id:
+        see _scope() - defaults to the calling bot's own scope, so each
+        dedicated bot only ever validates against its own owner's codes."""
+        payload = schemas.DiscountValidateRequest(code=code, package_price=package_price, username=username, owner_admin_id=_scope(owner_admin_id))
         return _dump(await _call(bot_router.validate_discount, payload))
 
-    async def redeem_discount(self, code: str, username: str, package_price: int = 0) -> dict:
+    async def redeem_discount(self, code: str, username: str, package_price: int = 0, owner_admin_id: Optional[int] = None) -> dict:
         """Called once at final purchase confirmation - actually consumes
         the code (bumps used_count, records a redemption row)."""
-        payload = schemas.DiscountRedeemRequest(code=code, username=username, package_price=package_price)
+        payload = schemas.DiscountRedeemRequest(code=code, username=username, package_price=package_price, owner_admin_id=_scope(owner_admin_id))
         return _dump(await _call(bot_router.redeem_discount, payload))
 
 

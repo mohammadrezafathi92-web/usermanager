@@ -8,19 +8,21 @@ import { useLanguage } from "../context/LanguageContext.jsx";
 // these is enough" (see AuthContext.jsx's canAny). "__admin_or_above__"
 // means superadmin or level-2 Admin only - a level-3 Seller never sees it.
 //
-// Menu audit (3-tier hierarchy): Nodes and Discount codes are now
-// structurally Admin-tier-only on the backend too (see routers/nodes.py's
-// hierarchy.accessible_node_ids being unconditionally empty for a Seller,
-// and routers/discount_codes.py's router-level require_admin_or_above) -
-// so their sidebar entries are gated the same way instead of a permission
-// checkbox that could never actually grant a Seller anything real.
-// Packages and Settings are real, useful, and already internally
-// Seller-aware pages (Packages.jsx hides create/edit/delete and shows the
-// Seller's own resale-price editor instead; Settings.jsx hides the
+// Menu audit (3-tier hierarchy): Nodes stays structurally Admin-tier-only
+// on the backend too (see routers/nodes.py's create_node/accessible_node_ids
+// - a Seller can never own or be granted a node) - so its sidebar entry is
+// gated accordingly instead of a permission checkbox that could never
+// actually grant a Seller anything real.
+// Packages, Discount codes, and Settings are real, useful, and already
+// internally Seller-aware pages (Packages.jsx hides create/edit/delete and
+// shows the Seller's own resale-price editor instead; DiscountCodes.jsx
+// lets a Seller manage their OWN codes and hides edit/delete on anything
+// they don't own - see routers/discount_codes.py's per-tier ownership,
+// confirmed with the panel owner 2026-07-19; Settings.jsx hides the
 // superadmin-only/Admin-only cards and shows only password + own-bot +
-// own-backup for a Seller) - so their links are unconditionally visible
-// and each page does its own finer-grained gating internally, exactly
-// like Users/Dashboard already did.
+// own-backup + own-payment for a Seller) - so their links are
+// unconditionally visible and each page does its own finer-grained gating
+// internally, exactly like Users/Dashboard already did.
 const allLinks = [
   { to: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, end: true, perm: null },
   { to: "/users", labelKey: "nav.users", icon: Users, perm: null },
@@ -28,7 +30,7 @@ const allLinks = [
   { to: "/packages", labelKey: "nav.packages", icon: Package, perm: null },
   { to: "/tutorials", labelKey: "nav.tutorials", icon: GraduationCap, perm: "view_tutorials" },
   { to: "/radius-logs", labelKey: "nav.radiusLogs", icon: ShieldAlert, perm: null },
-  { to: "/discount-codes", labelKey: "nav.discountCodes", icon: Ticket, perm: "__admin_or_above__" },
+  { to: "/discount-codes", labelKey: "nav.discountCodes", icon: Ticket, perm: null },
   { to: "/settings", labelKey: "nav.settings", icon: Settings, perm: null },
   // Superadmins manage level-2 Admins here; level-2 Admins ALSO see this
   // page (to manage their OWN level-3 Sellers - see routers/admins.py's

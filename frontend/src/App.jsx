@@ -132,9 +132,9 @@ export default function App() {
       <Route
         path="/discount-codes"
         element={
-          <AdminOrAboveOnly>
+          <Protected>
             <DiscountCodes />
-          </AdminOrAboveOnly>
+          </Protected>
         }
       />
       <Route path="/a/:slug" element={<Navigate to="/login" replace />} />

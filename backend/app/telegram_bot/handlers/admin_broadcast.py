@@ -21,8 +21,16 @@ from ..keyboards import cancel_kb, home_kb
 from ..states import AdminBroadcastStates
 
 router = Router(name="admin_broadcast")
-router.message.filter(lambda m: config.is_admin(m.from_user.id))
-router.callback_query.filter(lambda c: config.is_admin(c.from_user.id))
+async def _is_admin_filter(event) -> bool:
+    """Async on purpose - NOT a plain lambda. See git history / chat log for
+    why: aiogram offloads sync filter callables to a background executor
+    thread, and config.RuntimeConfig is a threading.local, so a sync lambda
+    referencing config.is_admin() silently always returns False there.
+    Matches admin_users.py's _admin_scope_filter, which already had to be
+    async for the same reason."""
+    return config.is_admin(event.from_user.id)
+router.message.filter(_is_admin_filter)
+router.callback_query.filter(_is_admin_filter)
 
 SEND_DELAY_SECONDS = 0.05  # ~20 messages/sec - well under Telegram's bot rate limits
 

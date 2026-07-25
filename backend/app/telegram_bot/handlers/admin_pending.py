@@ -21,8 +21,16 @@ router = Router(name="admin_pending")
 # but this makes the "customers can never reach admin actions in this
 # router" guarantee explicit and structural instead of relying on every
 # handler remembering its own check.
-router.message.filter(lambda m: config.is_admin(m.from_user.id))
-router.callback_query.filter(lambda c: config.is_admin(c.from_user.id))
+async def _is_admin_filter(event) -> bool:
+    """Async on purpose - NOT a plain lambda. See git history / chat log for
+    why: aiogram offloads sync filter callables to a background executor
+    thread, and config.RuntimeConfig is a threading.local, so a sync lambda
+    referencing config.is_admin() silently always returns False there.
+    Matches admin_users.py's _admin_scope_filter, which already had to be
+    async for the same reason."""
+    return config.is_admin(event.from_user.id)
+router.message.filter(_is_admin_filter)
+router.callback_query.filter(_is_admin_filter)
 
 
 def _pending_summary(p: dict) -> str:
@@ -55,7 +63,7 @@ def _pending_summary(p: dict) -> str:
     return "\n".join(lines)
 
 
-@router.callback_query(MenuCB.filter(F.action == "admin_pending"), lambda c: config.is_admin(c.from_user.id))
+@router.callback_query(MenuCB.filter(F.action == "admin_pending"), _is_admin_filter)
 async def cb_admin_pending(call: CallbackQuery) -> None:
     items = storage.list_pending()
     if not items:

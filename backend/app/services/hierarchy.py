@@ -166,6 +166,16 @@ def accessible_package_owner_ids(admin: models.AdminUser) -> set[int | None]:
     global packages once, see git history)."""
     if role(admin) == ROLE_SUPERADMIN:
         return {None}
+    if role(admin) == ROLE_SELLER and admin.parent_admin is not None and admin.parent_admin.is_superadmin:
+        # Seller created directly under the superadmin (parent_admin_id
+        # points straight at the superadmin's own row) - parent_admin_scope_id
+        # would return the superadmin's REAL AdminUser.id here, but every
+        # package the superadmin owns is stored with owner_admin_id=NULL
+        # (see create_package), never their real id. Translate to the
+        # marker packages actually use, so this Seller can see (never
+        # edit - _require_package_manager still blocks that regardless)
+        # what their superadmin parent built.
+        return {None}
     return {parent_admin_scope_id(admin)}
 
 
@@ -178,6 +188,11 @@ def accessible_tutorial_owner_ids(admin: models.AdminUser) -> set[int | None]:
     this only ever needs to resolve to their PARENT Admin's scope - same
     parent_admin_scope_id() used for packages."""
     if role(admin) == ROLE_SUPERADMIN:
+        return {None}
+    if role(admin) == ROLE_SELLER and admin.parent_admin is not None and admin.parent_admin.is_superadmin:
+        # Same translation as accessible_package_owner_ids above, for the
+        # same reason - Tutorial.owner_admin_id follows the identical
+        # NULL-means-superadmin convention.
         return {None}
     return {parent_admin_scope_id(admin)}
 

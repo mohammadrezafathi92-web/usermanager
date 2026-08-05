@@ -56,8 +56,19 @@ class RemoteBridge:
         return await self._call("GET", "/nodes")
 
     # ------------------------------------------------------------ packages
-    async def list_packages(self) -> list[dict]:
-        return await self._call("GET", "/packages")
+    async def list_packages(self, owner_admin_id: Optional[int] = None) -> list[dict]:
+        """owner_admin_id: kept in parity with panel_bridge.PanelBridge's
+        version - WITHOUT this, a per-admin/per-seller dedicated bot (see
+        AdminUser.own_bot_token) deployed to a second/remote server would
+        silently lose its tenant scoping and see every admin's packages
+        panel-wide, since (unlike PanelBridge) this class has no _scope()
+        of its own to fall back on - the caller must pass it explicitly.
+        Not reachable through today's shipped "نصب ربات روی سرور دیگر" UI
+        (which only ever deploys the shared/global bot, owner_admin_id
+        always None there), but kept correct so extending remote deploy to
+        per-admin bots doesn't silently reopen this gap."""
+        params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
+        return await self._call("GET", "/packages", params=params)
 
     async def get_package_files(self, package_id: int) -> list[dict]:
         """Filename + raw bytes for each file attached to the package -
@@ -85,16 +96,29 @@ class RemoteBridge:
             return None
         return resp.content
 
-    async def get_payment_info(self) -> dict:
-        return await self._call("GET", "/payment-info")
+    async def get_payment_info(self, owner_admin_id: Optional[int] = None) -> dict:
+        params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
+        return await self._call("GET", "/payment-info", params=params)
 
     async def get_customer_menu_disabled_items(self) -> list[str]:
         row = await self._call("GET", "/customer-menu-config")
         return (row or {}).get("disabled_items", [])
 
+    async def get_customer_bot_enabled(self) -> bool:
+        """See panel_bridge.PanelBridge's version of this method for the
+        full story - this is the ONE way a bot running on a second server
+        actually finds out about Settings > ربات > «دسترسی مشتری‌ها به
+        ربات فعال باشد» at all, since it has no local BotSettings row of
+        its own to read."""
+        row = await self._call("GET", "/customer-menu-config")
+        return bool((row or {}).get("customer_bot_enabled", True))
+
     # -------------------------------------------------------- tutorials
-    async def list_tutorials(self) -> list[dict]:
-        return await self._call("GET", "/tutorials")
+    async def list_tutorials(self, owner_admin_id: Optional[int] = None) -> list[dict]:
+        """owner_admin_id: see list_packages's docstring above - same
+        parity rationale."""
+        params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
+        return await self._call("GET", "/tutorials", params=params)
 
     async def get_tutorial_media(self, tutorial_id: int) -> list[dict]:
         tutorials = await self.list_tutorials()
@@ -237,10 +261,14 @@ class RemoteBridge:
         payload = {"username": username, "referral_code": referral_code}
         return await self._call("POST", "/referral/apply", json=payload)
 
-    async def validate_discount(self, code: str, package_price: int = 0, username: Optional[str] = None) -> dict:
-        payload = {"code": code, "package_price": package_price, "username": username}
+    async def validate_discount(
+        self, code: str, package_price: int = 0, username: Optional[str] = None, owner_admin_id: Optional[int] = None,
+    ) -> dict:
+        payload = {"code": code, "package_price": package_price, "username": username, "owner_admin_id": owner_admin_id}
         return await self._call("POST", "/discount/validate", json=payload)
 
-    async def redeem_discount(self, code: str, username: str, package_price: int = 0) -> dict:
-        payload = {"code": code, "username": username, "package_price": package_price}
+    async def redeem_discount(
+        self, code: str, username: str, package_price: int = 0, owner_admin_id: Optional[int] = None,
+    ) -> dict:
+        payload = {"code": code, "username": username, "package_price": package_price, "owner_admin_id": owner_admin_id}
         return await self._call("POST", "/discount/redeem", json=payload)

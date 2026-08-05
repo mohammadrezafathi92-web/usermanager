@@ -257,12 +257,28 @@ def send_backup_to_telegram(path: Path) -> tuple[int, int]:
     admin_ids = _admin_telegram_ids()
     if not admin_ids:
         return 0, 0
+
+    size_mb = path.stat().st_size / (1024 ** 2)
+    if size_mb > 50:
+        # Telegram's Bot API hard-caps uploads sent BY a bot at 50MB - past
+        # that, every send below fails the exact same way regardless of
+        # token/proxy health, and (before send_document_sync started
+        # logging its real exception) looked identical to a broken proxy.
+        # Worth calling out explicitly since KEEP_LAST/rotation only limits
+        # backup COUNT, not the live database's own size, which only grows.
+        logger.warning(
+            "backup file %s is %.1fMB - over Telegram's 50MB bot-upload limit, every send below will fail",
+            path.name, size_mb,
+        )
+
     caption = f"💾 بک‌آپ دیتابیس — {dt.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
     sent = 0
     for chat_id in admin_ids:
         ok = telegram_bot_runner.send_document_sync(chat_id, str(path), caption=caption)
         if ok:
             sent += 1
+        else:
+            logger.warning("failed to send backup %s to admin chat %s - see send_document_sync's own log line above for the reason", path.name, chat_id)
     return sent, len(admin_ids)
 
 

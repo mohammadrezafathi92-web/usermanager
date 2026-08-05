@@ -88,6 +88,7 @@ def deploy(payload: schemas.RemoteBotDeployRequest, db: Session = Depends(get_db
             bot_token=row.bot_token,
             admin_ids=row.admin_ids or "",
             approval_chat_ids=row.approval_chat_ids or "",
+            telegram_api_proxy_url=row.telegram_api_proxy_url or "",
         )
     except remote_deploy.DeployError as exc:
         db.rollback()
@@ -132,6 +133,18 @@ def stop(payload: schemas.RemoteBotStopRequest, db: Session = Depends(get_db)):
         )
     except remote_deploy.DeployError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+    # The dedicated X-API-Key deploy() minted for this remote instance (see
+    # its own comment above) has no further reason to exist once that
+    # instance is stopped - it used to stay enabled forever, a live,
+    # unrevoked credential to this panel's full /api/bot/* surface sitting
+    # unused on a server that's no longer even running the bot. Disabling
+    # it here mirrors deploy()'s own "disable the old one" behavior instead
+    # of only ever doing it on the NEXT deploy.
+    if row.remote_api_key_id:
+        old_key = db.get(models.ApiKey, row.remote_api_key_id)
+        if old_key:
+            old_key.enabled = False
 
     row.remote_mode = False
     row.remote_status = "متوقف شد و به سرور اصلی بازگشت."

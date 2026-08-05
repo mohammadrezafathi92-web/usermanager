@@ -308,6 +308,24 @@ def reparent_admin(
         db.query(models.AdminUser).filter(models.AdminUser.parent_admin_id == admin.id).update(
             {"parent_admin_id": None}, synchronize_session=False
         )
+        # This account is being demoted into a level-3 Seller, who can never
+        # own Packages/Tutorials themselves (see routers/packages.py's
+        # _require_package_manager) - without reassigning its own
+        # Package/Tutorial rows, they'd keep owner_admin_id == admin.id,
+        # but accessible_package_owner_ids/accessible_tutorial_owner_ids for
+        # a Seller now resolves to their PARENT's id instead - so this
+        # admin would instantly lose visibility into packages/tutorials
+        # they themselves built, and nobody else (not even the new parent)
+        # could see them either. Reassigning to the new parent keeps them
+        # usable by exactly the people who should now have them: this
+        # demoted Seller (via their parent's scope) and their new parent
+        # Admin's whole tree.
+        db.query(models.Package).filter(models.Package.owner_admin_id == admin.id).update(
+            {"owner_admin_id": new_parent_id}, synchronize_session=False
+        )
+        db.query(models.Tutorial).filter(models.Tutorial.owner_admin_id == admin.id).update(
+            {"owner_admin_id": new_parent_id}, synchronize_session=False
+        )
 
     admin.parent_admin_id = new_parent_id
     db.commit()
@@ -602,6 +620,27 @@ def delete_admin(
     # service is silently destroyed just because the admin managing them
     # was removed. A superadmin can reassign them via the user edit form.
     db.query(models.User).filter(models.User.owner_admin_id == admin.id).update(
+        {"owner_admin_id": None}, synchronize_session=False
+    )
+    # Packages/Tutorials this admin owned need the SAME "don't destroy"
+    # treatment as Users above - without this, they silently become
+    # invisible to EVERYONE (not even the superadmin, unlike an orphaned
+    # User) once admin.id no longer belongs to any account:
+    # hierarchy.accessible_package_owner_ids/accessible_tutorial_owner_ids
+    # only ever match an EXACT owner_admin_id (a real admin's id, or None
+    # for the superadmin's own global scope) - a dangling id left behind
+    # by this delete matches nobody's scope at all. Unlike Users, Package/
+    # Tutorial has no separate "orphaned, superadmin-visible" state distinct
+    # from "owned by the superadmin" - NULL already means exactly that (see
+    # routers/packages.py's create_package: `None if admin.is_superadmin
+    # else ...`), so falling back to NULL here reuses that same convention
+    # instead of inventing a new one: the superadmin regains visibility and
+    # can keep or reassign them by hand, same as they can for orphaned
+    # Users.
+    db.query(models.Package).filter(models.Package.owner_admin_id == admin.id).update(
+        {"owner_admin_id": None}, synchronize_session=False
+    )
+    db.query(models.Tutorial).filter(models.Tutorial.owner_admin_id == admin.id).update(
         {"owner_admin_id": None}, synchronize_session=False
     )
     db.delete(admin)

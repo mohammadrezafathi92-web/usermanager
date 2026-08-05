@@ -205,6 +205,19 @@ export default function Users() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusFilter, onlineOnly]);
 
+  // A checkbox selection made under one filter/search silently kept "alive"
+  // under a completely different one (the underlying Set of ids never got
+  // cleared) - a bulk action taken after narrowing the filter could then
+  // silently include users no longer even visible on screen. Page changes
+  // are intentionally NOT in this list - paging through results while
+  // building up a multi-page selection is the whole point of the checkboxes
+  // (selectAllMatching covers the "everyone across all pages" case
+  // separately), only an actual filter/search change should reset it.
+  useEffect(() => {
+    setSelected(new Set());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, statusFilter, onlineOnly, ownerAdminFilter, packageFilter]);
+
   const toggleSortDir = () => setSortDir((d) => (d === "asc" ? "desc" : "asc"));
 
   const clearFilters = () => {
@@ -252,10 +265,35 @@ export default function Users() {
     }
   };
 
+  // Dedicated open-handler, matching every other modal in this file
+  // (openBulkCreate/openBulkEdit) - without it, "کاربر جدید" was the one
+  // modal left showing whatever was typed (or errored on) the previous
+  // time it was opened, including `owner_admin_id` - reopening it after a
+  // cancelled/failed attempt targeting one admin/seller could silently
+  // create the next new user under the wrong owner.
+  const openCreate = () => {
+    // Non-superadmins can't create "بدون پکیج" (see the form below) so the
+    // select always needs something valid pre-picked, same as the
+    // packages-just-loaded effect above does on first mount.
+    const defaultPackageId = !isSuperadmin && packages.length > 0 ? packages[0].id : "";
+    setForm({ ...emptyCreateForm, package_id: defaultPackageId });
+    setError("");
+    setOpen(true);
+  };
+
   const onDelete = async (id) => {
     if (!confirm(t("users.confirmDeleteUser"))) return;
     await deleteUser(id);
-    load();
+    // Deleting the last remaining user on a page beyond page 1 (e.g. page 3
+    // of 3, one user left on it) used to leave `page` pointed past the new
+    // last page - load() would then come back with an empty items array
+    // even though earlier pages still have users on them, looking like
+    // "all users disappeared" until the admin manually clicks "قبلی".
+    if (page > 1 && users.length === 1) {
+      setPage((p) => p - 1);
+    } else {
+      load();
+    }
   };
 
   const onReset = async (id) => {
@@ -544,7 +582,7 @@ export default function Users() {
             <button className="btn-secondary" onClick={openBulkCreate}>
               <Layers size={16} /> {t("users.bulkCreate")}
             </button>
-            <button className="btn-primary" onClick={() => setOpen(true)}>
+            <button className="btn-primary" onClick={openCreate}>
               <Plus size={16} /> {t("users.newUser")}
             </button>
           </div>

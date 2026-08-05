@@ -57,7 +57,24 @@ class MaintenanceModeMiddleware(BaseMiddleware):
     while customers are locked out."""
 
     async def __call__(self, handler, event, data):
-        if config.customer_bot_enabled:
+        # Live check (see panel_bridge.py's/remote_bridge.py's
+        # get_customer_bot_enabled) instead of the config.customer_bot_enabled
+        # threading.local snapshot taken once at bot startup - that snapshot
+        # was never even populated correctly for a bot running on a second
+        # server (BOT_STANDALONE_MODE startup had no plumbing to read this
+        # setting at all), so the toggle silently did nothing there before
+        # this fix. Fails OPEN (customers stay able to use the bot) on a
+        # transient panel-connectivity error - a network hiccup must never
+        # accidentally lock every customer out, same fail-open policy as
+        # keyboards.py's per-item menu check.
+        from .panel_bridge import api, ApiError
+
+        try:
+            customer_bot_enabled = await api.get_customer_bot_enabled()
+        except ApiError:
+            customer_bot_enabled = True
+
+        if customer_bot_enabled:
             return await handler(event, data)
 
         user = data.get("event_from_user")
@@ -189,7 +206,18 @@ def _lookup_telegram_api_proxy_url() -> str | None:
     in Settings takes effect on that instance's next start/restart with no
     other code change needed. Empty/unset (the default) = None, meaning
     "connect directly" - exactly today's behavior for every existing
-    deployment that doesn't need this."""
+    deployment that doesn't need this.
+
+    Standalone mode (bot deployed on a second server, see config.py's
+    bot_standalone_telegram_api_proxy_url docstring) has no local
+    BotSettings row worth reading - its own DB is an empty throwaway - so
+    it must be checked first and, if set, short-circuit the DB lookup
+    below entirely."""
+    from ..config import settings
+
+    if settings.bot_standalone_mode:
+        return settings.bot_standalone_telegram_api_proxy_url.strip() or None
+
     from ..database import SessionLocal
     from .. import models
 
@@ -248,15 +276,30 @@ def send_message_sync(chat_id: int, text: str, timeout: float = 10.0, token: str
     try:
         asyncio.run(_send())
         return True
-    except Exception:
+    except Exception as exc:
+        # Used to fail 100% silently - a customer blocking the bot (routine,
+        # not worth logging) and a broken Telegram-API-proxy/expired token
+        # (a real, actionable outage) looked IDENTICAL from the outside:
+        # both just "didn't send", nothing in the logs either way. Logging
+        # at debug level keeps routine blocks quiet by default while still
+        # making the real cause (timeout, proxy connection refused, 401
+        # Unauthorized, ...) available via `docker compose logs` instead of
+        # pure guesswork.
+        logger.debug("send_message_sync to %s failed: %s: %s", chat_id, type(exc).__name__, exc)
         return False
 
 
-def send_document_sync(chat_id: int, file_path: str, caption: str = "", timeout: float = 30.0, token: str | None = None) -> bool:
+def send_document_sync(chat_id: int, file_path: str, caption: str = "", timeout: float = 90.0, token: str | None = None) -> bool:
     """Same idea as send_message_sync but for a file on disk - used by
     services/backup.py to deliver database backups to the bot admins.
-    Longer default timeout since backup files can be a few MB. `token` -
-    see send_message_sync's docstring."""
+    Longer default timeout than send_message_sync (90s, was 30s) - a
+    multi-MB backup file relayed through a configured Telegram-API reverse-
+    proxy (see _lookup_telegram_api_proxy_url, common for deployments where
+    the panel server's own IP can't reach api.telegram.org directly) can
+    legitimately take much longer to fully upload than a proxied text
+    message does; 30s was tight enough to time out a perfectly healthy send
+    on a slower proxy hop and looked, from the panel/logs, identical to the
+    proxy being broken. `token` - see send_message_sync's docstring."""
     token = token or _lookup_bot_token()
     if not token:
         return False
@@ -273,7 +316,16 @@ def send_document_sync(chat_id: int, file_path: str, caption: str = "", timeout:
     try:
         asyncio.run(_send())
         return True
-    except Exception:
+    except Exception as exc:
+        # See send_message_sync's matching comment - but at warning level
+        # here (not debug): a backup failing to reach the admins is worth
+        # noticing, unlike a customer blocking the bot. Was completely
+        # silent before - services/backup.py's caller only ever saw a
+        # "sent to 0/N admins" count with zero indication of *why* (proxy
+        # timeout vs bad token vs file too large vs admin blocked the bot).
+        logger.warning(
+            "send_document_sync to %s failed (%s): %s: %s", chat_id, file_path, type(exc).__name__, exc
+        )
         return False
 
 

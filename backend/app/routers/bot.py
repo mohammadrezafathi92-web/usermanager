@@ -196,11 +196,21 @@ def get_payment_info(owner_admin_id: Optional[int] = None, db: Session = Depends
 @router.get("/customer-menu-config")
 def get_customer_menu_config(db: Session = Depends(get_db)):
     """Which customer main-menu buttons are hidden (see Settings > ربات >
-    منوی مشتری and telegram_bot/keyboards.py's main_menu_kb)."""
+    منوی مشتری and telegram_bot/keyboards.py's main_menu_kb), PLUS whether
+    customers can use the bot AT ALL right now (Settings > ربات > «دسترسی
+    مشتری‌ها به ربات فعال باشد» - models.BotSettings.customer_bot_enabled).
+    Both are read live by every bot instance on every update (see
+    runner.py's MaintenanceModeMiddleware and panel_bridge.py's/
+    remote_bridge.py's get_customer_bot_enabled) instead of being baked in
+    once at bot startup - the only way a bot running on a second/remote
+    server (see services/remote_deploy.py) ever sees this setting at all,
+    since its own local env has no field for it and its own local DB is
+    just an empty throwaway file."""
     row = db.get(models.BotSettings, 1)
     raw = (row.customer_menu_disabled_items or "") if row else ""
     items = [x.strip() for x in raw.split(",") if x.strip()]
-    return {"disabled_items": items}
+    customer_bot_enabled = row.customer_bot_enabled if row and row.customer_bot_enabled is not None else True
+    return {"disabled_items": items, "customer_bot_enabled": customer_bot_enabled}
 
 
 @router.get("/tutorials", response_model=list[schemas.TutorialOut])

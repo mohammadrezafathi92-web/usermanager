@@ -58,6 +58,17 @@ class Settings(BaseSettings):
     bot_standalone_token: str = os.environ.get("BOT_TOKEN", "")
     bot_standalone_admin_ids: str = os.environ.get("BOT_ADMIN_IDS", "")
     bot_standalone_approval_chat_ids: str = os.environ.get("BOT_APPROVAL_CHAT_IDS", "")
+    # Snapshotted at deploy time from BotSettings.telegram_api_proxy_url
+    # (see services/remote_deploy.py's _build_env) - without this, a bot
+    # deployed to a second server had NO way at all to see this setting: it
+    # runs against its own empty local database (see this class's own
+    # docstring), so runner.py's _lookup_telegram_api_proxy_url's usual
+    # `db.get(models.BotSettings, 1)` always found nothing there. Like
+    # BOT_ADMIN_IDS above, this is a snapshot (only refreshed on the next
+    # "نصب ربات روی سرور دیگر" redeploy), not live - acceptable here since
+    # this is a network-transport setting only ever needed once at Bot
+    # object construction (bot start/restart), unlike a per-update check.
+    bot_standalone_telegram_api_proxy_url: str = os.environ.get("BOT_TELEGRAM_API_PROXY_URL", "")
 
     class Config:
         env_file = ".env"

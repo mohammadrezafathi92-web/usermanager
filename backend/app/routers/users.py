@@ -419,7 +419,28 @@ def create_user(
     db.refresh(user)
 
     if package:
-        user_ops.provision_package_connections(db, user, package)
+        # Mirrors bulk_create_users' own try/except below: an outright crash
+        # while provisioning (unreachable node, MikroTik/Xray API error
+        # that isn't caught as a per-connection HTTPException, ...) left the
+        # admin's wallet debited by _charge_admin_for_package above with
+        # nothing to show for it. Refund before re-raising so a failed
+        # attempt is free, same as the bulk path already guarantees.
+        try:
+            result = user_ops.provision_package_connections(db, user, package)
+        except Exception:
+            _refund_admin_for_package(db, admin, package, units=1)
+            raise
+        # provision_package_connections() itself doesn't raise for the more
+        # common case - every bundled connection individually rejected (e.g.
+        # every node in the package was since deleted) - it just returns an
+        # empty `created` list. Unlike bulk-create (which still counts the
+        # user itself as "created" even with zero live connections - see its
+        # own docstring), a single paid-for user ending up with literally
+        # none of the package's services is worth refunding for too.
+        if package.connections and not result["created"]:
+            _refund_admin_for_package(db, admin, package, units=1)
+            reasons = "، ".join(s["reason"] for s in result["skipped"]) or "دلیل نامشخص"
+            raise HTTPException(400, f"هیچ‌کدام از سرویس‌های پکیج قابل ساخت نبودند: {reasons}")
         db.commit()
         db.refresh(user)
 
@@ -606,7 +627,14 @@ def reset_usage(user_id: int, db: Session = Depends(get_db), admin: models.Admin
     user = _get_owned_user(db, admin, user_id)
     user.used_bytes = 0
     if user.status == models.UserStatus.quota_exceeded:
-        user.status = models.UserStatus.active
+        # Quota being the reason shown doesn't mean expiry is fine too - a
+        # user can be simultaneously over-quota AND past their expire_at
+        # (quota_manager._enforce_user_limits shows "quota_exceeded" first
+        # whenever both are true, masking the expiry side). Blindly setting
+        # active here used to grant a real, if brief, MikroTik/Xray enable
+        # that the next poll cycle would immediately undo. See
+        # user_ops._resolve_status_after_reset.
+        user.status = user_ops._resolve_status_after_reset(user.total_quota_bytes, user.used_bytes, user.expire_at)
         # Without this, a user whose Xray/3X-UI client got disabled/deleted
         # on quota cutoff would come back "active" in the DB but their
         # actual connection would stay dead until the next poll cycle
@@ -741,7 +769,15 @@ def apply_package(
     package = _get_scoped_package(db, admin, payload.package_id)
 
     _charge_admin_for_package(db, admin, package, units=1)
-    user_ops.apply_package_as_purchase(db, user, package)
+    # Same refund-on-failure guarantee as create_user's package path above -
+    # without it, a provisioning failure here (node unreachable, VPN API
+    # error, ...) left the admin permanently charged for a package the user
+    # never actually received any service from.
+    try:
+        user_ops.apply_package_as_purchase(db, user, package)
+    except Exception:
+        _refund_admin_for_package(db, admin, package, units=1)
+        raise
     db.commit()
     db.refresh(user)
     return user
@@ -763,7 +799,9 @@ def reset_purchase_usage(
         raise HTTPException(404, "خرید پیدا نشد")
     purchase.used_bytes = 0
     if purchase.status == models.UserStatus.quota_exceeded:
-        purchase.status = models.UserStatus.active
+        # Same fix as reset_usage above - re-derive against expiry too
+        # instead of assuming quota was the only exhausted dimension.
+        purchase.status = user_ops._resolve_status_after_reset(purchase.quota_bytes, purchase.used_bytes, purchase.expire_at)
         user_ops.reconcile_purchase_connections(db, purchase)
     db.commit()
     db.refresh(purchase)

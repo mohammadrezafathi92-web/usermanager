@@ -37,6 +37,35 @@ router = Router(name="customer")
 # harm), but the "no account yet" messaging is written for customers.
 
 
+async def _menu_item_enabled(action: str) -> bool:
+    """True unless the admin has hidden this item from Settings > ربات >
+    منوی مشتری (models.BotSettings.customer_menu_disabled_items).
+    keyboards.main_menu_kb() already skips drawing a button for a disabled
+    item, but that alone doesn't stop a customer who already has the
+    button in an older chat message, or who just types the matching slash
+    command (/account, /link, /buy, /topup - see runner.py's
+    CUSTOMER_COMMANDS, which is NOT filtered by this setting) from
+    reaching the flow anyway. Call this at the top of every entry point a
+    toggleable CUSTOMER_MENU_ITEMS action maps to, so disabling it in
+    Settings actually blocks the feature instead of just hiding its
+    button. Fails OPEN (returns True) on an ApiError so a transient
+    panel-connectivity hiccup never falsely locks customers out of a
+    feature that's actually still enabled."""
+    try:
+        disabled = await api.get_customer_menu_disabled_items()
+    except ApiError:
+        return True
+    return action not in disabled
+
+
+async def _reply_menu_item_disabled(target) -> None:
+    text = "این قابلیت در حال حاضر توسط ادمین غیرفعال شده است."
+    if isinstance(target, CallbackQuery):
+        await target.answer(text, show_alert=True)
+    else:
+        await target.answer(text, reply_markup=home_kb())
+
+
 def _account_text(user: dict) -> str:
     # Lead with the actual name when the admin set one (e.g. "علی رضایی")
     # instead of the panel's internal username (which can be a cryptic
@@ -208,6 +237,9 @@ async def send_package_extras(bot: Bot, chat_id: int, pkg: dict) -> None:
 @router.message(Command("account"))
 async def cmd_account(message: Message, state: FSMContext, bot: Bot) -> None:
     """Slash-command shortcut for "👤 اکانت من"."""
+    if not await _menu_item_enabled("cust_account"):
+        await _reply_menu_item_disabled(message)
+        return
     await _clear_state_keep_account(state)
     user = await _resolve_account(message, state, message.from_user.id, "cust_account")
     if user == "ambiguous":
@@ -226,6 +258,9 @@ async def cmd_account(message: Message, state: FSMContext, bot: Bot) -> None:
 @router.message(Command("link"))
 async def cmd_link(message: Message, state: FSMContext) -> None:
     """Slash-command shortcut for "🔗 وصل کردن حساب قبلی"."""
+    if not await _menu_item_enabled("cust_link"):
+        await _reply_menu_item_disabled(message)
+        return
     await state.clear()
     await state.set_state(CustomerLinkStates.waiting_username)
     await message.answer("نام کاربری حساب قبلی‌تان را بفرستید:", reply_markup=cancel_kb())
@@ -244,6 +279,9 @@ def _distinct_session_counts(packages: list[dict]) -> list[int]:
 @router.message(Command("buy"))
 async def cmd_buy(message: Message, state: FSMContext) -> None:
     """Slash-command shortcut for "🛒 خرید اکانت جدید"."""
+    if not await _menu_item_enabled("cust_buy"):
+        await _reply_menu_item_disabled(message)
+        return
     await state.clear()
     try:
         packages = await api.list_packages()
@@ -266,6 +304,9 @@ async def cmd_buy(message: Message, state: FSMContext) -> None:
 @router.message(Command("topup"))
 async def cmd_topup(message: Message, state: FSMContext) -> None:
     """Slash-command shortcut for "💰 افزایش اعتبار"."""
+    if not await _menu_item_enabled("cust_topup"):
+        await _reply_menu_item_disabled(message)
+        return
     await _clear_state_keep_account(state)
     account = await _resolve_account(message, state, message.from_user.id, "cust_topup")
     if account == "ambiguous":
@@ -293,6 +334,9 @@ async def cmd_topup(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(MenuCB.filter(F.action == "cust_account"))
 async def cb_account(call: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    if not await _menu_item_enabled("cust_account"):
+        await _reply_menu_item_disabled(call)
+        return
     await _clear_state_keep_account(state)
     user = await _resolve_account(call, state, call.from_user.id, "cust_account")
     if user == "ambiguous":
@@ -317,6 +361,9 @@ async def cb_support(call: CallbackQuery) -> None:
     """Static support text/contact the admin sets from the panel's Settings
     page (PanelSettings.support_contact_text) - see routers/panel_settings.py.
     Deliberately simple (no ticket system) per the confirmed design."""
+    if not await _menu_item_enabled("cust_support"):
+        await _reply_menu_item_disabled(call)
+        return
     try:
         settings = await api.get_payment_info()  # returns the full PanelSettings row, not just payment fields
     except ApiError as exc:
@@ -332,6 +379,9 @@ async def cb_referral(call: CallbackQuery, state: FSMContext) -> None:
     """Shows the customer's own invite code plus the currently-configured
     reward amounts (both sides get a gift - see PanelSettings.referral_*
     and services/user_ops.py's apply_referral_code)."""
+    if not await _menu_item_enabled("cust_referral"):
+        await _reply_menu_item_disabled(call)
+        return
     user = await _resolve_account(call, state, call.from_user.id, "cust_referral")
     if user == "ambiguous":
         return
@@ -374,6 +424,9 @@ async def cb_usage(call: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     per-service usage breakdown as the section under "اکانت من"
     (usage_per_service_text), but as its own standalone view reachable in
     one tap instead of having to open the account view first."""
+    if not await _menu_item_enabled("cust_usage"):
+        await _reply_menu_item_disabled(call)
+        return
     user = await _resolve_account(call, state, call.from_user.id, "cust_usage")
     if user == "ambiguous":
         return
@@ -464,6 +517,9 @@ async def cb_myid(call: CallbackQuery) -> None:
     account from the panel's user-edit form (see UserDetail.jsx's "آیدی
     عددی تلگرام" field) but the customer hasn't purchased/linked through the
     bot yet, so there's no other way for the admin to get this number."""
+    if not await _menu_item_enabled("cust_myid"):
+        await _reply_menu_item_disabled(call)
+        return
     text = (
         f"🆔 آیدی عددی تلگرام شما:\n\n<code>{call.from_user.id}</code>\n\n"
         "روی عدد بزنید تا کپی شود، و آن را برای ادمین ارسال کنید."
@@ -475,6 +531,9 @@ async def cb_myid(call: CallbackQuery) -> None:
 # --------------------------------------------------------------- link existing
 @router.callback_query(MenuCB.filter(F.action == "cust_link"))
 async def cb_link_start(call: CallbackQuery, state: FSMContext) -> None:
+    if not await _menu_item_enabled("cust_link"):
+        await _reply_menu_item_disabled(call)
+        return
     await state.set_state(CustomerLinkStates.waiting_username)
     await call.message.edit_text("نام کاربری حساب قبلی‌تان را بفرستید:", reply_markup=cancel_kb())
     await call.answer()
@@ -569,11 +628,33 @@ async def pick_session_count(call: CallbackQuery, callback_data: SessionCountCB,
 
 @router.callback_query(MenuCB.filter(F.action == "cust_buy"))
 async def cb_buy(call: CallbackQuery, state: FSMContext) -> None:
+    # Unlike cmd_buy (the /buy slash command, which does a full state.clear()),
+    # this button is the ~99%-used entry point and can be tapped from an old
+    # still-live "🏠 خانه"/menu message sitting in the chat - without
+    # clearing first, a stale discount_code/discount_step_done/
+    # referral_step_done left over from a previous ABANDONED purchase
+    # attempt (started, a code applied, then never finished) silently
+    # carries into this new one: _advance_purchase_flow's "already done"
+    # guards skip straight past the referral/discount steps and reuse the
+    # old discount_amount/code - computed against a DIFFERENT package's
+    # price - as this purchase's final_price, and redeem_discount can end
+    # up called again for a single-use code. _clear_state_keep_account
+    # (not a full state.clear()) so the multi-account picker memory
+    # (active_username) survives, same as every other button entry point.
+    if not await _menu_item_enabled("cust_buy"):
+        await _reply_menu_item_disabled(call)
+        return
+    await _clear_state_keep_account(state)
     await _start_package_picker(call, state, "new")
 
 
 @router.callback_query(MenuCB.filter(F.action == "cust_renew"))
 async def cb_renew(call: CallbackQuery, state: FSMContext) -> None:
+    # Same stale-state gap as cb_buy above, same fix.
+    if not await _menu_item_enabled("cust_renew"):
+        await _reply_menu_item_disabled(call)
+        return
+    await _clear_state_keep_account(state)
     account = await _resolve_account(call, state, call.from_user.id, "cust_renew")
     if account == "ambiguous":
         return
@@ -699,7 +780,31 @@ async def _show_payment_screen(target, state: FSMContext) -> None:
     # If the customer already has a linked account with enough balance,
     # offer an instant "pay from balance" option alongside the usual
     # card-to-card receipt flow (see pay_with_balance below).
-    account = await _resolve_account_silent(state, _uid(target))
+    #
+    # Prefer a target_username already resolved earlier THIS purchase (by
+    # cb_renew, which resolves it eagerly, or by _ask_for_receipt's own
+    # silent resolve right after package/protocol pick) over re-running
+    # _resolve_account_silent's telegram_id lookup here from scratch. For a
+    # customer with 2+ linked accounts (bought more than once - see
+    # User.telegram_id), that lookup only succeeds via `active_username` in
+    # FSM state - but this bot's Dispatcher uses aiogram's MemoryStorage
+    # (see runner.py), which is wiped on every bot restart/redeploy. A
+    # multi-account customer who picked an account earlier in the exact
+    # same session (or even a few messages ago, if the bot happened to
+    # restart in between) would silently lose that pick here and get
+    # nothing back from _resolve_account_silent even though which account
+    # this purchase is for was never actually in doubt - the "پرداخت از
+    # طریق اعتبار" button would then just vanish despite real, sufficient
+    # balance. Fetching the already-known username directly sidesteps the
+    # ambiguity check entirely.
+    target_username = data.get("target_username")
+    if target_username:
+        try:
+            account = await api.get_user(target_username)
+        except ApiError:
+            account = None
+    else:
+        account = await _resolve_account_silent(state, _uid(target))
     can_pay_from_balance = bool(account and final_price and (account.get("balance") or 0) >= final_price)
     if account:
         await state.update_data(target_username=account["username"])
@@ -968,6 +1073,9 @@ async def _ask_for_topup_receipt(target, state: FSMContext, amount: int) -> None
 
 @router.callback_query(MenuCB.filter(F.action == "cust_topup"))
 async def cb_topup_start(call: CallbackQuery, state: FSMContext) -> None:
+    if not await _menu_item_enabled("cust_topup"):
+        await _reply_menu_item_disabled(call)
+        return
     account = await _resolve_account(call, state, call.from_user.id, "cust_topup")
     if account == "ambiguous":
         return

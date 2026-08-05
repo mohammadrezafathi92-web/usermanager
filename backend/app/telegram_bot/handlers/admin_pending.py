@@ -264,6 +264,20 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
         storage.release_pending(pending["id"])
         await call.answer(f"خطا: {exc}", show_alert=True)
         return
+    except Exception:
+        # Anything NOT wrapped as ApiError (a bug here, an unexpected None,
+        # a raw network/timeout error slipping past panel_bridge/
+        # remote_bridge's own wrapping, ...) used to propagate straight out
+        # of this handler - claim_pending() above had already flipped this
+        # request to 'processing' and nothing ever put it back, so it stuck
+        # there forever: invisible to "در انتظار تایید" (which only lists
+        # 'pending'), un-retryable, and un-rejectable, with the customer
+        # left hanging indefinitely. Release the claim so the request goes
+        # back to 'pending' and an admin can simply tap Approve again.
+        logger.exception("Unexpected error approving pending request %s", pending["id"])
+        storage.release_pending(pending["id"])
+        await call.answer("خطای غیرمنتظره - دوباره تلاش کنید", show_alert=True)
+        return
 
     storage.set_status(pending["id"], "approved")
     await _finish("✅ تایید و فعال‌سازی شد.")

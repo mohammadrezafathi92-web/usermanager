@@ -140,6 +140,19 @@ class PanelBridge:
         row = await _call(bot_router.get_customer_menu_config)
         return row.get("disabled_items", [])
 
+    async def get_customer_bot_enabled(self) -> bool:
+        """Live read of Settings > ربات > «دسترسی مشتری‌ها به ربات فعال
+        باشد» - see runner.py's MaintenanceModeMiddleware, the only caller.
+        Checked fresh on every single update instead of being snapshotted
+        once at bot startup into config.customer_bot_enabled, so (a) it
+        actually works for a bot deployed to a second server (see
+        remote_bridge.py's version of this method - BOT_STANDALONE_MODE
+        startup never had a way to read this setting at all before this
+        fix), and (b) even the in-process bot reacts the instant the
+        setting is saved, no restart_bot() round-trip needed."""
+        row = await _call(bot_router.get_customer_menu_config)
+        return bool(row.get("customer_bot_enabled", True))
+
     # -------------------------------------------------------- tutorials
     async def list_tutorials(self, owner_admin_id: Optional[int] = None) -> list[dict]:
         """Same owner-scoping shape as list_packages/get_payment_info above

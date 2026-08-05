@@ -5,12 +5,22 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from ..panel_bridge import api, ApiError
 from ..callbacks import MenuCB, TutorialCB
 from ..keyboards import tutorials_kb, home_kb
+# customer.py's handlers module is imported before this one in
+# handlers/__init__.py's build_router(), so this is safe (no circularity) -
+# reuses the same "is this menu item hidden in Settings?" guard instead of
+# duplicating it, so cust_tutorials gets the same actual-enforcement fix as
+# every other toggleable item (see customer.py's _menu_item_enabled
+# docstring for the full "hiding the button alone isn't enough" story).
+from .customer import _menu_item_enabled, _reply_menu_item_disabled
 
 router = Router(name="tutorials")
 
 
 @router.callback_query(MenuCB.filter(F.action == "cust_tutorials"))
 async def cb_tutorials(call: CallbackQuery) -> None:
+    if not await _menu_item_enabled("cust_tutorials"):
+        await _reply_menu_item_disabled(call)
+        return
     try:
         tutorials = await api.list_tutorials()
     except ApiError as exc:
@@ -27,6 +37,9 @@ async def cb_tutorials(call: CallbackQuery) -> None:
 @router.message(Command("tutorials"))
 async def cmd_tutorials(message: Message) -> None:
     """Slash-command shortcut for "📚 آموزش"."""
+    if not await _menu_item_enabled("cust_tutorials"):
+        await _reply_menu_item_disabled(message)
+        return
     try:
         tutorials = await api.list_tutorials()
     except ApiError as exc:

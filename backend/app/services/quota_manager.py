@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from .. import models
@@ -26,6 +27,26 @@ PPP_TYPES = (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.C
 # should never go this long between handshakes - this threshold just adds a
 # safety margin over one missed poll/keepalive cycle.
 WIREGUARD_ONLINE_THRESHOLD_SECONDS = 180
+
+
+def _atomic_increment(db: Session, model, obj_id: int, column: str, delta: float) -> None:
+    """Atomic `column = column + delta` evaluated by SQLite itself (a raw
+    UPDATE's SET expression), instead of Python computing `old_value +
+    delta` from an ORM attribute read and assigning it back. The scheduler's
+    poll_all job and radius_server.py's accounting handler each run on
+    their own thread with their own independent SessionLocal(), and can
+    both be mid-way through processing the SAME user/purchase/admin at once
+    (e.g. a user with one WireGuard connection, polled by the scheduler,
+    and one OpenVPN connection, accounted live via RADIUS) - two
+    concurrent `obj.used_bytes = obj.used_bytes + delta` read-then-writes
+    silently drop whichever one commits last (lost update). A DB-level
+    atomic increment can't lose either side no matter how the two threads
+    interleave. Immediately expires the now-stale in-Python attribute so
+    the next read (e.g. quota_manager._enforce_user_limits's exceeded
+    check, called right after this in the same request/job) sees the
+    fresh committed value instead of a stale cached one."""
+    db.execute(update(model).where(model.id == obj_id).values(**{column: getattr(model, column) + delta}))
+    db.expire(db.get(model, obj_id), [column])
 
 
 def _apply_delta(db: Session, connection: models.Connection, rx: int, tx: int):
@@ -56,9 +77,12 @@ def _apply_delta(db: Session, connection: models.Connection, rx: int, tx: int):
 
     user: models.User = connection.user
     if connection.purchase_id:
-        connection.purchase.used_bytes = (connection.purchase.used_bytes or 0) + delta
+        # Atomic - see _atomic_increment's docstring: a Purchase can have
+        # more than one bundled connection, so its used_bytes is a shared
+        # target too, not just the User-level field below.
+        _atomic_increment(db, models.Purchase, connection.purchase_id, "used_bytes", delta)
     else:
-        user.used_bytes = (user.used_bytes or 0) + delta
+        _atomic_increment(db, models.User, user.id, "used_bytes", delta)
 
     db.add(models.UsageLog(user_id=user.id, connection_id=connection.id, delta_bytes=delta))
 
@@ -70,7 +94,11 @@ def _apply_delta(db: Session, connection: models.Connection, rx: int, tx: int):
     # creation time (see routers/users.py's _charge_admin_for_package).
     admin = user.owner_admin
     if admin is not None and not admin.is_superadmin and admin.billing_mode == "usage":
-        admin.volume_balance_gb = (admin.volume_balance_gb or 0) - (delta / (1024 ** 3))
+        # Atomic - this is the highest-collision target of the three: every
+        # one of an admin's users' connections, across both the scheduler
+        # thread and the RADIUS thread, funnels delta events into this same
+        # AdminUser row.
+        _atomic_increment(db, models.AdminUser, admin.id, "volume_balance_gb", -(delta / (1024 ** 3)))
 
 
 def _enforce_user_limits(db: Session, user: models.User):

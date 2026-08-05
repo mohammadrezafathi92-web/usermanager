@@ -103,8 +103,15 @@ def _build_app_tar() -> bytes:
     return buf.getvalue()
 
 
-def _build_env(panel_api_url: str, panel_api_key: str, bot_token: str, admin_ids: str, approval_chat_ids: str) -> str:
-    return (
+def _build_env(
+    panel_api_url: str,
+    panel_api_key: str,
+    bot_token: str,
+    admin_ids: str,
+    approval_chat_ids: str,
+    telegram_api_proxy_url: str = "",
+) -> str:
+    env = (
         "DATABASE_URL=sqlite:////app/data/usermanager.db\n"
         "BOT_STANDALONE_MODE=true\n"
         f"PANEL_API_URL={panel_api_url}\n"
@@ -114,6 +121,12 @@ def _build_env(panel_api_url: str, panel_api_key: str, bot_token: str, admin_ids
         f"BOT_APPROVAL_CHAT_IDS={approval_chat_ids}\n"
         "RADIUS_ENABLED=false\n"
     )
+    # Snapshot of Settings > ربات > آدرس پروکسی Telegram API at deploy time -
+    # see config.py's bot_standalone_telegram_api_proxy_url docstring for why
+    # this can't just be read live from the DB like the panel's own bot does.
+    if telegram_api_proxy_url:
+        env += f"BOT_TELEGRAM_API_PROXY_URL={telegram_api_proxy_url}\n"
+    return env
 
 
 def _connect(host: str, ssh_port: int, ssh_username: str, ssh_password: str) -> paramiko.SSHClient:
@@ -144,6 +157,7 @@ def deploy(
     bot_token: str,
     admin_ids: str,
     approval_chat_ids: str,
+    telegram_api_proxy_url: str = "",
 ) -> str:
     """Connects over SSH, installs Docker if missing, uploads the backend
     source plus a bot-only docker-compose setup, and brings it up. Returns
@@ -217,7 +231,9 @@ def deploy(
             with sftp.open(f"{REMOTE_DIR}/docker-compose.yml", "wb") as f:
                 f.write(COMPOSE_YML.encode("utf-8"))
 
-            env_content = _build_env(panel_api_url, panel_api_key, bot_token, admin_ids, approval_chat_ids)
+            env_content = _build_env(
+                panel_api_url, panel_api_key, bot_token, admin_ids, approval_chat_ids, telegram_api_proxy_url,
+            )
             with sftp.open(f"{REMOTE_DIR}/.env", "wb") as f:
                 f.write(env_content.encode("utf-8"))
             # .env holds the panel API key + bot token in plaintext -

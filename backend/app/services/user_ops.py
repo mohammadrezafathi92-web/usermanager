@@ -277,6 +277,36 @@ def redeem_discount_code(
     return True, "", amount
 
 
+def _resolve_status_after_reset(
+    quota_bytes: Optional[int], used_bytes: int, expire_at: Optional[dt.datetime], now: Optional[dt.datetime] = None,
+) -> models.UserStatus:
+    """Single source of truth for "what should status actually become right
+    after directly resetting/renewing usage or quota/expiry" - mirrors
+    quota_manager._enforce_user_limits's own exceeded-before-expired
+    priority. Every renewal/reset/reserved-activation code path below used
+    to just blindly set status=active whenever it fixed the ONE dimension
+    that had triggered the cutoff (e.g. resetting used_bytes on a
+    quota_exceeded account), without checking whether the OTHER dimension
+    (expire_at) was independently ALSO already exhausted - a very common
+    real case (an account usually runs out of data and time close
+    together). That blind flip, combined with reconcile_user_connections/
+    reconcile_purchase_connections (which enable purely off `status ==
+    active`), granted a real - if brief - enable via MikroTik/Xray API
+    calls, which quota_manager.poll_all's next cycle (or radius_server.py's
+    live login check) then had to notice and undo, making a renewal look
+    like it silently "didn't work" or "reverted itself". Using this
+    everywhere those code paths decide the post-reset status means
+    connections only ever actually turn on when BOTH dimensions are
+    genuinely satisfied, from the very first commit - no flap, no
+    incorrect brief enable."""
+    now = now or dt.datetime.utcnow()
+    if quota_bytes and used_bytes >= quota_bytes:
+        return models.UserStatus.quota_exceeded
+    if expire_at and expire_at < now:
+        return models.UserStatus.expired
+    return models.UserStatus.active
+
+
 def renew_user(
     db: Session,
     user: models.User,
@@ -326,7 +356,11 @@ def renew_user(
         user.used_bytes = 0
 
     if user.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
-        user.status = models.UserStatus.active
+        # See _resolve_status_after_reset's docstring - only actually
+        # becomes "active" (and only then does reconcile below re-enable
+        # anything) if BOTH quota and expiry are genuinely fine now, not
+        # just the one dimension this renewal happened to touch.
+        user.status = _resolve_status_after_reset(user.total_quota_bytes, user.used_bytes, user.expire_at, now)
         # Renewing a previously cut-off user must also push the "enabled"
         # state back out to their actual connections (MikroTik peer/RADIUS
         # flag, Xray/3X-UI client) - just flipping the DB column here is not
@@ -378,7 +412,17 @@ def _maybe_activate_reserved_renewal(db: Session, user: models.User) -> bool:
     user.reserved_package_id = None
     user.reserved_created_at = None
     if user.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
-        user.status = models.UserStatus.active
+        # See _resolve_status_after_reset's docstring - a reservation only
+        # ever restores ONE dimension at a time (e.g. quota, not
+        # necessarily expiry - see renew_user's reservation branch above),
+        # so re-derive against BOTH before deciding this account is
+        # actually usable again. Without this, a reservation that only
+        # covered quota would still get a real (if brief) MikroTik/Xray
+        # enable below even though expire_at is still in the past - this
+        # function is called live from radius_server.py's login check, so
+        # that's a real, if momentary, access grant, not just a stale DB
+        # flag.
+        user.status = _resolve_status_after_reset(user.total_quota_bytes, user.used_bytes, user.expire_at, now)
         # Same reconciliation-gap fix as renew_user above - this function is
         # also called directly from radius_server.py's live login check, so
         # without this the customer's PPP login would be let back in while
@@ -597,11 +641,32 @@ def bulk_update_users(
             _maybe_grant_loyalty_reward(db, user)
         elif add_gb or add_days or reset_usage:
             renew_user(db, user, add_gb=add_gb, add_days=add_days, reset_usage=reset_usage)
-        if status is not None and status != user.status:
-            user.status = status
-            # Explicit bulk enable/disable (e.g. "غیرفعال‌سازی گروهی") - push
-            # it out to the real connections too, both directions.
-            reconcile_user_connections(db, user)
+        if status is not None:
+            # UserDetail.jsx's "تمدید سریع" (quick renew) modal calls this
+            # same endpoint with add_gb/add_days/reset_usage AND an explicit
+            # status="active" in one request. Blindly applying that active
+            # here used to stomp right back over whatever correct status
+            # renew_user() just resolved two lines up (see
+            # _resolve_status_after_reset's docstring) - if the user was
+            # quota-exceeded AND expired and this renewal only fixed one of
+            # the two, renew_user correctly left them non-active, but the
+            # unconditional overwrite below flipped them to active anyway
+            # and reconcile_user_connections briefly turned the real VPN
+            # connection back on, until the next poll cycle undid it. Only
+            # an explicit *non*-active status (e.g. "غیرفعال‌سازی گروهی")
+            # is an unconditional admin intent that should always apply as
+            # given; an explicit "active" must go through the same
+            # both-dimensions check as every other renew/reset path.
+            resolved_status = (
+                _resolve_status_after_reset(user.total_quota_bytes, user.used_bytes, user.expire_at)
+                if status == models.UserStatus.active
+                else status
+            )
+            if resolved_status != user.status:
+                user.status = resolved_status
+                # Explicit bulk enable/disable (e.g. "غیرفعال‌سازی گروهی") -
+                # push it out to the real connections too, both directions.
+                reconcile_user_connections(db, user)
         if max_concurrent_sessions is not None and package is None:
             # combined cap across all of the user's connections together -
             # see models.User.max_concurrent_sessions (skipped when a
@@ -941,9 +1006,12 @@ def apply_package_as_purchase(db: Session, user: models.User, package: models.Pa
     # of) - purchase_id is the NEW, separate thing that actually carries
     # quota semantics.
     batch = uuid.uuid4().hex
+    created_any = False
+    skip_reasons: list[str] = []
     for pc in package.connections:
         node = db.get(models.Node, pc.node_id)
         if not node:
+            skip_reasons.append("نود پیدا نشد")
             continue
         try:
             conn = provision_connection(
@@ -951,8 +1019,24 @@ def apply_package_as_purchase(db: Session, user: models.User, package: models.Pa
                 purchase_batch=batch, package_name=package.name,
             )
             conn.purchase_id = purchase.id
-        except HTTPException:
-            continue
+            created_any = True
+        except HTTPException as exc:
+            skip_reasons.append(str(exc.detail))
+
+    # Unlike provision_package_connections (bulk-create's version of this
+    # loop, which tolerates a user ending up with zero live connections -
+    # see its own docstring), this is the ONLY caller of this function
+    # (routers/users.py's "افزودن پکیج" action) and it always charges the
+    # admin's wallet for the package right before calling this - so a
+    # package where literally every bundled connection failed (all its
+    # nodes deleted, all unreachable, ...) must not silently create a
+    # zero-service Purchase the admin already paid for. Roll back the
+    # Purchase row itself and raise so routers/users.py's apply_package can
+    # refund the charge, same guarantee create_user's package path has.
+    if package.connections and not created_any:
+        db.rollback()
+        reasons = "، ".join(skip_reasons) or "دلیل نامشخص"
+        raise HTTPException(400, f"هیچ‌کدام از سرویس‌های پکیج قابل ساخت نبودند: {reasons}")
 
     user.purchase_count = (user.purchase_count or 0) + 1
     _maybe_grant_loyalty_reward(db, user)
@@ -999,7 +1083,10 @@ def renew_purchase(
         purchase.used_bytes = 0
 
     if purchase.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
-        purchase.status = models.UserStatus.active
+        # See _resolve_status_after_reset's docstring - same asymmetric
+        # add_gb-without-add_days (or vice versa) gap as renew_user, just
+        # scoped to one independent Purchase.
+        purchase.status = _resolve_status_after_reset(purchase.quota_bytes, purchase.used_bytes, purchase.expire_at, now)
         # Same reconciliation-gap fix as reconcile_user_connections above -
         # without this, quota_manager.py's own change-detection would see no
         # transition on the next poll (since purchase.status is already
@@ -1033,7 +1120,11 @@ def _maybe_activate_reserved_purchase_renewal(db: Session, purchase: models.Purc
     purchase.reserved_package_id = None
     purchase.reserved_created_at = None
     if purchase.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
-        purchase.status = models.UserStatus.active
+        # See _resolve_status_after_reset's docstring / _maybe_activate_reserved_renewal's
+        # matching comment above - same "only one dimension got restored"
+        # gap, scoped to a single Purchase, also reachable live from
+        # radius_server.py's login check.
+        purchase.status = _resolve_status_after_reset(purchase.quota_bytes, purchase.used_bytes, purchase.expire_at, now)
         reconcile_purchase_connections(db, purchase)
     return True
 

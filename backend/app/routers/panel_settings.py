@@ -10,7 +10,7 @@ admin JWT, since it's the PEER SERVER calling this unattended - not a
 logged-in admin. See services/backup.py's create_snapshot_bytes/
 ha_pull_and_apply/ha_healthcheck and main.py's ha_tick()/
 _promote_to_active() for the rest of the flow."""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -18,7 +18,7 @@ import datetime as dt
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import require_admin_or_above, require_superadmin, get_bot_api_key, get_current_admin
+from ..deps import require_admin_or_above, require_superadmin, get_current_admin
 from ..services import backup as backup_service
 from ..services import local_deploy
 from ..services import hierarchy
@@ -161,8 +161,29 @@ def update_my_payment(
 ha_router = APIRouter(prefix="/api/ha", tags=["ha"])
 
 
+def _require_ha_peer_key(
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    db: Session = Depends(get_db),
+) -> None:
+    """Auth for /api/ha/snapshot - deliberately NOT get_bot_api_key.
+    get_bot_api_key accepts ANY enabled ApiKey row, but ApiKey is the same
+    table used for third-party bot integrations and the auto-generated key
+    for a remote Telegram bot deployment (see routers/remote_bot.py) - any
+    one of those keys used to also work here, letting a low-trust
+    integration credential download a full gzip snapshot of the ENTIRE
+    database (every AdminUser's hashed password, every tenant's node SSH/
+    API credentials, even ha_peer_api_key itself). This endpoint must only
+    ever accept the ONE specific shared secret configured for HA
+    replication (PanelSettings.ha_peer_api_key - manually set to the same
+    value on both servers, see models.py's docstring), nothing else."""
+    row = db.get(models.PanelSettings, 1)
+    expected = (row.ha_peer_api_key or "") if row else ""
+    if not expected or not x_api_key or x_api_key != expected:
+        raise HTTPException(status_code=401, detail="کلید HA نامعتبر است")
+
+
 @ha_router.get("/snapshot")
-def ha_snapshot(_: models.ApiKey = Depends(get_bot_api_key)):
+def ha_snapshot(_: None = Depends(_require_ha_peer_key)):
     data = backup_service.create_snapshot_bytes()
     return Response(content=data, media_type="application/gzip")
 

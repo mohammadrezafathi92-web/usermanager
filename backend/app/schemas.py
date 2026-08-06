@@ -468,6 +468,43 @@ class BulkDeleteUsersRequest(BaseModel):
 
 class BulkDeleteUsersResult(BaseModel):
     deleted_count: int
+    # A user whose deletion failed (almost always: one of their connections
+    # lives on a node that's currently unreachable, so its config can't be
+    # removed remotely) is now reported here instead of silently aborting
+    # every OTHER user still left in the batch - see
+    # user_ops.bulk_delete_users' docstring.
+    failed_count: int = 0
+    failed: List[dict] = []
+
+
+class BulkNotifyUsersRequest(BaseModel):
+    user_ids: List[int]
+    message: str
+
+    @field_validator("user_ids")
+    @classmethod
+    def _cap_user_ids(cls, v):
+        if len(v) > 1000:
+            raise ValueError("حداکثر ۱۰۰۰ کاربر در هر بار")
+        return v
+
+    @field_validator("message")
+    @classmethod
+    def _non_empty_message(cls, v):
+        if not v or not v.strip():
+            raise ValueError("متن پیام نمی‌تواند خالی باشد")
+        return v
+
+
+class BulkNotifyUsersResult(BaseModel):
+    sent_count: int
+    # Selected users with no linked Telegram account (never used the bot,
+    # or used it but never actually linked - see User.telegram_id) - there
+    # is simply no chat id to send to for these, distinct from a real
+    # delivery failure (blocked the bot, deleted account, ...) below.
+    skipped_no_telegram_count: int
+    failed_count: int
+    total_count: int
 
 
 # ---------- Dashboard ----------

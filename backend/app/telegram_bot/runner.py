@@ -39,6 +39,12 @@ logger = logging.getLogger("telegram_bot")
 
 MAINTENANCE_TEXT = "🔧 ربات موقتاً در دسترس نیست، لطفاً بعداً دوباره تلاش کنید."
 
+# Distinguishes "no parse_mode override given" from "explicitly override to
+# None" in send_message_sync below - None is a real, meaningful value
+# there (plain text, no HTML parsing), so it can't double as the "not
+# passed" default itself.
+_UNSET = object()
+
 # Sentinel instance_key for the single shared/global bot - every existing
 # caller (routers/telegram_bot_settings.py) that doesn't pass instance_key
 # at all lands here, so pre-hierarchy behavior is completely unchanged.
@@ -242,7 +248,9 @@ def _make_bot(token: str) -> Bot:
     return Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML), session=session)
 
 
-def send_message_sync(chat_id: int, text: str, timeout: float = 10.0, token: str | None = None) -> bool:
+def send_message_sync(
+    chat_id: int, text: str, timeout: float = 10.0, token: str | None = None, parse_mode: str | object = _UNSET,
+) -> bool:
     """Thread-safe, best-effort message send for callers running OUTSIDE
     the bot's own event loop/thread (aiogram's Bot is not thread-safe to
     call directly) - e.g. the daily quota/expiry reminder job and the 4x/day
@@ -259,6 +267,17 @@ def send_message_sync(chat_id: int, text: str, timeout: float = 10.0, token: str
     `token`, when given, sends through THAT token instead of the shared/
     global BotSettings one - used for a level-2 Admin's own scoped backup
     delivered through their own dedicated bot (see services/backup.py).
+
+    `parse_mode`, when given, overrides the Bot's default (HTML - see
+    _make_bot) for just this one send - pass None for free-form
+    admin-typed text (bulk "ارسال پیام تلگرام"/broadcast messages) that may
+    contain a stray "<" or "&"; sending that as HTML fails Telegram's
+    parser for literally every recipient, and previously did so silently -
+    identical to every recipient having simply blocked the bot, with
+    nothing to tell the two apart. Left alone (the default _UNSET
+    sentinel, not None) for every existing caller, which already write
+    their own deliberately-HTML messages (e.g. notify.py's `<b>` tags).
+
     Returns False (never raises) if no token is configured/given or the
     send failed - e.g. the customer blocked the bot, which is expected
     often enough that it shouldn't be treated as an error by callers."""
@@ -269,7 +288,8 @@ def send_message_sync(chat_id: int, text: str, timeout: float = 10.0, token: str
     async def _send():
         bot = _make_bot(token)
         try:
-            await asyncio.wait_for(bot.send_message(chat_id, text), timeout=timeout)
+            kwargs = {} if parse_mode is _UNSET else {"parse_mode": parse_mode}
+            await asyncio.wait_for(bot.send_message(chat_id, text, **kwargs), timeout=timeout)
         finally:
             await bot.session.close()
 

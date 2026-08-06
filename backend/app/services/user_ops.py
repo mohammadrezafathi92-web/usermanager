@@ -482,17 +482,85 @@ def bulk_delete_users(db: Session, user_ids: list[int], owner_admin_ids: Optiona
     see routers/users.py's hierarchy.owned_admin_ids), restricts this to
     only ids owned by that admin OR any of their own level-3 Sellers -
     anything else is silently skipped, same as a plain missing id, so a
-    non-superadmin can never delete another group's users by guessing ids."""
+    non-superadmin can never delete another group's users by guessing ids.
+
+    Each user is deleted independently, one failure at a time - before this,
+    delete_user_cascade's own deprovision_connection call raising
+    HTTPException (e.g. one selected user has a connection on a node that's
+    currently unreachable/offline) propagated straight out of THIS whole
+    loop, aborting the entire bulk-delete on the very first bad user and
+    leaving every user after it in the selection completely untouched -
+    with the panel showing nothing but a bare failed request and no
+    indication which user (or how many) actually got deleted versus never
+    even attempted. Now every other user in the batch still gets deleted
+    normally; only the ones that genuinely fail are skipped and reported
+    back by username + reason so the admin can see exactly what happened
+    (e.g. retry once that node is back up)."""
     deleted_count = 0
+    failed: list[dict] = []
     for uid in user_ids:
         user = db.get(models.User, uid)
         if not user:
             continue
         if owner_admin_ids is not None and user.owner_admin_id not in owner_admin_ids:
             continue
-        delete_user_cascade(db, user)
-        deleted_count += 1
-    return {"deleted_count": deleted_count}
+        try:
+            delete_user_cascade(db, user)
+            deleted_count += 1
+        except HTTPException as exc:
+            db.rollback()
+            failed.append({"id": uid, "username": user.username, "reason": str(exc.detail)})
+        except Exception as exc:
+            db.rollback()
+            failed.append({"id": uid, "username": user.username, "reason": str(exc)})
+    return {"deleted_count": deleted_count, "failed_count": len(failed), "failed": failed}
+
+
+def bulk_notify_users(db: Session, user_ids: list[int], message: str, owner_admin_ids: Optional[set] = None) -> dict:
+    """Sends a free-form text message through the bot to every selected
+    user that has a linked Telegram account - "ارسال پیام تلگرام" on
+    Users.jsx, meant to be used together with its status filter (e.g.
+    filter to "منقضی‌شده", select all matching, then send one message to
+    everyone whose service just expired). owner_admin_ids scoping matches
+    bulk_delete_users above - a non-superadmin can only message their own
+    tree's users.
+
+    Same delivery path (and same shared-bot-only token) as
+    services/notify.py's daily quota/expiry warnings - a per-admin's own
+    dedicated bot isn't used here either; fine for now since every existing
+    telegram_id link was made through whichever bot the customer actually
+    talked to, and that's exactly the one still best-suited to reach them."""
+    from ..telegram_bot import runner as telegram_bot_runner  # local import: avoids import cycle at module load
+
+    sent = 0
+    skipped_no_telegram = 0
+    failed = 0
+    total = 0
+    for uid in user_ids:
+        user = db.get(models.User, uid)
+        if not user:
+            continue
+        if owner_admin_ids is not None and user.owner_admin_id not in owner_admin_ids:
+            continue
+        total += 1
+        if not user.telegram_id:
+            skipped_no_telegram += 1
+            continue
+        # parse_mode=None: this is free-form admin-typed text, not one of
+        # this codebase's own deliberately-HTML messages - see
+        # send_message_sync's docstring for why HTML here would silently
+        # fail for every recipient the moment the admin's message contains
+        # a stray "<" or "&".
+        if telegram_bot_runner.send_message_sync(user.telegram_id, message, parse_mode=None):
+            sent += 1
+        else:
+            failed += 1
+    return {
+        "sent_count": sent,
+        "skipped_no_telegram_count": skipped_no_telegram,
+        "failed_count": failed,
+        "total_count": total,
+    }
 
 
 # ------------------------------------------------------------------- bulk ops

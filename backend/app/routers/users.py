@@ -368,6 +368,23 @@ def bulk_delete_users(
     )
 
 
+@router.post("/bulk-notify", response_model=schemas.BulkNotifyUsersResult)
+def bulk_notify_users(
+    payload: schemas.BulkNotifyUsersRequest,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+):
+    """"ارسال پیام تلگرام" bulk action on Users.jsx - meant to be used
+    together with the page's own status filter + "انتخاب همه با این
+    فیلتر" (e.g. filter to منقضی‌شده, select everyone matching, then send
+    one message to all of them at once). Users with no linked Telegram
+    account are silently skipped (counted, not errored) - see
+    user_ops.bulk_notify_users."""
+    return user_ops.bulk_notify_users(
+        db, user_ids=payload.user_ids, message=payload.message, owner_admin_ids=hierarchy.owned_admin_ids(db, admin)
+    )
+
+
 @router.post("", response_model=schemas.UserOut)
 def create_user(
     payload: schemas.UserCreate,

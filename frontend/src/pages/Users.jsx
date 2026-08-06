@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Plus, Search, Trash2, RotateCcw, Network, Layers, PencilLine, ChevronRight, ChevronLeft, X, ArrowUpDown, FileDown, Wand2, CheckSquare } from "lucide-react";
+import { Plus, Search, Trash2, RotateCcw, Network, Layers, PencilLine, ChevronRight, ChevronLeft, X, ArrowUpDown, FileDown, Wand2, CheckSquare, Send } from "lucide-react";
 
 // یوزرنیم رندوم برای دکمه "تولید خودکار" کاربر - فقط حروف/عدد لاتین (مشابه
 // همون تابع تو Admins.jsx، اینجا مستقل تعریف شده چون دو صفحه جدان).
@@ -23,6 +23,7 @@ import {
   bulkCreateUsers,
   bulkUpdateUsers,
   bulkDeleteUsers,
+  bulkNotifyUsers,
   fetchNodes,
   fetchPackages,
   fetchAdmins,
@@ -123,6 +124,12 @@ export default function Users() {
   });
   const [bulkEditError, setBulkEditError] = useState("");
   const [exporting, setExporting] = useState(false);
+
+  const [bulkNotifyOpen, setBulkNotifyOpen] = useState(false);
+  const [bulkNotifyMessage, setBulkNotifyMessage] = useState("");
+  const [bulkNotifyError, setBulkNotifyError] = useState("");
+  const [bulkNotifyResult, setBulkNotifyResult] = useState(null);
+  const [bulkNotifySending, setBulkNotifySending] = useState(false);
 
   const totalPages = Math.max(Math.ceil(total / PAGE_SIZE), 1);
 
@@ -283,7 +290,16 @@ export default function Users() {
 
   const onDelete = async (id) => {
     if (!confirm(t("users.confirmDeleteUser"))) return;
-    await deleteUser(id);
+    try {
+      await deleteUser(id);
+    } catch (err) {
+      // e.g. one of this user's connections lives on a node that's
+      // currently unreachable, so its config can't be removed remotely
+      // (see routers/users.py's delete_user) - used to fail with nothing
+      // shown at all, identical to the button just not working.
+      alert(err?.response?.data?.detail || t("users.deleteUserError"));
+      return;
+    }
     // Deleting the last remaining user on a page beyond page 1 (e.g. page 3
     // of 3, one user left on it) used to leave `page` pointed past the new
     // last page - load() would then come back with an empty items array
@@ -349,9 +365,60 @@ export default function Users() {
   const onBulkDelete = async () => {
     if (selected.size === 0) return;
     if (!confirm(t("users.confirmBulkDelete", { count: selected.size }))) return;
-    await bulkDeleteUsers(Array.from(selected));
-    clearSelection();
-    load();
+    try {
+      const res = await bulkDeleteUsers(Array.from(selected));
+      clearSelection();
+      load();
+      // Deleting used to silently abort the ENTIRE batch the moment just
+      // ONE selected user's deprovisioning failed (e.g. a connection on a
+      // currently-unreachable node) - with nothing shown here at all, so
+      // it looked like the delete button had simply stopped working. The
+      // backend now pushes through every user it can and only reports the
+      // real failures (see user_ops.bulk_delete_users) - surface those so
+      // "چرا حذف نشد" has an actual answer instead of silence.
+      if (res.data.failed_count > 0) {
+        const reasons = res.data.failed.map((f) => `${f.username}: ${f.reason}`).join("\n");
+        alert(
+          t("users.bulkDeletePartialFailure", { deleted: res.data.deleted_count, failed: res.data.failed_count }) +
+            "\n\n" +
+            reasons
+        );
+      }
+    } catch (err) {
+      alert(err?.response?.data?.detail || t("users.bulkDeleteError"));
+    }
+  };
+
+  // ---------------- bulk notify (telegram) ----------------
+  // Meant to be used together with the status filter above + "انتخاب همه
+  // با این فیلتر" (selectAllMatching) - e.g. filter to "منقضی‌شده", select
+  // everyone matching across all pages, then send one message to all of
+  // them. Users with no linked Telegram account are silently skipped
+  // server-side (see user_ops.bulk_notify_users) - reported back in the
+  // result, not treated as an error.
+  const openBulkNotify = () => {
+    setBulkNotifyMessage("");
+    setBulkNotifyError("");
+    setBulkNotifyResult(null);
+    setBulkNotifyOpen(true);
+  };
+
+  const submitBulkNotify = async (e) => {
+    e.preventDefault();
+    if (!bulkNotifyMessage.trim()) {
+      setBulkNotifyError(t("users.notifyMessageRequired"));
+      return;
+    }
+    setBulkNotifySending(true);
+    setBulkNotifyError("");
+    try {
+      const res = await bulkNotifyUsers(Array.from(selected), bulkNotifyMessage);
+      setBulkNotifyResult(res.data);
+    } catch (err) {
+      setBulkNotifyError(err?.response?.data?.detail || t("users.notifyError"));
+    } finally {
+      setBulkNotifySending(false);
+    }
   };
 
   // ---------------- bulk create ----------------
@@ -565,6 +632,9 @@ export default function Users() {
                 </span>
                 <button className="btn-secondary" onClick={openBulkEdit}>
                   <PencilLine size={16} /> {t("users.bulkEdit")}
+                </button>
+                <button className="btn-secondary" onClick={openBulkNotify}>
+                  <Send size={16} /> {t("users.bulkNotify")}
                 </button>
                 <button className="btn-danger" onClick={onBulkDelete}>
                   <Trash2 size={16} /> {t("users.bulkDelete")}
@@ -1135,6 +1205,51 @@ export default function Users() {
             </button>
           </div>
         </form>
+      </Modal>
+
+      {/* Bulk notify (telegram) modal */}
+      <Modal open={bulkNotifyOpen} onClose={() => setBulkNotifyOpen(false)} title={t("users.bulkNotifyModalTitle", { count: selected.size })}>
+        {bulkNotifyResult ? (
+          <div className="space-y-4">
+            <div className="text-sm text-gray-600 bg-gray-50 dark:bg-slate-800 rounded-lg px-3 py-2 space-y-1">
+              <div>{t("users.notifySentCount", { count: bulkNotifyResult.sent_count })}</div>
+              {bulkNotifyResult.skipped_no_telegram_count > 0 && (
+                <div className="text-amber-600">{t("users.notifySkippedCount", { count: bulkNotifyResult.skipped_no_telegram_count })}</div>
+              )}
+              {bulkNotifyResult.failed_count > 0 && (
+                <div className="text-red-500">{t("users.notifyFailedCount", { count: bulkNotifyResult.failed_count })}</div>
+              )}
+            </div>
+            <div className="flex justify-end">
+              <button type="button" className="btn-primary" onClick={() => setBulkNotifyOpen(false)}>
+                {t("users.close")}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={submitBulkNotify} className="space-y-4">
+            <div className="text-xs text-gray-400">{t("users.notifyHint")}</div>
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">{t("users.notifyMessageField")}</label>
+              <textarea
+                className="input"
+                rows={5}
+                value={bulkNotifyMessage}
+                onChange={(e) => setBulkNotifyMessage(e.target.value)}
+                placeholder={t("users.notifyMessagePlaceholder")}
+              />
+            </div>
+            {bulkNotifyError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{bulkNotifyError}</div>}
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" className="btn-secondary" onClick={() => setBulkNotifyOpen(false)}>
+                {t("common.cancel")}
+              </button>
+              <button type="submit" disabled={bulkNotifySending} className="btn-primary">
+                {bulkNotifySending ? t("users.savingEllipsis") : t("users.notifySendButton")}
+              </button>
+            </div>
+          </form>
+        )}
       </Modal>
     </Layout>
   );

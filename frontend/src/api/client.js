@@ -85,6 +85,7 @@ export const resetUsage = (id) => client.post(`/users/${id}/reset-usage`);
 export const bulkCreateUsers = (data) => client.post("/users/bulk", data);
 export const bulkUpdateUsers = (data) => client.put("/users/bulk", data);
 export const bulkDeleteUsers = (userIds) => client.delete("/users/bulk", { data: { user_ids: userIds } });
+export const bulkNotifyUsers = (userIds, message) => client.post("/users/bulk-notify", { user_ids: userIds, message });
 export const updateConnection = (userId, connectionId, data) =>
   client.put(`/users/${userId}/connections/${connectionId}`, data);
 export const unbanConnection = (userId, connectionId) =>

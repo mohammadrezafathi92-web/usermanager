@@ -11,7 +11,7 @@ from .database import Base, engine, SessionLocal
 from . import models
 from .security import hash_password
 from .services.quota_manager import poll_all
-from .services.radius_server import start_radius_server_in_background, cleanup_stale_radius_sessions
+from .services.radius_server import start_radius_server_in_background, cleanup_stale_radius_sessions, cleanup_old_radius_limit_logs
 from .services.notify import run_daily_notify_job
 from .services.backup import run_scheduled_backup, ha_healthcheck, ha_pull_and_apply, notify_admins_text
 from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, tutorials, backup, remote_bot, admins, radius_logs, discount_codes
@@ -328,6 +328,11 @@ def _start_full_services() -> None:
     without a process restart."""
     scheduler.add_job(poll_all, "interval", seconds=settings.poll_interval_seconds, id="poll_all", replace_existing=True)
     scheduler.add_job(cleanup_stale_radius_sessions, "interval", minutes=5, id="cleanup_stale_radius_sessions", replace_existing=True)
+    # Once a day - prune RadiusLimitEventLog rows older than
+    # RADIUS_LIMIT_EVENT_LOG_KEEP_DAYS (7 by default - "لاگ‌های محدودیت
+    # اتصال فقط یک هفته کافیه"). This table had no cleanup at all before -
+    # every rejected/banned RADIUS auth attempt accumulated forever.
+    scheduler.add_job(cleanup_old_radius_limit_logs, "cron", hour=3, minute=30, id="cleanup_old_radius_limit_logs", replace_existing=True)
     # Once a day - quota/expiry reminder messages via the sales bot
     # (best-effort no-op if the bot isn't running/configured).
     scheduler.add_job(run_daily_notify_job, "cron", hour=10, minute=0, id="daily_notify", replace_existing=True)

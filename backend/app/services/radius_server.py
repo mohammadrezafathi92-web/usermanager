@@ -576,6 +576,38 @@ class UserManagerRadiusServer(Server):
             db.close()
 
 
+# کاربر: "لاگ‌های محدودیت اتصال فقط برای یک هفته نگه داشته بشه کافیه" - قبلا
+# models.RadiusLimitEventLog (رد شدن به‌خاطر عبور از سقف اتصال هم‌زمان + بن
+# موقت پس از تلاش مکرر - نوشته می‌شه توسط HandleAuthPacket پایین همین فایل
+# و routers/users.py's kick_connection) هیچ پاک‌سازی‌ای نداشت و برای همیشه
+# انباشته می‌شد.
+RADIUS_LIMIT_EVENT_LOG_KEEP_DAYS = 7
+
+
+def cleanup_old_radius_limit_logs(keep_days: int = RADIUS_LIMIT_EVENT_LOG_KEEP_DAYS) -> int:
+    """Deletes RadiusLimitEventLog rows older than `keep_days` - meant to be
+    called once a day from the scheduler (see main.py's _start_full_services).
+    Returns the number of rows deleted."""
+    db = SessionLocal()
+    try:
+        cutoff = dt.datetime.utcnow() - dt.timedelta(days=keep_days)
+        deleted = (
+            db.query(models.RadiusLimitEventLog)
+            .filter(models.RadiusLimitEventLog.created_at < cutoff)
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+        if deleted:
+            logger.info("cleaned up %d old RADIUS limit event log(s) (older than %d day(s))", deleted, keep_days)
+        return deleted
+    except Exception:
+        logger.exception("failed to clean up old RADIUS limit event logs")
+        db.rollback()
+        return 0
+    finally:
+        db.close()
+
+
 def cleanup_stale_radius_sessions(stale_after_minutes: int = STALE_SESSION_MINUTES) -> int:
     """Deletes RadiusActiveSession rows that haven't been refreshed in a
     while (a lost Stop packet - router reboot, network blip, etc. - would

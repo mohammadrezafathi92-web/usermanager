@@ -331,32 +331,15 @@ def purchases_kb(groups: list[dict]) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def usage_per_service_text(connections: list[dict]) -> str:
-    """Renders the "📊 مصرف هر سرویس" section appended to the account view -
-    each connection's own lifetime usage (Connection.total_bytes), as
-    opposed to the single combined total already shown higher up in
-    _account_text. Only meaningful when there's more than one service,
-    otherwise it just repeats the combined total for no benefit."""
-    if len(connections) < 2:
-        return ""
-    from .utils import fmt_bytes
-
-    lines = ["\n📊 <b>مصرف هر سرویس:</b>"]
-    for c in connections:
-        label = PROTOCOL_LABELS.get(c["type"], c["type"])
-        node_name = (c.get("node_name") or "").strip()
-        name = f"{label} — {node_name}" if node_name else label
-        lines.append(f"• {name}: {fmt_bytes(c.get('total_bytes') or 0)}")
-    return "\n".join(lines)
-
-
 def standalone_usage_text(connections: list[dict], expire_at=None) -> str:
     """Full standalone "📊 مصرف سرویس‌ها" view opened directly from the main
-    menu (see MenuCB action="cust_usage") - unlike usage_per_service_text
-    above (a supplementary section only shown when there's 2+ services,
-    appended under the full "اکانت من" view), this is the ENTIRE message
-    for this button, so it has to say something sensible for 0 or 1
-    service too, not just stay blank.
+    menu (see MenuCB action="cust_usage") - the ONLY place a customer sees
+    per-service usage numbers; "اکانت من" (_account_text in
+    handlers/customer.py) deliberately does not repeat them (used to, via
+    this function's now-removed usage_per_service_text sibling - it just
+    duplicated this view and cluttered the account screen). Has to say
+    something sensible for 0 or 1 service too, not just stay blank, since
+    unlike that old sibling this is the ENTIRE message for this button.
 
     Grouped by purchase (same grouping as "👤 اکانت من" - see
     group_connections_by_purchase) so services bought together show up

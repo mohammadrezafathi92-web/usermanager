@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_admin
-from ..services import hierarchy
+from ..services import hierarchy, system_stats
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"], dependencies=[Depends(get_current_admin)])
 
@@ -98,6 +98,28 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
     bytes_last_minute = speed_q.scalar() or 0
     avg_speed_bps = bytes_last_minute / 60
 
+    # Per-protocol connection counts (same visibility scope as everything
+    # else) - powers the dashboard's VPN-services-style status grid. Fixed
+    # dict with every ConnectionType key present (defaulting to 0) so the
+    # frontend can render a stable grid without guessing which protocols
+    # exist yet.
+    protocol_counts = {p.value: 0 for p in models.ConnectionType}
+    protocol_rows = (
+        db.query(models.Connection.type, func.count(models.Connection.id))
+        .join(models.User, models.User.id == models.Connection.user_id)
+        .filter(visibility)
+        .group_by(models.Connection.type)
+        .all()
+    )
+    for conn_type, count in protocol_rows:
+        key = conn_type.value if hasattr(conn_type, "value") else conn_type
+        protocol_counts[key] = count
+
+    # Host system stats (CPU/RAM/disk of THIS server) - shared
+    # infrastructure, not tenant data, so only shown to a superadmin or
+    # level-2 Admin (see schemas.DashboardStats' docstring on these fields).
+    sys_stats = system_stats.get_system_stats() if hierarchy.role(admin) != hierarchy.ROLE_SELLER else None
+
     return schemas.DashboardStats(
         total_users=total_users,
         active_users=counts_by_status.get(models.UserStatus.active, 0),
@@ -111,4 +133,12 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
         usage_last_24h=[{"bucket": k, "bytes": v} for k, v in buckets.items()],
         admin_balance=None if admin.is_superadmin else (admin.balance or 0),
         avg_speed_bps=avg_speed_bps,
+        protocol_connection_counts=protocol_counts,
+        system_cpu_percent=sys_stats["cpu_percent"] if sys_stats else None,
+        system_cpu_cores=sys_stats["cpu_cores"] if sys_stats else None,
+        system_ram_used_bytes=sys_stats["ram_used_bytes"] if sys_stats else None,
+        system_ram_total_bytes=sys_stats["ram_total_bytes"] if sys_stats else None,
+        system_disk_used_bytes=sys_stats["disk_used_bytes"] if sys_stats else None,
+        system_disk_total_bytes=sys_stats["disk_total_bytes"] if sys_stats else None,
+        system_uptime_seconds=sys_stats["uptime_seconds"] if sys_stats else None,
     )

@@ -10,6 +10,39 @@ export function formatBytes(bytes) {
   return `${value.toFixed(value >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`;
 }
 
+export function formatBitrate(bytesPerSec) {
+  // Dashboard's "میانگین سرعت مصرف" used to run this exact value through
+  // formatBytes instead (e.g. "540 KB/s") - technically an accurate BYTE
+  // count, but network speed is conventionally reported in BITS/sec
+  // (Mbps) - what an ISP plan, a router's port speed, or a speedtest.net
+  // result all use. Showing bytes made every real-world comparison look
+  // off by a factor of 8 on top of a completely different unit, which is
+  // exactly why this looked "wrong" next to reality even though the raw
+  // number itself was correct.
+  if (bytesPerSec === null || bytesPerSec === undefined) return "-";
+  const bits = bytesPerSec * 8;
+  if (bits <= 0) return "0 bps";
+  const units = ["bps", "Kbps", "Mbps", "Gbps"];
+  // Network speeds use decimal (SI, 1000-based) scaling - 1 Mbps really is
+  // 1,000,000 bit/s, not 1,048,576 - unlike formatBytes' 1024-based scaling
+  // for storage sizes. Using 1024 here would make the shown Mbps number
+  // not match what a speed-test tool reports for the same real throughput.
+  const i = Math.floor(Math.log(bits) / Math.log(1000));
+  const idx = Math.min(Math.max(i, 0), units.length - 1);
+  const value = bits / Math.pow(1000, idx);
+  return `${value.toFixed(value >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`;
+}
+
+export function formatUptime(seconds) {
+  if (!seconds || seconds < 0) return "-";
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
 export function gbToBytes(gb) {
   return Math.round(Number(gb) * 1024 * 1024 * 1024);
 }

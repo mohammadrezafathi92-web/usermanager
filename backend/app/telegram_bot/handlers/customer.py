@@ -23,7 +23,6 @@ from ..keyboards import (
     connections_list_kb,
     group_connections_by_purchase,
     purchases_kb,
-    usage_per_service_text,
     standalone_usage_text,
     account_picker_kb,
 )
@@ -98,8 +97,13 @@ def _account_text(user: dict) -> str:
             "⏳ یک تمدید (" + " و ".join(parts) + ") رزرو شده و به محض تمام شدن سرویس فعلی‌تان خودکار فعال می‌شود."
         )
     if user["connections"]:
+        # Per-service usage used to be appended here too (usage_per_service_text)
+        # - duplicated what the dedicated "📊 مصرف" button (cust_usage,
+        # standalone_usage_text) already shows on its own, cluttering the
+        # account view with numbers that belong in the usage view instead.
+        # "اکانت من" now only lists which services exist / their config
+        # buttons; per-service byte counts live exclusively under "مصرف".
         lines.append(f"\n<b>خریدهای شما ({len(user['connections'])} سرویس):</b> روی هرکدوم از دکمه‌های پایین بزنید 👇")
-        lines.append(usage_per_service_text(user["connections"]))
     return "\n".join(lines)
 
 
@@ -420,10 +424,10 @@ async def cb_referral(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(MenuCB.filter(F.action == "cust_usage"))
 async def cb_usage(call: CallbackQuery, state: FSMContext, bot: Bot) -> None:
-    """Dedicated top-level "📊 مصرف سرویس‌ها" button - shows the same
-    per-service usage breakdown as the section under "اکانت من"
-    (usage_per_service_text), but as its own standalone view reachable in
-    one tap instead of having to open the account view first."""
+    """Dedicated top-level "📊 مصرف سرویس‌ها" button - the ONLY place a
+    customer sees per-service usage numbers (standalone_usage_text) -
+    "اکانت من" (_account_text above) deliberately does not repeat them,
+    just lists which services exist and their config buttons."""
     if not await _menu_item_enabled("cust_usage"):
         await _reply_menu_item_disabled(call)
         return

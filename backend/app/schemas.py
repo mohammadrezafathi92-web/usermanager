@@ -494,6 +494,25 @@ class DashboardStats(BaseModel):
     # 1-2 poll cycles" - a rough live speed gauge, not a precise real-time
     # metric.
     avg_speed_bps: float = 0
+    # Connection count per protocol type (in the same visibility scope as
+    # everything else above), keyed by models.ConnectionType's string value
+    # ("wireguard", "openvpn", "l2tp", "ikev2", "sstp", "xray") - powers the
+    # dashboard's per-protocol status grid. Always 0 for a protocol with no
+    # connections yet, never omitted, so the frontend can render a fixed
+    # grid without guessing which keys might be missing.
+    protocol_connection_counts: dict = {}
+    # This panel server's OWN host resource usage (services/system_stats.py) -
+    # shared infrastructure, not per-tenant data, so only populated for a
+    # superadmin or level-2 Admin (same admin_or_above rule the Nodes page
+    # uses) - null for a level-3 Seller and the frontend simply hides the
+    # card in that case, same pattern as admin_balance above.
+    system_cpu_percent: Optional[float] = None
+    system_cpu_cores: Optional[int] = None
+    system_ram_used_bytes: Optional[int] = None
+    system_ram_total_bytes: Optional[int] = None
+    system_disk_used_bytes: Optional[int] = None
+    system_disk_total_bytes: Optional[int] = None
+    system_uptime_seconds: Optional[int] = None
 
 
 # ---------- API keys (for the external/bot integration) ----------

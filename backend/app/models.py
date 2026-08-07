@@ -168,6 +168,26 @@ class AdminUser(Base):
     own_payment_instructions = Column(Text, nullable=True)
     own_topup_presets = Column(String(255), nullable=True)
 
+    # Multi-card support (چند شماره کارت + انتخاب/چرخش بین آن‌ها) - see
+    # PaymentCard below. own_payment_card_number/holder above stay as the
+    # legacy single-card fallback (still shown if this Admin/Seller never
+    # registers any PaymentCard row) - get_payment_info in routers/bot.py
+    # prefers a resolved PaymentCard over these whenever at least one
+    # is_active card exists for this admin_id.
+    #   "manual"    - always own_active_payment_card_id's card.
+    #   "rotate"    - round-robins (least-recently-shown) across every
+    #                 is_active card in this admin's own pool, on every
+    #                 payment screen view.
+    #   "threshold" - same as "manual" for display, but once confirmed
+    #                 deposits against the active card reach
+    #                 own_payment_card_switch_threshold (تومان), the panel
+    #                 auto-advances own_active_payment_card_id to the next
+    #                 card in the pool and resets the counter.
+    # See services/payment_cards.py's resolve_active_card/advance_after_payment.
+    own_payment_card_mode = Column(String(16), nullable=False, default="manual")
+    own_active_payment_card_id = Column(Integer, ForeignKey("payment_cards.id"), nullable=True)
+    own_payment_card_switch_threshold = Column(BigInteger, nullable=True)  # تومان - only meaningful in "threshold" mode
+
 
 class AdminPermissionGroup(Base):
     """A reusable, named set of permissions (see app/permissions.py) that
@@ -1085,6 +1105,19 @@ class PanelSettings(Base):
     # customer can also always type a custom amount instead.
     topup_presets = Column(Text, nullable=True, default="")
 
+    # Multi-card support (چند شماره کارت + انتخاب/چرخش بین آن‌ها) - see
+    # PaymentCard below. payment_card_number/holder above stay as the
+    # legacy single-card fallback (still shown if no PaymentCard row with
+    # owner_admin_id=NULL exists) - get_payment_info in routers/bot.py
+    # prefers a resolved PaymentCard over these whenever at least one
+    # is_active global card exists. Same three modes as
+    # AdminUser.own_payment_card_mode (see its docstring) - "manual",
+    # "rotate", or "threshold" - applied to the global card pool instead of
+    # one admin's own. See services/payment_cards.py.
+    payment_card_mode = Column(String(16), nullable=False, default="manual")
+    active_payment_card_id = Column(Integer, ForeignKey("payment_cards.id"), nullable=True)
+    payment_card_switch_threshold = Column(BigInteger, nullable=True)  # تومان - only meaningful in "threshold" mode
+
     # ---------------------------------------------------------------------
     # HA / near-real-time replication به سرور دوم (مورد ۱۰). Off by default
     # (ha_enabled=False) - purely additive, zero behavior change unless the
@@ -1168,6 +1201,52 @@ class PanelSettings(Base):
     loyalty_purchase_threshold = Column(Integer, nullable=True)
     loyalty_reward_credit = Column(BigInteger, nullable=False, default=0)  # تومان
     loyalty_reward_gb = Column(Float, nullable=False, default=0)
+
+
+class PaymentCard(Base):
+    """One card-to-card bank card registered for card-to-card payment
+    display - either in the panel-wide global pool (owner_admin_id=NULL,
+    backs the shared bot and every admin without their own dedicated bot's
+    card set - see PanelSettings.payment_card_mode/active_payment_card_id)
+    or in one specific Admin's/Seller's OWN pool for their dedicated bot
+    (owner_admin_id=that admin's id - see AdminUser.own_payment_card_mode/
+    own_active_payment_card_id).
+
+    Added so an admin isn't stuck with exactly one card number - registering
+    several and either manually picking which one is "active" (shown to
+    every customer until switched) or letting the panel round-robin between
+    them automatically (services/payment_cards.py's resolve_active_card)
+    spreads deposit traffic across cards, which in practice matters because
+    a single card taking too many small card-to-card transfers in a short
+    window is a common trigger for Iranian banks freezing it."""
+
+    __tablename__ = "payment_cards"
+
+    id = Column(Integer, primary_key=True)
+    owner_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=True, index=True)
+    card_number = Column(String(64), nullable=False)
+    card_holder = Column(String(128), nullable=True)
+    # Unchecking this takes the card out of both manual selection AND the
+    # rotation pool without deleting its row (e.g. temporarily pulling a
+    # card that just got frozen, without losing its saved number/holder).
+    is_active = Column(Boolean, nullable=False, default=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    # Rotation bookkeeping only (see resolve_active_card) - meaningless in
+    # "manual"/"threshold" mode. NULL = never picked yet, sorts first
+    # (oldest) so a freshly-added card enters the rotation immediately
+    # instead of waiting behind every already-used card.
+    last_used_at = Column(DateTime, nullable=True)
+    # "threshold" mode bookkeeping only (see advance_after_payment) -
+    # running total of CONFIRMED deposits (approved receipts/top-ups) made
+    # while this card was the pool's active one. Reset to 0 every time the
+    # pool auto-advances past this card. Meaningless in "manual"/"rotate"
+    # mode, but still accumulated regardless of mode so switching a pool
+    # INTO "threshold" mode later doesn't start from a misleadingly-zeroed
+    # number for whichever card happens to be active at that point.
+    accumulated_amount = Column(BigInteger, nullable=False, default=0)  # تومان
+    created_at = Column(DateTime, default=now)
+
+    owner_admin = relationship("AdminUser", foreign_keys=[owner_admin_id])
 
 
 class BotSettings(Base):

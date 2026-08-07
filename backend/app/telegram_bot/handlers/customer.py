@@ -828,6 +828,11 @@ async def _show_payment_screen(target, state: FSMContext) -> None:
     if payment.get("payment_instructions"):
         lines.append("\n" + payment["payment_instructions"])
 
+    # Remembered so receive_receipt below can stamp it onto the pending
+    # request - see storage.py's payment_card_id column docstring for why
+    # (threshold-mode bookkeeping once an admin approves this purchase).
+    await state.update_data(payment_card_id=payment.get("resolved_payment_card_id"))
+
     await state.set_state(CustomerPurchaseStates.waiting_receipt)
     await _reply(target, "\n".join(lines), receipt_choice_kb(can_pay_from_balance, final_price))
 
@@ -1025,6 +1030,7 @@ async def receive_receipt(message: Message, state: FSMContext, bot: Bot) -> None
         discount_code=data.get("discount_code"),
         discount_amount=discount_amount,
         final_price=max(0, pkg.get("price", 0) - discount_amount),
+        payment_card_id=data.get("payment_card_id"),
     )
     await state.clear()
     await message.answer("✅ رسید شما ثبت شد و برای بررسی ادمین ارسال شد. نتیجه به همین چت اطلاع داده می‌شود.", reply_markup=home_kb())
@@ -1055,7 +1061,7 @@ async def _ask_for_topup_receipt(target, state: FSMContext, amount: int) -> None
         else:
             await target.answer(f"خطا: {exc}")
         return
-    await state.update_data(topup_amount=amount)
+    await state.update_data(topup_amount=amount, payment_card_id=payment.get("resolved_payment_card_id"))
     lines = [
         f"مبلغ افزایش اعتبار: <b>{amount:,} تومان</b>",
         "",
@@ -1140,6 +1146,7 @@ async def receive_topup_receipt(message: Message, state: FSMContext, bot: Bot) -
         package={"id": 0, "name": f"افزایش اعتبار {amount:,} تومان", "quota_gb": 0, "duration_days": None, "price": amount},
         target_username=target_username,
         receipt_file_id=message.photo[-1].file_id,
+        payment_card_id=data.get("payment_card_id"),
     )
     await state.clear()
     await message.answer("✅ رسید شما ثبت شد و برای بررسی ادمین ارسال شد. نتیجه به همین چت اطلاع داده می‌شود.", reply_markup=home_kb())

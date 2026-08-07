@@ -11,6 +11,11 @@ import {
   deleteApiKey,
   fetchPanelSettings,
   updatePanelSettings,
+  fetchPaymentCards,
+  createPaymentCard,
+  updatePaymentCard,
+  deletePaymentCard,
+  activatePaymentCard,
   fetchTelegramBotSettings,
   updateTelegramBotSettings,
   restartTelegramBot,
@@ -18,6 +23,11 @@ import {
   updateMyBot,
   fetchMyPayment,
   updateMyPayment,
+  fetchMyPaymentCards,
+  createMyPaymentCard,
+  updateMyPaymentCard,
+  deleteMyPaymentCard,
+  activateMyPaymentCard,
   fetchBackups,
   runBackup,
   downloadBackup,
@@ -250,6 +260,42 @@ export default function Settings() {
     } finally {
       setSavingPayment(false);
     }
+  };
+
+  // Global چند شماره کارت pool (see PaymentCardsManager) - separate from
+  // submitPayment above since these mutate immediately (add/delete/
+  // activate a card, or switch mode) rather than waiting for an explicit
+  // "save" on the whole form.
+  const [savingCardMode, setSavingCardMode] = useState(false);
+  const reloadPaymentCards = async () => {
+    const res = await fetchPanelSettings();
+    setPayment((p) => ({ ...p, ...res.data }));
+  };
+  const saveCardModeThreshold = async (mode, threshold) => {
+    setSavingCardMode(true);
+    try {
+      const res = await updatePanelSettings({ payment_card_mode: mode, payment_card_switch_threshold: threshold });
+      setPayment((p) => ({ ...p, ...res.data }));
+    } finally {
+      setSavingCardMode(false);
+    }
+  };
+  const addPaymentCardHandler = async (data) => {
+    await createPaymentCard(data);
+    await reloadPaymentCards();
+  };
+  const deletePaymentCardHandler = async (id) => {
+    if (!window.confirm(t("settings.confirmDeleteCard"))) return;
+    await deletePaymentCard(id);
+    await reloadPaymentCards();
+  };
+  const activatePaymentCardHandler = async (id) => {
+    const res = await activatePaymentCard(id);
+    setPayment((p) => ({ ...p, ...res.data }));
+  };
+  const toggleCardActiveHandler = async (card) => {
+    await updatePaymentCard(card.id, { is_active: !card.is_active });
+    await reloadPaymentCards();
   };
 
   const submit = async (e) => {
@@ -628,6 +674,20 @@ export default function Settings() {
             </button>
           </div>
         </form>
+
+        <PaymentCardsManager
+          t={t}
+          cards={payment.payment_cards}
+          mode={payment.payment_card_mode}
+          activeCardId={payment.active_payment_card_id}
+          threshold={payment.payment_card_switch_threshold}
+          savingModeThreshold={savingCardMode}
+          onSaveModeThreshold={saveCardModeThreshold}
+          onAdd={addPaymentCardHandler}
+          onDelete={deletePaymentCardHandler}
+          onActivate={activatePaymentCardHandler}
+          onToggleActive={toggleCardActiveHandler}
+        />
       </div>
       )}
 
@@ -1388,6 +1448,175 @@ function OwnBotCard({ t }) {
   );
 }
 
+// Shared چند شماره کارت UI - used both by the global (superadmin) payment
+// card below and by OwnPaymentCard (level-2 Admin/level-3 Seller's own
+// pool) - same three modes either way (see services/payment_cards.py's
+// module docstring), just pointed at a different pool via the fetch*/
+// create*/update*/delete*/activate* functions passed in as props.
+function PaymentCardsManager({
+  t, cards, mode, activeCardId, threshold,
+  onSaveModeThreshold, savingModeThreshold,
+  onAdd, onDelete, onActivate, onToggleActive,
+}) {
+  const [newNumber, setNewNumber] = useState("");
+  const [newHolder, setNewHolder] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [localMode, setLocalMode] = useState(mode || "manual");
+  const [localThreshold, setLocalThreshold] = useState(threshold || "");
+  const [busyId, setBusyId] = useState(null);
+
+  useEffect(() => setLocalMode(mode || "manual"), [mode]);
+  useEffect(() => setLocalThreshold(threshold || ""), [threshold]);
+
+  const submitAdd = async (e) => {
+    e.preventDefault();
+    if (!newNumber.trim()) return;
+    setAdding(true);
+    try {
+      await onAdd({ card_number: newNumber.trim(), card_holder: newHolder.trim() || null });
+      setNewNumber("");
+      setNewHolder("");
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const withBusy = (id, fn) => async () => {
+    setBusyId(id);
+    try {
+      await fn();
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="mt-6 pt-6 border-t border-gray-100">
+      <h4 className="font-bold text-gray-700 text-sm mb-1">{t("settings.multiCardTitle")}</h4>
+      <p className="text-xs text-gray-400 mb-4">{t("settings.multiCardHint")}</p>
+
+      <div className="flex flex-wrap items-end gap-3 mb-4">
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">{t("settings.cardModeLabel")}</label>
+          <select className="input w-auto" value={localMode} onChange={(e) => setLocalMode(e.target.value)}>
+            <option value="manual">{t("settings.cardModeManual")}</option>
+            <option value="rotate">{t("settings.cardModeRotate")}</option>
+            <option value="threshold">{t("settings.cardModeThreshold")}</option>
+          </select>
+        </div>
+        {localMode === "threshold" && (
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">{t("settings.cardThresholdLabel")}</label>
+            <input
+              className="input w-auto"
+              dir="ltr"
+              type="number"
+              min="0"
+              placeholder={t("settings.cardThresholdPlaceholder")}
+              value={localThreshold}
+              onChange={(e) => setLocalThreshold(e.target.value)}
+            />
+          </div>
+        )}
+        <button
+          type="button"
+          className="btn-secondary text-sm"
+          disabled={savingModeThreshold}
+          onClick={() => onSaveModeThreshold(localMode, localThreshold ? Number(localThreshold) : null)}
+        >
+          {savingModeThreshold ? t("settings.saving") : t("settings.cardModeSave")}
+        </button>
+      </div>
+      {localMode === "threshold" && (
+        <p className="text-xs text-gray-400 mb-4">{t("settings.cardThresholdHint")}</p>
+      )}
+
+      <div className="space-y-2 mb-4">
+        {(!cards || cards.length === 0) && (
+          <p className="text-xs text-gray-400">{t("settings.noCardsYet")}</p>
+        )}
+        {(cards || []).map((c) => (
+          <div
+            key={c.id}
+            className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 ${
+              c.id === activeCardId ? "border-brand-300 bg-brand-50/40" : "border-gray-200"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <input
+                type="radio"
+                name="activePaymentCard"
+                checked={c.id === activeCardId}
+                disabled={!c.is_active || busyId === c.id}
+                onChange={withBusy(c.id, () => onActivate(c.id))}
+              />
+              <div>
+                <div className="text-sm font-mono" dir="ltr">{c.card_number}</div>
+                {c.card_holder && <div className="text-xs text-gray-400">{c.card_holder}</div>}
+              </div>
+              {c.id === activeCardId && (
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">
+                  {t("settings.cardActiveBadge")}
+                </span>
+              )}
+              {!c.is_active && (
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-400">
+                  {t("settings.cardDisabledBadge")}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              {localMode === "threshold" && (
+                <span className="text-xs text-gray-400" dir="ltr">
+                  {(c.accumulated_amount || 0).toLocaleString()} / {threshold ? Number(threshold).toLocaleString() : "-"}
+                </span>
+              )}
+              <button
+                type="button"
+                className="text-xs text-gray-500 hover:text-gray-700"
+                disabled={busyId === c.id}
+                onClick={withBusy(c.id, () => onToggleActive(c))}
+              >
+                {c.is_active ? t("settings.cardDeactivate") : t("settings.cardActivateToggle")}
+              </button>
+              <button
+                type="button"
+                className="text-red-500 hover:text-red-600"
+                disabled={busyId === c.id}
+                onClick={withBusy(c.id, () => onDelete(c.id))}
+                title={t("settings.cardDelete")}
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <form onSubmit={submitAdd} className="flex flex-wrap gap-2 items-end">
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">{t("settings.cardNumber")}</label>
+          <input
+            className="input"
+            dir="ltr"
+            placeholder="6037-XXXX-XXXX-XXXX"
+            value={newNumber}
+            onChange={(e) => setNewNumber(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">{t("settings.cardHolder")}</label>
+          <input className="input" value={newHolder} onChange={(e) => setNewHolder(e.target.value)} />
+        </div>
+        <button type="submit" className="btn-primary text-sm" disabled={adding}>
+          <Plus size={14} className="inline -mt-0.5 ml-1" />
+          {t("settings.addCard")}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 // This Admin's/Seller's OWN card-to-card payment info, shown to customers
 // in THEIR OWN bot instead of the superadmin's global card (see routers/
 // panel_settings.py's my_payment_router and models.AdminUser.
@@ -1424,6 +1653,40 @@ function OwnPaymentCard({ t }) {
     } finally {
       setSaving(false);
     }
+  };
+
+  // This Admin's/Seller's own چند شماره کارت pool - same shape as the
+  // global one on the superadmin's page, see PaymentCardsManager.
+  const [savingCardMode, setSavingCardMode] = useState(false);
+  const reloadCards = async () => {
+    const res = await fetchMyPayment();
+    setForm(res.data);
+  };
+  const saveCardModeThreshold = async (mode, threshold) => {
+    setSavingCardMode(true);
+    try {
+      const res = await updateMyPayment({ payment_card_mode: mode, payment_card_switch_threshold: threshold });
+      setForm(res.data);
+    } finally {
+      setSavingCardMode(false);
+    }
+  };
+  const addCard = async (data) => {
+    await createMyPaymentCard(data);
+    await reloadCards();
+  };
+  const deleteCard = async (id) => {
+    if (!window.confirm(t("settings.confirmDeleteCard"))) return;
+    await deleteMyPaymentCard(id);
+    await reloadCards();
+  };
+  const activateCard = async (id) => {
+    const res = await activateMyPaymentCard(id);
+    setForm(res.data);
+  };
+  const toggleCardActive = async (card) => {
+    await updateMyPaymentCard(card.id, { is_active: !card.is_active });
+    await reloadCards();
   };
 
   if (!loaded) return null;
@@ -1486,6 +1749,20 @@ function OwnPaymentCard({ t }) {
           </button>
         </div>
       </div>
+
+      <PaymentCardsManager
+        t={t}
+        cards={form.payment_cards}
+        mode={form.payment_card_mode}
+        activeCardId={form.active_payment_card_id}
+        threshold={form.payment_card_switch_threshold}
+        savingModeThreshold={savingCardMode}
+        onSaveModeThreshold={saveCardModeThreshold}
+        onAdd={addCard}
+        onDelete={deleteCard}
+        onActivate={activateCard}
+        onToggleActive={toggleCardActive}
+      />
     </div>
   );
 }

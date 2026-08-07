@@ -47,6 +47,14 @@ _NEW_COLUMNS = {
     "discount_code": "TEXT",
     "discount_amount": "INTEGER NOT NULL DEFAULT 0",
     "final_price": "INTEGER",
+    # Which PaymentCard (see models.py) was actually shown to the customer
+    # for THIS request (routers/bot.py's get_payment_info resolves one at
+    # payment-screen time - see its docstring) - NULL if the relevant pool
+    # had no registered cards (legacy single-card fallback was shown
+    # instead) or this is a 'link' request (no payment involved at all).
+    # Read back by admin_pending.py once the request is approved, to credit
+    # the right card's accumulated_amount for "threshold" mode.
+    "payment_card_id": "INTEGER",
 }
 
 
@@ -86,14 +94,16 @@ def create_pending(
     discount_code: Optional[str] = None,
     discount_amount: int = 0,
     final_price: Optional[int] = None,
+    payment_card_id: Optional[int] = None,
 ) -> int:
     with _conn() as conn:
         cur = conn.execute(
             """INSERT INTO pending_purchases
                (telegram_id, telegram_username, telegram_name, kind, package_id, package_name,
                 quota_gb, duration_days, price, node_id, node_name, protocol, target_username,
-                receipt_file_id, created_at, referral_code, discount_code, discount_amount, final_price)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                receipt_file_id, created_at, referral_code, discount_code, discount_amount, final_price,
+                payment_card_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 telegram_id,
                 telegram_username,
@@ -114,6 +124,7 @@ def create_pending(
                 discount_code,
                 discount_amount or 0,
                 final_price if final_price is not None else package.get("price", 0),
+                payment_card_id,
             ),
         )
         return cur.lastrowid

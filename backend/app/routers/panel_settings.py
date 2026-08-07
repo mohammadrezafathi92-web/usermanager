@@ -22,6 +22,7 @@ from ..deps import require_admin_or_above, require_superadmin, get_current_admin
 from ..services import backup as backup_service
 from ..services import local_deploy
 from ..services import hierarchy
+from ..services import payment_cards as payment_cards_service
 
 # Panel-wide (single PanelSettings row, id=1) - payment/checkout info,
 # support contact, referral/loyalty config, panel port, HA config all
@@ -42,9 +43,20 @@ def _get_or_create(db: Session) -> models.PanelSettings:
     return row
 
 
+def _settings_out(db: Session, row: models.PanelSettings) -> schemas.PanelSettingsOut:
+    """PaymentCardOut.payment_cards isn't a real column/relationship on
+    PanelSettings - populated here from the global pool (owner_admin_id
+    IS NULL) instead of relying on from_attributes to find it."""
+    out = schemas.PanelSettingsOut.model_validate(row)
+    out.payment_cards = [
+        schemas.PaymentCardOut.model_validate(c) for c in payment_cards_service.list_cards(db, None)
+    ]
+    return out
+
+
 @router.get("", response_model=schemas.PanelSettingsOut)
 def get_settings(db: Session = Depends(get_db)):
-    return _get_or_create(db)
+    return _settings_out(db, _get_or_create(db))
 
 
 @router.put("", response_model=schemas.PanelSettingsOut)
@@ -65,7 +77,84 @@ def update_settings(payload: schemas.PanelSettingsUpdate, db: Session = Depends(
         setattr(row, k, v)
     db.commit()
     db.refresh(row)
-    return row
+    return _settings_out(db, row)
+
+
+# ---------------------------------------------------------------------------
+# Global payment card pool (چند شماره کارت) - see services/payment_cards.py's
+# module docstring for the manual/rotate/threshold modes. Card-holder for
+# this pool is the shared/global bot (superadmin's own) - a level-2 Admin/
+# level-3 Seller manages their OWN pool instead, via my_payment_router
+# below. Deliberately just more routes on `router` (already superadmin/
+# level-2-Admin-only via require_admin_or_above) rather than a separate
+# router, same reasoning as change-port above.
+@router.get("/payment-cards", response_model=list[schemas.PaymentCardOut])
+def list_payment_cards(db: Session = Depends(get_db)):
+    return payment_cards_service.list_cards(db, None)
+
+
+@router.post("/payment-cards", response_model=schemas.PaymentCardOut)
+def create_payment_card(payload: schemas.PaymentCardCreate, db: Session = Depends(get_db)):
+    was_empty = not payment_cards_service.list_cards(db, None)
+    card = models.PaymentCard(owner_admin_id=None, **payload.model_dump())
+    db.add(card)
+    db.flush()
+    if was_empty:
+        # First card ever added to an empty pool - make it the active one
+        # right away instead of leaving active_payment_card_id null (which
+        # would otherwise silently keep showing the legacy single
+        # payment_card_number field until the admin remembers to activate
+        # something).
+        row = _get_or_create(db)
+        row.active_payment_card_id = card.id
+    db.commit()
+    db.refresh(card)
+    return card
+
+
+@router.put("/payment-cards/{card_id}", response_model=schemas.PaymentCardOut)
+def update_payment_card(card_id: int, payload: schemas.PaymentCardUpdate, db: Session = Depends(get_db)):
+    card = db.get(models.PaymentCard, card_id)
+    if not card or card.owner_admin_id is not None:
+        raise HTTPException(404, "کارت پیدا نشد")
+    for k, v in payload.model_dump(exclude_unset=True).items():
+        setattr(card, k, v)
+    db.commit()
+    db.refresh(card)
+    return card
+
+
+@router.delete("/payment-cards/{card_id}")
+def delete_payment_card(card_id: int, db: Session = Depends(get_db)):
+    card = db.get(models.PaymentCard, card_id)
+    if not card or card.owner_admin_id is not None:
+        raise HTTPException(404, "کارت پیدا نشد")
+    row = _get_or_create(db)
+    db.delete(card)
+    db.flush()
+    if row.active_payment_card_id == card_id:
+        # Was the active card - fall back to whatever's left in the pool
+        # (None if this was the last card) instead of leaving a dangling
+        # pointer to a deleted row.
+        remaining = payment_cards_service.list_cards(db, None)
+        row.active_payment_card_id = remaining[0].id if remaining else None
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/payment-cards/{card_id}/activate", response_model=schemas.PanelSettingsOut)
+def activate_payment_card(card_id: int, db: Session = Depends(get_db)):
+    """Manual card selection - sets card_id as the one shown to customers
+    right now. Meaningful in "manual" and "threshold" mode; harmless
+    (just overwritten on the next view) in "rotate" mode."""
+    card = db.get(models.PaymentCard, card_id)
+    if not card or card.owner_admin_id is not None:
+        raise HTTPException(404, "کارت پیدا نشد")
+    row = _get_or_create(db)
+    row.active_payment_card_id = card.id
+    db.commit()
+    db.refresh(row)
+    return _settings_out(db, row)
 
 
 @router.post("/change-port", response_model=schemas.PanelPortChangeResult, dependencies=[Depends(require_superadmin)])
@@ -113,15 +202,25 @@ def _require_not_superadmin(admin: models.AdminUser) -> None:
         raise HTTPException(403, "این بخش برای ادمین اصلی در دسترس نیست - از تنظیمات پرداخت مشترک استفاده کنید")
 
 
-@my_payment_router.get("", response_model=schemas.OwnPaymentSettingsOut)
-def get_my_payment(admin: models.AdminUser = Depends(get_current_admin)):
-    _require_not_superadmin(admin)
+def _own_payment_out(db: Session, admin: models.AdminUser) -> schemas.OwnPaymentSettingsOut:
     return schemas.OwnPaymentSettingsOut(
         payment_card_number=admin.own_payment_card_number or "",
         payment_card_holder=admin.own_payment_card_holder or "",
         payment_instructions=admin.own_payment_instructions or "",
         topup_presets=admin.own_topup_presets or "",
+        payment_card_mode=admin.own_payment_card_mode or "manual",
+        active_payment_card_id=admin.own_active_payment_card_id,
+        payment_card_switch_threshold=admin.own_payment_card_switch_threshold,
+        payment_cards=[
+            schemas.PaymentCardOut.model_validate(c) for c in payment_cards_service.list_cards(db, admin.id)
+        ],
     )
+
+
+@my_payment_router.get("", response_model=schemas.OwnPaymentSettingsOut)
+def get_my_payment(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    _require_not_superadmin(admin)
+    return _own_payment_out(db, admin)
 
 
 @my_payment_router.put("", response_model=schemas.OwnPaymentSettingsOut)
@@ -145,14 +244,92 @@ def update_my_payment(
         admin.own_payment_instructions = (data["payment_instructions"] or "").strip() or None
     if "topup_presets" in data:
         admin.own_topup_presets = (data["topup_presets"] or "").strip() or None
+    if "payment_card_mode" in data:
+        admin.own_payment_card_mode = data["payment_card_mode"] or "manual"
+    if "active_payment_card_id" in data:
+        admin.own_active_payment_card_id = data["active_payment_card_id"]
+    if "payment_card_switch_threshold" in data:
+        admin.own_payment_card_switch_threshold = data["payment_card_switch_threshold"]
     db.commit()
     db.refresh(admin)
-    return schemas.OwnPaymentSettingsOut(
-        payment_card_number=admin.own_payment_card_number or "",
-        payment_card_holder=admin.own_payment_card_holder or "",
-        payment_instructions=admin.own_payment_instructions or "",
-        topup_presets=admin.own_topup_presets or "",
-    )
+    return _own_payment_out(db, admin)
+
+
+# ------------------------------------------------------- per-admin card pool
+# Same shape as the global /payment-cards routes above, scoped to this
+# admin's own pool (owner_admin_id=admin.id) instead of the global one.
+@my_payment_router.get("/cards", response_model=list[schemas.PaymentCardOut])
+def list_my_payment_cards(admin: models.AdminUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    _require_not_superadmin(admin)
+    return payment_cards_service.list_cards(db, admin.id)
+
+
+@my_payment_router.post("/cards", response_model=schemas.PaymentCardOut)
+def create_my_payment_card(
+    payload: schemas.PaymentCardCreate,
+    admin: models.AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    _require_not_superadmin(admin)
+    was_empty = not payment_cards_service.list_cards(db, admin.id)
+    card = models.PaymentCard(owner_admin_id=admin.id, **payload.model_dump())
+    db.add(card)
+    db.flush()
+    if was_empty:
+        admin.own_active_payment_card_id = card.id
+    db.commit()
+    db.refresh(card)
+    return card
+
+
+def _get_own_card_or_404(db: Session, admin: models.AdminUser, card_id: int) -> models.PaymentCard:
+    card = db.get(models.PaymentCard, card_id)
+    if not card or card.owner_admin_id != admin.id:
+        raise HTTPException(404, "کارت پیدا نشد")
+    return card
+
+
+@my_payment_router.put("/cards/{card_id}", response_model=schemas.PaymentCardOut)
+def update_my_payment_card(
+    card_id: int,
+    payload: schemas.PaymentCardUpdate,
+    admin: models.AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    _require_not_superadmin(admin)
+    card = _get_own_card_or_404(db, admin, card_id)
+    for k, v in payload.model_dump(exclude_unset=True).items():
+        setattr(card, k, v)
+    db.commit()
+    db.refresh(card)
+    return card
+
+
+@my_payment_router.delete("/cards/{card_id}")
+def delete_my_payment_card(
+    card_id: int, admin: models.AdminUser = Depends(get_current_admin), db: Session = Depends(get_db),
+):
+    _require_not_superadmin(admin)
+    card = _get_own_card_or_404(db, admin, card_id)
+    db.delete(card)
+    db.flush()
+    if admin.own_active_payment_card_id == card_id:
+        remaining = payment_cards_service.list_cards(db, admin.id)
+        admin.own_active_payment_card_id = remaining[0].id if remaining else None
+    db.commit()
+    return {"ok": True}
+
+
+@my_payment_router.post("/cards/{card_id}/activate", response_model=schemas.OwnPaymentSettingsOut)
+def activate_my_payment_card(
+    card_id: int, admin: models.AdminUser = Depends(get_current_admin), db: Session = Depends(get_db),
+):
+    _require_not_superadmin(admin)
+    card = _get_own_card_or_404(db, admin, card_id)
+    admin.own_active_payment_card_id = card.id
+    db.commit()
+    db.refresh(admin)
+    return _own_payment_out(db, admin)
 
 
 # ---------------------------------------------------------------------------

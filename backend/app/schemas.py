@@ -822,12 +822,51 @@ class ReferralApplyRequest(BaseModel):
 
 
 # ---------- Panel-wide settings (payment info shown by the sales bot) ----------
+class PaymentCardOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    card_number: str
+    card_holder: Optional[str] = None
+    is_active: bool = True
+    sort_order: int = 0
+    accumulated_amount: int = 0  # تومان - only meaningful in "threshold" mode, see models.PaymentCard
+    last_used_at: Optional[dt.datetime] = None
+    created_at: Optional[dt.datetime] = None
+
+
+class PaymentCardCreate(BaseModel):
+    card_number: str
+    card_holder: Optional[str] = None
+    is_active: bool = True
+    sort_order: int = 0
+
+
+class PaymentCardUpdate(BaseModel):
+    card_number: Optional[str] = None
+    card_holder: Optional[str] = None
+    is_active: Optional[bool] = None
+    sort_order: Optional[int] = None
+
+
 class PanelSettingsOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     payment_card_number: Optional[str] = None
     payment_card_holder: Optional[str] = None
     payment_instructions: Optional[str] = None
     topup_presets: Optional[str] = ""
+    # Multi-card support (see models.PaymentCard) - "manual" | "rotate" |
+    # "threshold". payment_cards is the full registered pool (global, i.e.
+    # PaymentCard.owner_admin_id IS NULL); resolved_payment_card_id is only
+    # ever set on the BOT-facing /api/bot/payment-info response (routers/
+    # bot.py's get_payment_info) - which specific card THIS response
+    # resolved to show, so the bot can remember it for threshold-mode
+    # bookkeeping once the payment is later approved. Always null on the
+    # admin-facing GET /api/settings response.
+    payment_card_mode: str = "manual"
+    active_payment_card_id: Optional[int] = None
+    payment_card_switch_threshold: Optional[int] = None
+    payment_cards: List[PaymentCardOut] = []
+    resolved_payment_card_id: Optional[int] = None
     # HA / near-real-time replication به سرور دوم (مورد ۱۰) - see models.PanelSettings
     ha_enabled: bool = False
     ha_mode: Optional[str] = "standby"
@@ -864,6 +903,10 @@ class PanelSettingsUpdate(BaseModel):
     payment_card_holder: Optional[str] = None
     payment_instructions: Optional[str] = None
     topup_presets: Optional[str] = None
+    # "manual" | "rotate" | "threshold" - see models.PanelSettings.payment_card_mode
+    payment_card_mode: Optional[str] = None
+    active_payment_card_id: Optional[int] = None
+    payment_card_switch_threshold: Optional[int] = None
     ha_enabled: Optional[bool] = None
     ha_mode: Optional[str] = None
     ha_peer_url: Optional[str] = None
@@ -958,6 +1001,11 @@ class OwnPaymentSettingsOut(BaseModel):
     payment_card_holder: Optional[str] = ""
     payment_instructions: Optional[str] = ""
     topup_presets: Optional[str] = ""
+    # Multi-card support (see models.PaymentCard, models.AdminUser.own_payment_card_mode)
+    payment_card_mode: str = "manual"
+    active_payment_card_id: Optional[int] = None
+    payment_card_switch_threshold: Optional[int] = None
+    payment_cards: List[PaymentCardOut] = []
 
 
 class OwnPaymentSettingsUpdate(BaseModel):
@@ -965,6 +1013,9 @@ class OwnPaymentSettingsUpdate(BaseModel):
     payment_card_holder: Optional[str] = None
     payment_instructions: Optional[str] = None
     topup_presets: Optional[str] = None
+    payment_card_mode: Optional[str] = None
+    active_payment_card_id: Optional[int] = None
+    payment_card_switch_threshold: Optional[int] = None
 
 
 # ---------- Remote bot deployment (install the interactive bot on a 2nd server) ----------
@@ -1126,6 +1177,13 @@ class BotPurchasePackageRequest(BaseModel):
 class BotPurchaseResponse(BaseModel):
     user: BotUserResponse
     connections: List[BotConnectionInfo]
+
+
+class BotRecordCardPaymentRequest(BaseModel):
+    """See services/payment_cards.py's advance_after_payment - amount is
+    the toman value of a receipt/top-up just approved against this card,
+    used for "threshold" mode's accumulated-total tracking."""
+    amount: int
 
 
 class BotUserListItem(BaseModel):

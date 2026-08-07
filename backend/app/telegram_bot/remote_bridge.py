@@ -239,6 +239,9 @@ class RemoteBridge:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         return await self._call("POST", f"/users/{username}/purchase-package", json=payload, params=params)
 
+    async def record_card_payment(self, card_id: int, amount: int) -> None:
+        await self._call("POST", f"/payment-cards/{card_id}/record-payment", json={"amount": amount})
+
     async def renew(
         self, username: str, add_gb: float = 0, add_days: int = 0, reset_usage: bool = False,
         owner_admin_id: Optional[int] = None, package_id: Optional[int] = None,

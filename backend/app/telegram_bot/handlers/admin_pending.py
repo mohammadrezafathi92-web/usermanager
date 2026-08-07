@@ -279,6 +279,21 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
         await call.answer("خطای غیرمنتظره - دوباره تلاش کنید", show_alert=True)
         return
 
+    if pending.get("payment_card_id") and pending["kind"] in ("new", "renew", "topup"):
+        # Best-effort "threshold" mode bookkeeping (see services/
+        # payment_cards.py's advance_after_payment) - which card this
+        # request's payment screen actually showed was captured at that
+        # time (routers/bot.py's get_payment_info, threaded through via
+        # storage.py's payment_card_id column). Never blocks an otherwise-
+        # successful approval - the money's confirmed either way, this is
+        # just deciding whether to auto-switch the active card afterward.
+        amount = pending.get("final_price") if pending["kind"] in ("new", "renew") else pending.get("price")
+        if amount:
+            try:
+                await api.record_card_payment(pending["payment_card_id"], amount)
+            except ApiError:
+                pass
+
     storage.set_status(pending["id"], "approved")
     await _finish("✅ تایید و فعال‌سازی شد.")
     # customer_msg intentionally has no keyboard here - if connections/files

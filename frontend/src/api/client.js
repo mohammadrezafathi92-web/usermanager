@@ -197,11 +197,30 @@ export const resolveHaFailover = () => client.post("/ha/resolve");
 export const changePanelPort = (newPort) =>
   client.post("/settings/change-port", { new_port: newPort });
 
+// Global card-to-card payment card pool (چند شماره کارت) - manual/rotate/
+// threshold mode lives on the settings object above (payment_card_mode/
+// active_payment_card_id/payment_card_switch_threshold, saved via
+// updatePanelSettings); these just manage the card rows themselves - see
+// routers/panel_settings.py's payment-cards routes.
+export const fetchPaymentCards = () => client.get("/settings/payment-cards");
+export const createPaymentCard = (data) => client.post("/settings/payment-cards", data);
+export const updatePaymentCard = (id, data) => client.put(`/settings/payment-cards/${id}`, data);
+export const deletePaymentCard = (id) => client.delete(`/settings/payment-cards/${id}`);
+export const activatePaymentCard = (id) => client.post(`/settings/payment-cards/${id}/activate`);
+
 // Level-2 Admin's OR level-3 Seller's OWN card-to-card payment info (3-tier
 // hierarchy - separate from the global card above, superadmin-excluded) -
 // see routers/panel_settings.py's my_payment_router.
 export const fetchMyPayment = () => client.get("/settings/my-payment");
 export const updateMyPayment = (data) => client.put("/settings/my-payment", data);
+
+// Same per-admin card pool as fetchPaymentCards above, scoped to this
+// admin's own bot instead of the global one.
+export const fetchMyPaymentCards = () => client.get("/settings/my-payment/cards");
+export const createMyPaymentCard = (data) => client.post("/settings/my-payment/cards", data);
+export const updateMyPaymentCard = (id, data) => client.put(`/settings/my-payment/cards/${id}`, data);
+export const deleteMyPaymentCard = (id) => client.delete(`/settings/my-payment/cards/${id}`);
+export const activateMyPaymentCard = (id) => client.post(`/settings/my-payment/cards/${id}/activate`);
 
 export const fetchTelegramBotSettings = () => client.get("/telegram-bot");
 export const updateTelegramBotSettings = (data) => client.put("/telegram-bot", data);

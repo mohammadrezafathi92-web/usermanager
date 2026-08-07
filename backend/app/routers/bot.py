@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session, joinedload
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_bot_api_key
-from ..services import user_ops, hierarchy
+from ..services import user_ops, hierarchy, payment_cards
 from ..services.quota_manager import _set_connection_enabled
 from .panel_settings import _get_or_create as _get_or_create_settings
 
@@ -177,20 +177,64 @@ def get_payment_info(owner_admin_id: Optional[int] = None, db: Session = Depends
     field they haven't set themselves still falls back to the panel-wide
     default instead of showing the customer nothing. referral/loyalty/
     support-contact-text/HA/port fields are untouched - still panel-wide
-    only, not part of this per-admin overlay."""
+    only, not part of this per-admin overlay.
+
+    Multi-card pools (services/payment_cards.py) then take priority over
+    whichever single payment_card_number/holder the block above landed on:
+    if the relevant pool (this admin's own, if any, otherwise the global
+    one) has at least one registered active card, resolve_active_card's
+    pick overrides payment_card_number/holder and resolved_payment_card_id
+    is set on the response - the bot threads that id through into the
+    pending purchase/top-up record it creates (telegram_bot/handlers/
+    customer.py) so, once an admin approves it, "threshold" mode's
+    accumulated-deposit tracking (record_payment_card_use below) knows
+    exactly which card to credit. A pool with zero registered cards keeps
+    showing the legacy single-card fields exactly as before - this is
+    fully additive, no behavior change for a panel that never adopts the
+    multi-card feature."""
     row = _get_or_create_settings(db)
+    own_admin = None
     if owner_admin_id is not None:
-        target = db.get(models.AdminUser, owner_admin_id)
-        if target is not None and not target.is_superadmin:
-            if target.own_payment_card_number:
-                row.payment_card_number = target.own_payment_card_number
-            if target.own_payment_card_holder:
-                row.payment_card_holder = target.own_payment_card_holder
-            if target.own_payment_instructions:
-                row.payment_instructions = target.own_payment_instructions
-            if target.own_topup_presets:
-                row.topup_presets = target.own_topup_presets
-    return row
+        candidate = db.get(models.AdminUser, owner_admin_id)
+        if candidate is not None and not candidate.is_superadmin:
+            own_admin = candidate
+    if own_admin is not None:
+        if own_admin.own_payment_card_number:
+            row.payment_card_number = own_admin.own_payment_card_number
+        if own_admin.own_payment_card_holder:
+            row.payment_card_holder = own_admin.own_payment_card_holder
+        if own_admin.own_payment_instructions:
+            row.payment_instructions = own_admin.own_payment_instructions
+        if own_admin.own_topup_presets:
+            row.topup_presets = own_admin.own_topup_presets
+
+    if own_admin is not None:
+        pool_owner_id = own_admin.id
+        pool_mode = own_admin.own_payment_card_mode
+        pool_active_id = own_admin.own_active_payment_card_id
+    else:
+        pool_owner_id = None
+        pool_mode = row.payment_card_mode
+        pool_active_id = row.active_payment_card_id
+    card = payment_cards.resolve_active_card(db, pool_owner_id, pool_mode or "manual", pool_active_id)
+
+    out = schemas.PanelSettingsOut.model_validate(row)
+    if card:
+        out.payment_card_number = card.card_number
+        out.payment_card_holder = card.card_holder or ""
+        out.resolved_payment_card_id = card.id
+    return out
+
+
+@router.post("/payment-cards/{card_id}/record-payment")
+def record_payment_card_use(card_id: int, payload: schemas.BotRecordCardPaymentRequest, db: Session = Depends(get_db)):
+    """Called once by telegram_bot/handlers/admin_pending.py right after a
+    receipt/top-up payment is actually approved - see
+    services/payment_cards.py's advance_after_payment for what this does
+    ("threshold" mode's auto-switch-to-next-card bookkeeping; a harmless
+    no-op for a pool in "manual"/"rotate" mode)."""
+    payment_cards.advance_after_payment(db, card_id, payload.amount)
+    return {"ok": True}
 
 
 @router.get("/customer-menu-config")

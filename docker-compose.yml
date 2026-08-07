@@ -17,12 +17,45 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - .:/root/usermanager
     environment:
-      - DATABASE_URL=sqlite:////app/data/usermanager.db
+      # DATABASE_URL deliberately NOT set here (unlike before this comment
+      # existed) - it now comes from backend/.env (via env_file: above) so
+      # install.sh's database-engine choice (SQLite vs MySQL/MariaDB) is
+      # actually respected. `environment:` entries in a compose file take
+      # precedence over `env_file:` ones for the same variable, so setting
+      # DATABASE_URL here would silently override whatever backend/.env
+      # says, no matter what the admin picked at install time.
       - HOST_PROJECT_DIR=/root/usermanager
     ports:
       - "8000:8000"
       - "1812:1812/udp"
       - "1813:1813/udp"
+
+  # Optional MariaDB service - only started when the "mariadb" profile is
+  # active (install.sh writes COMPOSE_PROFILES=mariadb into a repo-root
+  # .env when the admin picks MySQL/MariaDB at install time; docker compose
+  # reads that file automatically for compose-file variable substitution -
+  # a separate mechanism from backend/.env's env_file: above, which only
+  # feeds the backend CONTAINER's own environment). Not wired into
+  # backend's depends_on on purpose - a non-profiled service can't depend
+  # on a profile-gated one without forcing the profile to always resolve;
+  # backend's `restart: unless-stopped` already covers the brief window
+  # where MariaDB is still starting up (SQLAlchemy's pool_pre_ping, see
+  # database.py, then makes the first successful connection retry-safe too).
+  mariadb:
+    image: mariadb:11
+    container_name: usermanager-mariadb
+    restart: unless-stopped
+    profiles:
+      - mariadb
+    environment:
+      - MARIADB_DATABASE=${MARIADB_DATABASE:-usermanager}
+      - MARIADB_USER=${MARIADB_USER:-usermanager}
+      - MARIADB_PASSWORD=${MARIADB_PASSWORD:-changeme}
+      - MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD:-changeme}
+    volumes:
+      - ./backend/data/mariadb:/var/lib/mysql
+    ports:
+      - "3306:3306"
 
   frontend:
     build: ./frontend

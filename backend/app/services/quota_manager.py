@@ -30,8 +30,9 @@ WIREGUARD_ONLINE_THRESHOLD_SECONDS = 180
 
 
 def _atomic_increment(db: Session, model, obj_id: int, column: str, delta: float) -> None:
-    """Atomic `column = column + delta` evaluated by SQLite itself (a raw
-    UPDATE's SET expression), instead of Python computing `old_value +
+    """Atomic `column = column + delta` evaluated by the database itself (a
+    raw UPDATE's SET expression - portable SQL, works the same on SQLite
+    and MySQL/MariaDB), instead of Python computing `old_value +
     delta` from an ORM attribute read and assigning it back. The scheduler's
     poll_all job and radius_server.py's accounting handler each run on
     their own thread with their own independent SessionLocal(), and can

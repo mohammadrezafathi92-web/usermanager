@@ -20,6 +20,13 @@
 #    USERMANAGER_ADMIN_USERNAME=admin \
 #    USERMANAGER_ADMIN_PASSWORD='change-me' \
 #    sudo -E bash install.sh
+#
+#  Database engine (defaults to SQLite - fine for most installs; pick
+#  MySQL/MariaDB up front if you expect a high user count):
+#    USERMANAGER_DB_ENGINE=sqlite          (default)
+#    USERMANAGER_DB_ENGINE=mariadb          bundled container, auto-configured
+#    USERMANAGER_DB_ENGINE=mysql-external   your own server - also set:
+#      USERMANAGER_DATABASE_URL='mysql+pymysql://user:pass@host:3306/dbname'
 # ============================================================================
 
 set -u
@@ -81,6 +88,10 @@ Options:
   --dir <path>        Install directory (default: /opt/usermanager, or the
                        existing /root/usermanager if already installed there)
   --yes, -y            Non-interactive (accept all defaults / env overrides)
+
+Database engine (first install only - see env vars in the header comment):
+  USERMANAGER_DB_ENGINE=sqlite|mariadb|mysql-external (default: sqlite)
+  USERMANAGER_DATABASE_URL=... (required if mysql-external)
 EOF
             exit 0 ;;
         *)
@@ -250,6 +261,7 @@ fi
 # ---------------------------------------------------------------------------
 gen_secret() { openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | md5sum | cut -d' ' -f1; }
 gen_password() { openssl rand -base64 16 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c14; }
+gen_db_password() { openssl rand -base64 18 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c16; }
 detect_public_ip() {
     curl -fsS --max-time 3 https://ifconfig.me 2>/dev/null \
         || curl -fsS --max-time 3 https://icanhazip.com 2>/dev/null \
@@ -265,6 +277,16 @@ fi
 PANEL_PORT="${USERMANAGER_PANEL_PORT:-80}"
 ADMIN_USERNAME="${USERMANAGER_ADMIN_USERNAME:-admin}"
 ADMIN_PASSWORD="${USERMANAGER_ADMIN_PASSWORD:-}"
+# Database engine: "sqlite" (default - simplest, fine for most installs),
+# "mariadb" (bundled container, managed by this installer/compose file), or
+# "mysql-external" (an existing MySQL/MariaDB server the admin already runs
+# - USERMANAGER_DATABASE_URL supplies the connection string). Precautionary
+# option for admins who expect a high user count and want a more scalable
+# database from day one - see services/backup.py's module docstring for
+# what changes under the hood (backup/restore/HA sync mechanism) once this
+# isn't SQLite anymore.
+DB_ENGINE="${USERMANAGER_DB_ENGINE:-sqlite}"
+DB_URL_OVERRIDE="${USERMANAGER_DATABASE_URL:-}"
 
 if [[ "$FIRST_INSTALL" == "1" ]]; then
     if [[ "$NONINTERACTIVE" != "1" ]]; then
@@ -273,16 +295,61 @@ if [[ "$FIRST_INSTALL" == "1" ]]; then
         read -r -p "Admin username [admin]: " _u; [[ -n "${_u:-}" ]] && ADMIN_USERNAME="$_u"
         read -r -s -p "Admin password [leave empty to auto-generate]: " _pw; echo
         [[ -n "${_pw:-}" ]] && ADMIN_PASSWORD="$_pw"
+
+        echo
+        echo "Database engine:"
+        echo "  1) SQLite (default - simplest, fine for most installs)"
+        echo "  2) MySQL/MariaDB - bundled container, set up automatically"
+        echo "  3) MySQL/MariaDB - connect to your own existing server"
+        read -r -p "Choose [1]: " _dbchoice
+        case "${_dbchoice:-1}" in
+            2) DB_ENGINE="mariadb" ;;
+            3) DB_ENGINE="mysql-external" ;;
+            *) DB_ENGINE="sqlite" ;;
+        esac
+        if [[ "$DB_ENGINE" == "mysql-external" ]]; then
+            read -r -p "Connection string (mysql+pymysql://user:pass@host:port/dbname): " DB_URL_OVERRIDE
+        fi
     fi
     [[ -z "$ADMIN_PASSWORD" ]] && ADMIN_PASSWORD="$(gen_password)"
 
     PUBLIC_IP="$(detect_public_ip)"
     SECRET_KEY="$(gen_secret)"
 
+    case "$DB_ENGINE" in
+        mariadb)
+            MARIADB_DATABASE="usermanager"
+            MARIADB_USER="usermanager"
+            MARIADB_PASSWORD="$(gen_db_password)"
+            MARIADB_ROOT_PASSWORD="$(gen_db_password)"
+            DATABASE_URL="mysql+pymysql://${MARIADB_USER}:${MARIADB_PASSWORD}@mariadb:3306/${MARIADB_DATABASE}"
+            log_step "Writing ${INSTALL_DIR}/.env (activates the bundled mariadb container)..."
+            cat > .env <<EOF
+COMPOSE_PROFILES=mariadb
+MARIADB_DATABASE=${MARIADB_DATABASE}
+MARIADB_USER=${MARIADB_USER}
+MARIADB_PASSWORD=${MARIADB_PASSWORD}
+MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD}
+EOF
+            ;;
+        mysql-external)
+            if [[ -z "$DB_URL_OVERRIDE" ]]; then
+                log_err "MySQL/MariaDB (external) chosen but no connection string given (USERMANAGER_DATABASE_URL) - falling back to SQLite."
+                DB_ENGINE="sqlite"
+                DATABASE_URL="sqlite:////app/data/usermanager.db"
+            else
+                DATABASE_URL="$DB_URL_OVERRIDE"
+            fi
+            ;;
+        *)
+            DATABASE_URL="sqlite:////app/data/usermanager.db"
+            ;;
+    esac
+
     log_step "Writing backend/.env..."
     cat > backend/.env <<EOF
 SECRET_KEY=${SECRET_KEY}
-DATABASE_URL=sqlite:////app/data/usermanager.db
+DATABASE_URL=${DATABASE_URL}
 DEFAULT_ADMIN_USERNAME=${ADMIN_USERNAME}
 DEFAULT_ADMIN_PASSWORD=${ADMIN_PASSWORD}
 POLL_INTERVAL_SECONDS=30
@@ -294,8 +361,15 @@ RADIUS_ACCT_PORT=1813
 RADIUS_HOSTS_REFRESH_SECONDS=60
 PANEL_PUBLIC_HOST=${PUBLIC_IP}
 EOF
+    if [[ "$DB_ENGINE" == "mariadb" ]]; then
+        log_info "Database engine: MySQL/MariaDB (bundled container) - credentials saved in ${INSTALL_DIR}/.env, keep it safe."
+    elif [[ "$DB_ENGINE" == "mysql-external" ]]; then
+        log_info "Database engine: MySQL/MariaDB (external server)."
+    else
+        log_info "Database engine: SQLite (default)."
+    fi
 else
-    log_info "backend/.env already exists, leaving admin credentials untouched (this is an update)."
+    log_info "backend/.env already exists, leaving admin credentials and database engine untouched (this is an update)."
     PANEL_PORT="${USERMANAGER_PANEL_PORT:-}"
 fi
 

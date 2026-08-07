@@ -138,12 +138,17 @@ def _auto_migrate_missing_columns() -> None:
     Any single column/index that fails to add is logged and skipped
     rather than aborting startup - a missing index is not worth crashing
     over, and a column ALTER failure will surface clearly the first time
-    something actually queries that column, same as before this existed."""
-    if engine.dialect.name != "sqlite":
-        # The ADD COLUMN DDL/default-value handling below is written and
-        # tested against SQLite specifically, which is the only database
-        # this project has ever run against (see database.py) - skip
-        # rather than risk an incorrect ALTER on a dialect nobody uses.
+    something actually queries that column, same as before this existed.
+
+    Also runs against MySQL/MariaDB (added when the "choose your database
+    at install time" feature landed) - `ADD COLUMN ... DEFAULT ...` is
+    valid DDL on both, and column.type.compile(dialect=...) already
+    produces the correct dialect-specific type string, so the only
+    dialect-specific wrinkle handled below is that MySQL/MariaDB reject a
+    literal DEFAULT on TEXT/BLOB/JSON columns (see is_lob_type)."""
+    if engine.dialect.name not in ("sqlite", "mysql", "mariadb"):
+        # Unknown/unsupported dialect - skip rather than risk an incorrect
+        # ALTER on something nobody has tested this against.
         return
 
     inspector = inspect(engine)
@@ -165,7 +170,15 @@ def _auto_migrate_missing_columns() -> None:
 
                 default_sql = ""
                 default = getattr(column, "default", None)
-                if default is not None and getattr(default, "is_scalar", False):
+                # MySQL/MariaDB reject a literal DEFAULT on TEXT/BLOB/JSON
+                # columns ("BLOB, TEXT, GEOMETRY or JSON column can't have a
+                # default value") - skip the DEFAULT clause for those so the
+                # ALTER still succeeds; the column is just added NULL-default
+                # instead, same as any other nullable column would be.
+                is_lob_type = engine.dialect.name in ("mysql", "mariadb") and any(
+                    kw in col_type.upper() for kw in ("TEXT", "BLOB", "JSON")
+                )
+                if default is not None and getattr(default, "is_scalar", False) and not is_lob_type:
                     arg = default.arg
                     if isinstance(arg, bool):
                         default_sql = f" DEFAULT {1 if arg else 0}"

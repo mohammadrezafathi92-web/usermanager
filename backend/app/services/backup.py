@@ -1,9 +1,21 @@
-"""Full-database backup: safe consistent copies of the live SQLite file
-(taken via sqlite3's online backup API, which is WAL-safe - a plain file
-copy could grab a half-written page while the RADIUS server/poller/web API
-are writing), gzip-compressed and written to /app/data/backups. Used by
-both the automatic 4x/day job (main.py) and the manual "دریافت بک‌آپ فوری"
-button in the panel (routers/backup.py).
+"""Full-database backup: safe consistent copies of the live database,
+gzip-compressed and written to /app/data/backups. Used by both the
+automatic 4x/day job (main.py) and the manual "دریافت بک‌آپ فوری" button
+in the panel (routers/backup.py).
+
+Two dialect-specific implementations live side by side here, selected via
+_is_mysql() at each call site - never a single shared code path, since the
+underlying primitives are fundamentally different:
+  - SQLite (default): a single file. Backups are taken via sqlite3's online
+    backup API (WAL-safe - a plain file copy could grab a half-written page
+    while the RADIUS server/poller/web API are writing); restore is an
+    atomic os.replace() of that file.
+  - MySQL/MariaDB (opt-in, chosen at install time - see install.sh):
+    no single file to copy. Backups shell out to `mysqldump
+    --single-transaction` (a consistent InnoDB snapshot without locking
+    tables); restore pipes the dump back in through the `mysql` CLI, which
+    replaces each table's contents (mysqldump's default output already
+    includes `DROP TABLE IF EXISTS` before every `CREATE TABLE`).
 
 Also holds the HA / near-real-time replication helpers (مورد ۱۰, near the
 bottom of this file): create_snapshot_bytes() / ha_healthcheck() /
@@ -12,7 +24,18 @@ scheduler job and the peer-facing endpoint in routers/panel_settings.py's
 ha_router. These deliberately do NOT touch BACKUP_DIR/KEEP_LAST rotation
 (create_snapshot_bytes) or trigger the "safety pre-backup" restore path
 does (ha_pull_and_apply) since they run every ~20 seconds - doing either
-would spam the real backup history shown in the UI within minutes."""
+would spam the real backup history shown in the UI within minutes.
+
+NOTE on HA + MySQL/MariaDB: the dump/restore cycle above works for HA sync
+too, but a mysqldump/mysql round-trip is far heavier than SQLite's
+in-process backup-API snapshot, and (unlike the SQLite file-swap) briefly
+runs the standby's tables through a DROP+recreate mid-sync. Fine for the
+4x/day scheduled backup and manual restore; the every-~20-seconds HA poll
+is a materially bigger ask of a MySQL/MariaDB server than of a local
+SQLite file. Documented here rather than silently degraded - if this
+becomes a real bottleneck at high HA-poll frequency, the fix is a longer
+ha_healthcheck interval for MySQL/MariaDB deployments, not a different
+sync mechanism."""
 from __future__ import annotations
 
 import datetime as dt
@@ -22,10 +45,12 @@ import logging
 import os
 import shutil
 import sqlite3
+import subprocess
 import tempfile
 from pathlib import Path
 
 import requests
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -33,6 +58,82 @@ from ..database import SessionLocal
 from .. import models
 
 logger = logging.getLogger("backup")
+
+
+def _is_mysql() -> bool:
+    return settings.database_url.startswith("mysql")
+
+
+def _mysql_conn_parts() -> dict:
+    """Parses DATABASE_URL (e.g. mysql+pymysql://user:pass@host:port/db)
+    into the pieces the mysqldump/mysql CLIs need. Uses SQLAlchemy's own
+    URL parser (same one database.py's create_engine uses under the hood)
+    so URL-encoded special characters in the password are handled
+    consistently with the rest of the app rather than re-implemented here."""
+    u = make_url(settings.database_url)
+    return {
+        "host": u.host or "127.0.0.1",
+        "port": str(u.port or 3306),
+        "user": u.username or "root",
+        "password": u.password or "",
+        "database": u.database or "",
+    }
+
+
+def _mysql_dump_bytes() -> bytes:
+    """Runs mysqldump against the live database and returns its raw
+    (uncompressed) output. --single-transaction takes a consistent InnoDB
+    snapshot without locking tables (this app's tables are all InnoDB via
+    SQLAlchemy's default) - the same "don't block concurrent writers"
+    requirement WAL mode satisfies on the SQLite path. --no-tablespaces
+    avoids a common "Access denied; you need the PROCESS privilege"
+    failure some managed MySQL/MariaDB hosts return for non-admin users
+    when tablespace metadata is requested, which this app has no use for
+    anyway."""
+    parts = _mysql_conn_parts()
+    cmd = [
+        "mysqldump",
+        f"--host={parts['host']}",
+        f"--port={parts['port']}",
+        f"--user={parts['user']}",
+        "--single-transaction",
+        "--no-tablespaces",
+        "--skip-lock-tables",
+        parts["database"],
+    ]
+    env = os.environ.copy()
+    if parts["password"]:
+        # MYSQL_PWD rather than --password=... - the latter is visible to
+        # any other user on the box via `ps`, the former is not.
+        env["MYSQL_PWD"] = parts["password"]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"mysqldump ناموفق بود: {proc.stderr.decode(errors='replace')[:500]}"
+        )
+    return proc.stdout
+
+
+def _mysql_restore_from_sql(sql_bytes: bytes) -> None:
+    """Restores a mysqldump SQL export by piping it into the `mysql` CLI
+    against the live server - there's no single file to atomically swap
+    the way SQLite has, so this is the only real primitive available."""
+    parts = _mysql_conn_parts()
+    cmd = [
+        "mysql",
+        f"--host={parts['host']}",
+        f"--port={parts['port']}",
+        f"--user={parts['user']}",
+        parts["database"],
+    ]
+    env = os.environ.copy()
+    if parts["password"]:
+        env["MYSQL_PWD"] = parts["password"]
+    proc = subprocess.run(cmd, input=sql_bytes, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    if proc.returncode != 0:
+        raise ValueError(
+            f"بازگردانی دیتابیس MySQL/MariaDB ناموفق بود: {proc.stderr.decode(errors='replace')[:500]}"
+        )
 
 BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "/app/data/backups"))
 # کاربر: "باید به صورت اوتوماتیک ۱۵ تا آخر سیو بماند" - قبلا ۴۰ تا نگه
@@ -63,11 +164,21 @@ def _db_path() -> str:
 
 def create_backup() -> Path:
     """Creates a fresh, consistent, gzip-compressed backup file and returns
-    its path. Also prunes old backups beyond KEEP_LAST."""
+    its path. Also prunes old backups beyond KEEP_LAST. Filename extension
+    reflects the dialect (backup_*.db.gz for SQLite, backup_*.sql.gz for
+    MySQL/MariaDB) so a downloaded file is immediately recognizable as a
+    raw SQLite database vs. a plain-text SQL dump."""
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    src_path = _db_path()
-
     stamp = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+    if _is_mysql():
+        final_path = BACKUP_DIR / f"backup_{stamp}.sql.gz"
+        with gzip.open(final_path, "wb") as f_out:
+            f_out.write(_mysql_dump_bytes())
+        _cleanup_old_backups()
+        return final_path
+
+    src_path = _db_path()
     tmp_db = BACKUP_DIR / f".tmp_{stamp}.db"
     final_path = BACKUP_DIR / f"backup_{stamp}.db.gz"
 
@@ -88,7 +199,11 @@ def create_backup() -> Path:
 
 
 def _cleanup_old_backups() -> None:
-    files = sorted(BACKUP_DIR.glob("backup_*.db.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
+    # "backup_*.gz" (not "backup_*.db.gz") on purpose - covers both the
+    # SQLite (.db.gz) and MySQL/MariaDB (.sql.gz) extensions so switching
+    # DB engines on an existing install doesn't leave the OTHER dialect's
+    # old backups un-rotated forever.
+    files = sorted(BACKUP_DIR.glob("backup_*.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
     for old in files[KEEP_LAST:]:
         old.unlink(missing_ok=True)
 
@@ -96,7 +211,7 @@ def _cleanup_old_backups() -> None:
 def list_backups() -> list[dict]:
     if not BACKUP_DIR.exists():
         return []
-    files = sorted(BACKUP_DIR.glob("backup_*.db.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
+    files = sorted(BACKUP_DIR.glob("backup_*.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
     return [
         {
             "filename": p.name,
@@ -417,15 +532,114 @@ def _apply_db_bytes(data: bytes, *, safety_backup: bool) -> None:
         tmp_path.unlink(missing_ok=True)
 
 
+def _apply_mysql_bytes(data: bytes, *, safety_backup: bool) -> None:
+    """MySQL/MariaDB counterpart of _apply_db_bytes: validates the given
+    bytes as a plausible mysqldump SQL export of this app's schema and
+    restores it by piping into the `mysql` CLI against the live server -
+    there's no single file to atomically swap the way SQLite has, so a
+    dump/import round-trip is the only real primitive available.
+    mysqldump's default output already includes `DROP TABLE IF EXISTS`
+    before each `CREATE TABLE`, so the import itself is what replaces the
+    old tables' contents.
+
+    Same HA-identity preservation as _apply_db_bytes (see its docstring
+    for the 2026-07-13 bug this guards against) - a passive-standby sync
+    must not overwrite THIS server's own ha_mode/ha_peer_url/
+    ha_peer_api_key with the primary's."""
+    if data[:2] == b"\x1f\x8b":
+        try:
+            data = gzip.decompress(data)
+        except OSError as exc:
+            raise ValueError("فایل gzip قابل باز شدن نیست (فایل خراب یا ناقص است)") from exc
+
+    text = data[:200_000].decode("utf-8", errors="ignore")
+    required_markers = ("CREATE TABLE", "`users`", "`admin_users`")
+    if not all(m in text for m in required_markers):
+        raise ValueError("این فایل مربوط به دیتابیس این پنل نیست (خروجی mysqldump معتبر به نظر نمی‌رسد)")
+
+    local_ha_identity = None if safety_backup else _read_local_ha_identity_mysql()
+
+    if safety_backup:
+        # Safety net: keep a backup of the CURRENT live db before overwriting it.
+        create_backup()
+
+    try:
+        _mysql_restore_from_sql(data)
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"بازگردانی دیتابیس MySQL/MariaDB ناموفق بود: {exc}") from exc
+
+    if local_ha_identity is not None:
+        _restore_local_ha_identity_mysql(local_ha_identity)
+
+
+def _read_local_ha_identity_mysql() -> dict | None:
+    """MySQL/MariaDB counterpart of _read_local_ha_identity - reads this
+    server's own HA identity columns from the CURRENT (about-to-be-
+    overwritten) live tables, straight off the server rather than out of a
+    file, since there's no file to read here."""
+    import pymysql
+
+    parts = _mysql_conn_parts()
+    try:
+        conn = pymysql.connect(
+            host=parts["host"], port=int(parts["port"]),
+            user=parts["user"], password=parts["password"], database=parts["database"],
+        )
+        try:
+            with conn.cursor() as cur:
+                cols = ", ".join(_HA_LOCAL_IDENTITY_COLUMNS)
+                cur.execute(f"SELECT {cols} FROM panel_settings WHERE id = 1")
+                row = cur.fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    return dict(zip(_HA_LOCAL_IDENTITY_COLUMNS, row))
+
+
+def _restore_local_ha_identity_mysql(identity: dict) -> None:
+    """MySQL/MariaDB counterpart of _restore_local_ha_identity - writes the
+    preserved identity dict back into the just-restored live tables. Runs
+    AFTER the mysql import (unlike the SQLite path's stale-fd concern,
+    there's no file swap here, so no ordering hazard around a connection
+    pool holding an old file descriptor - this just needs to run after the
+    dump has been imported)."""
+    import pymysql
+
+    parts = _mysql_conn_parts()
+    try:
+        conn = pymysql.connect(
+            host=parts["host"], port=int(parts["port"]),
+            user=parts["user"], password=parts["password"], database=parts["database"],
+        )
+        try:
+            with conn.cursor() as cur:
+                cols = ", ".join(f"{c} = %s" for c in _HA_LOCAL_IDENTITY_COLUMNS)
+                cur.execute(f"UPDATE panel_settings SET {cols} WHERE id = 1", [identity[c] for c in _HA_LOCAL_IDENTITY_COLUMNS])
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass  # no panel_settings table/row in the incoming snapshot - nothing to restore into
+
+
 def restore_from_upload(data: bytes) -> None:
-    """Validates an uploaded backup (accepts either the gzip'd .db.gz this
-    app produces, or a raw .db file) and atomically replaces the live
-    database with it, safety-backing-up the current live db first.
+    """Validates an uploaded backup (accepts the gzip'd .db.gz/.sql.gz this
+    app produces, or a raw .db file / .sql dump) and replaces the live
+    database with it, safety-backing-up the current live db first. Dialect
+    is inferred from DATABASE_URL, not from the file content or name.
 
     Note: the caller MUST force a process restart right after calling this
     for the new data to actually take effect - see _apply_db_bytes's
     docstring."""
-    _apply_db_bytes(data, safety_backup=True)
+    if _is_mysql():
+        _apply_mysql_bytes(data, safety_backup=True)
+    else:
+        _apply_db_bytes(data, safety_backup=True)
 
 
 def run_scheduled_backup() -> None:
@@ -469,7 +683,12 @@ def create_snapshot_bytes() -> bytes:
     anything into BACKUP_DIR or touch the persisted backup list
     (KEEP_LAST rotation, the "دریافت بک‌آپ فوری" history in the UI). Used
     by the HA peer-facing snapshot endpoint (routers/panel_settings.py's
-    ha_router), which a standby may poll every ~20 seconds."""
+    ha_router), which a standby may poll every ~20 seconds. On MySQL/
+    MariaDB this is a full mysqldump instead - see this module's docstring
+    for the "heavier than SQLite" caveat that implies for HA-poll frequency."""
+    if _is_mysql():
+        return gzip.compress(_mysql_dump_bytes())
+
     src_path = _db_path()
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_db = os.path.join(tmp_dir, "ha_snapshot.db")
@@ -546,7 +765,10 @@ def ha_pull_and_apply(peer_url: str, api_key: str, timeout: float = 20) -> None:
         raise RuntimeError("اسنپ‌شات دریافتی از سرور اصلی خالی بود")
 
     try:
-        _apply_db_bytes(resp.content, safety_backup=False)
+        if _is_mysql():
+            _apply_mysql_bytes(resp.content, safety_backup=False)
+        else:
+            _apply_db_bytes(resp.content, safety_backup=False)
     except ValueError as exc:
         # _apply_db_bytes already raises Persian, admin-safe messages for
         # corrupt/invalid snapshots (bad gzip, failed integrity check,

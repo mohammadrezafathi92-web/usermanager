@@ -32,6 +32,21 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# mysqldump/mysql CLI - only used when DATABASE_URL is a mysql+pymysql://
+# URL (opt-in at install time, see install.sh's database-engine prompt and
+# services/backup.py's module docstring). SQLite installs never call these
+# binaries, but they still need to EXIST in every image (an admin can only
+# pick MySQL/MariaDB at install time, and we don't build a separate image
+# per DB choice) - without this, create_backup()/restore_from_upload()/HA
+# sync would fail with FileNotFoundError the moment a MySQL/MariaDB install
+# tried to take its first backup. default-mysql-client is Debian's
+# MariaDB-based client package (works against both MySQL and MariaDB
+# servers) - small (a few MB), so always installing it is cheaper than
+# maintaining two image variants.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends default-mysql-client \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=pydeps /install /usr/local
 
 # Small text file, negligible size - kept in the final image (not just the

@@ -998,3 +998,33 @@ def get_share_link(
         raise HTTPException(404, "کانکشن پیدا نشد")
     share = user_ops.get_connection_share(conn)
     return schemas.ConnectionShareLink(connection_id=conn.id, **share)
+
+
+@router.get("/{user_id}/subscription-link", response_model=schemas.SubscriptionLinkOut)
+def get_subscription_link(
+    user_id: int,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+):
+    """Lazily generates (on first call) and returns this customer's public
+    subscription panel link - see routers/subscription.py."""
+    user = _get_owned_user(db, admin, user_id)
+    token = user_ops.ensure_subscription_token(db, user)
+    return schemas.SubscriptionLinkOut(
+        token=token, web_path=f"/s/{token}", app_path=f"/api/subscribe/{token}",
+    )
+
+
+@router.post("/{user_id}/subscription-link/regenerate", response_model=schemas.SubscriptionLinkOut)
+def regenerate_subscription_link(
+    user_id: int,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+):
+    """Rotates the token, invalidating any previously shared link/QR - see
+    services/user_ops.py's regenerate_subscription_token."""
+    user = _get_owned_user(db, admin, user_id)
+    token = user_ops.regenerate_subscription_token(db, user)
+    return schemas.SubscriptionLinkOut(
+        token=token, web_path=f"/s/{token}", app_path=f"/api/subscribe/{token}",
+    )

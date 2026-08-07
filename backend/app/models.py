@@ -554,6 +554,14 @@ class User(Base):
     created_at = Column(DateTime, default=now)
     updated_at = Column(DateTime, default=now, onupdate=now)
 
+    # Unique, unguessable token powering the customer-facing subscription
+    # panel (public web page + app-importable Xray subscription URL) - see
+    # routers/subscription.py. Generated lazily on first request
+    # (services/user_ops.py's ensure_subscription_token) rather than at
+    # user-creation time, so existing users pick one up automatically the
+    # first time an admin opens/shares the link. NULL until then.
+    subscription_token = Column(String(64), unique=True, index=True, nullable=True)
+
     connections = relationship(
         "Connection", back_populates="user", cascade="all, delete-orphan"
     )

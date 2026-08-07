@@ -291,6 +291,57 @@ class ConnectionShareLink(BaseModel):
     config_text: Optional[str] = None
 
 
+# ---------- Public customer subscription panel (routers/subscription.py) --
+# Unauthenticated, token-gated. See models.User.subscription_token.
+class SubscriptionConnectionOut(BaseModel):
+    id: int
+    type: ConnectionType
+    online: bool = False
+    total_bytes: int = 0
+    created_at: dt.datetime
+    node_name: Optional[str] = None
+    # See models.Connection.purchase_batch/package_name_snapshot - used to
+    # group connections the same way UserDetail.jsx / the bot's "اکانت من"
+    # screen do.
+    purchase_batch: Optional[str] = None
+    package_name_snapshot: Optional[str] = None
+    # Share data - mirrors services.user_ops.get_connection_share()'s
+    # return shape. `share_error` is set instead whenever building it fails
+    # (e.g. a WireGuard peer whose node is unreachable right now) so ONE
+    # broken service can't take down the whole public page for every other
+    # service the customer has.
+    kind: Optional[str] = None
+    link: Optional[str] = None
+    config_text: Optional[str] = None
+    server: Optional[str] = None
+    port: Optional[int] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    psk: Optional[str] = None
+    share_error: Optional[str] = None
+
+
+class SubscriptionInfo(BaseModel):
+    username: str
+    full_name: Optional[str] = None
+    status: UserStatus
+    total_quota_bytes: int = 0
+    used_bytes: int = 0
+    remaining_bytes: Optional[int] = None
+    expire_at: Optional[dt.datetime] = None
+    balance: int = 0
+    referral_code: Optional[str] = None
+    connections: List[SubscriptionConnectionOut] = []
+
+
+class SubscriptionLinkOut(BaseModel):
+    token: str
+    # Relative paths - the frontend prefixes window.location.origin itself,
+    # so this works unchanged behind any domain/reverse-proxy setup.
+    web_path: str
+    app_path: str
+
+
 # ---------- User ----------
 class UserBase(BaseModel):
     username: str

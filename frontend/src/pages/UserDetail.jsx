@@ -28,6 +28,8 @@ import {
   applyPackage,
   resetPurchaseUsage,
   renewPurchase,
+  fetchSubscriptionLink,
+  regenerateSubscriptionLink,
 } from "../api/client.js";
 import { statusLabel, STATUS_STYLES, gbToBytes, bytesToGb, formatBytes, formatDateTime, copyText, downloadTextFile } from "../utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
@@ -112,6 +114,8 @@ export default function UserDetail() {
   const [shareData, setShareData] = useState(null);
   const [qrUrl, setQrUrl] = useState(null);
   const [copiedKey, setCopiedKey] = useState(null);
+  const [subLink, setSubLink] = useState(null);
+  const [subLinkBusy, setSubLinkBusy] = useState(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -169,6 +173,9 @@ export default function UserDetail() {
     fetchRadiusLimitLogs({ user_id: id, limit: 50 })
       .then((res) => setLimitLogs(res.data))
       .catch(() => setLimitLogs([]));
+    fetchSubscriptionLink(id)
+      .then((res) => setSubLink(res.data))
+      .catch(() => setSubLink(null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
@@ -416,6 +423,17 @@ export default function UserDetail() {
     downloadTextFile(`${user.username}-${shareData.kind}.${ext}`, shareData.config_text);
   };
 
+  const onRegenerateSubLink = async () => {
+    if (!window.confirm(t("userDetail.regenerateLinkConfirm"))) return;
+    setSubLinkBusy(true);
+    try {
+      const res = await regenerateSubscriptionLink(user.id);
+      setSubLink(res.data);
+    } finally {
+      setSubLinkBusy(false);
+    }
+  };
+
   const nodeName = (nodeId) => nodes.find((n) => n.id === nodeId)?.name || `#${nodeId}`;
 
   const openLimit = (c) => {
@@ -566,6 +584,42 @@ export default function UserDetail() {
           </button>
         </div>
       </div>
+
+      {subLink && (
+        <div className="card mb-6">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-bold text-gray-700 flex items-center gap-2">
+              <QrCode size={16} className="text-brand-500" /> {t("userDetail.subscriptionLinkTitle")}
+            </h3>
+            <button className="btn-secondary" disabled={subLinkBusy} onClick={onRegenerateSubLink}>
+              <RefreshCw size={14} /> {t("userDetail.regenerateLink")}
+            </button>
+          </div>
+          <div className="text-xs text-gray-400 mb-3">{t("userDetail.subscriptionLinkHint")}</div>
+          <div className="space-y-3">
+            <div>
+              <div className="text-xs text-gray-500 mb-1">{t("userDetail.subscriptionWebLink")}</div>
+              <div className="flex gap-2">
+                <input readOnly className="input font-mono text-xs" value={`${window.location.origin}${subLink.web_path}`} />
+                <button className="btn-secondary" onClick={() => onCopy("sub-web", `${window.location.origin}${subLink.web_path}`)}>
+                  {copiedKey === "sub-web" ? <Check size={14} /> : <Copy size={14} />}
+                </button>
+              </div>
+              {copiedKey === "sub-web" && <div className="text-xs text-emerald-600 mt-1">{t("userDetail.copied")}</div>}
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 mb-1">{t("userDetail.subscriptionAppLink")}</div>
+              <div className="flex gap-2">
+                <input readOnly className="input font-mono text-xs" value={`${window.location.origin}${subLink.app_path}`} />
+                <button className="btn-secondary" onClick={() => onCopy("sub-app", `${window.location.origin}${subLink.app_path}`)}>
+                  {copiedKey === "sub-app" ? <Check size={14} /> : <Copy size={14} />}
+                </button>
+              </div>
+              {copiedKey === "sub-app" && <div className="text-xs text-emerald-600 mt-1">{t("userDetail.copied")}</div>}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="flex items-center justify-between mb-3">
         <h3 className="font-bold text-gray-700">{t("userDetail.connectionsHeading")}</h3>

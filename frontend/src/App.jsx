@@ -13,6 +13,7 @@ import Settings from "./pages/Settings.jsx";
 import Admins from "./pages/Admins.jsx";
 import RadiusLogs from "./pages/RadiusLogs.jsx";
 import DiscountCodes from "./pages/DiscountCodes.jsx";
+import Subscription from "./pages/Subscription.jsx";
 
 function Protected({ children }) {
   const { token, loading } = useAuth();
@@ -137,6 +138,10 @@ export default function App() {
           </Protected>
         }
       />
+      {/* Public customer subscription panel - no auth, gated only by the
+          unguessable token in the URL (see routers/subscription.py). Must
+          stay OUTSIDE Protected/AdminOrAboveOnly/PermRoute. */}
+      <Route path="/s/:token" element={<Subscription />} />
       <Route path="/a/:slug" element={<Navigate to="/login" replace />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

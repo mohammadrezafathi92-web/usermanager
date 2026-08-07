@@ -116,6 +116,19 @@ export const deleteConnection = (userId, connectionId) =>
 export const getShareLink = (userId, connectionId) =>
   client.get(`/users/${userId}/connections/${connectionId}/share`);
 
+// Customer-facing subscription panel link (public, token-gated - see
+// routers/subscription.py + pages/Subscription.jsx). Lazily generated on
+// first fetch, so this is safe to call every time UserDetail opens.
+export const fetchSubscriptionLink = (userId) => client.get(`/users/${userId}/subscription-link`);
+export const regenerateSubscriptionLink = (userId) =>
+  client.post(`/users/${userId}/subscription-link/regenerate`);
+
+// The public page itself calls these WITHOUT any auth header - fine, since
+// the interceptor above only attaches one if a token happens to be in
+// localStorage (e.g. an admin previewing their own panel session) and the
+// backend route never checks it either way.
+export const fetchPublicSubscriptionInfo = (token) => client.get(`/subscribe/${token}/info`);
+
 export const fetchNodes = () => client.get("/nodes");
 export const createNode = (data) => client.post("/nodes", data);
 export const updateNode = (id, data) => client.put(`/nodes/${id}`, data);

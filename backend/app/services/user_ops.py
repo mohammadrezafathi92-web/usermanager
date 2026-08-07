@@ -8,6 +8,7 @@ import datetime as dt
 import ipaddress
 import random
 import re
+import secrets
 import uuid
 from typing import Optional
 
@@ -1982,3 +1983,56 @@ def get_connection_share(connection: models.Connection) -> dict:
         "kind": "vless", "link": link, "config_text": None,
         "server": None, "port": None, "username": None, "password": None, "psk": None,
     }
+
+
+# ------------------------------------------------- customer subscription panel
+def ensure_subscription_token(db: Session, user: models.User) -> str:
+    """Returns user.subscription_token, generating+persisting one on first
+    use if it's still NULL (existing users, created before this feature).
+    Uses secrets.token_urlsafe rather than the short referral-code alphabet
+    - this token is a bare-access credential (no login, no expiry), so it
+    needs to be unguessable, not easy to type by hand."""
+    if user.subscription_token:
+        return user.subscription_token
+    for _ in range(5):
+        token = secrets.token_urlsafe(32)
+        if not db.query(models.User).filter(models.User.subscription_token == token).first():
+            user.subscription_token = token
+            db.commit()
+            db.refresh(user)
+            return token
+    # Astronomically unlikely, but never loop forever.
+    raise HTTPException(500, "Could not generate a unique subscription token")
+
+
+def regenerate_subscription_token(db: Session, user: models.User) -> str:
+    """Rotates the token (invalidating the old link/QR everywhere it was
+    shared) - used by the admin's "ایجاد لینک جدید" action."""
+    user.subscription_token = None
+    return ensure_subscription_token(db, user)
+
+
+def build_subscription_connections(user: models.User) -> list[dict]:
+    """Per-connection payload for the public subscription page/API - reuses
+    get_connection_share() but never lets one connection's failure (e.g. a
+    WireGuard node that's offline right now, which needs a LIVE call to
+    fetch the node's public key) take down the rest of the customer's
+    service list. See schemas.SubscriptionConnectionOut."""
+    out = []
+    for conn in user.connections:
+        item = {
+            "id": conn.id,
+            "type": conn.type,
+            "online": conn.online,
+            "total_bytes": conn.total_bytes,
+            "created_at": conn.created_at,
+            "node_name": conn.node.name if conn.node else None,
+            "purchase_batch": conn.purchase_batch,
+            "package_name_snapshot": conn.package_name_snapshot,
+        }
+        try:
+            item.update(get_connection_share(conn))
+        except Exception as exc:  # noqa: BLE001 - deliberately broad, see docstring
+            item["share_error"] = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+        out.append(item)
+    return out

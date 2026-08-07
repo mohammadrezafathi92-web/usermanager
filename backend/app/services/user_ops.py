@@ -478,12 +478,29 @@ def delete_user_cascade(db: Session, user: models.User):
     db.commit()
 
 
-def bulk_delete_users(db: Session, user_ids: list[int], owner_admin_ids: Optional[set] = None) -> dict:
-    """owner_admin_ids, when given (i.e. the caller is a non-superadmin -
-    see routers/users.py's hierarchy.owned_admin_ids), restricts this to
-    only ids owned by that admin OR any of their own level-3 Sellers -
-    anything else is silently skipped, same as a plain missing id, so a
-    non-superadmin can never delete another group's users by guessing ids.
+def bulk_delete_users(db: Session, user_ids: list[int], admin: Optional[models.AdminUser] = None) -> dict:
+    """admin, when given (always, from routers/users.py), restricts this to
+    only users that admin can see per hierarchy.can_see_user - their own
+    tree (self + level-3 Sellers), PLUS orphaned users (owner_admin_id IS
+    NULL) if admin is a superadmin - anything else is silently skipped,
+    same as a plain missing id, so a non-superadmin can never delete
+    another group's users by guessing ids.
+
+    BUG FIXED 2026-08: this used to take a bare `owner_admin_ids: set`
+    (from hierarchy.owned_admin_ids) and check `user.owner_admin_id in
+    owner_admin_ids` directly - which can NEVER match orphaned users
+    (owner_admin_id is None; None is never "in" a set of int ids), even
+    for a superadmin, who per hierarchy.can_see_user/user_visibility_clause
+    IS supposed to be able to manage orphaned users (legacy users, or ones
+    left behind by delete_admin's "unassign, don't destroy" handling).
+    Every orphaned user in a superadmin's selection was silently skipped -
+    no error, no partial-failure message (skipped ids never even reached
+    the `failed` list below) - which looked exactly like "select users,
+    click bulk delete, confirm, and nothing happens" if the selection was
+    ALL orphaned users. Now uses the exact same can_see_user check
+    _get_owned_user already uses for the single-user endpoints, so bulk
+    delete can never disagree with what "می‌تونی این کاربر رو ببینی/باز
+    کنی" already allows.
 
     Each user is deleted independently, one failure at a time - before this,
     delete_user_cascade's own deprovision_connection call raising
@@ -497,13 +514,14 @@ def bulk_delete_users(db: Session, user_ids: list[int], owner_admin_ids: Optiona
     normally; only the ones that genuinely fail are skipped and reported
     back by username + reason so the admin can see exactly what happened
     (e.g. retry once that node is back up)."""
+    owned = hierarchy.owned_admin_ids(db, admin) if admin is not None else None
     deleted_count = 0
     failed: list[dict] = []
     for uid in user_ids:
         user = db.get(models.User, uid)
         if not user:
             continue
-        if owner_admin_ids is not None and user.owner_admin_id not in owner_admin_ids:
+        if admin is not None and not hierarchy.can_see_user(admin, owned, user.owner_admin_id):
             continue
         try:
             delete_user_cascade(db, user)
@@ -517,14 +535,15 @@ def bulk_delete_users(db: Session, user_ids: list[int], owner_admin_ids: Optiona
     return {"deleted_count": deleted_count, "failed_count": len(failed), "failed": failed}
 
 
-def bulk_notify_users(db: Session, user_ids: list[int], message: str, owner_admin_ids: Optional[set] = None) -> dict:
+def bulk_notify_users(db: Session, user_ids: list[int], message: str, admin: Optional[models.AdminUser] = None) -> dict:
     """Sends a free-form text message through the bot to every selected
     user that has a linked Telegram account - "ارسال پیام تلگرام" on
     Users.jsx, meant to be used together with its status filter (e.g.
     filter to "منقضی‌شده", select all matching, then send one message to
-    everyone whose service just expired). owner_admin_ids scoping matches
-    bulk_delete_users above - a non-superadmin can only message their own
-    tree's users.
+    everyone whose service just expired). admin scoping matches
+    bulk_delete_users above (see its docstring for the orphaned-user bug
+    this used to have) - a non-superadmin can only message their own
+    tree's users; a superadmin can also reach orphaned (no-owner) users.
 
     Same delivery path (and same shared-bot-only token) as
     services/notify.py's daily quota/expiry warnings - a per-admin's own
@@ -533,6 +552,7 @@ def bulk_notify_users(db: Session, user_ids: list[int], message: str, owner_admi
     talked to, and that's exactly the one still best-suited to reach them."""
     from ..telegram_bot import runner as telegram_bot_runner  # local import: avoids import cycle at module load
 
+    owned = hierarchy.owned_admin_ids(db, admin) if admin is not None else None
     sent = 0
     skipped_no_telegram = 0
     failed = 0
@@ -541,7 +561,7 @@ def bulk_notify_users(db: Session, user_ids: list[int], message: str, owner_admi
         user = db.get(models.User, uid)
         if not user:
             continue
-        if owner_admin_ids is not None and user.owner_admin_id not in owner_admin_ids:
+        if admin is not None and not hierarchy.can_see_user(admin, owned, user.owner_admin_id):
             continue
         total += 1
         if not user.telegram_id:
@@ -667,13 +687,13 @@ def bulk_update_users(
     status: Optional[models.UserStatus] = None,
     max_concurrent_sessions: Optional[int] = None,
     package: Optional[models.Package] = None,
-    owner_admin_ids: Optional[set] = None,
+    admin: Optional[models.AdminUser] = None,
 ) -> dict:
     """Applies the same renewal/status/limit change to every user in
-    user_ids. Silently skips ids that don't exist - and, when
-    owner_admin_ids is given (non-superadmin caller - see
-    hierarchy.owned_admin_ids), ids outside that admin's own tree (self +
-    their level-3 Sellers) too.
+    user_ids. Silently skips ids that don't exist - and, when admin is
+    given, ids that admin can't see per hierarchy.can_see_user (outside
+    their own tree, unless orphaned and admin is a superadmin - see
+    bulk_delete_users' docstring for the bug this fixes).
 
     If `package` is given, it takes priority over add_gb/add_days: each
     user's quota/expiry/concurrent-session-cap is overwritten outright from
@@ -682,12 +702,13 @@ def bulk_update_users(
     package" and as a way to (re)tag existing users with a package for
     future package-based filtering/selection. Does not touch the package's
     own connections/services - only the user's quota/expiry/cap fields."""
+    owned = hierarchy.owned_admin_ids(db, admin) if admin is not None else None
     updated = 0
     for uid in user_ids:
         user = db.get(models.User, uid)
         if not user:
             continue
-        if owner_admin_ids is not None and user.owner_admin_id not in owner_admin_ids:
+        if admin is not None and not hierarchy.can_see_user(admin, owned, user.owner_admin_id):
             continue
         if package is not None:
             user.total_quota_bytes = gb_to_bytes(package.quota_gb) if package.quota_gb else 0

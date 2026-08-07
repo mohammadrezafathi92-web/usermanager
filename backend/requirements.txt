@@ -18,3 +18,4 @@ aiogram==3.15.0
 qrcode[pil]==7.4.2
 openpyxl==3.1.5
 psutil==6.0.0
+sentry-sdk[fastapi]==2.66.1

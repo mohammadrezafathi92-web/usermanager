@@ -260,6 +260,9 @@ npm run dev
 | `TUTORIAL_MEDIA_DIR` | `/app/data/tutorial_media` | مسیر ذخیره عکس/ویدیوهای آموزش. |
 | `BOT_STANDALONE_MODE` | `false` | فقط روی سرور دوم، توسط فرآیند نصب خودکار تنظیم می‌شود - دستی لازم نیست. |
 | `BOT_TOKEN` / `BOT_ADMIN_IDS` / `BOT_APPROVAL_CHAT_IDS` | - | فقط در حالت `BOT_STANDALONE_MODE=true` استفاده می‌شوند؛ در حالت عادی، توکن/ادمین‌های ربات از **پنل → تنظیمات → ربات تلگرام** ذخیره می‌شوند، نه از `.env`. |
+| `SENTRY_DSN` | *(خالی = غیرفعال)* | اگر پر شود، خطاهای بک‌اند (API، ربات تلگرام، RADIUS، کارهای زمان‌بندی‌شده) به‌جای اینکه فقط در `docker compose logs` گم شوند، با استک‌تریس کامل به Sentry ارسال می‌شوند. DSN را از sentry.io (یا نسخه self-hosted) → Settings → پروژه → Client Keys بگیرید. |
+| `SENTRY_ENVIRONMENT` | `production` | برچسب محیط در Sentry (مثلا برای جدا کردن سرور اصلی از یک سرور تست). |
+| `SENTRY_TRACES_SAMPLE_RATE` | `0` | درصد ردیابی کارایی (performance tracing) - `0` یعنی فقط خطاها ثبت شوند، بدون overhead اضافه؛ برای نصب‌های کوچک نیازی به تغییرش نیست. |
 
 ## ویژگی‌های پنل مدیریت
 

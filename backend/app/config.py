@@ -70,6 +70,20 @@ class Settings(BaseSettings):
     # object construction (bot start/restart), unlike a per-update check.
     bot_standalone_telegram_api_proxy_url: str = os.environ.get("BOT_TELEGRAM_API_PROXY_URL", "")
 
+    # Error monitoring (optional - completely off unless a DSN is set, see
+    # main.py's _init_sentry). Covers request handlers, the RADIUS server
+    # thread, the poll/notify/backup scheduler jobs, and the Telegram bot
+    # thread - anything running in this one process - so exceptions that
+    # currently only ever show up in `docker compose logs` (easy to miss,
+    # no history/alerting) also land in Sentry with a stack trace.
+    sentry_dsn: str = os.environ.get("SENTRY_DSN", "")
+    sentry_environment: str = os.environ.get("SENTRY_ENVIRONMENT", "production")
+    # Fraction of requests/tasks to also capture full performance traces for
+    # (0 = errors only, no tracing overhead - the sane default for a small
+    # single-server deployment; raise it only if you actually want latency
+    # breakdowns in Sentry).
+    sentry_traces_sample_rate: float = float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0"))
+
     class Config:
         env_file = ".env"
 

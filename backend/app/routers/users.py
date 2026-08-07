@@ -353,7 +353,7 @@ def bulk_update_users(
         status=payload.status,
         max_concurrent_sessions=payload.max_concurrent_sessions,
         package=package,
-        owner_admin_ids=hierarchy.owned_admin_ids(db, admin),
+        admin=admin,
     )
 
 
@@ -363,9 +363,7 @@ def bulk_delete_users(
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
 ):
-    return user_ops.bulk_delete_users(
-        db, user_ids=payload.user_ids, owner_admin_ids=hierarchy.owned_admin_ids(db, admin)
-    )
+    return user_ops.bulk_delete_users(db, user_ids=payload.user_ids, admin=admin)
 
 
 @router.post("/bulk-notify", response_model=schemas.BulkNotifyUsersResult)
@@ -380,9 +378,7 @@ def bulk_notify_users(
     one message to all of them at once). Users with no linked Telegram
     account are silently skipped (counted, not errored) - see
     user_ops.bulk_notify_users."""
-    return user_ops.bulk_notify_users(
-        db, user_ids=payload.user_ids, message=payload.message, owner_admin_ids=hierarchy.owned_admin_ids(db, admin)
-    )
+    return user_ops.bulk_notify_users(db, user_ids=payload.user_ids, message=payload.message, admin=admin)
 
 
 @router.post("", response_model=schemas.UserOut)

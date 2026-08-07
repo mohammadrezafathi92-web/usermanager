@@ -1,6 +1,7 @@
 import datetime as dt
 import logging
 
+import sentry_sdk
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +20,33 @@ from .telegram_bot import runner as telegram_bot_runner
 from .telegram_bot.config import parse_id_set
 
 logging.basicConfig(level=logging.INFO)
+
+
+def _init_sentry() -> None:
+    """Opt-in error monitoring - a complete no-op if SENTRY_DSN isn't set
+    (the default), so this changes nothing for anyone who doesn't want it.
+    Deliberately called before the FastAPI app and any background
+    thread (RADIUS server, scheduler, Telegram bot) is created, since
+    sentry_sdk.init() installs its exception hooks process-wide - anything
+    started after this point (including new threads) is automatically
+    covered, not just request handlers.
+
+    send_default_pii stays False on purpose: this panel's own data
+    (MikroTik/SSH credentials, API keys, customer wallet balances, RADIUS
+    secrets) is sensitive - Sentry gets exception type/traceback/request
+    path, never request bodies/headers/user IP by default."""
+    if not settings.sentry_dsn:
+        return
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        environment=settings.sentry_environment,
+        traces_sample_rate=settings.sentry_traces_sample_rate,
+        send_default_pii=False,
+    )
+    logging.info("Sentry error monitoring فعال شد (environment=%s)", settings.sentry_environment)
+
+
+_init_sentry()
 
 app = FastAPI(title=settings.app_name)
 

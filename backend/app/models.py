@@ -691,6 +691,21 @@ class Connection(Base):
     # meaningful for openvpn/l2tp (enforced by the RADIUS auth handler).
     max_concurrent_sessions = Column(Integer, nullable=True, default=1)
 
+    # Combined upload+download bandwidth cap for THIS connection, in Mbps.
+    # 0/NULL = unlimited. Only enforceable for MikroTik-hosted protocols:
+    # wireguard gets a RouterOS Simple Queue targeting its client IP (see
+    # services/mikrotik_client.py's upsert_simple_queue/remove_simple_queue,
+    # kept in sync from services/user_ops.py's provisioning + routers/
+    # users.py's update_connection), openvpn/l2tp/ikev2/sstp get a
+    # Mikrotik-Rate-Limit RADIUS attribute pushed on every successful auth
+    # (services/radius_server.py's HandleAuthPacket) - no separate live sync
+    # needed there since it's re-sent fresh on every PPP (re)connect. xray
+    # has NO enforcement path for this at all (neither Xray-core nor 3X-UI
+    # support per-client bandwidth throttling as of 2026) - this column is
+    # simply never set for xray connections; the frontend hides the control
+    # for that connection type rather than showing a value that does nothing.
+    speed_limit_mbps = Column(Integer, nullable=True)
+
     # Set by the RADIUS auth handler after repeated over-the-limit connection
     # attempts; while in the future, ALL auth attempts for this connection
     # are rejected regardless of correct credentials or free session slots.
@@ -900,6 +915,14 @@ class Package(Base):
     # 4-server package with this set to 1 still only allows one active
     # session at a time in total, not one per server. NULL = unlimited.
     max_concurrent_sessions = Column(Integer, nullable=True)
+
+    # Default per-connection bandwidth cap (Mbps, combined up+down) stamped
+    # onto every MikroTik-hosted connection (wireguard/openvpn/l2tp/ikev2/
+    # sstp) provisioned from this package - see
+    # Connection.speed_limit_mbps's docstring for enforcement details and
+    # why xray connections never get this. NULL/0 = unlimited. An admin can
+    # still override it per-connection afterward from UserDetail.jsx.
+    speed_limit_mbps = Column(Integer, nullable=True)
 
     # Free-text message the sales bot sends to the customer right after a
     # successful purchase/renewal of this package (e.g. setup instructions,

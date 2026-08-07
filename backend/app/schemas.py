@@ -190,6 +190,13 @@ class ApplyPackageRequest(BaseModel):
 class ConnectionUpdate(BaseModel):
     enabled: Optional[bool] = None
     max_concurrent_sessions: Optional[int] = None
+    # See models.Connection.speed_limit_mbps - send 0 or null to clear
+    # (unlimited). For wireguard, routers/users.py's update_connection also
+    # syncs a RouterOS Simple Queue live when this changes; for openvpn/
+    # l2tp/ikev2/sstp it just needs to be stored (picked up on the next
+    # RADIUS auth); sending it for an xray connection is accepted but has
+    # no effect anywhere (see the field's docstring on the model).
+    speed_limit_mbps: Optional[int] = None
     banned_until: Optional[dt.datetime] = None  # set to null/past to unban
     # Editable connection identity/credentials (see routers/users.py's
     # update_connection) - only the field(s) relevant to the connection's
@@ -253,6 +260,9 @@ class ConnectionOut(BaseModel):
     xr_flow: Optional[str] = None
     radius_session_id: Optional[str] = None
     max_concurrent_sessions: Optional[int] = None
+    # See models.Connection.speed_limit_mbps - NULL/0 = unlimited. Only ever
+    # enforced for wireguard/openvpn/l2tp/ikev2/sstp; always None for xray.
+    speed_limit_mbps: Optional[int] = None
     banned_until: Optional[dt.datetime] = None
     active_session_count: int = 0
     # Live connected/not-connected flag. For openvpn/l2tp this is
@@ -664,6 +674,10 @@ class PackageBase(BaseModel):
     # per service) - copied onto User.max_concurrent_sessions when a user
     # is created with this package. None/0 = unlimited.
     max_concurrent_sessions: Optional[int] = None
+    # See models.Package.speed_limit_mbps - default bandwidth cap (Mbps,
+    # combined up+down) stamped onto every MikroTik-hosted connection
+    # provisioned from this package. None/0 = unlimited.
+    speed_limit_mbps: Optional[int] = None
     # Sent by the sales bot to the customer right after a successful
     # purchase/renewal of this package, alongside any files attached below.
     custom_message: Optional[str] = None
@@ -684,6 +698,7 @@ class PackageUpdate(BaseModel):
     bot_enabled: Optional[bool] = None
     sort_order: Optional[int] = None
     max_concurrent_sessions: Optional[int] = None
+    speed_limit_mbps: Optional[int] = None
     custom_message: Optional[str] = None
     connections: Optional[List[PackageConnectionSpec]] = None
 

@@ -135,6 +135,7 @@ export default function UserDetail() {
   const [connFlow, setConnFlow] = useState("");
   const [connMaxSessions, setConnMaxSessions] = useState(location.state?.defaultMaxSessions ?? 1);
   const [limitConn, setLimitConn] = useState(null); // connection being edited in the limit modal
+  const [speedLimitValue, setSpeedLimitValue] = useState("");
   const [editConn, setEditConn] = useState(null); // connection being edited in the identity/credentials modal
   const [editConnForm, setEditConnForm] = useState({ wg_peer_name: "", ppp_username: "", ppp_password: "" });
   const [limitValue, setLimitValue] = useState(1);
@@ -439,13 +440,31 @@ export default function UserDetail() {
   const openLimit = (c) => {
     setLimitConn(c);
     setLimitValue(c.max_concurrent_sessions ?? 1);
+    setSpeedLimitValue(c.speed_limit_mbps ?? "");
   };
 
   const saveLimit = async () => {
     if (!limitConn) return;
     setSaving(true);
     try {
-      await updateConnection(user.id, limitConn.id, { max_concurrent_sessions: Number(limitValue) });
+      const payload = {};
+      // max_concurrent_sessions means something different for wireguard
+      // (how many adjacent client IPs this one peer/config reserves - set
+      // once at creation, see provision_wireguard) than for the PPP
+      // protocols (a live simultaneous-session cap) - this modal only
+      // ever edits the latter; changing a wireguard peer's IP count here
+      // would desync it from what's actually reserved on the router, so
+      // it's simply never sent for that type.
+      if (limitConn.type !== "wireguard") {
+        payload.max_concurrent_sessions = Number(limitValue);
+      }
+      // speed_limit_mbps has no enforcement path for xray (see
+      // models.Connection.speed_limit_mbps's docstring) - hidden in the
+      // modal for that type, so never sent either.
+      if (limitConn.type !== "xray") {
+        payload.speed_limit_mbps = speedLimitValue === "" ? null : Number(speedLimitValue);
+      }
+      await updateConnection(user.id, limitConn.id, payload);
       setLimitConn(null);
       load();
     } catch (err) {
@@ -770,6 +789,7 @@ export default function UserDetail() {
                           )}
                         </>
                       )}
+                      {c.speed_limit_mbps ? <div>{t("userDetail.speedLimitDisplay", { mbps: c.speed_limit_mbps })}</div> : null}
                       <div>{t("userDetail.createdAt", { value: formatDateTime(c.created_at, language) })}</div>
                     </div>
 
@@ -777,7 +797,7 @@ export default function UserDetail() {
                       <button className="btn-secondary flex-1" onClick={() => showShare(c.id)}>
                         <QrCode size={14} /> {t("userDetail.getConfig")}
                       </button>
-                      {(c.type === "openvpn" || c.type === "l2tp" || c.type === "ikev2" || c.type === "sstp") && (
+                      {c.type !== "xray" && (
                         <button className="btn-secondary" title={t("userDetail.concurrentLimitTitle")} onClick={() => openLimit(c)}>
                           <ShieldCheck size={14} />
                         </button>
@@ -1211,20 +1231,40 @@ export default function UserDetail() {
       <Modal open={!!limitConn} onClose={() => setLimitConn(null)} title={t("userDetail.maxConcurrentModalTitle")}>
         {limitConn && (
           <div className="space-y-4">
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldMaxConcurrentSimple")}</label>
-              <input
-                type="number"
-                min="0"
-                className="input"
-                placeholder={t("userDetail.maxConcurrentSimplePlaceholder")}
-                value={limitValue}
-                onChange={(e) => setLimitValue(e.target.value)}
-              />
-              <div className="text-xs text-gray-400 mt-1">
-                {t("userDetail.banHint")}
+            {limitConn.type !== "wireguard" && (
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldMaxConcurrentSimple")}</label>
+                <input
+                  type="number"
+                  min="0"
+                  className="input"
+                  placeholder={t("userDetail.maxConcurrentSimplePlaceholder")}
+                  value={limitValue}
+                  onChange={(e) => setLimitValue(e.target.value)}
+                />
+                <div className="text-xs text-gray-400 mt-1">
+                  {t("userDetail.banHint")}
+                </div>
               </div>
-            </div>
+            )}
+            {limitConn.type !== "xray" ? (
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldSpeedLimit")}</label>
+                <input
+                  type="number"
+                  min="0"
+                  className="input"
+                  placeholder={t("userDetail.speedLimitPlaceholder")}
+                  value={speedLimitValue}
+                  onChange={(e) => setSpeedLimitValue(e.target.value)}
+                />
+                <div className="text-xs text-gray-400 mt-1">{t("userDetail.speedLimitHint")}</div>
+              </div>
+            ) : (
+              <div className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2">
+                {t("userDetail.speedLimitXrayUnsupported")}
+              </div>
+            )}
             {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
             <div className="flex justify-end gap-2 pt-2">
               <button type="button" className="btn-secondary" onClick={() => setLimitConn(null)}>

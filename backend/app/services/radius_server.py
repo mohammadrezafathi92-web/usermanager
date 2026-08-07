@@ -43,6 +43,13 @@ DICT_PATH = os.path.join(os.path.dirname(__file__), "..", "radius", "dictionary"
 
 PPP_TYPES = (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp)
 
+# MikroTik's RADIUS vendor-specific attributes (RouterOS docs) - used to
+# push Connection.speed_limit_mbps on every successful PPP auth. Same raw
+# VSA wire format as the Microsoft ones in mschapv2.py (build_vsa is
+# generic over vendor_id), just a different vendor/attribute number.
+MIKROTIK_VENDOR_ID = 14988
+MIKROTIK_RATE_LIMIT_ATTR = 8
+
 # Shared-users (max simultaneous sessions) enforcement: a new connection
 # attempt beyond the limit is simply rejected (no CoA/disconnect-oldest -
 # that would need the router to accept incoming Disconnect-Requests, which
@@ -437,6 +444,24 @@ class UserManagerRadiusServer(Server):
                                 "RADIUS: activated first-use expiry for user=%r -> expire_at=%s",
                                 user.username, user.expire_at.isoformat(),
                             )
+            if ok and conn is not None and conn.speed_limit_mbps:
+                # See models.Connection.speed_limit_mbps's docstring - unlike
+                # WireGuard's RouterOS Simple Queue (a persistent object kept
+                # in sync from routers/users.py's update_connection), the PPP
+                # protocols get this re-delivered fresh on every single
+                # successful auth, straight in the Access-Accept, so there's
+                # nothing to provision/clean up ahead of time and a limit
+                # change takes effect on the connection's next (re)connect
+                # with zero extra code. Format is "rx-rate/tx-rate" per
+                # RouterOS's own RADIUS docs - rx/tx from the CLIENT's
+                # perspective (rx = client upload, tx = client download);
+                # this panel only ever offers one combined cap, so both
+                # sides get the same value.
+                rate = f"{conn.speed_limit_mbps}M/{conn.speed_limit_mbps}M"
+                reply.AddAttribute(
+                    "Vendor-Specific",
+                    mschapv2.build_vsa(MIKROTIK_RATE_LIMIT_ATTR, rate.encode("ascii"), vendor_id=MIKROTIK_VENDOR_ID),
+                )
             db.commit()  # persists banned_until / first-use expiry activation if set above
             reply.code = packet.AccessAccept if ok else packet.AccessReject
             logger.info(

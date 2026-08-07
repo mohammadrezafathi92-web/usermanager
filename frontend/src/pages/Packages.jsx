@@ -27,6 +27,7 @@ const emptyForm = {
   bot_enabled: true,
   sort_order: 0,
   max_concurrent_sessions: "",
+  speed_limit_mbps: "",
   custom_message: "",
   connections: [],
 };
@@ -98,6 +99,7 @@ export default function Packages() {
       ...pkg,
       cooperation_price: pkg.cooperation_price ?? "",
       max_concurrent_sessions: pkg.max_concurrent_sessions ?? "",
+      speed_limit_mbps: pkg.speed_limit_mbps ?? "",
       custom_message: pkg.custom_message || "",
       connections: (pkg.connections || []).map((c) => ({
         node_id: c.node_id,
@@ -141,6 +143,7 @@ export default function Packages() {
         ...form,
         cooperation_price: form.cooperation_price === "" ? null : Number(form.cooperation_price),
         max_concurrent_sessions: form.max_concurrent_sessions === "" ? null : Number(form.max_concurrent_sessions),
+        speed_limit_mbps: form.speed_limit_mbps === "" ? null : Number(form.speed_limit_mbps),
         connections: form.connections.filter((c) => c.node_id),
       };
       if (editingId) {
@@ -236,6 +239,9 @@ export default function Packages() {
                       {p.max_concurrent_sessions ? t("packages.maxConcurrent", { count: p.max_concurrent_sessions }) : ""}
                     </div>
                   )}
+                  {p.speed_limit_mbps ? (
+                    <div className="text-xs text-amber-600 mt-1">{t("packages.speedLimitBadge", { mbps: p.speed_limit_mbps })}</div>
+                  ) : null}
                 </td>
                 <td className="px-4 py-3 text-gray-600">{p.quota_gb ? `${p.quota_gb} GB` : t("packages.unlimited")}</td>
                 <td className="px-4 py-3 text-gray-600">{p.duration_days ? t("packages.days", { count: p.duration_days }) : t("packages.noExpiry")}</td>
@@ -398,6 +404,19 @@ export default function Packages() {
             <div className="text-xs text-gray-400 mt-1">
               {t("packages.maxConcurrentHint")}
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldSpeedLimit")}</label>
+            <input
+              type="number"
+              min="0"
+              className="input"
+              placeholder={t("packages.speedLimitPlaceholder")}
+              value={form.speed_limit_mbps}
+              onChange={(e) => set("speed_limit_mbps", e.target.value)}
+            />
+            <div className="text-xs text-gray-400 mt-1">{t("packages.speedLimitHint")}</div>
           </div>
 
           <div className="border-t border-gray-100 pt-3">

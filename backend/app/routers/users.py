@@ -865,14 +865,43 @@ def update_connection(
 
     data = payload.model_dump(exclude_unset=True)
     new_peer_name = data.get("wg_peer_name")
-    if (
+    old_peer_name = conn.wg_peer_name
+    renamed = (
         conn.type == models.ConnectionType.wireguard
         and new_peer_name
-        and new_peer_name != conn.wg_peer_name
-    ):
+        and new_peer_name != old_peer_name
+    )
+    if renamed:
         try:
             with user_ops.MikrotikClient.for_node(conn.node) as mt:
-                mt.rename_peer(conn.node.mt_wireguard_interface, conn.wg_peer_name, new_peer_name)
+                mt.rename_peer(conn.node.mt_wireguard_interface, old_peer_name, new_peer_name)
+        except user_ops.MikrotikError as exc:
+            raise HTTPException(400, str(exc))
+
+    # Speed-limit queue sync (see models.Connection.speed_limit_mbps /
+    # MikrotikClient.upsert_simple_queue - only wireguard has a live queue
+    # to keep in sync; openvpn/l2tp/ikev2/sstp just need the DB column
+    # updated below, RADIUS re-sends the Mikrotik-Rate-Limit attribute
+    # fresh on the connection's next auth). Runs whenever the limit itself
+    # changed OR the peer was just renamed above (the queue is keyed by
+    # peer name - see wg_speed_queue_name - so a rename with no explicit
+    # speed_limit_mbps in this same request still needs its queue moved to
+    # the new name, otherwise it would keep limiting a peer name that no
+    # longer exists on the router while the actual renamed peer silently
+    # goes back to unlimited).
+    if conn.type == models.ConnectionType.wireguard and ("speed_limit_mbps" in data or renamed):
+        effective_peer_name = new_peer_name if renamed else old_peer_name
+        effective_limit = data.get("speed_limit_mbps", conn.speed_limit_mbps) or None
+        try:
+            with user_ops.MikrotikClient.for_node(conn.node) as mt:
+                if renamed:
+                    mt.remove_simple_queue(user_ops.wg_speed_queue_name(old_peer_name))
+                if effective_limit:
+                    mt.upsert_simple_queue(
+                        user_ops.wg_speed_queue_name(effective_peer_name), conn.wg_client_address, effective_limit
+                    )
+                else:
+                    mt.remove_simple_queue(user_ops.wg_speed_queue_name(effective_peer_name))
         except user_ops.MikrotikError as exc:
             raise HTTPException(400, str(exc))
 

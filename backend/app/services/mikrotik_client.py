@@ -219,6 +219,46 @@ class MikrotikClient:
         except Exception as exc:
             raise MikrotikError(f"حذف peer ناموفق بود: {exc}") from exc
 
+    # ---------------------------------------------------------- speed limit
+    def upsert_simple_queue(self, name: str, target: str, limit_mbps: int, disabled: bool = False):
+        """Creates or updates a RouterOS Simple Queue rate-limiting a
+        specific client IP - the WireGuard side of
+        models.Connection.speed_limit_mbps (PPP protocols use a RADIUS
+        attribute instead - see radius_server.py's HandleAuthPacket, no
+        queue involved there). `name` must be a stable, unique-per-
+        connection identifier (services/user_ops.py uses f"um-{connection.
+        id}") - looked up by name rather than the peer's own comment, since
+        an admin can rename that independently (see rename_peer above)
+        without this queue needing to move with it.
+
+        limit_mbps applies symmetrically to both directions - this panel
+        only ever offers one combined speed cap per connection, not
+        separate upload/download limits, to keep the admin-facing UI to a
+        single field."""
+        path = self._api.path("queue", "simple")
+        limit_str = f"{limit_mbps}M/{limit_mbps}M"
+        try:
+            existing = list(path.select(Key(".id")).where(Key("name") == name))
+            fields = {"target": target, "max-limit": limit_str, "disabled": "yes" if disabled else "no"}
+            if existing:
+                path.update(**{".id": existing[0][".id"], **fields})
+            else:
+                path.add(name=name, **fields)
+        except Exception as exc:
+            raise MikrotikError(f"تنظیم محدودیت سرعت روی میکروتیک ناموفق بود: {exc}") from exc
+
+    def remove_simple_queue(self, name: str):
+        """No-op if the queue doesn't exist (e.g. the connection never had
+        a speed limit set) - safe to call unconditionally from
+        deprovision_connection."""
+        path = self._api.path("queue", "simple")
+        try:
+            existing = list(path.select(Key(".id")).where(Key("name") == name))
+            for row in existing:
+                path.remove(row[".id"])
+        except Exception as exc:
+            raise MikrotikError(f"حذف محدودیت سرعت از میکروتیک ناموفق بود: {exc}") from exc
+
     def get_public_key(self, interface: str) -> Optional[str]:
         """Returns the server's own public key for the given WG interface,
         needed to build client configs."""

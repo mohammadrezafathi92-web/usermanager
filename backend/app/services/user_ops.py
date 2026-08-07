@@ -836,6 +836,16 @@ def _wg_reserve_ips(node: models.Node, db: Session, count: int = 1) -> tuple[str
     return gateway_with_prefix, [str(h) for h in run], expanded
 
 
+def wg_speed_queue_name(peer_name: str) -> str:
+    """Stable RouterOS Simple Queue name for a WireGuard peer's speed
+    limit - looked up by this name (not the peer's own comment, which an
+    admin can rename independently - see MikrotikClient.rename_peer) from
+    provisioning, routers/users.py's update_connection, and
+    deprovision_connection below, so all three always agree on which queue
+    belongs to which peer."""
+    return f"um-speed-{peer_name}"
+
+
 def provision_wireguard(
     db: Session,
     user: models.User,
@@ -843,6 +853,7 @@ def provision_wireguard(
     purchase_batch: Optional[str] = None,
     package_name: Optional[str] = None,
     max_concurrent_sessions: Optional[int] = 1,
+    speed_limit_mbps: Optional[int] = None,
 ) -> models.Connection:
     """max_concurrent_sessions > 1 means this ONE peer/config is meant to be
     shared by several people/devices at once (see routers/users.py and the
@@ -879,6 +890,8 @@ def provision_wireguard(
                 allowed_address=client_address,
                 comment=peer_name,
             )
+            if speed_limit_mbps:
+                mt.upsert_simple_queue(wg_speed_queue_name(peer_name), client_address, speed_limit_mbps)
     except MikrotikError as exc:
         raise HTTPException(400, str(exc))
 
@@ -893,6 +906,7 @@ def provision_wireguard(
         max_concurrent_sessions=count,
         purchase_batch=purchase_batch,
         package_name_snapshot=package_name,
+        speed_limit_mbps=speed_limit_mbps or None,
     )
     db.add(conn)
     db.commit()
@@ -909,6 +923,7 @@ def _provision_ppp(
     max_concurrent_sessions: Optional[int] = 1,
     purchase_batch: Optional[str] = None,
     package_name: Optional[str] = None,
+    speed_limit_mbps: Optional[int] = None,
 ) -> models.Connection:
     """Creates only a username/password pair, stored in the panel's own
     database. Authentication now happens via RADIUS (this panel runs its own
@@ -921,7 +936,12 @@ def _provision_ppp(
 
     max_concurrent_sessions caps how many simultaneous RADIUS sessions this
     credential may have open at once (enforced by the RADIUS auth handler);
-    0/None means unlimited."""
+    0/None means unlimited.
+
+    speed_limit_mbps is stored but never pushed anywhere here - unlike
+    WireGuard's Simple Queue, it's delivered fresh on every successful
+    auth as a Mikrotik-Rate-Limit RADIUS attribute (see radius_server.py's
+    HandleAuthPacket), so there's nothing to provision up front."""
     if node.type != models.NodeType.mikrotik:
         raise HTTPException(400, "نود میکروتیک معتبر نیست")
 
@@ -943,6 +963,7 @@ def _provision_ppp(
         max_concurrent_sessions=max_concurrent_sessions if max_concurrent_sessions is not None else 1,
         purchase_batch=purchase_batch,
         package_name_snapshot=package_name,
+        speed_limit_mbps=speed_limit_mbps or None,
     )
     db.add(conn)
     db.commit()
@@ -957,8 +978,9 @@ def provision_openvpn(
     max_concurrent_sessions: Optional[int] = 1,
     purchase_batch: Optional[str] = None,
     package_name: Optional[str] = None,
+    speed_limit_mbps: Optional[int] = None,
 ) -> models.Connection:
-    return _provision_ppp(db, user, node, "ovpn", max_concurrent_sessions, purchase_batch, package_name)
+    return _provision_ppp(db, user, node, "ovpn", max_concurrent_sessions, purchase_batch, package_name, speed_limit_mbps)
 
 
 def provision_l2tp(
@@ -968,8 +990,9 @@ def provision_l2tp(
     max_concurrent_sessions: Optional[int] = 1,
     purchase_batch: Optional[str] = None,
     package_name: Optional[str] = None,
+    speed_limit_mbps: Optional[int] = None,
 ) -> models.Connection:
-    return _provision_ppp(db, user, node, "l2tp", max_concurrent_sessions, purchase_batch, package_name)
+    return _provision_ppp(db, user, node, "l2tp", max_concurrent_sessions, purchase_batch, package_name, speed_limit_mbps)
 
 
 def provision_ikev2(
@@ -979,8 +1002,9 @@ def provision_ikev2(
     max_concurrent_sessions: Optional[int] = 1,
     purchase_batch: Optional[str] = None,
     package_name: Optional[str] = None,
+    speed_limit_mbps: Optional[int] = None,
 ) -> models.Connection:
-    return _provision_ppp(db, user, node, "ikev2", max_concurrent_sessions, purchase_batch, package_name)
+    return _provision_ppp(db, user, node, "ikev2", max_concurrent_sessions, purchase_batch, package_name, speed_limit_mbps)
 
 
 def provision_sstp(
@@ -990,8 +1014,9 @@ def provision_sstp(
     max_concurrent_sessions: Optional[int] = 1,
     purchase_batch: Optional[str] = None,
     package_name: Optional[str] = None,
+    speed_limit_mbps: Optional[int] = None,
 ) -> models.Connection:
-    return _provision_ppp(db, user, node, "sstp", max_concurrent_sessions, purchase_batch, package_name)
+    return _provision_ppp(db, user, node, "sstp", max_concurrent_sessions, purchase_batch, package_name, speed_limit_mbps)
 
 
 # ---------------------------------------------------------------------- xray
@@ -1053,6 +1078,7 @@ def provision_package_connections(db: Session, user: models.User, package: model
             conn = provision_connection(
                 db, user, node, pc.protocol, pc.flow or "", 1,
                 purchase_batch=batch, package_name=package.name,
+                speed_limit_mbps=package.speed_limit_mbps,
             )
             created.append(conn)
         except HTTPException as exc:
@@ -1107,6 +1133,7 @@ def apply_package_as_purchase(db: Session, user: models.User, package: models.Pa
             conn = provision_connection(
                 db, user, node, pc.protocol, pc.flow or "", 1,
                 purchase_batch=batch, package_name=package.name,
+                speed_limit_mbps=package.speed_limit_mbps,
             )
             conn.purchase_id = purchase.id
             created_any = True
@@ -1239,19 +1266,23 @@ def provision_connection(
     max_concurrent_sessions: Optional[int] = 1,
     purchase_batch: Optional[str] = None,
     package_name: Optional[str] = None,
+    speed_limit_mbps: Optional[int] = None,
 ) -> models.Connection:
     """Generic dispatcher used by the bot API, where the protocol is picked
-    dynamically per request."""
+    dynamically per request. speed_limit_mbps is silently ignored for xray -
+    there is no enforcement path for it on that protocol (neither Xray-core
+    nor 3X-UI support per-client bandwidth throttling as of 2026) - see
+    models.Connection.speed_limit_mbps's docstring."""
     if protocol == models.ConnectionType.wireguard:
-        return provision_wireguard(db, user, node, purchase_batch, package_name, max_concurrent_sessions)
+        return provision_wireguard(db, user, node, purchase_batch, package_name, max_concurrent_sessions, speed_limit_mbps)
     if protocol == models.ConnectionType.openvpn:
-        return provision_openvpn(db, user, node, max_concurrent_sessions, purchase_batch, package_name)
+        return provision_openvpn(db, user, node, max_concurrent_sessions, purchase_batch, package_name, speed_limit_mbps)
     if protocol == models.ConnectionType.l2tp:
-        return provision_l2tp(db, user, node, max_concurrent_sessions, purchase_batch, package_name)
+        return provision_l2tp(db, user, node, max_concurrent_sessions, purchase_batch, package_name, speed_limit_mbps)
     if protocol == models.ConnectionType.ikev2:
-        return provision_ikev2(db, user, node, max_concurrent_sessions, purchase_batch, package_name)
+        return provision_ikev2(db, user, node, max_concurrent_sessions, purchase_batch, package_name, speed_limit_mbps)
     if protocol == models.ConnectionType.sstp:
-        return provision_sstp(db, user, node, max_concurrent_sessions, purchase_batch, package_name)
+        return provision_sstp(db, user, node, max_concurrent_sessions, purchase_batch, package_name, speed_limit_mbps)
     if protocol == models.ConnectionType.xray:
         return provision_xray(db, user, node, flow, purchase_batch, package_name)
     raise HTTPException(400, "پروتکل نامعتبر است")
@@ -1269,6 +1300,10 @@ def deprovision_connection(connection: models.Connection):
                 match = next((p for p in peers if p.get("comment") == connection.wg_peer_name), None)
                 if match:
                     mt.remove_peer(match[".id"])
+                # Harmless no-op if this connection never had a speed limit
+                # (see MikrotikClient.remove_simple_queue) - always attempted
+                # so a queue never outlives the peer it was limiting.
+                mt.remove_simple_queue(wg_speed_queue_name(connection.wg_peer_name))
         elif connection.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp):
             # Authenticated via RADIUS against this panel's own database -
             # there is no remote PPP secret to remove, deleting the DB row

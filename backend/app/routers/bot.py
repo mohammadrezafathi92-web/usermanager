@@ -346,6 +346,43 @@ def create_user(payload: schemas.BotCreateUserRequest, db: Session = Depends(get
     return _user_response(user)
 
 
+@router.post("/users/{username}/purchase-package", response_model=schemas.BotPurchaseResponse)
+def purchase_package(
+    username: str, payload: schemas.BotPurchasePackageRequest, db: Session = Depends(get_db),
+    owner_admin_id: Optional[int] = None,
+):
+    """Bot counterpart of routers/users.py's apply_package ("افزودن پکیج") -
+    gives an EXISTING customer a NEW, independently-enforced Purchase (its
+    own quota_bytes/expire_at, not merged into the user's combined fields)
+    instead of the old add_connection()+renew() pairing the sales bot's
+    "new" purchase flow used to funnel an already-registered customer's
+    purchase through. That old pairing pooled the new package's quota/
+    duration into the user's SHARED total_quota_bytes/expire_at - the exact
+    bug report this endpoint fixes: buying a second service looked, from
+    the customer's side, exactly like the first service had just been
+    renewed (a later expiry date, no visibly separate new service), because
+    functionally that's what it was doing.
+
+    payload.connections overrides package.connections when given - used for
+    a "plain" package with no admin-defined bundle, where the customer
+    picked exactly one node/protocol by hand in the bot's purchase flow
+    (see telegram_bot/handlers/customer.py's pick_node/pick_protocol)."""
+    user = _get_user_or_404(db, username, owner_admin_id)
+    package = db.get(models.Package, payload.package_id)
+    if not package:
+        raise HTTPException(404, "پکیج پیدا نشد")
+    override = (
+        [{"node_id": c.node_id, "protocol": c.protocol, "flow": c.flow or ""} for c in payload.connections]
+        if payload.connections else None
+    )
+    purchase = user_ops.apply_package_as_purchase(db, user, package, connections_override=override)
+    db.refresh(user)
+    return schemas.BotPurchaseResponse(
+        user=_user_response(user),
+        connections=[_connection_info(c) for c in purchase.connections],
+    )
+
+
 @router.post("/referral/apply")
 def apply_referral(payload: schemas.ReferralApplyRequest, db: Session = Depends(get_db)):
     """Called once, right after admin_pending.py's receipt-approval handler

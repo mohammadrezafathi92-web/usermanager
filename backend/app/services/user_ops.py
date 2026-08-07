@@ -1086,11 +1086,16 @@ def provision_package_connections(db: Session, user: models.User, package: model
     return {"created": created, "skipped": skipped}
 
 
-def apply_package_as_purchase(db: Session, user: models.User, package: models.Package) -> models.Purchase:
+def apply_package_as_purchase(
+    db: Session, user: models.User, package: models.Package,
+    connections_override: Optional[list[dict]] = None,
+) -> models.Purchase:
     """The real, independently-enforced counterpart to
     provision_package_connections above - used by routers/users.py's
     apply_package endpoint (the "افزودن پکیج" admin action, for giving an
-    EXISTING user an extra package on top of whatever they already have).
+    EXISTING user an extra package on top of whatever they already have)
+    AND by routers/bot.py's purchase_package endpoint (same thing, but for
+    a purchase made through the sales bot).
 
     Before this existed, that action only ever created connections and left
     the user's own combined total_quota_bytes/used_bytes/expire_at
@@ -1102,7 +1107,16 @@ def apply_package_as_purchase(db: Session, user: models.User, package: models.Pa
     to a brand-new Purchase row with its OWN quota_bytes/used_bytes/expire_at
     - see models.Purchase's docstring and services/quota_manager.py's
     _enforce_purchase_limits for how that gets enforced independently of the
-    user's own fields."""
+    user's own fields.
+
+    connections_override, when given, is a list of {"node_id", "protocol",
+    "flow"} dicts used INSTEAD of package.connections - needed for a "plain"
+    package (no bundled services defined by the admin) where the customer
+    picks a single node/protocol by hand (see telegram_bot/handlers/
+    customer.py's node/protocol picker) rather than the admin having
+    pre-bundled specific servers into the package. None (the default, and
+    always the case for the web panel's apply_package endpoint) uses
+    package.connections as before."""
     purchase = models.Purchase(
         user_id=user.id,
         package_id=package.id,
@@ -1124,14 +1138,18 @@ def apply_package_as_purchase(db: Session, user: models.User, package: models.Pa
     batch = uuid.uuid4().hex
     created_any = False
     skip_reasons: list[str] = []
-    for pc in package.connections:
-        node = db.get(models.Node, pc.node_id)
+    conn_specs = (
+        connections_override if connections_override is not None
+        else [{"node_id": pc.node_id, "protocol": pc.protocol, "flow": pc.flow or ""} for pc in package.connections]
+    )
+    for spec in conn_specs:
+        node = db.get(models.Node, spec["node_id"])
         if not node:
             skip_reasons.append("نود پیدا نشد")
             continue
         try:
             conn = provision_connection(
-                db, user, node, pc.protocol, pc.flow or "", 1,
+                db, user, node, spec["protocol"], spec.get("flow") or "", 1,
                 purchase_batch=batch, package_name=package.name,
                 speed_limit_mbps=package.speed_limit_mbps,
             )
@@ -1142,15 +1160,16 @@ def apply_package_as_purchase(db: Session, user: models.User, package: models.Pa
 
     # Unlike provision_package_connections (bulk-create's version of this
     # loop, which tolerates a user ending up with zero live connections -
-    # see its own docstring), this is the ONLY caller of this function
-    # (routers/users.py's "افزودن پکیج" action) and it always charges the
-    # admin's wallet for the package right before calling this - so a
-    # package where literally every bundled connection failed (all its
-    # nodes deleted, all unreachable, ...) must not silently create a
-    # zero-service Purchase the admin already paid for. Roll back the
-    # Purchase row itself and raise so routers/users.py's apply_package can
-    # refund the charge, same guarantee create_user's package path has.
-    if package.connections and not created_any:
+    # see its own docstring), this function always charges the admin's
+    # wallet (or, via the bot, the customer's balance) for the package
+    # right before calling this - so a package where literally every
+    # requested connection failed (all its nodes deleted, all unreachable,
+    # ...) must not silently create a zero-service Purchase already paid
+    # for. Roll back the Purchase row itself and raise so the caller
+    # (routers/users.py's apply_package, or routers/bot.py's
+    # purchase_package) can refund the charge, same guarantee create_user's
+    # package path has.
+    if conn_specs and not created_any:
         db.rollback()
         reasons = "، ".join(skip_reasons) or "دلیل نامشخص"
         raise HTTPException(400, f"هیچ‌کدام از سرویس‌های پکیج قابل ساخت نبودند: {reasons}")

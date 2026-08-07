@@ -307,6 +307,16 @@ class PanelBridge:
         )
         return _dump(await _call(bot_router.add_connection, username, spec, owner_admin_id=_scope(owner_admin_id)))
 
+    async def purchase_package(
+        self, username: str, package_id: int, connections: Optional[list[dict]] = None,
+        owner_admin_id: Optional[int] = None,
+    ) -> dict:
+        payload = schemas.BotPurchasePackageRequest(
+            package_id=package_id,
+            connections=[schemas.BotCreateConnectionSpec(**c) for c in (connections or [])],
+        )
+        return _dump(await _call(bot_router.purchase_package, username, payload, owner_admin_id=_scope(owner_admin_id)))
+
     async def renew(
         self, username: str, add_gb: float = 0, add_days: int = 0, reset_usage: bool = False,
         owner_admin_id: Optional[int] = None, package_id: Optional[int] = None,

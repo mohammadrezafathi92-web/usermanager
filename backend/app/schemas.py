@@ -1039,6 +1039,11 @@ class BotRenewRequest(BaseModel):
     package_id: Optional[int] = None
 
 
+class BotPurchaseResponse(BaseModel):
+    user: "BotUserResponse"
+    connections: List["BotConnectionInfo"]
+
+
 class BotAddBalanceRequest(BaseModel):
     amount: int  # tomans, can be negative to deduct
 
@@ -1099,6 +1104,28 @@ class BotUserResponse(BaseModel):
     # "اکانت من" so it isn't mistaken for the renewal having failed/vanished.
     reserved_quota_gb: Optional[float] = None
     reserved_duration_days: Optional[int] = None
+
+
+class BotPurchasePackageRequest(BaseModel):
+    """Bot counterpart of ApplyPackageRequest (routers/users.py's "افزودن
+    پکیج" admin action) - gives an EXISTING customer a brand-new,
+    independently-enforced Purchase (own quota_bytes/expire_at, not merged
+    into the user's combined fields - see user_ops.apply_package_as_purchase)
+    instead of the old add_connection()+renew() pairing, which pooled every
+    "new" purchase's quota/duration into the user's shared total, making a
+    second service look like it had just renewed the first one instead of
+    being its own thing."""
+    package_id: int
+    # Only needed for a "plain" package with no bundled services (the admin
+    # never defined package.connections) - the customer picked exactly one
+    # node/protocol by hand in the bot's purchase flow. Empty (the default)
+    # for a bundled package, where the package's own connections are used.
+    connections: List[BotCreateConnectionSpec] = []
+
+
+class BotPurchaseResponse(BaseModel):
+    user: BotUserResponse
+    connections: List[BotConnectionInfo]
 
 
 class BotUserListItem(BaseModel):

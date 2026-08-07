@@ -1,5 +1,3 @@
-import uuid
-
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -890,27 +888,31 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
     new_connections: list[dict] = []
     try:
         if kind == "new":
-            # One batch per purchase, so if this package bundles more than
-            # one service they group together under one "خرید" entry in
-            # "اکانت من" instead of showing as separate unrelated services -
-            # see models.Connection.purchase_batch.
-            batch = uuid.uuid4().hex
+            # target_username here is ALWAYS an already-existing, already-
+            # linked account (see the check at the top of this function -
+            # paying from balance requires an account with sufficient
+            # balance in the first place, so there is no "brand new
+            # customer" case to handle here, unlike admin_pending.py's
+            # receipt-approval path). Gives them a brand-new, independently
+            # -enforced Purchase (own quota_bytes/expire_at) instead of the
+            # old add_connection()+renew() pairing, which pooled this
+            # purchase's quota/duration into the customer's SHARED total -
+            # see user_ops.apply_package_as_purchase's docstring. That old
+            # behavior is the exact bug report this fixes: buying a SECOND
+            # service looked, from the customer's side, exactly like the
+            # FIRST service had just been renewed (later expiry, no visibly
+            # separate new service) - because that's genuinely what it was
+            # doing under the hood.
+            connections_override = None
             if data.get("node_id"):
                 # plain package - single manually-picked service
-                conn = await api.add_connection(
-                    target_username, data["node_id"], data["protocol"], flow="",
-                    purchase_batch=batch, package_name=pkg.get("name"),
-                )
-                new_connections.append(conn)
-            else:
-                # package with bundled services - provision all of them
-                for c in (pkg.get("connections") or []):
-                    conn = await api.add_connection(
-                        target_username, c["node_id"], c["protocol"], flow=c.get("flow") or "",
-                        purchase_batch=batch, package_name=pkg.get("name"),
-                    )
-                    new_connections.append(conn)
-        if add_gb or add_days:
+                connections_override = [{"node_id": data["node_id"], "protocol": data["protocol"], "flow": ""}]
+            # else: bundled package - purchase_package uses the package's
+            # OWN connections list server-side (fetched fresh from the DB,
+            # not this possibly-stale bot-side pkg snapshot).
+            result = await api.purchase_package(target_username, pkg["id"], connections=connections_override)
+            new_connections = result["connections"]
+        elif add_gb or add_days:
             await api.renew(target_username, add_gb=add_gb, add_days=add_days, package_id=pkg.get("id"))
         user = await api.get_user(target_username)
     except ApiError as exc:

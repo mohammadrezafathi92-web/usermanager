@@ -1,5 +1,4 @@
 import logging
-import uuid
 
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
@@ -166,9 +165,15 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
             # sets target_username to their existing username whenever
             # they're linked, regardless of "new" vs "renew"). create_user
             # below would reject that with "username already exists", so
-            # check first and, if they already exist, add this package's
-            # services to their existing account instead (mirrors exactly
-            # what pay_with_balance's instant-checkout "new" path does).
+            # check first and, if they already exist, give them a brand-new,
+            # independently-enforced Purchase instead (mirrors exactly what
+            # customer.py's pay_with_balance instant-checkout "new" path
+            # does - see user_ops.apply_package_as_purchase's docstring for
+            # why this has to be a separate Purchase, own quota_bytes/
+            # expire_at, rather than add_connection()+renew(): the old
+            # pairing pooled this purchase's quota/duration into the
+            # customer's SHARED total, so a second service looked exactly
+            # like the first one had just been renewed).
             existing_user = None
             try:
                 existing_user = await api.get_user(pending["target_username"])
@@ -177,21 +182,16 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
 
             user = None
             if existing_user:
-                batch = uuid.uuid4().hex
-                new_connections = []
-                for c in connections:
-                    conn = await api.add_connection(
-                        pending["target_username"], c["node_id"], c["protocol"], flow=c.get("flow") or "",
-                        purchase_batch=batch, package_name=(pkg or {}).get("name"),
-                    )
-                    new_connections.append(conn)
-                if pending["quota_gb"] or pending["duration_days"]:
-                    user = await api.renew(
-                        pending["target_username"],
-                        add_gb=pending["quota_gb"] or 0,
-                        add_days=pending["duration_days"] or 0,
-                        package_id=(pkg or {}).get("id"),
-                    )
+                if not pkg:
+                    # Package was deleted between the customer's purchase
+                    # request and this approval - nothing sane to provision.
+                    raise ApiError("پکیج این خرید دیگر وجود ندارد - امکان تایید نیست")
+                connections_override = connections if connections else None
+                result = await api.purchase_package(
+                    pending["target_username"], pkg["id"], connections=connections_override,
+                )
+                new_connections = result["connections"]
+                user = result["user"]
             else:
                 user = await api.create_user(
                     username=pending["target_username"],

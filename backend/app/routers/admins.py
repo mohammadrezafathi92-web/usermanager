@@ -15,7 +15,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..deps import require_admin_or_above, require_superadmin
 from ..security import hash_password
-from ..services import hierarchy
+from ..services import hierarchy, accounting
 from ..permissions import PERMISSION_CHOICES, PERMISSION_GROUPS, parse_permissions, format_permissions, effective_permissions
 
 router = APIRouter(prefix="/api/admins", tags=["admins"], dependencies=[Depends(require_admin_or_above)])
@@ -133,6 +133,13 @@ def _apply_balance_change(db: Session, admin: models.AdminUser, amount: int, not
         created_by_id=actor_id,
     )
     db.add(log)
+    # Accounting mirror of the same event (see services/accounting.py) -
+    # added to the same uncommitted transaction, so it can never drift from
+    # the AdminBalanceLog row above.
+    accounting.record(
+        db, "admin_credit_change", amount,
+        admin_id=admin.id, actor_admin_id=actor_id, note=note,
+    )
     return log
 
 

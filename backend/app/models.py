@@ -1202,6 +1202,12 @@ class PanelSettings(Base):
     loyalty_reward_credit = Column(BigInteger, nullable=False, default=0)  # تومان
     loyalty_reward_gb = Column(Float, nullable=False, default=0)
 
+    # One-shot guard for services/accounting.py's backfill_if_needed() -
+    # flipped to True after historical Purchases/AdminBalanceLogs have been
+    # copied into the accounting ledger once, so a restart never
+    # double-imports them.
+    accounting_backfilled = Column(Boolean, nullable=False, default=False)
+
 
 class PaymentCard(Base):
     """One card-to-card bank card registered for card-to-card payment
@@ -1247,6 +1253,77 @@ class PaymentCard(Base):
     created_at = Column(DateTime, default=now)
 
     owner_admin = relationship("AdminUser", foreign_keys=[owner_admin_id])
+
+
+class LedgerEntry(Base):
+    """One row per financial event, panel-wide - the single source of truth
+    the "حساب‌داری" (Accounting) section reads. Written automatically at
+    every point money actually moves (see services/accounting.py's record()
+    call sites: bot sale/renewal/top-up approval in routers/bot.py, the
+    panel-side cooperation-price charge in routers/users.py, every admin
+    credit change in routers/admins.py) plus manual superadmin-entered
+    expenses. Historical Purchases/AdminBalanceLogs are copied in once at
+    first startup (backfill_if_needed - see PanelSettings.
+    accounting_backfilled).
+
+    `kind` values (plain strings, same convention as the "mode" columns
+    elsewhere):
+      sale_new            customer bought a new package (amount = final
+                          price actually paid, after discount when known)
+      sale_renew          customer paid to renew/extend
+      wallet_topup        customer wallet top-up approved (cash actually
+                          received on a card)
+      admin_credit_change signed top-up/deduction of a reseller's credit
+                          by superadmin/parent (mirrors AdminBalanceLog)
+      admin_credit_spend  reseller's credit debited at cooperation price
+                          for creating/renewing their own customer
+      admin_credit_refund cooperation-price charge rolled back after a
+                          failed provision
+      expense             manual superadmin-entered cost (server rent, ...)
+
+    Note wallet mechanics: a wallet PAYMENT shows up as a sale_* row with
+    payment_method="wallet" - the wallet debit itself is deliberately NOT
+    a second row (it would double-count the same purchase), and wallet
+    top-ups are their own kind so dashboards can distinguish "cash that
+    arrived on a card" from "revenue recognized as sales"."""
+
+    __tablename__ = "ledger_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    kind = Column(String(32), nullable=False, index=True)
+    # Tomans. Positive for sales/top-ups/spends/refunds/expenses (the kind
+    # says which side of the books it lands on); signed only for
+    # admin_credit_change (negative = manual deduction).
+    amount = Column(BigInteger, nullable=False, default=0)
+
+    # Who/what this event was about - all nullable snapshots-with-FKs so
+    # deleting a customer/package/card later never breaks the books.
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    username_snapshot = Column(String(255), nullable=True)
+    # Owner-scope: the Admin/Seller whose business this money belongs to
+    # (User.owner_admin_id for customer events, the target admin for credit
+    # events). NULL = the superadmin's own direct business. This is the
+    # column every role-scoped accounting query filters on - see
+    # services/accounting.py's visible_admin_ids().
+    admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True, index=True)
+    admin_username_snapshot = Column(String(255), nullable=True)
+    # Who performed the action, when different from admin_id (e.g. the
+    # superadmin topping up a reseller's credit).
+    actor_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True)
+    package_id = Column(Integer, ForeignKey("packages.id", ondelete="SET NULL"), nullable=True)
+    package_name_snapshot = Column(String(255), nullable=True)
+    purchase_id = Column(Integer, ForeignKey("purchases.id", ondelete="SET NULL"), nullable=True)
+    payment_card_id = Column(Integer, ForeignKey("payment_cards.id", ondelete="SET NULL"), nullable=True, index=True)
+    payment_method = Column(String(20), nullable=True)  # card | wallet | admin_credit
+    discount_code = Column(String(64), nullable=True)
+    discount_amount = Column(BigInteger, nullable=True)
+    category = Column(String(100), nullable=True)  # expense rows only
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=now, index=True)
+
+    user = relationship("User", foreign_keys=[user_id])
+    admin = relationship("AdminUser", foreign_keys=[admin_id])
+    actor_admin = relationship("AdminUser", foreign_keys=[actor_admin_id])
 
 
 class BotSettings(Base):

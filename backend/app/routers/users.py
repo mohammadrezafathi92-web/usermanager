@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, joinedload
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_admin
-from ..services import user_ops, hierarchy
+from ..services import user_ops, hierarchy, accounting
 
 router = APIRouter(prefix="/api/users", tags=["users"], dependencies=[Depends(get_current_admin)])
 
@@ -63,9 +63,18 @@ def _charge_admin_for_package(db: Session, admin: models.AdminUser, package: mod
         .where(models.AdminUser.id == admin.id, models.AdminUser.balance >= cost)
         .values(balance=models.AdminUser.balance - cost)
     )
-    db.commit()
     if result.rowcount == 0:
+        db.commit()
         raise HTTPException(400, f"اعتبار شما کافی نیست - این پکیج {cost:,} تومان از اعتبار شما کم می‌کند")
+    # Accounting: the reseller's cost of goods (see services/accounting.py) -
+    # committed together with the deduction itself.
+    accounting.record(
+        db, "admin_credit_spend", cost,
+        admin_id=admin.id, actor_admin_id=admin.id, package=package,
+        payment_method="admin_credit",
+        note=f"{units} × {package.name}" if units > 1 else None,
+    )
+    db.commit()
 
 
 def _refund_admin_for_package(db: Session, admin: models.AdminUser, package: models.Package, units: int) -> None:
@@ -85,6 +94,12 @@ def _refund_admin_for_package(db: Session, admin: models.AdminUser, package: mod
         models.AdminUser.__table__.update()
         .where(models.AdminUser.id == admin.id)
         .values(balance=models.AdminUser.balance + amount)
+    )
+    accounting.record(
+        db, "admin_credit_refund", amount,
+        admin_id=admin.id, actor_admin_id=admin.id, package=package,
+        payment_method="admin_credit",
+        note=f"بازگشت اعتبار {units} پکیج ساخته‌نشده",
     )
     db.commit()
 

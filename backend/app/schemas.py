@@ -1077,6 +1077,14 @@ class BotCreateUserRequest(BaseModel):
     # models.User.package_id). None for admin-created users with no package
     # (e.g. admin_users.py's manual node/protocol flow).
     package_id: Optional[int] = None
+    # --- accounting (see services/accounting.py) - all optional so older
+    # deployed bots that don't send them keep working; the panel falls back
+    # to the package's list price with no payment-method detail. ---
+    paid_amount: Optional[int] = None  # final tomans actually paid (after discount)
+    payment_method: Optional[str] = None  # "card" | "wallet"
+    payment_card_id: Optional[int] = None
+    discount_code: Optional[str] = None
+    discount_amount: Optional[int] = None
 
 
 class BotRenewRequest(BaseModel):
@@ -1088,6 +1096,12 @@ class BotRenewRequest(BaseModel):
     # package-based filtering in the panel stays accurate across renewals
     # too (not just at first creation).
     package_id: Optional[int] = None
+    # --- accounting - same optional fields/fallback as BotCreateUserRequest ---
+    paid_amount: Optional[int] = None
+    payment_method: Optional[str] = None
+    payment_card_id: Optional[int] = None
+    discount_code: Optional[str] = None
+    discount_amount: Optional[int] = None
 
 
 class BotPurchaseResponse(BaseModel):
@@ -1097,6 +1111,10 @@ class BotPurchaseResponse(BaseModel):
 
 class BotAddBalanceRequest(BaseModel):
     amount: int  # tomans, can be negative to deduct
+    # Which card the approved top-up receipt was deposited to - only sent
+    # (positive amounts) by the bot's top-up approval flow, for the
+    # accounting ledger's wallet_topup row. See services/accounting.py.
+    payment_card_id: Optional[int] = None
 
 
 class BotLinkTelegramRequest(BaseModel):
@@ -1172,6 +1190,12 @@ class BotPurchasePackageRequest(BaseModel):
     # node/protocol by hand in the bot's purchase flow. Empty (the default)
     # for a bundled package, where the package's own connections are used.
     connections: List[BotCreateConnectionSpec] = []
+    # --- accounting - same optional fields/fallback as BotCreateUserRequest ---
+    paid_amount: Optional[int] = None
+    payment_method: Optional[str] = None
+    payment_card_id: Optional[int] = None
+    discount_code: Optional[str] = None
+    discount_amount: Optional[int] = None
 
 
 class BotPurchaseResponse(BaseModel):
@@ -1468,3 +1492,43 @@ class BroadcastResult(BaseModel):
     sent: int
     failed: int
     total: int
+
+
+# ---------- Accounting (حساب‌داری) - see services/accounting.py ----------
+class LedgerEntryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    kind: str
+    amount: int
+    user_id: Optional[int] = None
+    username_snapshot: Optional[str] = None
+    admin_id: Optional[int] = None
+    admin_username_snapshot: Optional[str] = None
+    actor_admin_id: Optional[int] = None
+    package_id: Optional[int] = None
+    package_name_snapshot: Optional[str] = None
+    purchase_id: Optional[int] = None
+    payment_card_id: Optional[int] = None
+    payment_method: Optional[str] = None
+    discount_code: Optional[str] = None
+    discount_amount: Optional[int] = None
+    category: Optional[str] = None
+    note: Optional[str] = None
+    created_at: dt.datetime
+
+
+class LedgerPage(BaseModel):
+    items: List[LedgerEntryOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class ExpenseCreate(BaseModel):
+    amount: int  # tomans, positive
+    category: Optional[str] = None
+    note: Optional[str] = None
+    # Optional historical date (e.g. entering last month's server invoice) -
+    # defaults to "now" server-side when omitted.
+    created_at: Optional[dt.datetime] = None

@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session, joinedload
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_bot_api_key
-from ..services import user_ops, hierarchy, payment_cards
+from ..services import user_ops, hierarchy, payment_cards, accounting
 from ..services.quota_manager import _set_connection_enabled
 from .panel_settings import _get_or_create as _get_or_create_settings
 
@@ -82,6 +82,34 @@ def _get_user_or_404(db: Session, username: str, owner_admin_id: Optional[int] =
     if not user or (owner_admin_id is not None and user.owner_admin_id != owner_admin_id):
         raise HTTPException(404, "کاربر پیدا نشد")
     return user
+
+
+def _record_bot_sale(
+    db: Session, kind: str, payload, user: models.User,
+    package: Optional[models.Package], purchase_id: Optional[int] = None,
+) -> None:
+    """Shared accounting hook for every bot sale endpoint below (see
+    services/accounting.py). Uses the exact paid amount when the bot sent
+    it (new bot builds pass the post-discount final price), otherwise falls
+    back to the package's list/seller price so a stale remote bot still
+    produces sensible books. Adds to the session only - the caller's own
+    commit right after makes it atomic with the sale itself."""
+    paid = getattr(payload, "paid_amount", None)
+    if paid is None:
+        if package is None:
+            return  # package-less admin-created user - nothing was sold
+        paid = accounting.sale_fallback_price(db, package, user.owner_admin_id)
+    accounting.record(
+        db, kind, paid,
+        user=user,
+        admin_id=user.owner_admin_id,
+        package=package,
+        purchase_id=purchase_id,
+        payment_card_id=getattr(payload, "payment_card_id", None),
+        payment_method=getattr(payload, "payment_method", None),
+        discount_code=getattr(payload, "discount_code", None),
+        discount_amount=getattr(payload, "discount_amount", None),
+    )
 
 
 @router.get("/nodes", response_model=list[schemas.BotNodeInfo])
@@ -386,6 +414,9 @@ def create_user(payload: schemas.BotCreateUserRequest, db: Session = Depends(get
             db, user, node, spec.protocol, spec.flow or "",
             purchase_batch=batch, package_name=payload.package_name,
         )
+    package = db.get(models.Package, payload.package_id) if payload.package_id else None
+    _record_bot_sale(db, "sale_new", payload, user, package)
+    db.commit()
     db.refresh(user)
     return _user_response(user)
 
@@ -420,6 +451,8 @@ def purchase_package(
         if payload.connections else None
     )
     purchase = user_ops.apply_package_as_purchase(db, user, package, connections_override=override)
+    _record_bot_sale(db, "sale_new", payload, user, package, purchase_id=purchase.id)
+    db.commit()
     db.refresh(user)
     return schemas.BotPurchaseResponse(
         user=_user_response(user),
@@ -593,6 +626,13 @@ def renew(
 ):
     user = _get_user_or_404(db, username, owner_admin_id)
     user_ops.renew_user(db, user, payload.add_gb, payload.add_days, payload.reset_usage, package_id=payload.package_id)
+    # Accounting: only a package-based renewal (or one where the bot sent
+    # the exact paid amount) is a paid event - a bare reset_usage or manual
+    # add_gb/add_days admin favor isn't a sale.
+    if payload.package_id or payload.paid_amount is not None:
+        package = db.get(models.Package, payload.package_id) if payload.package_id else None
+        _record_bot_sale(db, "sale_renew", payload, user, package)
+        db.commit()
     return _user_response(user)
 
 
@@ -644,6 +684,18 @@ def add_balance(username: str, payload: schemas.BotAddBalanceRequest, db: Sessio
         db.refresh(user)
     else:
         user.balance = (user.balance or 0) + payload.amount
+        # Accounting: a positive credit is an approved wallet top-up - cash
+        # that actually arrived on a card (see services/accounting.py's
+        # LedgerEntry kind docs for why the negative/debit branch above is
+        # deliberately NOT recorded - the sale row already covers it).
+        if payload.amount > 0:
+            accounting.record(
+                db, "wallet_topup", payload.amount,
+                user=user,
+                admin_id=user.owner_admin_id,
+                payment_card_id=payload.payment_card_id,
+                payment_method="card",
+            )
         db.commit()
         db.refresh(user)
     return _user_response(user)

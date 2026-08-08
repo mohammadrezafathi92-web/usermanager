@@ -165,6 +165,7 @@ class RemoteBridge:
         owner_admin_id: Optional[int] = None,
         package_name: Optional[str] = None,
         package_id: Optional[int] = None,
+        sale_info: Optional[dict] = None,
     ) -> dict:
         payload = {
             "username": username,
@@ -176,6 +177,7 @@ class RemoteBridge:
             "owner_admin_id": owner_admin_id,
             "package_name": package_name,
             "package_id": package_id,
+            **(sale_info or {}),
         }
         return await self._call("POST", "/users", json=payload)
 
@@ -233,9 +235,9 @@ class RemoteBridge:
 
     async def purchase_package(
         self, username: str, package_id: int, connections: Optional[list[dict]] = None,
-        owner_admin_id: Optional[int] = None,
+        owner_admin_id: Optional[int] = None, sale_info: Optional[dict] = None,
     ) -> dict:
-        payload = {"package_id": package_id, "connections": connections or []}
+        payload = {"package_id": package_id, "connections": connections or [], **(sale_info or {})}
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         return await self._call("POST", f"/users/{username}/purchase-package", json=payload, params=params)
 
@@ -245,8 +247,9 @@ class RemoteBridge:
     async def renew(
         self, username: str, add_gb: float = 0, add_days: int = 0, reset_usage: bool = False,
         owner_admin_id: Optional[int] = None, package_id: Optional[int] = None,
+        sale_info: Optional[dict] = None,
     ) -> dict:
-        payload = {"add_gb": add_gb, "add_days": add_days, "reset_usage": reset_usage, "package_id": package_id}
+        payload = {"add_gb": add_gb, "add_days": add_days, "reset_usage": reset_usage, "package_id": package_id, **(sale_info or {})}
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         return await self._call("POST", f"/users/{username}/renew", json=payload, params=params)
 
@@ -260,8 +263,8 @@ class RemoteBridge:
             params["owner_admin_id"] = owner_admin_id
         return await self._call("POST", f"/users/{username}/set-enabled", params=params)
 
-    async def add_balance(self, username: str, amount: int) -> dict:
-        return await self._call("POST", f"/users/{username}/add-balance", json={"amount": amount})
+    async def add_balance(self, username: str, amount: int, payment_card_id: Optional[int] = None) -> dict:
+        return await self._call("POST", f"/users/{username}/add-balance", json={"amount": amount, "payment_card_id": payment_card_id})
 
     async def delete_user(self, username: str, owner_admin_id: Optional[int] = None) -> None:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}

@@ -299,3 +299,12 @@ export const createDiscountCode = (data) => client.post("/discount-codes", data)
 export const updateDiscountCode = (id, data) => client.put(`/discount-codes/${id}`, data);
 export const deleteDiscountCode = (id) => client.delete(`/discount-codes/${id}`);
 export const fetchDiscountCodeRedemptions = (id) => client.get(`/discount-codes/${id}/redemptions`);
+
+// ---------- Accounting (حساب‌داری) ----------
+export const fetchAccountingSummary = (params = {}) => client.get("/accounting/summary", { params });
+export const fetchAccountingSeries = (params = {}) => client.get("/accounting/series", { params });
+export const fetchAccountingTransactions = (params = {}) => client.get("/accounting/transactions", { params });
+export const createAccountingExpense = (data) => client.post("/accounting/expenses", data);
+export const deleteAccountingExpense = (id) => client.delete(`/accounting/expenses/${id}`);
+export const exportAccounting = (params = {}) =>
+  client.get("/accounting/export", { params, responseType: "blob" });

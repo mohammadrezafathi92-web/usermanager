@@ -15,7 +15,8 @@ from .services.quota_manager import poll_all
 from .services.radius_server import start_radius_server_in_background, cleanup_stale_radius_sessions, cleanup_old_radius_limit_logs
 from .services.notify import run_daily_notify_job
 from .services.backup import run_scheduled_backup, ha_healthcheck, ha_pull_and_apply, notify_admins_text
-from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, tutorials, backup, remote_bot, admins, radius_logs, discount_codes, subscription
+from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, tutorials, backup, remote_bot, admins, radius_logs, discount_codes, subscription, accounting as accounting_router
+from .services import accounting as accounting_service
 from .telegram_bot import runner as telegram_bot_runner
 from .telegram_bot.config import parse_id_set
 
@@ -77,6 +78,7 @@ app.include_router(discount_codes.router)
 app.include_router(panel_settings.my_payment_router)
 app.include_router(panel_settings.ha_router)
 app.include_router(subscription.router)
+app.include_router(accounting_router.router)
 
 scheduler = BackgroundScheduler()
 
@@ -313,6 +315,20 @@ def on_startup():
         db.close()
 
     _seed_default_permission_groups()
+
+    # One-time import of pre-existing purchases/credit logs into the
+    # accounting ledger (see services/accounting.py's backfill_if_needed -
+    # guarded by PanelSettings.accounting_backfilled, so a no-op on every
+    # startup after the first).
+    db = SessionLocal()
+    try:
+        imported = accounting_service.backfill_if_needed(db)
+        if imported:
+            logging.info("حساب‌داری: %s رکورد تاریخی به دفتر کل منتقل شد", imported)
+    except Exception:
+        logging.exception("خطا در انتقال تاریخچه مالی به دفتر کل حساب‌داری")
+    finally:
+        db.close()
 
     if settings.bot_standalone_mode:
         # This container is a bot-only instance deployed on a second server

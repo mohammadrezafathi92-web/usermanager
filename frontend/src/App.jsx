@@ -13,6 +13,7 @@ import Settings from "./pages/Settings.jsx";
 import Admins from "./pages/Admins.jsx";
 import RadiusLogs from "./pages/RadiusLogs.jsx";
 import DiscountCodes from "./pages/DiscountCodes.jsx";
+import Accounting from "./pages/Accounting.jsx";
 import Subscription from "./pages/Subscription.jsx";
 
 function Protected({ children }) {
@@ -135,6 +136,16 @@ export default function App() {
         element={
           <Protected>
             <DiscountCodes />
+          </Protected>
+        }
+      />
+      {/* حساب‌داری - visible to every tier; the backend scopes each role's
+          numbers (see routers/accounting.py + services/accounting.py). */}
+      <Route
+        path="/accounting"
+        element={
+          <Protected>
+            <Accounting />
           </Protected>
         }
       />

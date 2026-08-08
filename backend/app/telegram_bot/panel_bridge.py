@@ -248,6 +248,7 @@ class PanelBridge:
         owner_admin_id: Optional[int] = None,
         package_name: Optional[str] = None,
         package_id: Optional[int] = None,
+        sale_info: Optional[dict] = None,
     ) -> dict:
         payload = schemas.BotCreateUserRequest(
             username=username,
@@ -259,6 +260,7 @@ class PanelBridge:
             owner_admin_id=_scope(owner_admin_id),
             package_name=package_name,
             package_id=package_id,
+            **(sale_info or {}),
         )
         return _dump(await _call(bot_router.create_user, payload))
 
@@ -309,11 +311,12 @@ class PanelBridge:
 
     async def purchase_package(
         self, username: str, package_id: int, connections: Optional[list[dict]] = None,
-        owner_admin_id: Optional[int] = None,
+        owner_admin_id: Optional[int] = None, sale_info: Optional[dict] = None,
     ) -> dict:
         payload = schemas.BotPurchasePackageRequest(
             package_id=package_id,
             connections=[schemas.BotCreateConnectionSpec(**c) for c in (connections or [])],
+            **(sale_info or {}),
         )
         return _dump(await _call(bot_router.purchase_package, username, payload, owner_admin_id=_scope(owner_admin_id)))
 
@@ -324,8 +327,12 @@ class PanelBridge:
     async def renew(
         self, username: str, add_gb: float = 0, add_days: int = 0, reset_usage: bool = False,
         owner_admin_id: Optional[int] = None, package_id: Optional[int] = None,
+        sale_info: Optional[dict] = None,
     ) -> dict:
-        payload = schemas.BotRenewRequest(add_gb=add_gb, add_days=add_days, reset_usage=reset_usage, package_id=package_id)
+        payload = schemas.BotRenewRequest(
+            add_gb=add_gb, add_days=add_days, reset_usage=reset_usage, package_id=package_id,
+            **(sale_info or {}),
+        )
         return _dump(await _call(bot_router.renew, username, payload, owner_admin_id=_scope(owner_admin_id)))
 
     async def reset_usage(self, username: str, owner_admin_id: Optional[int] = None) -> dict:
@@ -334,8 +341,8 @@ class PanelBridge:
     async def set_enabled(self, username: str, enabled: bool, owner_admin_id: Optional[int] = None) -> dict:
         return _dump(await _call(bot_router.set_user_enabled, username, enabled, owner_admin_id=_scope(owner_admin_id)))
 
-    async def add_balance(self, username: str, amount: int) -> dict:
-        payload = schemas.BotAddBalanceRequest(amount=amount)
+    async def add_balance(self, username: str, amount: int, payment_card_id: Optional[int] = None) -> dict:
+        payload = schemas.BotAddBalanceRequest(amount=amount, payment_card_id=payment_card_id)
         return _dump(await _call(bot_router.add_balance, username, payload))
 
     async def delete_user(self, username: str, owner_admin_id: Optional[int] = None) -> None:

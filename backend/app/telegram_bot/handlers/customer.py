@@ -30,6 +30,21 @@ from .. import storage
 from ..connection_sender import send_connection, send_connections
 
 router = Router(name="customer")
+
+
+def _sale_info(data: dict, final_price: int, method: str) -> dict:
+    """Exact-amount accounting details passed through to routers/bot.py's
+    ledger hook (see services/accounting.py) - the bot is the only place
+    that knows the post-discount price the customer really paid and which
+    card their payment screen showed, so it sends them along instead of
+    letting the panel fall back to the package's list price."""
+    return {
+        "paid_amount": final_price,
+        "payment_method": method,
+        "payment_card_id": data.get("payment_card_id") if method == "card" else None,
+        "discount_code": data.get("discount_code"),
+        "discount_amount": data.get("discount_amount") or None,
+    }
 # Everything in this file is customer-facing - admins can use it too (no
 # harm), but the "no account yet" messaging is written for customers.
 
@@ -915,10 +930,16 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
             # else: bundled package - purchase_package uses the package's
             # OWN connections list server-side (fetched fresh from the DB,
             # not this possibly-stale bot-side pkg snapshot).
-            result = await api.purchase_package(target_username, pkg["id"], connections=connections_override)
+            result = await api.purchase_package(
+                target_username, pkg["id"], connections=connections_override,
+                sale_info=_sale_info(data, final_price, "wallet"),
+            )
             new_connections = result["connections"]
         elif add_gb or add_days:
-            await api.renew(target_username, add_gb=add_gb, add_days=add_days, package_id=pkg.get("id"))
+            await api.renew(
+                target_username, add_gb=add_gb, add_days=add_days, package_id=pkg.get("id"),
+                sale_info=_sale_info(data, final_price, "wallet"),
+            )
         user = await api.get_user(target_username)
     except ApiError as exc:
         # Provisioning failed after the debit already went through - refund

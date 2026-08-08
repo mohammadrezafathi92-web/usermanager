@@ -147,6 +147,16 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
         pkg = next((p for p in packages if p["id"] == pending["package_id"]), None)
 
     new_connections = None
+    # Exact-amount accounting details for routers/bot.py's ledger hook (see
+    # services/accounting.py) - the post-discount price the customer really
+    # paid and the card their payment screen showed, both captured when the
+    # pending request was created.
+    sale_info = {
+        "paid_amount": pending.get("final_price") if pending.get("final_price") is not None else pending.get("price"),
+        "payment_method": "card",
+        "payment_card_id": pending.get("payment_card_id"),
+        "discount_code": pending.get("discount_code"),
+    }
     try:
         if pending["kind"] == "new":
             if pending["node_id"]:
@@ -189,6 +199,7 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
                 connections_override = connections if connections else None
                 result = await api.purchase_package(
                     pending["target_username"], pkg["id"], connections=connections_override,
+                    sale_info=sale_info,
                 )
                 new_connections = result["connections"]
                 user = result["user"]
@@ -202,6 +213,7 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
                     connections=connections,
                     package_name=(pkg or {}).get("name"),
                     package_id=(pkg or {}).get("id"),
+                    sale_info=sale_info,
                 )
                 new_connections = user["connections"]
                 # Brand-new account - this is the ONE choke point new
@@ -226,7 +238,7 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
         elif pending["kind"] == "renew":
             user = await api.renew(
                 pending["target_username"], add_gb=pending["quota_gb"], add_days=pending["duration_days"],
-                package_id=(pkg or {}).get("id"),
+                package_id=(pkg or {}).get("id"), sale_info=sale_info,
             )
             if pending.get("discount_code"):
                 try:
@@ -255,7 +267,10 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
             await api.link_telegram(pending["target_username"], pending["telegram_id"])
             customer_msg = f"✅ درخواست شما تایید شد. حساب «{pending['target_username']}» به شما وصل شد."
         else:  # topup
-            user = await api.add_balance(pending["target_username"], pending["price"])
+            user = await api.add_balance(
+                pending["target_username"], pending["price"],
+                payment_card_id=pending.get("payment_card_id"),
+            )
             customer_msg = (
                 f"✅ پرداخت شما تایید شد و {pending['price']:,} تومان به اعتبار حساب «{pending['target_username']}» اضافه شد.\n"
                 f"موجودی فعلی: {user['balance']:,} تومان."
@@ -279,20 +294,34 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
         await call.answer("خطای غیرمنتظره - دوباره تلاش کنید", show_alert=True)
         return
 
-    if pending.get("payment_card_id") and pending["kind"] in ("new", "renew", "topup"):
-        # Best-effort "threshold" mode bookkeeping (see services/
-        # payment_cards.py's advance_after_payment) - which card this
-        # request's payment screen actually showed was captured at that
-        # time (routers/bot.py's get_payment_info, threaded through via
-        # storage.py's payment_card_id column). Never blocks an otherwise-
-        # successful approval - the money's confirmed either way, this is
-        # just deciding whether to auto-switch the active card afterward.
+    # Best-effort "threshold" mode bookkeeping (see services/
+    # payment_cards.py's advance_after_payment) - which card this request's
+    # payment screen actually showed was captured at that time (routers/
+    # bot.py's get_payment_info, threaded through via storage.py's
+    # payment_card_id column). Never blocks an otherwise-successful
+    # approval - the money's confirmed either way, this is just deciding
+    # whether to auto-switch the active card afterward. Logged at INFO
+    # (not just on failure) since a silently-skipped update here is exactly
+    # the kind of thing that's otherwise invisible - "the counter just
+    # doesn't move" with no error anywhere.
+    if pending["kind"] in ("new", "renew", "topup"):
+        card_id = pending.get("payment_card_id")
         amount = pending.get("final_price") if pending["kind"] in ("new", "renew") else pending.get("price")
-        if amount:
+        if not card_id:
+            logger.info(
+                "pending request %s (kind=%s) approved with no payment_card_id recorded - "
+                "either no card pool was configured when the payment screen was shown, or this "
+                "request predates the multi-card feature - skipping card bookkeeping",
+                pending["id"], pending["kind"],
+            )
+        elif not amount:
+            logger.info("pending request %s has payment_card_id=%s but amount=%s - skipping card bookkeeping", pending["id"], card_id, amount)
+        else:
             try:
-                await api.record_card_payment(pending["payment_card_id"], amount)
+                await api.record_card_payment(card_id, amount)
+                logger.info("pending request %s: recorded %s toman against payment card %s", pending["id"], amount, card_id)
             except ApiError:
-                pass
+                logger.exception("pending request %s: record_card_payment failed for card %s", pending["id"], card_id)
 
     storage.set_status(pending["id"], "approved")
     await _finish("✅ تایید و فعال‌سازی شد.")

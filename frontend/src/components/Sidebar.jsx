@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, Users, Server, Settings, Network, Package, GraduationCap, ShieldCheck, ShieldAlert, Ticket, Sun, Moon, X, Languages } from "lucide-react";
+import { LayoutDashboard, Users, Server, Settings, Network, Package, GraduationCap, ShieldCheck, ShieldAlert, Ticket, Sun, Moon, X, Languages, Calculator } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
@@ -31,6 +31,10 @@ const allLinks = [
   { to: "/tutorials", labelKey: "nav.tutorials", icon: GraduationCap, perm: "view_tutorials" },
   { to: "/radius-logs", labelKey: "nav.radiusLogs", icon: ShieldAlert, perm: null },
   { to: "/discount-codes", labelKey: "nav.discountCodes", icon: Ticket, perm: null },
+  // All three tiers see this - the backend scopes what each role's numbers
+  // cover (superadmin: whole panel; level-2 Admin: own tree; Seller: self) -
+  // see routers/accounting.py.
+  { to: "/accounting", labelKey: "nav.accounting", icon: Calculator, perm: null },
   { to: "/settings", labelKey: "nav.settings", icon: Settings, perm: null },
   // Superadmins manage level-2 Admins here; level-2 Admins ALSO see this
   // page (to manage their OWN level-3 Sellers - see routers/admins.py's

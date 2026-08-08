@@ -137,3 +137,76 @@ export function downloadBlob(filename, blob) {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+
+// ---------- Jalali (شمسی) date conversion ----------
+// The accounting section's date-range filters let the admin TYPE a Jalali
+// date (e.g. 1405/05/18) which the API - which speaks ISO/Gregorian - needs
+// converted, and shows stored ISO dates back in Jalali. Standard well-known
+// jalaali algorithm, no external dependency.
+const _div = (a, b) => ~~(a / b);
+
+export function gregorianToJalali(gy, gm, gd) {
+  const g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+  let jy = gy <= 1600 ? 0 : 979;
+  gy -= gy <= 1600 ? 621 : 1600;
+  const gy2 = gm > 2 ? gy + 1 : gy;
+  let days = 365 * gy + _div(gy2 + 3, 4) - _div(gy2 + 99, 100) + _div(gy2 + 399, 400) - 80 + gd + g_d_m[gm - 1];
+  jy += 33 * _div(days, 12053);
+  days %= 12053;
+  jy += 4 * _div(days, 1461);
+  days %= 1461;
+  if (days > 365) {
+    jy += _div(days - 1, 365);
+    days = (days - 1) % 365;
+  }
+  const jm = days < 186 ? 1 + _div(days, 31) : 7 + _div(days - 186, 30);
+  const jd = 1 + (days < 186 ? days % 31 : (days - 186) % 30);
+  return [jy, jm, jd];
+}
+
+export function jalaliToGregorian(jy, jm, jd) {
+  let gy = jy <= 979 ? 621 : 1600;
+  jy -= jy <= 979 ? 0 : 979;
+  let days = 365 * jy + _div(jy, 33) * 8 + _div((jy % 33) + 3, 4) + 78 + jd + (jm < 7 ? (jm - 1) * 31 : (jm - 7) * 30 + 186);
+  gy += 400 * _div(days, 146097);
+  days %= 146097;
+  if (days > 36524) {
+    gy += 100 * _div(--days, 36524);
+    days %= 36524;
+    if (days >= 365) days++;
+  }
+  gy += 4 * _div(days, 1461);
+  days %= 1461;
+  if (days > 365) {
+    gy += _div(days - 1, 365);
+    days = (days - 1) % 365;
+  }
+  let gd = days + 1;
+  const leap = (gy % 4 === 0 && gy % 100 !== 0) || gy % 400 === 0;
+  const sal_a = [0, 31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  let gm;
+  for (gm = 1; gm <= 12 && gd > sal_a[gm]; gm++) gd -= sal_a[gm];
+  return [gy, gm, gd];
+}
+
+// "2026-08-09" (or full ISO datetime) -> "1405/05/18"
+export function isoToJalali(iso) {
+  if (!iso) return "";
+  const [gy, gm, gd] = String(iso).slice(0, 10).split("-").map(Number);
+  if (!gy || !gm || !gd) return "";
+  const [jy, jm, jd] = gregorianToJalali(gy, gm, gd);
+  return `${jy}/${String(jm).padStart(2, "0")}/${String(jd).padStart(2, "0")}`;
+}
+
+// "1405/5/18" (Persian or latin digits, / or -) -> "2026-08-09", null if invalid
+export function jalaliToIso(str) {
+  const normalized = String(str || "")
+    .trim()
+    .replace(/[۰-۹]/g, (d) => "0123456789"["۰۱۲۳۴۵۶۷۸۹".indexOf(d)]);
+  const m = normalized.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+  if (!m) return null;
+  const jy = +m[1], jm = +m[2], jd = +m[3];
+  if (jm < 1 || jm > 12 || jd < 1 || jd > 31) return null;
+  const [gy, gm, gd] = jalaliToGregorian(jy, jm, jd);
+  return `${gy}-${String(gm).padStart(2, "0")}-${String(gd).padStart(2, "0")}`;
+}

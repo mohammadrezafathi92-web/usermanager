@@ -16,6 +16,7 @@ import {
 } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
+import { formatDateTime, isoToJalali, jalaliToIso } from "../utils.js";
 
 // The «حساب‌داری» section - see backend routers/accounting.py +
 // services/accounting.py. The backend already scopes everything by role
@@ -41,16 +42,51 @@ function KindBadge({ kind, t }) {
   );
 }
 
-function DateFilters({ dateFrom, dateTo, setDateFrom, setDateTo, t, children }) {
+// In Persian mode the range filters accept a TYPED Jalali date (e.g.
+// ۱۴۰۵/۰۵/۱۸ or 1405/05/18 - Persian digits, / or - all fine) and convert
+// it to the ISO/Gregorian string the API speaks (see utils.js's
+// jalaliToIso); English mode keeps the native browser date picker. The
+// value held in state is ALWAYS ISO - only the presentation is Jalali.
+function JalaliDateInput({ value, onChange, lang }) {
+  const [text, setText] = useState(value ? isoToJalali(value) : "");
+  useEffect(() => {
+    setText(value ? isoToJalali(value) : "");
+  }, [value]);
+  if (lang === "en") {
+    return <input type="date" className="input" value={value} onChange={(e) => onChange(e.target.value)} />;
+  }
+  const valid = !text.trim() || jalaliToIso(text) !== null;
+  return (
+    <input
+      type="text"
+      dir="ltr"
+      className={`input w-36 text-center ${valid ? "" : "border-red-400 focus:border-red-400"}`}
+      placeholder="۱۴۰۵/۰۵/۱۸"
+      value={text}
+      onChange={(e) => {
+        const v = e.target.value;
+        setText(v);
+        if (!v.trim()) {
+          onChange("");
+          return;
+        }
+        const iso = jalaliToIso(v);
+        if (iso) onChange(iso);
+      }}
+    />
+  );
+}
+
+function DateFilters({ dateFrom, dateTo, setDateFrom, setDateTo, t, lang, children }) {
   return (
     <div className="flex flex-wrap items-end gap-3 mb-4">
       <div>
         <label className="block text-xs text-gray-400 mb-1">{t("accounting.filterFrom")}</label>
-        <input type="date" className="input" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+        <JalaliDateInput value={dateFrom} onChange={setDateFrom} lang={lang} />
       </div>
       <div>
         <label className="block text-xs text-gray-400 mb-1">{t("accounting.filterTo")}</label>
-        <input type="date" className="input" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+        <JalaliDateInput value={dateTo} onChange={setDateTo} lang={lang} />
       </div>
       {children}
     </div>
@@ -58,7 +94,7 @@ function DateFilters({ dateFrom, dateTo, setDateFrom, setDateTo, t, children }) 
 }
 
 export default function Accounting() {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const { isSuperadmin, isAdminOrAbove } = useAuth();
   const [tab, setTab] = useState("dashboard");
   const [dateFrom, setDateFrom] = useState("");
@@ -219,7 +255,7 @@ export default function Accounting() {
       {/* ================= dashboard ================= */}
       {tab === "dashboard" && (
         <>
-          <DateFilters dateFrom={dateFrom} dateTo={dateTo} setDateFrom={setDateFrom} setDateTo={setDateTo} t={t}>
+          <DateFilters dateFrom={dateFrom} dateTo={dateTo} setDateFrom={setDateFrom} setDateTo={setDateTo} t={t} lang={language}>
             <button type="button" className="btn-secondary" onClick={loadSummary}>{t("accounting.apply")}</button>
           </DateFilters>
 
@@ -315,7 +351,7 @@ export default function Accounting() {
       {/* ================= transactions ================= */}
       {tab === "transactions" && (
         <>
-          <DateFilters dateFrom={dateFrom} dateTo={dateTo} setDateFrom={setDateFrom} setDateTo={setDateTo} t={t}>
+          <DateFilters dateFrom={dateFrom} dateTo={dateTo} setDateFrom={setDateFrom} setDateTo={setDateTo} t={t} lang={language}>
             <div>
               <label className="block text-xs text-gray-400 mb-1">{t("accounting.filterKind")}</label>
               <select className="input" value={txKind} onChange={(e) => { setTxKind(e.target.value); setTxPage(1); }}>
@@ -358,7 +394,7 @@ export default function Accounting() {
                       <td className="px-4 py-3">{e.admin_username_snapshot || "-"}</td>
                       <td className="px-4 py-3">{e.package_name_snapshot || e.category || "-"}</td>
                       <td className="px-4 py-3">{e.payment_method ? t(`accounting.method.${e.payment_method}`) : "-"}</td>
-                      <td className="px-4 py-3 text-gray-400 text-xs" dir="ltr">{(e.created_at || "").replace("T", " ").slice(0, 16)}</td>
+                      <td className="px-4 py-3 text-gray-400 text-xs" dir="ltr">{formatDateTime(e.created_at, language)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -394,7 +430,7 @@ export default function Accounting() {
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">{t("accounting.expenseDate")}</label>
-              <input type="date" className="input" value={expForm.created_at} onChange={(e) => setExpForm({ ...expForm, created_at: e.target.value })} />
+              <JalaliDateInput value={expForm.created_at} onChange={(v) => setExpForm({ ...expForm, created_at: v })} lang={language} />
             </div>
             <button type="submit" disabled={expSaving} className="btn-primary flex items-center gap-1">
               <Plus size={15} /> {t("accounting.addExpense")}
@@ -423,7 +459,7 @@ export default function Accounting() {
                       <td className="px-4 py-3 font-medium" dir="ltr">{fmt(e.amount)}</td>
                       <td className="px-4 py-3">{e.category || "-"}</td>
                       <td className="px-4 py-3 text-gray-500">{e.note || "-"}</td>
-                      <td className="px-4 py-3 text-gray-400 text-xs" dir="ltr">{(e.created_at || "").slice(0, 10)}</td>
+                      <td className="px-4 py-3 text-gray-400 text-xs" dir="ltr">{language === "en" ? (e.created_at || "").slice(0, 10) : isoToJalali(e.created_at)}</td>
                       <td className="px-4 py-3">
                         <button type="button" className="text-red-500 hover:text-red-700" onClick={() => removeExpense(e.id)} title={t("accounting.deleteExpense")}>
                           <Trash2 size={16} />
@@ -516,7 +552,7 @@ export default function Accounting() {
       {/* ================= reports ================= */}
       {tab === "reports" && (
         <>
-          <DateFilters dateFrom={dateFrom} dateTo={dateTo} setDateFrom={setDateFrom} setDateTo={setDateTo} t={t}>
+          <DateFilters dateFrom={dateFrom} dateTo={dateTo} setDateFrom={setDateFrom} setDateTo={setDateTo} t={t} lang={language}>
             <div>
               <label className="block text-xs text-gray-400 mb-1"> </label>
               <select className="input" value={granularity} onChange={(e) => setGranularity(e.target.value)}>
@@ -535,7 +571,7 @@ export default function Accounting() {
               <div className="text-gray-400">{t("accounting.noData")}</div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={series}>
+                <BarChart data={language === "en" ? series : series.map((s) => ({ ...s, period: s.period.length === 7 ? isoToJalali(`${s.period}-15`).slice(0, 7) : isoToJalali(s.period) }))}>
                   <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.15} />
                   <XAxis dataKey="period" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => (v >= 1000000 ? `${v / 1000000}M` : v >= 1000 ? `${v / 1000}K` : v)} />

@@ -11,6 +11,8 @@ import {
   createAccountingExpense,
   deleteAccountingExpense,
   exportAccounting,
+  fetchAdmins,
+  topupAdminBalance,
 } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
@@ -57,7 +59,7 @@ function DateFilters({ dateFrom, dateTo, setDateFrom, setDateTo, t, children }) 
 
 export default function Accounting() {
   const { t } = useLanguage();
-  const { isSuperadmin } = useAuth();
+  const { isSuperadmin, isAdminOrAbove } = useAuth();
   const [tab, setTab] = useState("dashboard");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -122,6 +124,36 @@ export default function Accounting() {
     loadSummary();
   };
 
+  // ---------------- admin credit (moved here from the ادمین‌ها page -
+  // uses the same /admins/{id}/topup endpoint, whose _apply_balance_change
+  // hook writes the matching ledger row automatically) ----------------
+  const [admins, setAdmins] = useState(null);
+  const [creditForm, setCreditForm] = useState({}); // { [adminId]: {amount, note} }
+  const [creditSaving, setCreditSaving] = useState(null);
+  const [creditError, setCreditError] = useState("");
+  const loadAdmins = useCallback(() => {
+    fetchAdmins()
+      .then((res) => setAdmins((res.data || []).filter((a) => !a.is_superadmin)))
+      .catch(() => setAdmins([]));
+  }, []);
+
+  const submitCredit = async (adminId) => {
+    const f = creditForm[adminId] || {};
+    const amount = Number(f.amount);
+    if (!amount) return;
+    setCreditSaving(adminId);
+    setCreditError("");
+    try {
+      await topupAdminBalance(adminId, { amount, note: f.note || null });
+      setCreditForm((c) => ({ ...c, [adminId]: { amount: "", note: "" } }));
+      loadAdmins();
+    } catch (err) {
+      setCreditError(err?.response?.data?.detail || "خطا");
+    } finally {
+      setCreditSaving(null);
+    }
+  };
+
   // ---------------- reports ----------------
   const [granularity, setGranularity] = useState("day");
   const [series, setSeries] = useState([]);
@@ -149,13 +181,15 @@ export default function Accounting() {
     if (tab === "dashboard") loadSummary();
     else if (tab === "transactions") loadTx();
     else if (tab === "expenses") loadExpenses();
+    else if (tab === "credit") loadAdmins();
     else if (tab === "reports") loadSeries();
-  }, [tab, loadSummary, loadTx, loadExpenses, loadSeries]);
+  }, [tab, loadSummary, loadTx, loadExpenses, loadAdmins, loadSeries]);
 
   const tabs = [
     { id: "dashboard", label: t("accounting.tabDashboard") },
     { id: "transactions", label: t("accounting.tabTransactions") },
     ...(isSuperadmin ? [{ id: "expenses", label: t("accounting.tabExpenses") }] : []),
+    ...(isAdminOrAbove ? [{ id: "credit", label: t("accounting.tabCredit") }] : []),
     { id: "reports", label: t("accounting.tabReports") },
   ];
 
@@ -399,6 +433,81 @@ export default function Accounting() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ================= admin credit (superadmin + level-2) ================= */}
+      {tab === "credit" && isAdminOrAbove && (
+        <>
+          {creditError && <div className="text-sm text-red-500 mb-3">{creditError}</div>}
+          {!admins ? (
+            <div className="text-gray-400">{t("common.loading")}</div>
+          ) : admins.length === 0 ? (
+            <div className="card text-gray-400">{t("accounting.noAdmins")}</div>
+          ) : (
+            <div className="card overflow-x-auto p-0">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-gray-400 border-b border-gray-50">
+                    <th className="text-right font-medium px-4 py-3">{t("accounting.colAdmin")}</th>
+                    <th className="text-right font-medium px-4 py-3">{t("accounting.creditBalance")}</th>
+                    <th className="text-right font-medium px-4 py-3">{t("accounting.creditChange")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {admins.map((a) => {
+                    const f = creditForm[a.id] || { amount: "", note: "" };
+                    const usageMode = a.billing_mode === "usage";
+                    return (
+                      <tr key={a.id} className="border-t border-gray-50">
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-gray-800 dark:text-gray-100">{a.username}</div>
+                          {a.parent_admin_username && (
+                            <div className="text-xs text-gray-400">{a.parent_admin_username}</div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 font-medium" dir="ltr">
+                          {usageMode
+                            ? `${fmt(a.volume_balance_gb)} GB`
+                            : `${fmt(a.balance)} ${t("accounting.toman")}`}
+                        </td>
+                        <td className="px-4 py-3">
+                          {usageMode ? (
+                            <span className="text-xs text-gray-400">{t("accounting.usageModeHint")}</span>
+                          ) : (
+                            <div className="flex flex-wrap gap-2 items-center">
+                              <input
+                                type="number"
+                                className="input w-36"
+                                placeholder={t("accounting.creditAmountPlaceholder")}
+                                value={f.amount}
+                                onChange={(e) => setCreditForm((c) => ({ ...c, [a.id]: { ...f, amount: e.target.value } }))}
+                              />
+                              <input
+                                className="input w-44"
+                                placeholder={t("accounting.expenseNote")}
+                                value={f.note || ""}
+                                onChange={(e) => setCreditForm((c) => ({ ...c, [a.id]: { ...f, note: e.target.value } }))}
+                              />
+                              <button
+                                type="button"
+                                className="btn-secondary shrink-0"
+                                disabled={creditSaving === a.id || !Number(f.amount)}
+                                onClick={() => submitCredit(a.id)}
+                              >
+                                {creditSaving === a.id ? "..." : t("accounting.apply")}
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div className="px-4 py-3 text-xs text-gray-400 border-t border-gray-50">{t("accounting.creditHint")}</div>
             </div>
           )}
         </>

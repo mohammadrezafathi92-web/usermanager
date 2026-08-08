@@ -910,28 +910,10 @@ export default function Admins() {
                 </button>
               </div>
 
-              <div className="flex gap-2 mt-2">
-                <input
-                  type="number"
-                  className="input flex-1"
-                  placeholder={t("admins.amountPlaceholder")}
-                  value={topupAmount}
-                  onChange={(e) => setTopupAmount(e.target.value)}
-                />
-                <input
-                  className="input flex-1"
-                  placeholder={t("admins.notePlaceholder")}
-                  value={topupNote}
-                  onChange={(e) => setTopupNote(e.target.value)}
-                />
-                <button type="button" className="btn-secondary shrink-0" disabled={topupSaving} onClick={doTopup}>
-                  {topupSaving ? "..." : t("admins.submit")}
-                </button>
-              </div>
-              {topupError && <div className="text-xs text-red-500 mt-1">{topupError}</div>}
-              <div className="text-xs text-gray-400 mt-1">
-                {t("admins.balanceHint")}
-              </div>
+              {/* افزایش/کاهش اعتبار moved to the حساب‌داری section's
+                  "اعتبار ادمین‌ها" tab (per the panel owner, 2026-08-08) -
+                  the read-only balance + history stay here for context. */}
+              <div className="text-xs text-gray-400 mt-2">{t("admins.topupMovedHint")}</div>
 
               {showLogs && (
                 <div className="mt-2 border border-gray-100 rounded-xl overflow-hidden">

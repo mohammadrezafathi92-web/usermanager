@@ -288,12 +288,35 @@ def backfill_if_needed(db: Session) -> int:
     if settings is None or settings.accounting_backfilled:
         return 0
 
+    # Historical discounts: DiscountCodeRedemption is the only record of
+    # what a customer REALLY paid pre-ledger (package_price - discount) -
+    # match each redemption to the nearest same-user purchase within 15
+    # minutes (both flows redeem the code within seconds of the purchase
+    # call, in either order) so a discounted historical purchase isn't
+    # imported at its full list price. Each redemption matches at most
+    # once (popped) so two same-day purchases can't both claim it.
+    unmatched_redemptions: dict[int, list] = {}
+    for red in db.query(models.DiscountCodeRedemption).all():
+        if red.user_id and red.created_at:
+            unmatched_redemptions.setdefault(red.user_id, []).append(red)
+
     imported = 0
     for purchase in db.query(models.Purchase).all():
         user = purchase.user
         owner_admin_id = user.owner_admin_id if user else None
         package = purchase.package
         amount = sale_fallback_price(db, package, owner_admin_id) if package else 0
+        discount_code = None
+        discount_amount = None
+        candidates = unmatched_redemptions.get(user.id if user else None) or []
+        for red in candidates:
+            if purchase.created_at and abs((red.created_at - purchase.created_at).total_seconds()) <= 900:
+                base_price = red.package_price if red.package_price is not None else amount
+                discount_amount = red.discount_amount or 0
+                amount = max(0, base_price - discount_amount)
+                discount_code = red.code.code if red.code else None
+                candidates.remove(red)
+                break
         record(
             db,
             "sale_new",
@@ -302,6 +325,8 @@ def backfill_if_needed(db: Session) -> int:
             admin_id=owner_admin_id,
             package=package,
             purchase_id=purchase.id,
+            discount_code=discount_code,
+            discount_amount=discount_amount,
             note="ثبت تاریخی (backfill)",
             created_at=purchase.created_at,
         )

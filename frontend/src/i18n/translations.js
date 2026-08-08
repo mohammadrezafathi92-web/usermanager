@@ -991,6 +991,13 @@ export const translations = {
     "accounting.chartExpenses": "هزینه",
     "accounting.noData": "هنوز تراکنشی ثبت نشده است.",
     "accounting.toman": "تومان",
+    "accounting.tabCredit": "اعتبار ادمین‌ها",
+    "accounting.creditChange": "افزایش / کاهش اعتبار",
+    "accounting.creditAmountPlaceholder": "مبلغ (منفی = کاهش)",
+    "accounting.creditHint": "مبلغ مثبت اعتبار را افزایش و مبلغ منفی کاهش می‌دهد - همه تغییرات به‌صورت خودکار در تب تراکنش‌ها ثبت می‌شوند.",
+    "accounting.usageModeHint": "این ادمین حجمی است - از صفحه ادمین‌ها مدیریت می‌شود",
+    "accounting.noAdmins": "ادمینی برای مدیریت اعتبار وجود ندارد.",
+    "admins.topupMovedHint": "افزایش/کاهش اعتبار به بخش «حساب‌داری» ← تب «اعتبار ادمین‌ها» منتقل شد.",
   },
   en: {
     "nav.dashboard": "Dashboard",
@@ -1970,6 +1977,13 @@ export const translations = {
     "accounting.chartExpenses": "Expenses",
     "accounting.noData": "No transactions recorded yet.",
     "accounting.toman": "Toman",
+    "accounting.tabCredit": "Admin credit",
+    "accounting.creditChange": "Increase / decrease credit",
+    "accounting.creditAmountPlaceholder": "Amount (negative = deduct)",
+    "accounting.creditHint": "A positive amount adds credit, a negative amount deducts - every change is automatically recorded in the Transactions tab.",
+    "accounting.usageModeHint": "Volume-billed admin - managed from the Admins page",
+    "accounting.noAdmins": "No admins to manage credit for.",
+    "admins.topupMovedHint": "Credit top-up/deduction has moved to Accounting → Admin credit tab.",
   },
 };
 

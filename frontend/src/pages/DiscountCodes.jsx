@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from "react";
-import { Plus, Trash2, Pencil, Ticket, Power } from "lucide-react";
+import { Plus, Trash2, Pencil, Ticket, Power, Users } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
-import { fetchDiscountCodes, createDiscountCode, updateDiscountCode, deleteDiscountCode } from "../api/client.js";
+import { fetchDiscountCodes, createDiscountCode, updateDiscountCode, deleteDiscountCode, fetchDiscountCodeRedemptions } from "../api/client.js";
 import { formatDateTime } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
@@ -26,6 +26,21 @@ export default function DiscountCodes() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // «چه کسانی از این کد استفاده کرده‌اند» - reads the pre-existing
+  // /discount-codes/{id}/redemptions endpoint (one row per successful use,
+  // see models.DiscountCodeRedemption).
+  const [redemptionsFor, setRedemptionsFor] = useState(null); // the code row being inspected
+  const [redemptions, setRedemptions] = useState([]);
+  const [redemptionsLoading, setRedemptionsLoading] = useState(false);
+
+  const openRedemptions = (c) => {
+    setRedemptionsFor(c);
+    setRedemptionsLoading(true);
+    fetchDiscountCodeRedemptions(c.id)
+      .then((res) => setRedemptions(res.data || []))
+      .catch(() => setRedemptions([]))
+      .finally(() => setRedemptionsLoading(false));
+  };
 
   const load = () => {
     setLoading(true);
@@ -137,9 +152,17 @@ export default function DiscountCodes() {
                   <td className="px-4 py-3 text-gray-600">
                     {c.kind === "percent" ? `${c.value}%` : `${c.value.toLocaleString()} ${t("discountCodes.toman")}`}
                   </td>
-                  <td className="px-4 py-3 text-gray-500">
-                    {c.used_count}
-                    {c.max_uses ? ` / ${c.max_uses}` : ` / ${t("discountCodes.unlimited")}`}
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={() => openRedemptions(c)}
+                      className="inline-flex items-center gap-1.5 text-gray-500 hover:text-brand-600 transition-colors"
+                      title={t("discountCodes.viewRedemptions")}
+                    >
+                      <Users size={14} className="text-gray-300" />
+                      {c.used_count}
+                      {c.max_uses ? ` / ${c.max_uses}` : ` / ${t("discountCodes.unlimited")}`}
+                    </button>
                   </td>
                   <td className="px-4 py-3 text-gray-500">{c.expires_at ? formatDateTime(c.expires_at, language) : t("discountCodes.never")}</td>
                   <td className="px-4 py-3">
@@ -180,6 +203,41 @@ export default function DiscountCodes() {
           </table>
         </div>
       </div>
+
+      <Modal
+        open={!!redemptionsFor}
+        onClose={() => setRedemptionsFor(null)}
+        title={t("discountCodes.redemptionsTitle", { code: redemptionsFor?.code || "" })}
+      >
+        {redemptionsLoading ? (
+          <div className="text-gray-400 text-center py-6">{t("common.loading")}</div>
+        ) : redemptions.length === 0 ? (
+          <div className="text-gray-400 text-center py-6">{t("discountCodes.noRedemptions")}</div>
+        ) : (
+          <div className="overflow-x-auto max-h-96 overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-gray-400 border-b border-gray-50">
+                  <th className="text-right font-medium px-3 py-2">{t("discountCodes.redColUser")}</th>
+                  <th className="text-right font-medium px-3 py-2">{t("discountCodes.redColPrice")}</th>
+                  <th className="text-right font-medium px-3 py-2">{t("discountCodes.redColDiscount")}</th>
+                  <th className="text-right font-medium px-3 py-2">{t("discountCodes.redColDate")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {redemptions.map((r) => (
+                  <tr key={r.id} className="border-t border-gray-50">
+                    <td className="px-3 py-2 font-mono text-gray-700 dark:text-gray-200">{r.username || (r.user_id ? `#${r.user_id}` : "-")}</td>
+                    <td className="px-3 py-2 text-gray-500" dir="ltr">{r.package_price != null ? r.package_price.toLocaleString() : "-"}</td>
+                    <td className="px-3 py-2 text-emerald-600 font-medium" dir="ltr">{r.discount_amount != null ? r.discount_amount.toLocaleString() : "-"}</td>
+                    <td className="px-3 py-2 text-gray-400 text-xs" dir="ltr">{formatDateTime(r.created_at, language)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Modal>
 
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={editing ? t("discountCodes.editCode") : t("discountCodes.newCode")}>
         <form onSubmit={submit} className="grid grid-cols-1 md:grid-cols-2 gap-4">

@@ -92,6 +92,10 @@ class ThreeXUIClient:
         if self.api_token:
             self.session.headers["Authorization"] = f"Bearer {self.api_token}"
         self._logged_in = bool(self.api_token)  # token auth needs no login step
+        # Remembers which per-client traffic endpoint spelling THIS panel
+        # understands, so the other one isn't retried (and logged) for
+        # every client on every poll - see _get_client_traffic.
+        self._traffic_path: Optional[str] = None
 
     # ------------------------------------------------------------------
     def connect(self):
@@ -250,24 +254,66 @@ class ThreeXUIClient:
             return set()
         return set(obj)
 
+    def _bulk_client_stats(self) -> dict[str, dict]:
+        """All clients' traffic counters for our inbound in ONE request.
+
+        WHY THIS EXISTS (storage-filling bug, fixed 2026-08-09): usage
+        polling used to call _get_client_traffic() once PER CLIENT, every
+        single poll cycle. At the default 30s interval that is up to
+        `2 x clients + 3` HTTP requests every 30 seconds against the 3X-UI
+        panel (2x because the first endpoint variant 404s on most builds,
+        so every client cost two requests plus an error log line). With a
+        few hundred clients that is over a million requests a day - and
+        3X-UI writes an access-log line for every one of them, which is
+        what was filling up the node's disk.
+
+        `/panel/api/inbounds/list` returns every inbound together with its
+        `clientStats` array ({email, up, down, ...}), so one request covers
+        every client. Returns {} when the panel doesn't provide usable
+        stats this way, in which case the caller falls back to the old
+        per-client path."""
+        try:
+            data = self._get("/panel/api/inbounds/list")
+        except XrayError:
+            return {}
+        inbounds = data.get("obj") or []
+        if isinstance(inbounds, dict):
+            inbounds = [inbounds]
+        out: dict[str, dict] = {}
+        for inbound in inbounds:
+            if not isinstance(inbound, dict):
+                continue
+            # Only our own inbound's clients - a panel can host several.
+            if self.inbound_id and inbound.get("id") != self.inbound_id:
+                continue
+            for row in inbound.get("clientStats") or []:
+                email = row.get("email")
+                if email:
+                    out[email] = row
+        return out
+
     def _get_client_traffic(self, email: str) -> dict:
-        """Per-client traffic (up/down) isn't reliably present on the
-        inbound object itself (its `clientStats` came back null on at least
-        one real panel we tested against) - it has to be read per-email
-        from a dedicated endpoint instead. Tries the newer top-level
-        endpoint first, then the classic one (confirmed working via a live
-        test: /panel/api/inbounds/getClientTraffics/:email returns
-        {"up":.., "down":.., "allTime":.., ...})."""
-        for path in (
-            f"/panel/api/clients/traffic/{email}",
-            f"/panel/api/inbounds/getClientTraffics/{email}",
-        ):
+        """Per-client traffic (up/down) for ONE client - the fallback path
+        for panels whose /panel/api/inbounds/list carries no clientStats
+        (see _bulk_client_stats above, which is what normal polling uses).
+
+        Which of the two endpoint spellings this panel understands is
+        remembered after the first success (self._traffic_path), so a panel
+        that 404s on the newer one doesn't pay - and log - a wasted request
+        for every client on every poll forever."""
+        paths = (
+            [self._traffic_path] if self._traffic_path
+            else [f"/panel/api/clients/traffic/{email}", f"/panel/api/inbounds/getClientTraffics/{email}"]
+        )
+        for path in paths:
             try:
-                data = self._get(path)
+                data = self._get(path.replace("{email}", email) if "{email}" in path else path)
             except XrayError:
                 continue
             obj = data.get("obj")
             if obj:
+                if not self._traffic_path:
+                    self._traffic_path = path.replace(email, "{email}")
                 return obj
         return {}
 
@@ -282,12 +328,15 @@ class ThreeXUIClient:
         except (ValueError, TypeError):
             clients = []
 
+        bulk = self._bulk_client_stats()
         result = []
         for c in clients:
             email = c.get("email")
             if not email:
                 continue
-            traffic = self._get_client_traffic(email)
+            traffic = bulk.get(email)
+            if traffic is None:
+                traffic = self._get_client_traffic(email)
             result.append({
                 "id": c.get("id") or c.get("password"),  # vless/vmess use id, trojan uses password
                 "email": email,
@@ -413,12 +462,19 @@ class ThreeXUIClient:
         except (ValueError, TypeError):
             clients = []
 
+        # ONE bulk request for everyone (see _bulk_client_stats's docstring
+        # for the storage-filling bug this replaced); only fall back to the
+        # per-client endpoint for clients the bulk call didn't cover.
+        bulk = self._bulk_client_stats()
+
         results: dict[str, dict[str, int]] = {}
         for c in clients:
             email = c.get("email")
             if not email:
                 continue
-            traffic = self._get_client_traffic(email)
+            traffic = bulk.get(email)
+            if traffic is None:
+                traffic = self._get_client_traffic(email)
             results[email] = {
                 "uplink": int(traffic.get("up", 0) or 0),
                 "downlink": int(traffic.get("down", 0) or 0),

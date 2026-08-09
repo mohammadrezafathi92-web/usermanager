@@ -331,6 +331,26 @@ def on_startup():
     finally:
         db.close()
 
+    # One-time move of the old single Package.ovpn_template column into the
+    # multi-file PackageOvpnTemplate table (see that model's docstring) -
+    # the column is cleared afterwards, so this can't run twice.
+    db = SessionLocal()
+    try:
+        legacy_pkgs = db.query(models.Package).filter(models.Package.ovpn_template.isnot(None)).all()
+        for pkg in legacy_pkgs:
+            if (pkg.ovpn_template or "").strip():
+                db.add(models.PackageOvpnTemplate(
+                    package_id=pkg.id, name="config.ovpn", content=pkg.ovpn_template, sort_order=0,
+                ))
+            pkg.ovpn_template = None
+        if legacy_pkgs:
+            db.commit()
+            logging.info("انتقال %s فایل ovpn قدیمی پکیج‌ها به جدول جدید", len(legacy_pkgs))
+    except Exception:
+        logging.exception("خطا در انتقال فایل ovpn قدیمی پکیج‌ها")
+    finally:
+        db.close()
+
     # One-time conversion of legacy shared-pool services into independent
     # Purchases (see services/purchase_migration.py's docstring).
     db = SessionLocal()

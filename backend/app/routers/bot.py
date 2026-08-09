@@ -43,7 +43,7 @@ def _connection_info(conn: models.Connection) -> schemas.BotConnectionInfo:
         username=share.get("username"),
         password=share.get("password"),
         psk=share.get("psk"),
-        ovpn_file=share.get("ovpn_file"),
+        ovpn_files=share.get("ovpn_files") or [],
         total_bytes=conn.total_bytes or 0,
         created_at=conn.created_at,
         purchase_batch=conn.purchase_batch,

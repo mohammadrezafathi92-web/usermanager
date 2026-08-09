@@ -92,6 +92,23 @@ def _sync_connections(db: Session, pkg: models.Package, specs: list[schemas.Pack
         ))
 
 
+def _sync_ovpn_templates(db: Session, pkg: models.Package, specs: list) -> None:
+    """Replaces the package's whole set of ready-made .ovpn files with the
+    ones just submitted (same whole-list-replace semantics as
+    _sync_connections above). See models.PackageOvpnTemplate."""
+    db.query(models.PackageOvpnTemplate).filter(models.PackageOvpnTemplate.package_id == pkg.id).delete()
+    for i, spec in enumerate(specs):
+        content = (spec.content or "").strip()
+        if not content:
+            continue
+        db.add(models.PackageOvpnTemplate(
+            package_id=pkg.id,
+            name=(spec.name or f"config-{i + 1}").strip()[:255],
+            content=content,
+            sort_order=i,
+        ))
+
+
 @router.get("", response_model=list[schemas.PackageOut])
 def list_packages(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     allowed = hierarchy.accessible_package_owner_ids(admin)
@@ -120,7 +137,7 @@ def list_packages(db: Session = Depends(get_db), admin: models.AdminUser = Depen
 @router.post("", response_model=schemas.PackageOut)
 def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
     _require_package_manager(admin)
-    data = payload.model_dump(exclude={"connections"})
+    data = payload.model_dump(exclude={"connections", "ovpn_templates"})
     # owner_admin_id is always derived from who's creating it, never taken
     # from the payload - a superadmin's packages stay global (NULL), a
     # level-2 Admin's packages are scoped to themselves (see
@@ -131,6 +148,7 @@ def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db)
     db.add(pkg)
     db.flush()  # assign pkg.id before adding child rows
     _sync_connections(db, pkg, payload.connections)
+    _sync_ovpn_templates(db, pkg, payload.ovpn_templates)
     db.commit()
     db.refresh(pkg)
     return _out(pkg)
@@ -140,12 +158,14 @@ def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db)
 def update_package(package_id: int, payload: schemas.PackageUpdate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
     _require_package_manager(admin)
     pkg = _get_scoped_package(db, package_id, admin)
-    data = payload.model_dump(exclude_unset=True, exclude={"connections"})
+    data = payload.model_dump(exclude_unset=True, exclude={"connections", "ovpn_templates"})
     data.pop("owner_admin_id", None)  # ownership never changes via this endpoint
     for k, v in data.items():
         setattr(pkg, k, v)
     if payload.connections is not None:
         _sync_connections(db, pkg, payload.connections)
+    if payload.ovpn_templates is not None:
+        _sync_ovpn_templates(db, pkg, payload.ovpn_templates)
     db.commit()
     db.refresh(pkg)
     return _out(pkg)

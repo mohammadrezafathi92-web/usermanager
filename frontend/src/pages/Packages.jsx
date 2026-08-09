@@ -29,7 +29,7 @@ const emptyForm = {
   max_concurrent_sessions: "",
   speed_limit_mbps: "",
   custom_message: "",
-  ovpn_template: "",
+  ovpn_templates: [],
   connections: [],
 };
 
@@ -102,7 +102,7 @@ export default function Packages() {
       max_concurrent_sessions: pkg.max_concurrent_sessions ?? "",
       speed_limit_mbps: pkg.speed_limit_mbps ?? "",
       custom_message: pkg.custom_message || "",
-      ovpn_template: pkg.ovpn_template || "",
+      ovpn_templates: (pkg.ovpn_templates || []).map((tpl) => ({ name: tpl.name, content: tpl.content })),
       connections: (pkg.connections || []).map((c) => ({
         node_id: c.node_id,
         protocol: c.protocol,
@@ -482,43 +482,68 @@ export default function Packages() {
             />
           </div>
 
-          {/* Admin's ready-made .ovpn used VERBATIM for this package's
-              OpenVPN services - the panel injects only each customer's own
-              credentials (see services/link_builder.py's
-              render_ovpn_template) and never rewrites remote/port/certs. */}
+          {/* Admin's ready-made .ovpn files used VERBATIM for this
+              package's OpenVPN services - the panel injects only each
+              customer's own credentials (see services/link_builder.py's
+              render_ovpn_template) and never rewrites remote/port/certs.
+              A package can carry SEVERAL (one per server/port variant);
+              the customer receives all of them. */}
           <div className="border-t border-gray-100 pt-3">
-            <label className="block text-sm text-gray-600 mb-1">
-              {t("packages.ovpnTemplateHeading")}
-            </label>
-            <div className="flex items-center gap-2 mb-2">
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-sm text-gray-600">
+                {t("packages.ovpnTemplateHeading")}
+              </label>
               <label className="btn-secondary cursor-pointer">
                 <Paperclip size={14} /> {t("packages.ovpnTemplateUpload")}
                 <input
                   type="file"
                   accept=".ovpn,.conf,text/plain"
+                  multiple
                   className="hidden"
                   onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    set("ovpn_template", await file.text());
+                    const files = Array.from(e.target.files || []);
+                    if (!files.length) return;
+                    const added = await Promise.all(
+                      files.map(async (f) => ({ name: f.name, content: await f.text() }))
+                    );
+                    set("ovpn_templates", [...(form.ovpn_templates || []), ...added]);
                     e.target.value = "";
                   }}
                 />
               </label>
-              {form.ovpn_template && (
-                <button type="button" className="text-xs text-red-500" onClick={() => set("ovpn_template", "")}>
-                  {t("packages.ovpnTemplateClear")}
-                </button>
-              )}
             </div>
-            <textarea
-              className="input font-mono text-xs"
-              rows={form.ovpn_template ? 8 : 3}
-              placeholder={t("packages.ovpnTemplatePlaceholder")}
-              value={form.ovpn_template}
-              onChange={(e) => set("ovpn_template", e.target.value)}
-            />
-            <div className="text-xs text-gray-400 mt-1">{t("packages.ovpnTemplateHint")}</div>
+
+            {(form.ovpn_templates || []).length === 0 ? (
+              <div className="text-xs text-gray-400">{t("packages.ovpnTemplateEmpty")}</div>
+            ) : (
+              <div className="space-y-2">
+                {(form.ovpn_templates || []).map((tpl, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <input
+                      className="input flex-1 text-xs"
+                      value={tpl.name}
+                      placeholder={t("packages.ovpnTemplateNamePlaceholder")}
+                      onChange={(e) => {
+                        const next = [...form.ovpn_templates];
+                        next[i] = { ...next[i], name: e.target.value };
+                        set("ovpn_templates", next);
+                      }}
+                    />
+                    <span className="text-[11px] text-gray-400 shrink-0" dir="ltr">
+                      {Math.round((tpl.content || "").length / 1024)} KB
+                    </span>
+                    <button
+                      type="button"
+                      className="text-red-500 hover:text-red-700 shrink-0"
+                      onClick={() => set("ovpn_templates", form.ovpn_templates.filter((_, j) => j !== i))}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="text-xs text-gray-400 mt-2">{t("packages.ovpnTemplateHint")}</div>
           </div>
 
           <div className="border-t border-gray-100 pt-3">

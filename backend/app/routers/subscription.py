@@ -56,7 +56,7 @@ def get_subscription_info(token: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{token}/config/{connection_id}")
-def download_connection_config(token: str, connection_id: int, db: Session = Depends(get_db)):
+def download_connection_config(token: str, connection_id: int, file: int = 0, db: Session = Depends(get_db)):
     """Downloadable config FILE for one service - what the QR code under
     each service on the subscription page points at, so scanning it with a
     phone camera downloads the ready-to-import file instead of dumping raw
@@ -75,9 +75,19 @@ def download_connection_config(token: str, connection_id: int, db: Session = Dep
     except Exception:
         raise HTTPException(400, "config unavailable")
 
-    if conn.type == models.ConnectionType.openvpn and share.get("ovpn_file"):
-        body, ext, media = share["ovpn_file"], "ovpn", "application/x-openvpn-profile"
-    elif conn.type == models.ConnectionType.wireguard and share.get("config_text"):
+    ovpn_files = share.get("ovpn_files") or []
+    if conn.type == models.ConnectionType.openvpn and ovpn_files:
+        # `file` selects WHICH of the package's ready-made .ovpn files this
+        # is (a package can carry several - see models.PackageOvpnTemplate);
+        # out-of-range falls back to the first so an old QR never 404s.
+        picked = ovpn_files[file] if 0 <= file < len(ovpn_files) else ovpn_files[0]
+        filename = picked.get("name") or f"{user.username}-{conn.id}.ovpn"
+        return PlainTextResponse(
+            picked.get("content") or "",
+            media_type="application/x-openvpn-profile",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    if conn.type == models.ConnectionType.wireguard and share.get("config_text"):
         body, ext, media = share["config_text"], "conf", "text/plain; charset=utf-8"
     else:
         body = share.get("link") or share.get("config_text") or ""

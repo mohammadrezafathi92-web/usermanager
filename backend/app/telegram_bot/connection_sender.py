@@ -95,16 +95,28 @@ async def send_connection(bot: Bot, chat_id: int, conn: dict) -> None:
         # link_builder.py's render_ovpn_template). When a template exists
         # the customer needs nothing else - no server/port to type in by
         # hand - so the credentials text is skipped entirely.
-        ovpn_file = conn.get("ovpn_file")
-        if ctype == "openvpn" and ovpn_file:
-            try:
-                await bot.send_document(
-                    chat_id,
-                    BufferedInputFile(ovpn_file.encode("utf-8"), filename=f"{conn.get('username') or 'openvpn'}.ovpn"),
-                    caption=f"{label} — {status}\n\n📄 فایل کانفیگ آماده - کافیست در اپلیکیشن OpenVPN وارد (Import) کنید.",
+        ovpn_files = conn.get("ovpn_files") or []
+        if ctype == "openvpn" and ovpn_files:
+            # A package can carry several ready-made files (one per
+            # server/port variant) - send them all, captioned so the
+            # customer knows which is which.
+            for i, f in enumerate(ovpn_files):
+                caption = (
+                    f"{label} — {status}\n\n📄 {f.get('name') or 'config.ovpn'}\n"
+                    "کافیست در اپلیکیشن OpenVPN وارد (Import) کنید."
+                    if i == 0 else f"📄 {f.get('name') or 'config.ovpn'}"
                 )
-            except Exception as exc:
-                _log_send_failure(exc, f"send openvpn file {conn.get('id')} to {chat_id}")
+                try:
+                    await bot.send_document(
+                        chat_id,
+                        BufferedInputFile(
+                            (f.get("content") or "").encode("utf-8"),
+                            filename=f.get("name") or "config.ovpn",
+                        ),
+                        caption=caption,
+                    )
+                except Exception as exc:
+                    _log_send_failure(exc, f"send openvpn file {conn.get('id')} to {chat_id}")
             return
 
         port = conn.get("port") or DEFAULT_PORTS.get(ctype)

@@ -917,14 +917,11 @@ class Package(Base):
     quota_gb = Column(Float, default=0)  # 0 = unlimited
     duration_days = Column(Integer, default=30)  # 0/None = never expires
     price = Column(BigInteger, default=0)  # in tomans, charged to customers
-    # Admin-supplied ready-made .ovpn client config TEMPLATE for this
-    # package's OpenVPN connections. Used VERBATIM - the panel injects ONLY
-    # each customer's own credentials as an inline <auth-user-pass> block
-    # (see services/link_builder.py's render_ovpn_template) and never
-    # touches the file's own remote/port/cert lines, per the panel owner's
-    # requirement (2026-08-09): the admin's file already knows its servers.
-    # NULL = no template; the OpenVPN share falls back to the plain
-    # server/port/user/pass info text, same as before.
+    # LEGACY single .ovpn template - superseded by the PackageOvpnTemplate
+    # table below, since a package can now carry SEVERAL ready-made files
+    # (e.g. one per server/port variant). Kept as a column only so existing
+    # data isn't lost: main.py's startup copies any value here into a
+    # PackageOvpnTemplate row exactly once, and nothing reads it after that.
     ovpn_template = Column(Text, nullable=True)
     # Wholesale price charged to a non-superadmin ADMIN's own credit balance
     # (see AdminUser.balance) when they create a user with this package for
@@ -995,6 +992,33 @@ class PackageFile(Base):
     created_at = Column(DateTime, default=now)
 
     package = relationship("Package", back_populates="files")
+
+
+class PackageOvpnTemplate(Base):
+    """One admin-supplied ready-made .ovpn client config attached to a
+    package. A package can have SEVERAL (one per server/port/protocol
+    variant the admin offers) - every one of them is rendered per customer
+    and delivered together, so the customer gets the full set of files for
+    what they bought.
+
+    The file is used VERBATIM: the panel injects ONLY that customer's own
+    credentials as an inline <auth-user-pass> block (see
+    services/link_builder.py's render_ovpn_template) and never touches the
+    file's own remote/port/cert lines - the admin's file already knows its
+    servers (panel owner's requirement, 2026-08-09)."""
+
+    __tablename__ = "package_ovpn_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    package_id = Column(Integer, ForeignKey("packages.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Shown to the customer and used as the delivered file's name (".ovpn"
+    # appended if missing) - e.g. "آلمان - UDP 1194".
+    name = Column(String(255), nullable=False)
+    content = Column(Text, nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=now)
+
+    package = relationship("Package", backref="ovpn_templates")
 
 
 class PackageConnection(Base):

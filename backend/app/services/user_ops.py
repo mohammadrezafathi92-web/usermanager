@@ -2030,7 +2030,7 @@ def get_connection_share(connection: models.Connection) -> dict:
         # render_ovpn_template). Template resolution follows the ownership
         # chain: this connection's own Purchase's package first, then the
         # user's create-time package for legacy/shared connections.
-        ovpn_file = None
+        ovpn_files = []
         template_pkg = None
         if connection.purchase and connection.purchase.package:
             template_pkg = connection.purchase.package
@@ -2039,16 +2039,23 @@ def get_connection_share(connection: models.Connection) -> dict:
             session = object_session(connection)
             if session is not None:
                 template_pkg = session.get(models.Package, connection.user.package_id)
-        if template_pkg is not None and template_pkg.ovpn_template:
+        if template_pkg is not None:
             from .link_builder import render_ovpn_template
-            ovpn_file = render_ovpn_template(
-                template_pkg.ovpn_template, connection.ppp_username or "", connection.ppp_password or "",
-            )
+            for tpl in sorted(
+                template_pkg.ovpn_templates or [], key=lambda t: (t.sort_order or 0, t.id)
+            ):
+                name = tpl.name if tpl.name.lower().endswith(".ovpn") else f"{tpl.name}.ovpn"
+                ovpn_files.append({
+                    "name": name,
+                    "content": render_ovpn_template(
+                        tpl.content, connection.ppp_username or "", connection.ppp_password or "",
+                    ),
+                })
         return {
             "kind": "openvpn", "link": None, "config_text": text,
             "server": node.mt_endpoint_host, "port": node.mt_ovpn_port or 1194,
             "username": connection.ppp_username, "password": connection.ppp_password, "psk": None,
-            "ovpn_file": ovpn_file,
+            "ovpn_files": ovpn_files,
         }
 
     if connection.type == models.ConnectionType.l2tp:

@@ -310,6 +310,13 @@ class ConnectionShareLink(BaseModel):
 
 # ---------- Public customer subscription panel (routers/subscription.py) --
 # Unauthenticated, token-gated. See models.User.subscription_token.
+class OvpnFileOut(BaseModel):
+    """One rendered, ready-to-import .ovpn file for a specific customer -
+    the package template's display name plus its rendered content."""
+    name: str
+    content: str
+
+
 class SubscriptionConnectionOut(BaseModel):
     id: int
     type: ConnectionType
@@ -338,11 +345,10 @@ class SubscriptionConnectionOut(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
     psk: Optional[str] = None
-    # Ready-to-import .ovpn file (admin's package template + this
-    # customer's injected credentials) - OpenVPN services only, and only
-    # when the package has a template uploaded. See link_builder.
-    # render_ovpn_template.
-    ovpn_file: Optional[str] = None
+    # Ready-to-import .ovpn files (each of the package's admin-uploaded
+    # templates with this customer's credentials injected) - OpenVPN
+    # services only. See link_builder.render_ovpn_template.
+    ovpn_files: List["OvpnFileOut"] = []
     share_error: Optional[str] = None
 
 
@@ -696,15 +702,27 @@ class PackageBase(BaseModel):
     # Sent by the sales bot to the customer right after a successful
     # purchase/renewal of this package, alongside any files attached below.
     custom_message: Optional[str] = None
-    # Admin's ready-made .ovpn client config used VERBATIM for this
-    # package's OpenVPN services - the panel injects only each customer's
-    # credentials into it (see models.Package.ovpn_template and
-    # services/link_builder.py's render_ovpn_template). None = no template.
-    ovpn_template: Optional[str] = None
+
+
+class PackageOvpnTemplateIn(BaseModel):
+    """One ready-made .ovpn file attached to a package - used verbatim,
+    only the customer's credentials get injected (see
+    models.PackageOvpnTemplate / link_builder.render_ovpn_template)."""
+    name: str
+    content: str
+
+
+class PackageOvpnTemplateOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    content: str
+    sort_order: int = 0
 
 
 class PackageCreate(PackageBase):
     connections: List[PackageConnectionSpec] = []
+    ovpn_templates: List[PackageOvpnTemplateIn] = []
 
 
 class PackageUpdate(BaseModel):
@@ -720,7 +738,10 @@ class PackageUpdate(BaseModel):
     max_concurrent_sessions: Optional[int] = None
     speed_limit_mbps: Optional[int] = None
     custom_message: Optional[str] = None
-    ovpn_template: Optional[str] = None
+    # Full replacement list of this package's ready-made .ovpn files (see
+    # models.PackageOvpnTemplate) - omit to leave them untouched, send []
+    # to clear them all.
+    ovpn_templates: Optional[List["PackageOvpnTemplateIn"]] = None
     connections: Optional[List[PackageConnectionSpec]] = None
 
 
@@ -730,6 +751,7 @@ class PackageOut(PackageBase):
     created_at: dt.datetime
     connections: List[PackageConnectionOut] = []
     files: List[PackageFileOut] = []
+    ovpn_templates: List[PackageOvpnTemplateOut] = []
     # Which level-2 Admin owns this package - None means superadmin-made/
     # global (see models.Package.owner_admin_id's docstring). Read-only,
     # always derived server-side from the creating admin, never accepted
@@ -1159,11 +1181,11 @@ class BotConnectionInfo(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
     psk: Optional[str] = None  # l2tp/ipsec pre-shared key, if configured
-    # Ready-to-import .ovpn file (the package's admin-uploaded template with
-    # this customer's credentials injected) - OpenVPN only, and only when
-    # the package has a template. The bot sends this as a document instead
-    # of the server/port/user/pass text. See link_builder.render_ovpn_template.
-    ovpn_file: Optional[str] = None
+    # Ready-to-import .ovpn files (the package's admin-uploaded templates
+    # with this customer's credentials injected) - OpenVPN only. The bot
+    # sends each as a document instead of the server/port/user/pass text.
+    # See link_builder.render_ovpn_template.
+    ovpn_files: List["OvpnFileOut"] = []
     # Lifetime bytes used by THIS connection alone (not the user's shared
     # total) - powers the bot's "مصرف هر سرویس" section.
     total_bytes: int = 0

@@ -51,8 +51,10 @@ function ServiceCard({ conn, meta, token }) {
   // config text - scanning it with a phone camera downloads the
   // ready-to-import file instead of showing a wall of text (panel owner's
   // request, 2026-08-09).
-  const downloadUrl = `${window.location.origin}/api/subscribe/${token}/config/${conn.id}`;
-  const hasConfig = Boolean(conn.link || conn.config_text || conn.ovpn_file);
+  const ovpnFiles = conn.ovpn_files || [];
+  const fileUrl = (i = 0) => `${window.location.origin}/api/subscribe/${token}/config/${conn.id}?file=${i}`;
+  const downloadUrl = fileUrl(0);
+  const hasConfig = Boolean(conn.link || conn.config_text || ovpnFiles.length);
 
   useEffect(() => {
     if (!hasConfig) {
@@ -69,12 +71,6 @@ function ServiceCard({ conn, meta, token }) {
   };
 
   const onDownload = () => {
-    // Ready-made .ovpn (package template + injected credentials) wins when
-    // present - it's the file the customer actually imports.
-    if (conn.ovpn_file) {
-      downloadTextFile(`${conn.username || conn.node_name || "openvpn"}.ovpn`, conn.ovpn_file);
-      return;
-    }
     if (!conn.config_text) return;
     downloadTextFile(`${conn.node_name || conn.kind}.${FILE_EXT[conn.kind] || "txt"}`, conn.config_text);
   };
@@ -117,18 +113,22 @@ function ServiceCard({ conn, meta, token }) {
             </div>
           )}
 
-          {conn.ovpn_file && (
+          {ovpnFiles.length > 0 && (
             <div className="space-y-2">
               <div className="text-xs text-emerald-600 bg-emerald-50 rounded-lg px-3 py-2">
                 {t("subscription.ovpnReady")}
               </div>
-              <a className="btn-primary w-full justify-center" href={downloadUrl} download>
-                <Download size={14} /> {t("subscription.downloadOvpn")}
-              </a>
+              {/* A package can ship several ready-made files (one per
+                  server/port variant) - each gets its own download. */}
+              {ovpnFiles.map((f, i) => (
+                <a key={i} className="btn-primary w-full justify-center" href={fileUrl(i)} download={f.name}>
+                  <Download size={14} /> {f.name || t("subscription.downloadOvpn")}
+                </a>
+              ))}
             </div>
           )}
 
-          {conn.config_text && !conn.ovpn_file && (
+          {conn.config_text && ovpnFiles.length === 0 && (
             <div className="space-y-2">
               <textarea readOnly className="input font-mono text-xs" rows={7} value={conn.config_text} />
               <div className="flex gap-2">

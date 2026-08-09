@@ -230,6 +230,13 @@ class PurchaseOut(BaseModel):
     reserved_package_id: Optional[int] = None
     reserved_created_at: Optional[dt.datetime] = None
     created_at: dt.datetime
+    # Free-form label written by the customer at purchase time (bot) and/or
+    # the admin - see models.Purchase.comment.
+    comment: Optional[str] = None
+
+
+class PurchaseCommentUpdate(BaseModel):
+    comment: Optional[str] = None
 
 
 class PurchaseRenewRequest(BaseModel):
@@ -315,6 +322,9 @@ class SubscriptionConnectionOut(BaseModel):
     # screen do.
     purchase_batch: Optional[str] = None
     package_name_snapshot: Optional[str] = None
+    # Customer/admin-written label for the owning service (models.Purchase.
+    # comment) - shown next to the service name on the public page.
+    comment: Optional[str] = None
     # Share data - mirrors services.user_ops.get_connection_share()'s
     # return shape. `share_error` is set instead whenever building it fails
     # (e.g. a WireGuard peer whose node is unreachable right now) so ONE
@@ -328,6 +338,11 @@ class SubscriptionConnectionOut(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
     psk: Optional[str] = None
+    # Ready-to-import .ovpn file (admin's package template + this
+    # customer's injected credentials) - OpenVPN services only, and only
+    # when the package has a template uploaded. See link_builder.
+    # render_ovpn_template.
+    ovpn_file: Optional[str] = None
     share_error: Optional[str] = None
 
 
@@ -681,6 +696,11 @@ class PackageBase(BaseModel):
     # Sent by the sales bot to the customer right after a successful
     # purchase/renewal of this package, alongside any files attached below.
     custom_message: Optional[str] = None
+    # Admin's ready-made .ovpn client config used VERBATIM for this
+    # package's OpenVPN services - the panel injects only each customer's
+    # credentials into it (see models.Package.ovpn_template and
+    # services/link_builder.py's render_ovpn_template). None = no template.
+    ovpn_template: Optional[str] = None
 
 
 class PackageCreate(PackageBase):
@@ -700,6 +720,7 @@ class PackageUpdate(BaseModel):
     max_concurrent_sessions: Optional[int] = None
     speed_limit_mbps: Optional[int] = None
     custom_message: Optional[str] = None
+    ovpn_template: Optional[str] = None
     connections: Optional[List[PackageConnectionSpec]] = None
 
 
@@ -1138,6 +1159,11 @@ class BotConnectionInfo(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
     psk: Optional[str] = None  # l2tp/ipsec pre-shared key, if configured
+    # Ready-to-import .ovpn file (the package's admin-uploaded template with
+    # this customer's credentials injected) - OpenVPN only, and only when
+    # the package has a template. The bot sends this as a document instead
+    # of the server/port/user/pass text. See link_builder.render_ovpn_template.
+    ovpn_file: Optional[str] = None
     # Lifetime bytes used by THIS connection alone (not the user's shared
     # total) - powers the bot's "مصرف هر سرویس" section.
     total_bytes: int = 0
@@ -1190,6 +1216,9 @@ class BotPurchasePackageRequest(BaseModel):
     # node/protocol by hand in the bot's purchase flow. Empty (the default)
     # for a bundled package, where the package's own connections are used.
     connections: List[BotCreateConnectionSpec] = []
+    # Optional customer-written label for this service (bot's «یک نام برای
+    # این سرویس» step) - see models.Purchase.comment.
+    comment: Optional[str] = None
     # --- accounting - same optional fields/fallback as BotCreateUserRequest ---
     paid_amount: Optional[int] = None
     payment_method: Optional[str] = None
@@ -1553,6 +1582,7 @@ class BotPurchaseInfo(BaseModel):
     reserved_duration_days: Optional[int] = None
     created_at: dt.datetime
     connection_count: int = 0
+    comment: Optional[str] = None
 
 
 class LegacyGroupConvertRequest(BaseModel):

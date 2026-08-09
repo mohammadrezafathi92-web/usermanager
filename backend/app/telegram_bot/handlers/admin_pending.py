@@ -199,7 +199,7 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
                 connections_override = connections if connections else None
                 result = await api.purchase_package(
                     pending["target_username"], pkg["id"], connections=connections_override,
-                    sale_info=sale_info,
+                    sale_info=sale_info, comment=pending.get("comment"),
                 )
                 new_connections = result["connections"]
                 user = result["user"]

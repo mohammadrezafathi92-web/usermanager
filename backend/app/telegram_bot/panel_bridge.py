@@ -312,10 +312,12 @@ class PanelBridge:
     async def purchase_package(
         self, username: str, package_id: int, connections: Optional[list[dict]] = None,
         owner_admin_id: Optional[int] = None, sale_info: Optional[dict] = None,
+        comment: Optional[str] = None,
     ) -> dict:
         payload = schemas.BotPurchasePackageRequest(
             package_id=package_id,
             connections=[schemas.BotCreateConnectionSpec(**c) for c in (connections or [])],
+            comment=comment,
             **(sale_info or {}),
         )
         return _dump(await _call(bot_router.purchase_package, username, payload, owner_admin_id=_scope(owner_admin_id)))

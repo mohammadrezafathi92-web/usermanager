@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from "react";
-import { Plus, Trash2, Pencil, Wifi, Globe, PlugZap, CheckCircle2, XCircle, Power, X } from "lucide-react";
+import { Plus, Trash2, Pencil, Wifi, Globe, PlugZap, CheckCircle2, XCircle, Power, X, Cpu, MemoryStick, HardDrive, Clock } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
-import { fetchNodes, createNode, updateNode, deleteNode, testNode, pushRadiusConfig, pushSstpConfig, pushL2tpConfig, pushIkev2Config, importPppUsers, importUserManagerUsers, import3xuiClients } from "../api/client.js";
+import { fetchNodes, fetchNodeResources, createNode, updateNode, deleteNode, testNode, pushRadiusConfig, pushSstpConfig, pushL2tpConfig, pushIkev2Config, importPppUsers, importUserManagerUsers, import3xuiClients } from "../api/client.js";
 import { formatDateTime } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
@@ -51,6 +51,29 @@ const emptyForm = {
   xr_sni: "",
 };
 
+// Live node resource monitor helpers (see services/node_monitor.py).
+const pct = (used, total) => (total ? Math.min((used / total) * 100, 100) : 0);
+const fmtGB = (bytes) => {
+  if (!bytes) return "0";
+  const gb = bytes / 1024 ** 3;
+  return gb >= 1 ? `${gb.toFixed(1)}G` : `${(bytes / 1024 ** 2).toFixed(0)}M`;
+};
+
+function ResourceRow({ icon: Icon, label, percent, text }) {
+  const p = Math.max(0, Math.min(100, percent || 0));
+  const color = p >= 90 ? "bg-red-500" : p >= 70 ? "bg-amber-500" : "bg-emerald-500";
+  return (
+    <div className="flex items-center gap-2 text-[11px] text-gray-500">
+      <Icon size={12} className="text-gray-400 shrink-0" />
+      <span className="w-8 shrink-0">{label}</span>
+      <div className="flex-1 h-1.5 rounded-full bg-gray-200 dark:bg-slate-700 overflow-hidden">
+        <div className={`h-full rounded-full ${color} transition-all`} style={{ width: `${p}%` }} />
+      </div>
+      <span className="shrink-0 tabular-nums" dir="ltr">{text}</span>
+    </div>
+  );
+}
+
 export default function Nodes() {
   const { t, language } = useLanguage();
   const { isSuperadmin, adminId } = useAuth();
@@ -90,8 +113,23 @@ export default function Nodes() {
   const [dnsRows, setDnsRows] = useState(["1.1.1.1"]);
 
   const load = () => fetchNodes().then((res) => setNodes(res.data));
+  // Live CPU/RAM/disk per node (see services/node_monitor.py) - polled
+  // separately from the node list so a slow/unreachable box never delays
+  // the page itself, and keyed by node id for lookup while rendering.
+  const [resources, setResources] = useState({});
+  const loadResources = () =>
+    fetchNodeResources()
+      .then((res) => {
+        const map = {};
+        for (const r of res.data || []) map[r.node_id] = r;
+        setResources(map);
+      })
+      .catch(() => {});
   useEffect(() => {
     load();
+    loadResources();
+    const timer = setInterval(loadResources, 20000);
+    return () => clearInterval(timer);
   }, []);
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
@@ -349,7 +387,10 @@ export default function Nodes() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {nodes.map((n) => (
+        {nodes.map((n) => {
+          const res = resources[n.id];
+          return (
+
           <div key={n.id} className={`card ${!n.enabled ? "opacity-60" : ""}`}>
             <div className="flex items-start justify-between mb-3">
               <div className="flex items-center gap-2">
@@ -391,6 +432,25 @@ export default function Nodes() {
               {!n.enabled && <div className="text-amber-600">{t("nodes.disabledNote")}</div>}
             </div>
 
+            {/* Live resource monitor (see services/node_monitor.py) - a
+                node that's unreachable or unsupported (3X-UI panels have no
+                shell) simply shows nothing rather than a scary error. */}
+            {res && res.supported && !res.error && (
+              <div className="rounded-xl bg-gray-50 dark:bg-slate-800/60 px-3 py-2 mb-3 space-y-1.5">
+                <ResourceRow icon={Cpu} label={t("nodes.cpu")} percent={res.cpu_percent} text={`${Math.round(res.cpu_percent || 0)}%`} />
+                <ResourceRow icon={MemoryStick} label={t("nodes.ram")} percent={pct(res.mem_used, res.mem_total)} text={`${fmtGB(res.mem_used)} / ${fmtGB(res.mem_total)}`} />
+                <ResourceRow icon={HardDrive} label={t("nodes.disk")} percent={pct(res.disk_used, res.disk_total)} text={`${fmtGB(res.disk_used)} / ${fmtGB(res.disk_total)}`} />
+                {res.uptime && (
+                  <div className="flex items-center gap-1.5 text-[11px] text-gray-400">
+                    <Clock size={12} /> {t("nodes.uptime", { value: res.uptime })}
+                  </div>
+                )}
+              </div>
+            )}
+            {res && res.error && (
+              <div className="text-[11px] text-amber-600 mb-3">{t("nodes.resourcesUnavailable")}</div>
+            )}
+
             <div className="flex items-center gap-2">
               <button className="btn-secondary flex-1" onClick={() => onTest(n.id)}>
                 <PlugZap size={14} /> {t("nodes.testConnection")}
@@ -411,7 +471,8 @@ export default function Nodes() {
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
         {nodes.length === 0 && <div className="card text-center text-gray-400 col-span-2 py-10">{t("nodes.empty")}</div>}
       </div>
 

@@ -55,14 +55,51 @@ def get_subscription_info(token: str, db: Session = Depends(get_db)):
     )
 
 
+@router.get("/{token}/config/{connection_id}")
+def download_connection_config(token: str, connection_id: int, db: Session = Depends(get_db)):
+    """Downloadable config FILE for one service - what the QR code under
+    each service on the subscription page points at, so scanning it with a
+    phone camera downloads the ready-to-import file instead of dumping raw
+    config text on screen (panel owner's request, 2026-08-09).
+
+    For OpenVPN this is the package's admin-uploaded .ovpn template with
+    only this customer's credentials injected (see link_builder.
+    render_ovpn_template); for every other type it's the same human-
+    readable config text/link the page already shows, as a .txt/.conf."""
+    user = _get_user_by_token(token, db)
+    conn = db.get(models.Connection, connection_id)
+    if not conn or conn.user_id != user.id:
+        raise HTTPException(404, "Not found")
+    try:
+        share = user_ops.get_connection_share(conn)
+    except Exception:
+        raise HTTPException(400, "config unavailable")
+
+    if conn.type == models.ConnectionType.openvpn and share.get("ovpn_file"):
+        body, ext, media = share["ovpn_file"], "ovpn", "application/x-openvpn-profile"
+    elif conn.type == models.ConnectionType.wireguard and share.get("config_text"):
+        body, ext, media = share["config_text"], "conf", "text/plain; charset=utf-8"
+    else:
+        body = share.get("link") or share.get("config_text") or ""
+        ext, media = "txt", "text/plain; charset=utf-8"
+    if not body:
+        raise HTTPException(404, "config unavailable")
+
+    filename = f"{user.username}-{conn.type.value}-{conn.id}.{ext}"
+    return PlainTextResponse(
+        body, media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/{token}")
 def get_subscription_app_import(token: str, db: Session = Depends(get_db)):
-    """The actual "Subscribe" URL an app like V2rayNG is pointed at - only
-    Xray (vless://) connections have anything to offer here; other protocol
-    types (WireGuard/OpenVPN/L2TP/IKEv2/SSTP) simply aren't representable
-    in this format and are silently skipped, same as they would be if the
-    customer only had a mix of services and the app just shows what it
-    understands."""
+    """The actual "Subscribe" URL an app like V2rayNG is pointed at -
+    V2Ray/Xray services ONLY (confirmed with the panel owner 2026-08-09:
+    this link is *the* V2Ray subscription link). Other protocol types
+    (WireGuard/OpenVPN/L2TP/IKEv2/SSTP) aren't representable in this
+    format at all and are skipped - they're delivered as downloadable
+    config files instead (see download_connection_config above)."""
     user = _get_user_by_token(token, db)
     links = []
     for conn in user.connections:

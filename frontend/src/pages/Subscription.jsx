@@ -41,20 +41,26 @@ function groupByPurchase(connections) {
   return order.map((k) => groups.get(k)).sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
 }
 
-function ServiceCard({ conn, meta }) {
+function ServiceCard({ conn, meta, token }) {
   const { t } = useLanguage();
   const [qrUrl, setQrUrl] = useState(null);
   const [copiedKey, setCopiedKey] = useState(null);
   const Icon = meta.icon;
-  const payload = conn.link || conn.config_text;
+  // The QR now encodes a DOWNLOAD URL for this service's config file
+  // (routers/subscription.py's download_connection_config), not the raw
+  // config text - scanning it with a phone camera downloads the
+  // ready-to-import file instead of showing a wall of text (panel owner's
+  // request, 2026-08-09).
+  const downloadUrl = `${window.location.origin}/api/subscribe/${token}/config/${conn.id}`;
+  const hasConfig = Boolean(conn.link || conn.config_text || conn.ovpn_file);
 
   useEffect(() => {
-    if (!payload) {
+    if (!hasConfig) {
       setQrUrl(null);
       return;
     }
-    QRCode.toDataURL(payload, { width: 200, margin: 1 }).then(setQrUrl).catch(() => setQrUrl(null));
-  }, [payload]);
+    QRCode.toDataURL(downloadUrl, { width: 200, margin: 1 }).then(setQrUrl).catch(() => setQrUrl(null));
+  }, [downloadUrl, hasConfig]);
 
   const onCopy = async (key, text) => {
     const ok = await copyText(text);
@@ -63,6 +69,12 @@ function ServiceCard({ conn, meta }) {
   };
 
   const onDownload = () => {
+    // Ready-made .ovpn (package template + injected credentials) wins when
+    // present - it's the file the customer actually imports.
+    if (conn.ovpn_file) {
+      downloadTextFile(`${conn.username || conn.node_name || "openvpn"}.ovpn`, conn.ovpn_file);
+      return;
+    }
     if (!conn.config_text) return;
     downloadTextFile(`${conn.node_name || conn.kind}.${FILE_EXT[conn.kind] || "txt"}`, conn.config_text);
   };
@@ -77,6 +89,7 @@ function ServiceCard({ conn, meta }) {
           <div>
             <div className="font-medium text-sm">{meta.label}</div>
             {conn.node_name && <div className="text-xs text-gray-400">{conn.node_name}</div>}
+            {conn.comment && <div className="text-xs text-brand-600">📝 {conn.comment}</div>}
           </div>
         </div>
         <span className={`text-xs px-2 py-1 rounded-full ${conn.online ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
@@ -91,7 +104,7 @@ function ServiceCard({ conn, meta }) {
           {qrUrl && (
             <div className="flex flex-col items-center gap-1 py-1">
               <img src={qrUrl} alt="QR" width={160} height={160} className="rounded-lg border border-gray-100" />
-              <div className="text-[11px] text-gray-400">{t("subscription.qrHint")}</div>
+              <div className="text-[11px] text-gray-400">{t("subscription.qrDownloadHint")}</div>
             </div>
           )}
 
@@ -104,7 +117,18 @@ function ServiceCard({ conn, meta }) {
             </div>
           )}
 
-          {conn.config_text && (
+          {conn.ovpn_file && (
+            <div className="space-y-2">
+              <div className="text-xs text-emerald-600 bg-emerald-50 rounded-lg px-3 py-2">
+                {t("subscription.ovpnReady")}
+              </div>
+              <a className="btn-primary w-full justify-center" href={downloadUrl} download>
+                <Download size={14} /> {t("subscription.downloadOvpn")}
+              </a>
+            </div>
+          )}
+
+          {conn.config_text && !conn.ovpn_file && (
             <div className="space-y-2">
               <textarea readOnly className="input font-mono text-xs" rows={7} value={conn.config_text} />
               <div className="flex gap-2">
@@ -240,7 +264,7 @@ export default function Subscription() {
               {g.packageName && <div className="text-xs text-gray-400 px-1">{g.packageName}</div>}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {g.connections.map((conn) => (
-                  <ServiceCard key={conn.id} conn={conn} meta={TYPE_META[conn.type] || TYPE_META.xray} />
+                  <ServiceCard key={conn.id} conn={conn} meta={TYPE_META[conn.type] || TYPE_META.xray} token={token} />
                 ))}
               </div>
             </div>

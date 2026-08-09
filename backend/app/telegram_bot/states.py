@@ -32,6 +32,7 @@ class CustomerPurchaseStates(StatesGroup):
     picking_protocol = State()  # ProtocolCB callback expected (only for a fresh purchase)
     entering_referral_code = State()  # free text OR "promo_skip" callback - brand-new customers only
     entering_discount_code = State()  # free text OR "promo_skip" callback - shown to everyone
+    entering_comment = State()  # free text OR "promo_skip" - optional service label ("new" purchases only)
     waiting_receipt = State()   # a photo message expected
 
 

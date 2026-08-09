@@ -860,6 +860,27 @@ def renew_purchase_endpoint(
     )
 
 
+@router.put("/{user_id}/purchases/{purchase_id}/comment", response_model=schemas.PurchaseOut)
+def update_purchase_comment(
+    user_id: int,
+    purchase_id: int,
+    payload: schemas.PurchaseCommentUpdate,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+):
+    """Admin-side edit of a service's free-form label (see
+    models.Purchase.comment) - the customer can also set it themselves at
+    purchase time in the bot. Shown on the customer's subscription page."""
+    user = _get_owned_user(db, admin, user_id)
+    purchase = db.get(models.Purchase, purchase_id)
+    if not purchase or purchase.user_id != user.id:
+        raise HTTPException(404, "سرویس پیدا نشد")
+    purchase.comment = (payload.comment or "").strip() or None
+    db.commit()
+    db.refresh(purchase)
+    return purchase
+
+
 @router.post("/{user_id}/legacy-groups/convert", response_model=schemas.PurchaseOut)
 def convert_legacy_group(
     user_id: int,

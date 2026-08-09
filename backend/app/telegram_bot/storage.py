@@ -61,6 +61,10 @@ _NEW_COLUMNS = {
     # the approval falls back to routers/bot.py renew()'s single-service
     # auto-target.
     "renew_purchase_id": "INTEGER",
+    # Optional customer-written label for the service being bought (the
+    # bot's «یک نام برای این سرویس» step) - applied to the created
+    # models.Purchase on approval. See models.Purchase.comment.
+    "comment": "TEXT",
 }
 
 
@@ -102,6 +106,7 @@ def create_pending(
     final_price: Optional[int] = None,
     payment_card_id: Optional[int] = None,
     renew_purchase_id: Optional[int] = None,
+    comment: Optional[str] = None,
 ) -> int:
     with _conn() as conn:
         cur = conn.execute(
@@ -109,8 +114,8 @@ def create_pending(
                (telegram_id, telegram_username, telegram_name, kind, package_id, package_name,
                 quota_gb, duration_days, price, node_id, node_name, protocol, target_username,
                 receipt_file_id, created_at, referral_code, discount_code, discount_amount, final_price,
-                payment_card_id, renew_purchase_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                payment_card_id, renew_purchase_id, comment)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 telegram_id,
                 telegram_username,
@@ -133,6 +138,7 @@ def create_pending(
                 final_price if final_price is not None else package.get("price", 0),
                 payment_card_id,
                 renew_purchase_id,
+                comment,
             ),
         )
         return cur.lastrowid

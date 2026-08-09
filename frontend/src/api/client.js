@@ -312,3 +312,9 @@ export const exportAccounting = (params = {}) =>
 // Converts a leftover shared-pool connection group into an independent
 // Purchase (see routers/users.py's convert_legacy_group).
 export const convertLegacyGroup = (userId, data) => client.post(`/users/${userId}/legacy-groups/convert`, data);
+
+// Live CPU/RAM/disk/uptime for every accessible node (see services/node_monitor.py).
+export const fetchNodeResources = () => client.get("/nodes/resources");
+// Admin-side edit of a service's free-form label (models.Purchase.comment).
+export const updatePurchaseComment = (userId, purchaseId, comment) =>
+  client.put(`/users/${userId}/purchases/${purchaseId}/comment`, { comment });

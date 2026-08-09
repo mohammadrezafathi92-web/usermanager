@@ -647,6 +647,13 @@ class Purchase(Base):
 
     status = Column(Enum(UserStatus), default=UserStatus.active, nullable=False)
 
+    # Free-form label/note for THIS service - optionally typed by the
+    # customer at purchase time in the bot («مثلا: لپ‌تاپ کار») and/or
+    # edited by the admin from the user page; shown on the customer's
+    # public subscription page next to the service so a multi-service
+    # customer can tell their otherwise-identical services apart.
+    comment = Column(String(255), nullable=True)
+
     # Same queued-renewal idea as User.reserved_quota_bytes (see that
     # docstring) - but scoped to just this one purchase.
     reserved_quota_bytes = Column(BigInteger, nullable=True)
@@ -910,6 +917,15 @@ class Package(Base):
     quota_gb = Column(Float, default=0)  # 0 = unlimited
     duration_days = Column(Integer, default=30)  # 0/None = never expires
     price = Column(BigInteger, default=0)  # in tomans, charged to customers
+    # Admin-supplied ready-made .ovpn client config TEMPLATE for this
+    # package's OpenVPN connections. Used VERBATIM - the panel injects ONLY
+    # each customer's own credentials as an inline <auth-user-pass> block
+    # (see services/link_builder.py's render_ovpn_template) and never
+    # touches the file's own remote/port/cert lines, per the panel owner's
+    # requirement (2026-08-09): the admin's file already knows its servers.
+    # NULL = no template; the OpenVPN share falls back to the plain
+    # server/port/user/pass info text, same as before.
+    ovpn_template = Column(Text, nullable=True)
     # Wholesale price charged to a non-superadmin ADMIN's own credit balance
     # (see AdminUser.balance) when they create a user with this package for
     # their own group - NULL means "same as price" (no discount configured).

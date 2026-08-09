@@ -90,6 +90,23 @@ async def send_connection(bot: Bot, chat_id: int, conn: dict) -> None:
         return
 
     if ctype in ("openvpn", "l2tp", "ikev2", "sstp"):
+        # Ready-to-import .ovpn file: the package's admin-uploaded template
+        # with only this customer's credentials injected (see services/
+        # link_builder.py's render_ovpn_template). When a template exists
+        # the customer needs nothing else - no server/port to type in by
+        # hand - so the credentials text is skipped entirely.
+        ovpn_file = conn.get("ovpn_file")
+        if ctype == "openvpn" and ovpn_file:
+            try:
+                await bot.send_document(
+                    chat_id,
+                    BufferedInputFile(ovpn_file.encode("utf-8"), filename=f"{conn.get('username') or 'openvpn'}.ovpn"),
+                    caption=f"{label} — {status}\n\n📄 فایل کانفیگ آماده - کافیست در اپلیکیشن OpenVPN وارد (Import) کنید.",
+                )
+            except Exception as exc:
+                _log_send_failure(exc, f"send openvpn file {conn.get('id')} to {chat_id}")
+            return
+
         port = conn.get("port") or DEFAULT_PORTS.get(ctype)
         lines = [f"{label} — {status}", ""]
         lines.append(f"سرور: <code>{conn.get('server') or '-'}</code>")

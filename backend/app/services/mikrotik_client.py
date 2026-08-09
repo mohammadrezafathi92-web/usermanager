@@ -268,6 +268,29 @@ class MikrotikClient:
             return rows[0].get("public-key")
         return None
 
+    def get_system_resources(self) -> dict:
+        """Live CPU/RAM/disk/uptime straight from RouterOS's own
+        `/system/resource` - used by the panel's node resource monitor
+        (routers/nodes.py's node_resources)."""
+        rows = list(self._api.path("system", "resource"))
+        if not rows:
+            raise MikrotikError("خروجی /system/resource خالی بود")
+        r = rows[0]
+        total_mem = int(r.get("total-memory") or 0)
+        free_mem = int(r.get("free-memory") or 0)
+        total_hdd = int(r.get("total-hdd-space") or 0)
+        free_hdd = int(r.get("free-hdd-space") or 0)
+        return {
+            "cpu_percent": float(r.get("cpu-load") or 0),
+            "mem_total": total_mem,
+            "mem_used": max(total_mem - free_mem, 0),
+            "disk_total": total_hdd,
+            "disk_used": max(total_hdd - free_hdd, 0),
+            "uptime": str(r.get("uptime") or ""),
+            "board": str(r.get("board-name") or ""),
+            "version": str(r.get("version") or ""),
+        }
+
     # --------------------------------------------------------- kick session
     def kick_ppp_session(self, ppp_username: str) -> bool:
         """Force-closes a currently-open OpenVPN/L2TP/IKEv2/SSTP session by

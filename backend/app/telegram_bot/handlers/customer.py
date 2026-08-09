@@ -787,7 +787,34 @@ async def _advance_purchase_flow(target, state: FSMContext) -> None:
         )
         return
 
+    # 3) optional free-form label for THIS service (models.Purchase.comment)
+    # - only for a NEW purchase (a renewal continues an existing service
+    # that already has, or doesn't need, its own label). Shown next to the
+    # service on the customer's subscription page, so someone buying
+    # several services can tell them apart.
+    if data.get("kind") == "new" and not data.get("comment_step_done"):
+        await state.update_data(comment_step_done=True)
+        await state.set_state(CustomerPurchaseStates.entering_comment)
+        await _reply(
+            target,
+            "📝 می‌خواهید یک نام برای این سرویس بگذارید؟ (مثلا: گوشی خودم، لپ‌تاپ کار)\n\n"
+            "همینجا تایپ کنید یا دکمه رد کردن را بزنید.",
+            promo_skip_kb(),
+        )
+        return
+
     await _show_payment_screen(target, state)
+
+
+@router.callback_query(MenuCB.filter(F.action == "promo_skip"), CustomerPurchaseStates.entering_comment)
+async def skip_comment(call: CallbackQuery, state: FSMContext) -> None:
+    await _advance_purchase_flow(call, state)
+
+
+@router.message(CustomerPurchaseStates.entering_comment, F.text)
+async def enter_comment(message: Message, state: FSMContext) -> None:
+    await state.update_data(comment=message.text.strip()[:255])
+    await _advance_purchase_flow(message, state)
 
 
 @router.callback_query(MenuCB.filter(F.action == "promo_skip"), CustomerPurchaseStates.entering_referral_code)
@@ -978,6 +1005,7 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
             result = await api.purchase_package(
                 target_username, pkg["id"], connections=connections_override,
                 sale_info=_sale_info(data, final_price, "wallet"),
+                comment=data.get("comment"),
             )
             new_connections = result["connections"]
         elif add_gb or add_days:
@@ -1109,6 +1137,7 @@ async def receive_receipt(message: Message, state: FSMContext, bot: Bot) -> None
         final_price=max(0, pkg.get("price", 0) - discount_amount),
         payment_card_id=data.get("payment_card_id"),
         renew_purchase_id=data.get("renew_purchase_id"),
+        comment=data.get("comment"),
     )
     await state.clear()
     await message.answer("✅ رسید شما ثبت شد و برای بررسی ادمین ارسال شد. نتیجه به همین چت اطلاع داده می‌شود.", reply_markup=home_kb())

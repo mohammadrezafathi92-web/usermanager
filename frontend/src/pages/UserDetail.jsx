@@ -29,6 +29,7 @@ import {
   resetPurchaseUsage,
   renewPurchase,
   convertLegacyGroup,
+  updatePurchaseComment,
   fetchSubscriptionLink,
   regenerateSubscriptionLink,
 } from "../api/client.js";
@@ -137,6 +138,21 @@ export default function UserDetail() {
       else next.add(key);
       return next;
     });
+  };
+
+  // Inline edit of a service's free-form label (models.Purchase.comment) -
+  // the customer can also set it themselves at purchase time in the bot;
+  // it shows on their subscription page.
+  const [editingCommentId, setEditingCommentId] = useState(null);
+  const [commentDraft, setCommentDraft] = useState("");
+  const saveComment = async (purchase) => {
+    try {
+      await updatePurchaseComment(user.id, purchase.id, commentDraft.trim() || null);
+      setEditingCommentId(null);
+      load();
+    } catch (err) {
+      setError(err?.response?.data?.detail || "خطا در ذخیره یادداشت");
+    }
   };
 
   const submitConvert = async () => {
@@ -792,6 +808,33 @@ export default function UserDetail() {
                     })}
                   </div>
                 )}
+                <div className="mt-2">
+                  {editingCommentId === purchase.id ? (
+                    <div className="flex gap-2">
+                      <input
+                        className="input flex-1 text-xs"
+                        maxLength={255}
+                        placeholder={t("userDetail.commentPlaceholder")}
+                        value={commentDraft}
+                        onChange={(e) => setCommentDraft(e.target.value)}
+                      />
+                      <button className="btn-primary !py-1 !px-3 text-xs" onClick={() => saveComment(purchase)}>
+                        {t("common.save")}
+                      </button>
+                      <button className="btn-secondary !py-1 !px-3 text-xs" onClick={() => setEditingCommentId(null)}>
+                        {t("common.cancel")}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="text-xs text-gray-400 hover:text-brand-600 transition-colors"
+                      onClick={() => { setEditingCommentId(purchase.id); setCommentDraft(purchase.comment || ""); }}
+                    >
+                      📝 {purchase.comment || t("userDetail.addComment")}
+                    </button>
+                  )}
+                </div>
                 <div className="flex gap-2 mt-3">
                   <button
                     className="btn-secondary flex-1"

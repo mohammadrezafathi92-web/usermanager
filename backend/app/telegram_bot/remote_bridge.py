@@ -236,8 +236,9 @@ class RemoteBridge:
     async def purchase_package(
         self, username: str, package_id: int, connections: Optional[list[dict]] = None,
         owner_admin_id: Optional[int] = None, sale_info: Optional[dict] = None,
+        comment: Optional[str] = None,
     ) -> dict:
-        payload = {"package_id": package_id, "connections": connections or [], **(sale_info or {})}
+        payload = {"package_id": package_id, "connections": connections or [], "comment": comment, **(sale_info or {})}
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         return await self._call("POST", f"/users/{username}/purchase-package", json=payload, params=params)
 

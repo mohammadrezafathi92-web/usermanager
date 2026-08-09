@@ -1089,6 +1089,7 @@ def provision_package_connections(db: Session, user: models.User, package: model
 def apply_package_as_purchase(
     db: Session, user: models.User, package: models.Package,
     connections_override: Optional[list[dict]] = None,
+    comment: Optional[str] = None,
 ) -> models.Purchase:
     """The real, independently-enforced counterpart to
     provision_package_connections above - used by routers/users.py's
@@ -1127,6 +1128,9 @@ def apply_package_as_purchase(
         ),
         max_concurrent_sessions=package.max_concurrent_sessions,
         status=models.UserStatus.active,
+        # Optional customer-written label from the bot's purchase flow -
+        # see models.Purchase.comment.
+        comment=(comment or None),
     )
     db.add(purchase)
     db.flush()  # assigns purchase.id inside this same transaction
@@ -2021,10 +2025,30 @@ def get_connection_share(connection: models.Connection) -> dict:
 
     if connection.type == models.ConnectionType.openvpn:
         text = build_openvpn_config(connection, node)
+        # Ready-made .ovpn file: the package's admin-uploaded template with
+        # ONLY this customer's credentials injected (see link_builder.
+        # render_ovpn_template). Template resolution follows the ownership
+        # chain: this connection's own Purchase's package first, then the
+        # user's create-time package for legacy/shared connections.
+        ovpn_file = None
+        template_pkg = None
+        if connection.purchase and connection.purchase.package:
+            template_pkg = connection.purchase.package
+        elif connection.user and connection.user.package_id:
+            from sqlalchemy.orm import object_session
+            session = object_session(connection)
+            if session is not None:
+                template_pkg = session.get(models.Package, connection.user.package_id)
+        if template_pkg is not None and template_pkg.ovpn_template:
+            from .link_builder import render_ovpn_template
+            ovpn_file = render_ovpn_template(
+                template_pkg.ovpn_template, connection.ppp_username or "", connection.ppp_password or "",
+            )
         return {
             "kind": "openvpn", "link": None, "config_text": text,
             "server": node.mt_endpoint_host, "port": node.mt_ovpn_port or 1194,
             "username": connection.ppp_username, "password": connection.ppp_password, "psk": None,
+            "ovpn_file": ovpn_file,
         }
 
     if connection.type == models.ConnectionType.l2tp:
@@ -2104,6 +2128,10 @@ def build_subscription_connections(user: models.User) -> list[dict]:
             "node_name": conn.node.name if conn.node else None,
             "purchase_batch": conn.purchase_batch,
             "package_name_snapshot": conn.package_name_snapshot,
+            # Customer/admin-written label for the owning service (see
+            # models.Purchase.comment) - lets a customer tell two otherwise
+            # identical services apart on their subscription page.
+            "comment": conn.purchase.comment if conn.purchase else None,
         }
         try:
             item.update(get_connection_share(conn))

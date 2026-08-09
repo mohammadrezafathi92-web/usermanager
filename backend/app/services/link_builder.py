@@ -46,6 +46,34 @@ def _fallback_host(node: models.Node) -> str:
     return node.xr_ssh_host or ""
 
 
+def render_ovpn_template(template: str, username: str, password: str) -> str:
+    """Turns the admin's ready-made .ovpn template (Package.ovpn_template)
+    into a customer-specific file by injecting ONLY their credentials as an
+    inline <auth-user-pass> block (supported by OpenVPN 2.3+ and every
+    common mobile client). The template itself is used verbatim - its own
+    remote/port/cert lines are the admin's business, not the panel's (per
+    the panel owner, 2026-08-09). Any existing `auth-user-pass` directive
+    or previously-inlined block is stripped first so the injected
+    credentials are the only ones in play."""
+    out_lines: list[str] = []
+    in_block = False
+    for line in (template or "").splitlines():
+        stripped = line.strip()
+        if stripped == "<auth-user-pass>":
+            in_block = True
+            continue
+        if stripped == "</auth-user-pass>":
+            in_block = False
+            continue
+        if in_block:
+            continue
+        if stripped == "auth-user-pass" or stripped.startswith("auth-user-pass "):
+            continue
+        out_lines.append(line)
+    body = "\n".join(out_lines).rstrip()
+    return f"{body}\n\n<auth-user-pass>\n{username or ''}\n{password or ''}\n</auth-user-pass>\n"
+
+
 def build_openvpn_config(connection: models.Connection, node: models.Node) -> str:
     """The panel only manages the username/password for OpenVPN (the actual
     .ovpn file needs the router's CA certificate embedded, which the panel

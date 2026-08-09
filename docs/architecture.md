@@ -76,5 +76,8 @@ flowchart TB
 | ربات | `backend/app/telegram_bot/` (handlers، bridges، storage) |
 | RADIUS و پایش | `services/radius_server.py` · `services/quota_manager.py` |
 | نودها | `services/mikrotik_client.py` · `services/xray_client.py` · `services/threexui_client.py` |
+| صفحه ساب مشتری | `routers/subscription.py` · `frontend/src/pages/Subscription.jsx` |
+| قالب OpenVPN پکیج | `services/link_builder.py` (`render_ovpn_template`) · `models.Package.ovpn_template` |
+| مانیتور منابع نودها | `services/node_monitor.py` · `routers/nodes.py` (`/nodes/resources`) |
 | بکاپ/HA | `services/backup.py` |
 | استقرار ربات سرور دوم | `services/remote_deploy.py` · `routers/remote_bot.py` |

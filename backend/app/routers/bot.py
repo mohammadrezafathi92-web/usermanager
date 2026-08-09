@@ -43,6 +43,7 @@ def _connection_info(conn: models.Connection) -> schemas.BotConnectionInfo:
         username=share.get("username"),
         password=share.get("password"),
         psk=share.get("psk"),
+        ovpn_file=share.get("ovpn_file"),
         total_bytes=conn.total_bytes or 0,
         created_at=conn.created_at,
         purchase_batch=conn.purchase_batch,
@@ -451,7 +452,9 @@ def purchase_package(
         [{"node_id": c.node_id, "protocol": c.protocol, "flow": c.flow or ""} for c in payload.connections]
         if payload.connections else None
     )
-    purchase = user_ops.apply_package_as_purchase(db, user, package, connections_override=override)
+    purchase = user_ops.apply_package_as_purchase(
+        db, user, package, connections_override=override, comment=payload.comment,
+    )
     _record_bot_sale(db, "sale_new", payload, user, package, purchase_id=purchase.id)
     db.commit()
     db.refresh(user)

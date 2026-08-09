@@ -29,6 +29,7 @@ const emptyForm = {
   max_concurrent_sessions: "",
   speed_limit_mbps: "",
   custom_message: "",
+  ovpn_template: "",
   connections: [],
 };
 
@@ -101,6 +102,7 @@ export default function Packages() {
       max_concurrent_sessions: pkg.max_concurrent_sessions ?? "",
       speed_limit_mbps: pkg.speed_limit_mbps ?? "",
       custom_message: pkg.custom_message || "",
+      ovpn_template: pkg.ovpn_template || "",
       connections: (pkg.connections || []).map((c) => ({
         node_id: c.node_id,
         protocol: c.protocol,
@@ -478,6 +480,45 @@ export default function Packages() {
               value={form.custom_message}
               onChange={(e) => set("custom_message", e.target.value)}
             />
+          </div>
+
+          {/* Admin's ready-made .ovpn used VERBATIM for this package's
+              OpenVPN services - the panel injects only each customer's own
+              credentials (see services/link_builder.py's
+              render_ovpn_template) and never rewrites remote/port/certs. */}
+          <div className="border-t border-gray-100 pt-3">
+            <label className="block text-sm text-gray-600 mb-1">
+              {t("packages.ovpnTemplateHeading")}
+            </label>
+            <div className="flex items-center gap-2 mb-2">
+              <label className="btn-secondary cursor-pointer">
+                <Paperclip size={14} /> {t("packages.ovpnTemplateUpload")}
+                <input
+                  type="file"
+                  accept=".ovpn,.conf,text/plain"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    set("ovpn_template", await file.text());
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+              {form.ovpn_template && (
+                <button type="button" className="text-xs text-red-500" onClick={() => set("ovpn_template", "")}>
+                  {t("packages.ovpnTemplateClear")}
+                </button>
+              )}
+            </div>
+            <textarea
+              className="input font-mono text-xs"
+              rows={form.ovpn_template ? 8 : 3}
+              placeholder={t("packages.ovpnTemplatePlaceholder")}
+              value={form.ovpn_template}
+              onChange={(e) => set("ovpn_template", e.target.value)}
+            />
+            <div className="text-xs text-gray-400 mt-1">{t("packages.ovpnTemplateHint")}</div>
           </div>
 
           <div className="border-t border-gray-100 pt-3">

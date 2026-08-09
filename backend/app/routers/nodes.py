@@ -91,6 +91,21 @@ def create_node(payload: schemas.NodeCreate, db: Session = Depends(get_db), admi
     return node
 
 
+@router.get("/resources")
+def node_resources(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    """Live CPU/RAM/disk/uptime for every node this admin can see - the
+    «مانیتور منابع» row on the Nodes page (see services/node_monitor.py).
+    Declared BEFORE /{node_id} so the literal path wins the route match.
+    Queried fresh on every call (the frontend polls) - deliberately no
+    caching, these are the live numbers the admin is here to watch."""
+    from ..services import node_monitor
+    allowed = hierarchy.accessible_node_ids(db, admin)
+    q = db.query(models.Node).filter(models.Node.enabled == True)  # noqa: E712
+    if allowed is not None:
+        q = q.filter(models.Node.id.in_(allowed)) if allowed else q.filter(False)
+    return node_monitor.fetch_all(q.all())
+
+
 @router.get("/{node_id}", response_model=schemas.NodeOut)
 def get_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     return _get_scoped_node(db, node_id, admin)

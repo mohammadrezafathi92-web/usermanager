@@ -40,6 +40,15 @@ class PackageCB(CallbackData, prefix="pkg"):
     package_id: int
 
 
+class RenewServiceCB(CallbackData, prefix="rensvc"):
+    # Picks WHICH of the customer's independent services (models.Purchase)
+    # a renewal continues - shown before the package list whenever they
+    # have more than one (see customer.py's cb_renew). Renewal always
+    # extends the SAME service (same connections/credentials, new package
+    # queued behind what's left) - never creates a new one.
+    purchase_id: int
+
+
 class SessionCountCB(CallbackData, prefix="sc"):
     # Picked from the "چند کاربره؟" step shown before the package list when
     # the available packages don't all share one Package.max_concurrent_sessions

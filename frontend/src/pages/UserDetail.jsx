@@ -28,6 +28,7 @@ import {
   applyPackage,
   resetPurchaseUsage,
   renewPurchase,
+  convertLegacyGroup,
   fetchSubscriptionLink,
   regenerateSubscriptionLink,
 } from "../api/client.js";
@@ -71,6 +72,7 @@ function groupConnectionsByPurchase(connections) {
         key,
         connections: [],
         packageName: c.purchase_batch ? c.package_name_snapshot : null,
+        batch: c.purchase_batch || null,
         createdAt: c.created_at || "",
         // Real, independently-enforced quota link (see models.Purchase) -
         // set only for groups created via "افزودن پکیج". Every connection in
@@ -118,6 +120,44 @@ export default function UserDetail() {
   const [subLinkBusy, setSubLinkBusy] = useState(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  // Which service groups' connection cards are expanded - collapsed by
+  // default so a multi-service customer's page stays one screen tall (per
+  // the یوزر منیجر redesign, 2026-08-09).
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set());
+  // Manual conversion of a leftover shared-pool group into an independent
+  // service (see routers/users.py's convert_legacy_group).
+  const [convertGroup, setConvertGroup] = useState(null); // the group being converted
+  const [convertForm, setConvertForm] = useState({ quota_gb: "", expire_days: "", name: "" });
+  const [convertSaving, setConvertSaving] = useState(false);
+
+  const toggleGroup = (key) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const submitConvert = async () => {
+    if (!convertGroup) return;
+    setConvertSaving(true);
+    try {
+      await convertLegacyGroup(user.id, {
+        batch: convertGroup.batch || null,
+        quota_gb: Number(convertForm.quota_gb) || 0,
+        expire_days: convertForm.expire_days ? Number(convertForm.expire_days) : null,
+        name: convertForm.name || convertGroup.packageName || null,
+      });
+      setConvertGroup(null);
+      setConvertForm({ quota_gb: "", expire_days: "", name: "" });
+      load();
+    } catch (err) {
+      setError(err?.response?.data?.detail || "خطا در تبدیل سرویس");
+    } finally {
+      setConvertSaving(false);
+    }
+  };
 
   const [editForm, setEditForm] = useState({
     full_name: "",
@@ -548,6 +588,22 @@ export default function UserDetail() {
     }
   };
 
+  // Redesign (2026-08-09): the header shows NO aggregate quota bar - each
+  // service (Purchase) carries its own bar/expiry below, because averaging
+  // an unlimited package with a 20GB one into one bar is meaningless (the
+  // exact confusion the old layout caused). These are the header's
+  // informational summary numbers only.
+  const purchasesList = user.purchases || [];
+  const legacyConns = (user.connections || []).filter((c) => !c.purchase_id);
+  const hasShared = legacyConns.length > 0;
+  const totalUsageInfo = (user.connections || []).reduce((s, c) => s + (c.total_bytes || 0), 0);
+  const expiryCandidates = [
+    ...purchasesList.map((p) => p.expire_at).filter(Boolean),
+    ...(hasShared && user.expire_at ? [user.expire_at] : []),
+  ];
+  const nearestExpiry = expiryCandidates.length ? expiryCandidates.reduce((a, b) => (a < b ? a : b)) : null;
+  const serviceCount = purchasesList.length + (hasShared ? 1 : 0);
+
   return (
     <Layout>
       <button onClick={() => navigate("/users")} className="flex items-center gap-1 text-sm text-gray-400 hover:text-gray-600 mb-4">
@@ -559,32 +615,32 @@ export default function UserDetail() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
         <div className="card lg:col-span-2">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="font-bold text-gray-700">{t("userDetail.usageHeading")}</h3>
+            <h3 className="font-bold text-gray-700">{t("userDetail.overviewHeading")}</h3>
             <span className={`badge ${STATUS_STYLES[user.status]}`}>{statusLabel(user.status, language)}</span>
           </div>
-          <QuotaBar used={user.used_bytes} total={user.total_quota_bytes} />
-          <div className="text-xs text-gray-400 mt-2">
-            {t("userDetail.remaining", { value: user.total_quota_bytes ? formatBytes(Math.max(user.total_quota_bytes - user.used_bytes, 0)) : t("userDetail.unlimited") })}
+          {/* No aggregate quota bar on purpose - each service below has its
+              own independent bar (see the redesign note above `return`). */}
+          <div className="flex flex-wrap gap-2">
+            <span className="badge bg-gray-50 text-gray-600 dark:bg-slate-800 dark:text-gray-300">
+              {t("userDetail.serviceCount", { count: serviceCount })}
+            </span>
+            <span className="badge bg-gray-50 text-gray-600 dark:bg-slate-800 dark:text-gray-300">
+              {t("userDetail.totalUsageInfo", { value: formatBytes(totalUsageInfo) })}
+            </span>
+            <span className="badge bg-gray-50 text-gray-600 dark:bg-slate-800 dark:text-gray-300">
+              {t("userDetail.nearestExpiry", { value: nearestExpiry ? formatDateTime(nearestExpiry, language) : t("userDetail.noExpiry") })}
+            </span>
+            <span className="badge bg-gray-50 text-gray-600 dark:bg-slate-800 dark:text-gray-300">
+              {t("userDetail.balance", { value: (user.balance || 0).toLocaleString() })}
+            </span>
+            {isSuperadmin && (
+              <span className="badge bg-gray-50 text-gray-600 dark:bg-slate-800 dark:text-gray-300">
+                {t("userDetail.ownerAdmin", { value: user.owner_admin_username || t("userDetail.noAdmin") })}
+              </span>
+            )}
           </div>
-          <div className="text-xs text-gray-400 mt-1">
-            {t("userDetail.expiry", {
-              value: user.expire_days_after_first_use
-                ? t("userDetail.expiryFirstUse", { days: user.expire_days_after_first_use })
-                : user.expire_at
-                ? formatDateTime(user.expire_at, language)
-                : t("userDetail.noExpiry"),
-            })}
-          </div>
-          <div className="text-xs text-gray-400 mt-1">
-            {t("userDetail.balance", { value: (user.balance || 0).toLocaleString() })}
-          </div>
-          {isSuperadmin && (
-            <div className="text-xs text-gray-400 mt-1">
-              {t("userDetail.ownerAdmin", { value: user.owner_admin_username || t("userDetail.noAdmin") })}
-            </div>
-          )}
           {(user.reserved_quota_bytes || user.reserved_duration_days) && (
-            <div className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mt-2">
+            <div className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mt-3">
               ⏳ {t("userDetail.reservedRenewal", {
                 value: [
                   user.reserved_quota_bytes ? formatBytes(user.reserved_quota_bytes) : null,
@@ -598,9 +654,13 @@ export default function UserDetail() {
           <button className="btn-secondary" onClick={() => setEditOpen(true)}>
             {t("userDetail.editQuota")}
           </button>
-          <button className="btn-primary" onClick={openRenew}>
-            <RefreshCw size={14} /> {t("userDetail.quickRenew")}
-          </button>
+          {hasShared ? (
+            <button className="btn-primary" onClick={openRenew}>
+              <RefreshCw size={14} /> {t("userDetail.quickRenew")}
+            </button>
+          ) : (
+            <div className="text-xs text-gray-400 text-center">{t("userDetail.renewPerServiceHint")}</div>
+          )}
         </div>
       </div>
 
@@ -661,6 +721,9 @@ export default function UserDetail() {
           // time) has no matching entry here and keeps showing only the
           // package-name header, exactly as before.
           const purchase = group.purchaseId ? (user.purchases || []).find((p) => p.id === group.purchaseId) : null;
+          const isExpanded = expandedGroups.has(group.key);
+          const groupUsage = group.connections.reduce((s, c) => s + (c.total_bytes || 0), 0);
+          const groupOnline = group.connections.filter((c) => c.online).length;
           return (
           <div key={group.key}>
             {group.packageName && (
@@ -672,6 +735,28 @@ export default function UserDetail() {
                     {t("userDetail.purchasedAt", { value: formatDateTime(group.createdAt, language) })}
                   </span>
                 )}
+              </div>
+            )}
+            {!purchase && (
+              /* Leftover shared-pool group (the automatic migration
+                 couldn't identify its package - see services/
+                 purchase_migration.py rule 3): governed by the user's
+                 combined quota, shown honestly as such, with a manual
+                 convert action. */
+              <div className="card mb-3 border-r-2 border-amber-300">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-semibold text-amber-700">{t("userDetail.sharedPoolHeading")}</h4>
+                  <button className="btn-secondary !py-1 !px-3 text-xs" onClick={() => { setConvertGroup(group); setConvertForm({ quota_gb: "", expire_days: "", name: group.packageName || "" }); }}>
+                    {t("userDetail.convertToService")}
+                  </button>
+                </div>
+                <QuotaBar used={user.used_bytes} total={user.total_quota_bytes} />
+                <div className="text-xs text-gray-400 mt-2">
+                  {t("userDetail.remaining", { value: user.total_quota_bytes ? formatBytes(Math.max(user.total_quota_bytes - user.used_bytes, 0)) : t("userDetail.unlimited") })}
+                  {" · "}
+                  {t("userDetail.expiry", { value: user.expire_at ? formatDateTime(user.expire_at, language) : t("userDetail.noExpiry") })}
+                </div>
+                <div className="text-xs text-gray-400 mt-1">{t("userDetail.sharedPoolHint")}</div>
               </div>
             )}
             {purchase && (
@@ -721,6 +806,18 @@ export default function UserDetail() {
                 </div>
               </div>
             )}
+            <button
+              type="button"
+              onClick={() => toggleGroup(group.key)}
+              className="w-full flex items-center justify-between card !py-2.5 mb-3 text-sm text-gray-500 hover:text-brand-600 transition-colors"
+            >
+              <span>
+                {t("userDetail.connectionsSummary", { count: group.connections.length, usage: formatBytes(groupUsage) })}
+                {groupOnline > 0 && <span className="text-emerald-500"> · {t("userDetail.onlineCount", { count: groupOnline })}</span>}
+              </span>
+              <span className="text-xs">{isExpanded ? "▲ " + t("userDetail.collapseConnections") : "▼ " + t("userDetail.expandConnections")}</span>
+            </button>
+            {isExpanded && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {group.connections.map((c) => {
                 const meta = TYPE_META[c.type] || TYPE_META.xray;
@@ -822,6 +919,7 @@ export default function UserDetail() {
                 );
               })}
             </div>
+            )}
           </div>
           );
         })}
@@ -829,6 +927,29 @@ export default function UserDetail() {
           <div className="card text-center text-gray-400 py-10">{t("userDetail.noConnections")}</div>
         )}
       </div>
+
+      {/* Manual conversion of a leftover shared-pool group into its own
+          independent service (see routers/users.py's convert_legacy_group). */}
+      <Modal open={!!convertGroup} onClose={() => setConvertGroup(null)} title={t("userDetail.convertToService")}>
+        <div className="space-y-3">
+          <div className="text-xs text-gray-400">{t("userDetail.convertHint")}</div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("userDetail.convertName")}</label>
+            <input className="input w-full" value={convertForm.name} onChange={(e) => setConvertForm({ ...convertForm, name: e.target.value })} />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("userDetail.convertQuota")}</label>
+            <input type="number" min="0" className="input w-full" value={convertForm.quota_gb} onChange={(e) => setConvertForm({ ...convertForm, quota_gb: e.target.value })} />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("userDetail.convertDays")}</label>
+            <input type="number" min="0" className="input w-full" value={convertForm.expire_days} onChange={(e) => setConvertForm({ ...convertForm, expire_days: e.target.value })} />
+          </div>
+          <button className="btn-primary w-full" disabled={convertSaving} onClick={submitConvert}>
+            {convertSaving ? "..." : t("userDetail.convertSubmit")}
+          </button>
+        </div>
+      </Modal>
 
       {limitLogs.length > 0 && (
         <div className="card mt-4">

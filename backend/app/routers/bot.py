@@ -8,6 +8,7 @@ telegram_bot/remote_bridge.py + services/remote_deploy.py) when the admin
 chooses to run the interactive Telegram bot on a second server instead of
 in-process here - same endpoints, same X-API-Key auth, just reached over
 the network instead of in-process."""
+import datetime as dt
 import os
 import uuid
 from typing import Optional
@@ -619,12 +620,69 @@ def add_connection(
     return _connection_info(conn)
 
 
+@router.get("/users/{username}/purchases", response_model=list[schemas.BotPurchaseInfo])
+def list_user_purchases(username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None):
+    """The customer's independently-tracked services, for the bot's
+    «کدام سرویس را تمدید می‌کنید؟» picker (renewal always continues one
+    SPECIFIC existing service - see renew_service below)."""
+    user = _get_user_or_404(db, username, owner_admin_id)
+    out = []
+    for p in sorted(user.purchases, key=lambda p: p.created_at or dt.datetime.min, reverse=True):
+        info = schemas.BotPurchaseInfo.model_validate(p)
+        info.connection_count = len(p.connections)
+        out.append(info)
+    return out
+
+
+@router.post("/users/{username}/purchases/{purchase_id}/renew", response_model=schemas.BotUserResponse)
+def renew_service(
+    username: str, purchase_id: int, payload: schemas.BotRenewRequest,
+    db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
+):
+    """Renews ONE specific service: same connections/credentials, the new
+    package queued (reserved) behind whatever the service has left and
+    auto-activated the moment it runs out - or applied immediately if the
+    service is already exhausted (see user_ops.renew_purchase). Never
+    creates anything new - renewal means CONTINUING the same service, per
+    the panel owner's definition (2026-08-09)."""
+    user = _get_user_or_404(db, username, owner_admin_id)
+    purchase = db.get(models.Purchase, purchase_id)
+    if not purchase or purchase.user_id != user.id:
+        raise HTTPException(404, "سرویس پیدا نشد")
+    user_ops.renew_purchase(db, purchase, payload.add_gb, payload.add_days, payload.reset_usage, package_id=payload.package_id)
+    if payload.package_id or payload.paid_amount is not None:
+        package = db.get(models.Package, payload.package_id) if payload.package_id else None
+        _record_bot_sale(db, "sale_renew", payload, user, package, purchase_id=purchase.id)
+        db.commit()
+    db.refresh(user)
+    db.refresh(purchase)
+    out = _user_response(user)
+    # Surface THIS purchase's queued-renewal state in the user-level
+    # reserved fields the bot's confirmation messages already read - the
+    # user-level ones are always empty post-migration, which would make a
+    # queued renewal read as an instant one.
+    if purchase.reserved_quota_bytes or purchase.reserved_duration_days:
+        out.reserved_quota_gb = (purchase.reserved_quota_bytes / (1024 ** 3)) if purchase.reserved_quota_bytes else None
+        out.reserved_duration_days = purchase.reserved_duration_days
+    return out
+
+
 @router.post("/users/{username}/renew", response_model=schemas.BotUserResponse)
 def renew(
     username: str, payload: schemas.BotRenewRequest, db: Session = Depends(get_db),
     owner_admin_id: Optional[int] = None,
 ):
     user = _get_user_or_404(db, username, owner_admin_id)
+    # Post-migration (services/purchase_migration.py) the user-level pool
+    # governs nothing for a fully-converted customer - a renewal landing
+    # here (old bot build, or a flow that didn't pick a service) would
+    # write to dead fields. If the customer has exactly one service, the
+    # intent is unambiguous: renew THAT service. With several services the
+    # bot's picker flow (renew_service above) should have been used; only
+    # then fall back to the legacy user-level behavior.
+    legacy_conns = [c for c in user.connections if c.purchase_id is None]
+    if not legacy_conns and len(user.purchases) == 1:
+        return renew_service(username, user.purchases[0].id, payload, db=db, owner_admin_id=owner_admin_id)
     user_ops.renew_user(db, user, payload.add_gb, payload.add_days, payload.reset_usage, package_id=payload.package_id)
     # Accounting: only a package-based renewal (or one where the bot sent
     # the exact paid amount) is a paid event - a bare reset_usage or manual

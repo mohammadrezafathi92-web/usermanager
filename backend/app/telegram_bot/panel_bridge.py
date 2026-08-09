@@ -324,6 +324,26 @@ class PanelBridge:
         payload = schemas.BotRecordCardPaymentRequest(amount=amount)
         await _call(bot_router.record_payment_card_use, card_id, payload)
 
+    async def list_purchases(self, username: str, owner_admin_id: Optional[int] = None) -> list[dict]:
+        """The customer's independently-tracked services - used by the
+        renewal flow's «کدام سرویس؟» picker (see routers/bot.py's
+        list_user_purchases)."""
+        return _dump(await _call(bot_router.list_user_purchases, username, owner_admin_id=_scope(owner_admin_id))) or []
+
+    async def renew_service(
+        self, username: str, purchase_id: int, add_gb: float = 0, add_days: int = 0,
+        reset_usage: bool = False, owner_admin_id: Optional[int] = None,
+        package_id: Optional[int] = None, sale_info: Optional[dict] = None,
+    ) -> dict:
+        """Renews ONE specific service (same connections/credentials, new
+        package queued behind what's left) - see routers/bot.py's
+        renew_service."""
+        payload = schemas.BotRenewRequest(
+            add_gb=add_gb, add_days=add_days, reset_usage=reset_usage, package_id=package_id,
+            **(sale_info or {}),
+        )
+        return _dump(await _call(bot_router.renew_service, username, purchase_id, payload, owner_admin_id=_scope(owner_admin_id)))
+
     async def renew(
         self, username: str, add_gb: float = 0, add_days: int = 0, reset_usage: bool = False,
         owner_admin_id: Optional[int] = None, package_id: Optional[int] = None,

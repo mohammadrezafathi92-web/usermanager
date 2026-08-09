@@ -1,10 +1,10 @@
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from ..panel_bridge import api, ApiError
-from ..callbacks import MenuCB, PackageCB, SessionCountCB, NodeCB, ProtocolCB, TopupAmountCB, PayCB, ConnectionCB, PurchaseCB, SwitchAccountCB
+from ..callbacks import MenuCB, PackageCB, SessionCountCB, NodeCB, ProtocolCB, TopupAmountCB, PayCB, ConnectionCB, PurchaseCB, SwitchAccountCB, RenewServiceCB
 from ..config import config
 from ..admin_scope import resolve_admin_scope
 from ..keyboards import (
@@ -679,6 +679,51 @@ async def cb_renew(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer("ابتدا باید یک حساب داشته باشید یا حساب قبلی را وصل کنید.", show_alert=True)
         return
     await state.update_data(target_username=account["username"])
+
+    # تمدید = ادامه‌ی همان سرویس قبلی (same connections/credentials, new
+    # package queued behind what's left - see routers/bot.py's
+    # renew_service). If the customer has several independent services,
+    # they pick WHICH one they're renewing before seeing the package list;
+    # with exactly one it's auto-targeted; with none (pre-migration edge
+    # case) the old user-level renew still applies server-side.
+    try:
+        purchases = await api.list_purchases(account["username"])
+    except ApiError:
+        purchases = []
+    if len(purchases) >= 2:
+        await state.update_data(renew_purchases={str(p["id"]): p for p in purchases})
+        await state.set_state(CustomerPurchaseStates.picking_service)
+        rows = []
+        for p in purchases:
+            name = p.get("package_name_snapshot") or "سرویس"
+            if p.get("quota_bytes"):
+                remaining = max(0, (p["quota_bytes"] - (p.get("used_bytes") or 0))) / (1024 ** 3)
+                detail = f"{remaining:.1f} GB مانده"
+            else:
+                detail = "نامحدود"
+            rows.append([InlineKeyboardButton(
+                text=f"{name} · {detail}",
+                callback_data=RenewServiceCB(purchase_id=p["id"]).pack(),
+            )])
+        await call.message.edit_text(
+            "کدام سرویس را می‌خواهید تمدید کنید؟",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        )
+        await call.answer()
+        return
+    if len(purchases) == 1:
+        await state.update_data(renew_purchase_id=purchases[0]["id"])
+    await _start_package_picker(call, state, "renew")
+
+
+@router.callback_query(RenewServiceCB.filter(), CustomerPurchaseStates.picking_service)
+async def pick_renew_service(call: CallbackQuery, callback_data: RenewServiceCB, state: FSMContext) -> None:
+    data = await state.get_data()
+    p = (data.get("renew_purchases") or {}).get(str(callback_data.purchase_id))
+    if not p:
+        await call.answer("سرویس پیدا نشد", show_alert=True)
+        return
+    await state.update_data(renew_purchase_id=callback_data.purchase_id)
     await _start_package_picker(call, state, "renew")
 
 
@@ -936,10 +981,21 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
             )
             new_connections = result["connections"]
         elif add_gb or add_days:
-            await api.renew(
-                target_username, add_gb=add_gb, add_days=add_days, package_id=pkg.get("id"),
-                sale_info=_sale_info(data, final_price, "wallet"),
-            )
+            # تمدید = ادامه‌ی همان سرویس انتخاب‌شده (renew_purchase_id از
+            # مرحله «کدام سرویس؟») - fallback to the user-level endpoint
+            # only when no specific service was picked, where the server
+            # itself auto-targets a single-service customer.
+            if data.get("renew_purchase_id"):
+                await api.renew_service(
+                    target_username, data["renew_purchase_id"],
+                    add_gb=add_gb, add_days=add_days, package_id=pkg.get("id"),
+                    sale_info=_sale_info(data, final_price, "wallet"),
+                )
+            else:
+                await api.renew(
+                    target_username, add_gb=add_gb, add_days=add_days, package_id=pkg.get("id"),
+                    sale_info=_sale_info(data, final_price, "wallet"),
+                )
         user = await api.get_user(target_username)
     except ApiError as exc:
         # Provisioning failed after the debit already went through - refund
@@ -1052,6 +1108,7 @@ async def receive_receipt(message: Message, state: FSMContext, bot: Bot) -> None
         discount_amount=discount_amount,
         final_price=max(0, pkg.get("price", 0) - discount_amount),
         payment_card_id=data.get("payment_card_id"),
+        renew_purchase_id=data.get("renew_purchase_id"),
     )
     await state.clear()
     await message.answer("✅ رسید شما ثبت شد و برای بررسی ادمین ارسال شد. نتیجه به همین چت اطلاع داده می‌شود.", reply_markup=home_kb())

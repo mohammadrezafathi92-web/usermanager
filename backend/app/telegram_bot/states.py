@@ -22,6 +22,8 @@ class CustomerLinkStates(StatesGroup):
 
 
 class CustomerPurchaseStates(StatesGroup):
+    picking_service = State()   # RenewServiceCB callback expected - renewals only, and only
+                                # when the customer has 2+ independent services to choose from
     picking_session_count = State()  # SessionCountCB callback expected - only shown when
                                       # the available packages don't all share one concurrent-
                                       # session limit (see customer.py's _start_package_picker)

@@ -244,6 +244,19 @@ class RemoteBridge:
     async def record_card_payment(self, card_id: int, amount: int) -> None:
         await self._call("POST", f"/payment-cards/{card_id}/record-payment", json={"amount": amount})
 
+    async def list_purchases(self, username: str, owner_admin_id: Optional[int] = None) -> list[dict]:
+        params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
+        return await self._call("GET", f"/users/{username}/purchases", params=params)
+
+    async def renew_service(
+        self, username: str, purchase_id: int, add_gb: float = 0, add_days: int = 0,
+        reset_usage: bool = False, owner_admin_id: Optional[int] = None,
+        package_id: Optional[int] = None, sale_info: Optional[dict] = None,
+    ) -> dict:
+        payload = {"add_gb": add_gb, "add_days": add_days, "reset_usage": reset_usage, "package_id": package_id, **(sale_info or {})}
+        params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
+        return await self._call("POST", f"/users/{username}/purchases/{purchase_id}/renew", json=payload, params=params)
+
     async def renew(
         self, username: str, add_gb: float = 0, add_days: int = 0, reset_usage: bool = False,
         owner_admin_id: Optional[int] = None, package_id: Optional[int] = None,

@@ -236,10 +236,22 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
                 from .customer import _loyalty_reward_text  # local import avoids a circular import at module load
                 customer_msg += "\n\n" + _loyalty_reward_text(user)
         elif pending["kind"] == "renew":
-            user = await api.renew(
-                pending["target_username"], add_gb=pending["quota_gb"], add_days=pending["duration_days"],
-                package_id=(pkg or {}).get("id"), sale_info=sale_info,
-            )
+            # تمدید = ادامه‌ی همان سرویسی که مشتری در مرحله «کدام سرویس؟»
+            # انتخاب کرد (renew_purchase_id) - the fallback endpoint below
+            # auto-targets a single-service customer server-side, so only a
+            # multi-service customer on a pre-picker request lands on the
+            # legacy user-level behavior.
+            if pending.get("renew_purchase_id"):
+                user = await api.renew_service(
+                    pending["target_username"], pending["renew_purchase_id"],
+                    add_gb=pending["quota_gb"], add_days=pending["duration_days"],
+                    package_id=(pkg or {}).get("id"), sale_info=sale_info,
+                )
+            else:
+                user = await api.renew(
+                    pending["target_username"], add_gb=pending["quota_gb"], add_days=pending["duration_days"],
+                    package_id=(pkg or {}).get("id"), sale_info=sale_info,
+                )
             if pending.get("discount_code"):
                 try:
                     await api.redeem_discount(pending["discount_code"], pending["target_username"], pending["price"])

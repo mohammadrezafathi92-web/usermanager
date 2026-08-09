@@ -308,3 +308,7 @@ export const createAccountingExpense = (data) => client.post("/accounting/expens
 export const deleteAccountingExpense = (id) => client.delete(`/accounting/expenses/${id}`);
 export const exportAccounting = (params = {}) =>
   client.get("/accounting/export", { params, responseType: "blob" });
+
+// Converts a leftover shared-pool connection group into an independent
+// Purchase (see routers/users.py's convert_legacy_group).
+export const convertLegacyGroup = (userId, data) => client.post(`/users/${userId}/legacy-groups/convert`, data);

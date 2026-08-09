@@ -860,6 +860,44 @@ def renew_purchase_endpoint(
     )
 
 
+@router.post("/{user_id}/legacy-groups/convert", response_model=schemas.PurchaseOut)
+def convert_legacy_group(
+    user_id: int,
+    payload: schemas.LegacyGroupConvertRequest,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+):
+    """Manually converts one leftover shared-pool connection group (one the
+    automatic migration couldn't identify a package for - see
+    services/purchase_migration.py rule 3) into an independent Purchase
+    with the admin-supplied quota/expiry. `batch` is the group's
+    Connection.purchase_batch, or null for the batch-less base group."""
+    import datetime as _dt
+    user = _get_owned_user(db, admin, user_id)
+    conns = [
+        c for c in user.connections
+        if c.purchase_id is None and (c.purchase_batch or None) == (payload.batch or None)
+    ]
+    if not conns:
+        raise HTTPException(404, "گروه اشتراکی پیدا نشد (شاید قبلاً تبدیل شده)")
+    purchase = models.Purchase(
+        user_id=user.id,
+        package_name_snapshot=payload.name or next((c.package_name_snapshot for c in conns), None),
+        quota_bytes=user_ops.gb_to_bytes(payload.quota_gb) if payload.quota_gb else 0,
+        used_bytes=sum(c.total_bytes or 0 for c in conns),
+        expire_at=(_dt.datetime.utcnow() + _dt.timedelta(days=payload.expire_days)) if payload.expire_days else None,
+        status=models.UserStatus.active,
+        created_at=min((c.created_at for c in conns if c.created_at), default=_dt.datetime.utcnow()),
+    )
+    db.add(purchase)
+    db.flush()
+    for c in conns:
+        c.purchase_id = purchase.id
+    db.commit()
+    db.refresh(purchase)
+    return purchase
+
+
 @router.put("/{user_id}/connections/{connection_id}", response_model=schemas.ConnectionOut)
 def update_connection(
     user_id: int,

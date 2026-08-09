@@ -1207,6 +1207,10 @@ class PanelSettings(Base):
     # copied into the accounting ledger once, so a restart never
     # double-imports them.
     accounting_backfilled = Column(Boolean, nullable=False, default=False)
+    # One-shot guard for services/purchase_migration.py - flipped to True
+    # after legacy shared-pool connection groups have been converted into
+    # independent Purchases once (see that module's docstring).
+    legacy_purchases_migrated = Column(Boolean, nullable=False, default=False)
 
 
 class PaymentCard(Base):

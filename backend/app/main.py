@@ -17,6 +17,7 @@ from .services.notify import run_daily_notify_job
 from .services.backup import run_scheduled_backup, ha_healthcheck, ha_pull_and_apply, notify_admins_text
 from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, tutorials, backup, remote_bot, admins, radius_logs, discount_codes, subscription, accounting as accounting_router
 from .services import accounting as accounting_service
+from .services import purchase_migration
 from .telegram_bot import runner as telegram_bot_runner
 from .telegram_bot.config import parse_id_set
 
@@ -327,6 +328,18 @@ def on_startup():
             logging.info("حساب‌داری: %s رکورد تاریخی به دفتر کل منتقل شد", imported)
     except Exception:
         logging.exception("خطا در انتقال تاریخچه مالی به دفتر کل حساب‌داری")
+    finally:
+        db.close()
+
+    # One-time conversion of legacy shared-pool services into independent
+    # Purchases (see services/purchase_migration.py's docstring).
+    db = SessionLocal()
+    try:
+        converted, skipped = purchase_migration.migrate_if_needed(db)
+        if converted or skipped:
+            logging.info("مهاجرت سرویس‌ها: %s تبدیل شد، %s اشتراکی ماند", converted, skipped)
+    except Exception:
+        logging.exception("خطا در مهاجرت سرویس‌های قدیمی به Purchase مستقل")
     finally:
         db.close()
 

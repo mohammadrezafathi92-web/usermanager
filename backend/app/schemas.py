@@ -1532,3 +1532,33 @@ class ExpenseCreate(BaseModel):
     # Optional historical date (e.g. entering last month's server invoice) -
     # defaults to "now" server-side when omitted.
     created_at: Optional[dt.datetime] = None
+
+
+# ---------- Bot: per-service (Purchase) renewal ----------
+class BotPurchaseInfo(BaseModel):
+    """One independently-tracked service of a customer, as shown in the
+    bot's «کدام سرویس را تمدید می‌کنید؟» picker (see telegram_bot/handlers/
+    customer.py's renewal flow) - renewal always continues the SAME service
+    (same connections/credentials) by queueing a new package on it, never
+    creating a new one."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    package_name_snapshot: Optional[str] = None
+    quota_bytes: int = 0  # 0 == unlimited
+    used_bytes: int = 0
+    expire_at: Optional[dt.datetime] = None
+    status: UserStatus
+    reserved_quota_bytes: Optional[int] = None
+    reserved_duration_days: Optional[int] = None
+    created_at: dt.datetime
+    connection_count: int = 0
+
+
+class LegacyGroupConvertRequest(BaseModel):
+    """Manual conversion of a leftover shared-pool connection group into an
+    independent Purchase (see routers/users.py's convert_legacy_group)."""
+    batch: Optional[str] = None  # Connection.purchase_batch; null = base group
+    quota_gb: float = 0  # 0 = unlimited
+    expire_days: Optional[int] = None  # None = never expires
+    name: Optional[str] = None  # display name for the service

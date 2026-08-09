@@ -55,6 +55,12 @@ _NEW_COLUMNS = {
     # Read back by admin_pending.py once the request is approved, to credit
     # the right card's accumulated_amount for "threshold" mode.
     "payment_card_id": "INTEGER",
+    # For kind='renew': WHICH of the customer's independent services this
+    # renewal continues (models.Purchase id, picked in the bot's «کدام
+    # سرویس؟» step). NULL = customer had one/no service at request time -
+    # the approval falls back to routers/bot.py renew()'s single-service
+    # auto-target.
+    "renew_purchase_id": "INTEGER",
 }
 
 
@@ -95,6 +101,7 @@ def create_pending(
     discount_amount: int = 0,
     final_price: Optional[int] = None,
     payment_card_id: Optional[int] = None,
+    renew_purchase_id: Optional[int] = None,
 ) -> int:
     with _conn() as conn:
         cur = conn.execute(
@@ -102,8 +109,8 @@ def create_pending(
                (telegram_id, telegram_username, telegram_name, kind, package_id, package_name,
                 quota_gb, duration_days, price, node_id, node_name, protocol, target_username,
                 receipt_file_id, created_at, referral_code, discount_code, discount_amount, final_price,
-                payment_card_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                payment_card_id, renew_purchase_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 telegram_id,
                 telegram_username,
@@ -125,6 +132,7 @@ def create_pending(
                 discount_amount or 0,
                 final_price if final_price is not None else package.get("price", 0),
                 payment_card_id,
+                renew_purchase_id,
             ),
         )
         return cur.lastrowid

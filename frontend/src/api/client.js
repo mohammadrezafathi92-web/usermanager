@@ -318,3 +318,6 @@ export const fetchNodeResources = () => client.get("/nodes/resources");
 // Admin-side edit of a service's free-form label (models.Purchase.comment).
 export const updatePurchaseComment = (userId, purchaseId, comment) =>
   client.put(`/users/${userId}/purchases/${purchaseId}/comment`, { comment });
+// Re-pushes every stored Xray client back onto a node with its original
+// uuid - recovery after the node's panel was wiped/reinstalled.
+export const rebuildNodeClients = (id) => client.post(`/nodes/${id}/rebuild-clients`);

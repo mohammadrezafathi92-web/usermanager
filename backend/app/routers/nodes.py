@@ -341,6 +341,64 @@ def import_usermanager_users(node_id: int, db: Session = Depends(get_db), admin:
     return user_ops.import_usermanager_accounts(db, node, admin)
 
 
+@router.post("/{node_id}/rebuild-clients", response_model=schemas.PppImportResult)
+def rebuild_node_clients(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+    """Re-pushes every Xray connection this panel has stored for the node
+    back ONTO the node - the recovery path after the node's panel was
+    wiped/reinstalled (e.g. clearing a 3X-UI whose logs filled the router's
+    storage, 2026-08-09).
+
+    Crucially each client is recreated with its ORIGINAL uuid/email/flow
+    from our database, so every customer's already-delivered vless:// link
+    and subscription entry keeps working untouched - a plain reinstall
+    would otherwise mean re-issuing configs to everyone.
+
+    Clients already present on the node are left alone, so this is safe to
+    run repeatedly (and safe to run on a node that was only partially
+    wiped)."""
+    node = _get_scoped_node(db, node_id, admin)
+    if node.type != models.NodeType.xray:
+        raise HTTPException(400, "این عملیات فقط برای نودهای Xray/V2Ray است")
+
+    conns = [c for c in node.connections if c.type == models.ConnectionType.xray]
+    imported: list[str] = []
+    skipped: list[schemas.PppImportSkipped] = []
+    try:
+        with client_for_node(node) as xc:
+            # Only the 3X-UI client can enumerate what's already there; the
+            # SSH-managed one has no such call, but ITS add_client already
+            # replaces any same-email entry in config.json, so re-adding is
+            # harmless there either way.
+            existing = (
+                {c.get("email") for c in xc.list_clients_with_usage()}
+                if hasattr(xc, "list_clients_with_usage") else set()
+            )
+            for conn in conns:
+                if not conn.xr_email or not conn.xr_uuid:
+                    skipped.append(schemas.PppImportSkipped(
+                        name=conn.xr_email or f"#{conn.id}", reason="شناسه/ایمیل ذخیره‌شده ندارد",
+                    ))
+                    continue
+                if conn.xr_email in existing:
+                    skipped.append(schemas.PppImportSkipped(name=conn.xr_email, reason="از قبل روی نود هست"))
+                    continue
+                try:
+                    xc.add_client(
+                        node.xr_inbound_tag, conn.xr_email,
+                        client_uuid=conn.xr_uuid, flow=conn.xr_flow or "",
+                    )
+                    imported.append(conn.xr_email)
+                except XrayError as exc:
+                    skipped.append(schemas.PppImportSkipped(name=conn.xr_email, reason=str(exc)))
+    except XrayError as exc:
+        raise HTTPException(400, str(exc))
+
+    return schemas.PppImportResult(
+        imported=imported, imported_count=len(imported),
+        skipped=skipped, skipped_count=len(skipped),
+    )
+
+
 @router.post("/{node_id}/import-3xui-clients", response_model=schemas.PppImportResult)
 def import_3xui_clients(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
     """Reads clients that already exist on the 3X-UI panel's configured

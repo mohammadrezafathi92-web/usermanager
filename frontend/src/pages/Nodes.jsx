@@ -3,7 +3,7 @@ import { Plus, Trash2, Pencil, Wifi, Globe, PlugZap, CheckCircle2, XCircle, Powe
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
-import { fetchNodes, fetchNodeResources, createNode, updateNode, deleteNode, testNode, pushRadiusConfig, pushSstpConfig, pushL2tpConfig, pushIkev2Config, importPppUsers, importUserManagerUsers, import3xuiClients } from "../api/client.js";
+import { fetchNodes, fetchNodeResources, createNode, updateNode, deleteNode, testNode, pushRadiusConfig, pushSstpConfig, pushL2tpConfig, pushIkev2Config, importPppUsers, importUserManagerUsers, import3xuiClients, rebuildNodeClients } from "../api/client.js";
 import { formatDateTime } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
@@ -259,6 +259,25 @@ export default function Nodes() {
       setXuiImportStatus("done");
     } catch (err) {
       setXuiImportStatus(err?.response?.data?.detail || t("nodes.importError"));
+    }
+  };
+
+  // Recovery after the node's own panel was wiped/reinstalled: re-push
+  // every stored client with its ORIGINAL uuid, so customers' existing
+  // configs keep working (see routers/nodes.py's rebuild_node_clients).
+  const [rebuildStatus, setRebuildStatus] = useState(null);
+  const [rebuildResult, setRebuildResult] = useState(null);
+  const onRebuildClients = async () => {
+    if (!editingId) return;
+    if (!confirm(t("nodes.rebuildConfirm"))) return;
+    setRebuildStatus("loading");
+    setRebuildResult(null);
+    try {
+      const res = await rebuildNodeClients(editingId);
+      setRebuildResult(res.data);
+      setRebuildStatus("done");
+    } catch (err) {
+      setRebuildStatus(err?.response?.data?.detail || t("nodes.importError"));
     }
   };
 
@@ -861,6 +880,29 @@ export default function Nodes() {
                       )}
                       {typeof xuiImportStatus === "string" && xuiImportStatus !== "loading" && xuiImportStatus !== "done" && (
                         <div className="text-xs mt-2 text-red-500">{xuiImportStatus}</div>
+                      )}
+                    </div>
+                  )}
+                  {editingId && (
+                    <div className="col-span-2 mt-1 bg-amber-50 rounded-lg p-3">
+                      <div className="text-xs text-amber-800 mb-2">{t("nodes.rebuildNote")}</div>
+                      <button type="button" className="btn-secondary" onClick={onRebuildClients} disabled={rebuildStatus === "loading"}>
+                        {rebuildStatus === "loading" ? t("nodes.reading") : t("nodes.rebuildButton")}
+                      </button>
+                      {rebuildResult && (
+                        <div className="text-xs mt-2 text-gray-600">
+                          {t("nodes.rebuildResult", { imported: rebuildResult.imported_count, skipped: rebuildResult.skipped_count })}
+                          {rebuildResult.skipped_count > 0 && (
+                            <ul className="mt-1 list-disc pr-4 space-y-0.5 max-h-32 overflow-y-auto">
+                              {rebuildResult.skipped.map((sk, i) => (
+                                <li key={i}>{sk.name}: {sk.reason}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )}
+                      {typeof rebuildStatus === "string" && rebuildStatus !== "loading" && rebuildStatus !== "done" && (
+                        <div className="text-xs mt-2 text-red-500">{rebuildStatus}</div>
                       )}
                     </div>
                   )}

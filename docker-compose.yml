@@ -1,8 +1,21 @@
+# Docker keeps EVERY line a container ever printed in an ever-growing
+# json log file under /var/lib/docker/containers/ - with no limit by
+# default. The backend prints a line per HTTP request plus RADIUS/poller
+# activity, so on a busy panel that file quietly grows to gigabytes and
+# fills the server's disk (exactly what happened, 2026-08-09). This anchor
+# caps every service below at 3 rotated files x 20MB.
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "20m"
+    max-file: "3"
+
 services:
   backend:
     build: ./backend
     container_name: usermanager-backend
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - ./backend/.env
     volumes:
@@ -45,6 +58,7 @@ services:
     image: mariadb:11
     container_name: usermanager-mariadb
     restart: unless-stopped
+    logging: *default-logging
     profiles:
       - mariadb
     environment:
@@ -61,6 +75,7 @@ services:
     build: ./frontend
     container_name: usermanager-frontend
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       - backend
     ports:

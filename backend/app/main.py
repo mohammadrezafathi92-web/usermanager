@@ -11,7 +11,7 @@ from .config import settings
 from .database import Base, engine, SessionLocal
 from . import models
 from .security import hash_password
-from .services.quota_manager import poll_all
+from .services.quota_manager import poll_all, cleanup_old_usage_logs
 from .services.radius_server import start_radius_server_in_background, cleanup_stale_radius_sessions, cleanup_old_radius_limit_logs
 from .services.notify import run_daily_notify_job
 from .services.backup import run_scheduled_backup, ha_healthcheck, ha_pull_and_apply, notify_admins_text
@@ -424,6 +424,10 @@ def _start_full_services() -> None:
     # اتصال فقط یک هفته کافیه"). This table had no cleanup at all before -
     # every rejected/banned RADIUS auth attempt accumulated forever.
     scheduler.add_job(cleanup_old_radius_limit_logs, "cron", hour=3, minute=30, id="cleanup_old_radius_limit_logs", replace_existing=True)
+    # UsageLog is written on every poll cycle and never pruned before this -
+    # see services/quota_manager.py's cleanup_old_usage_logs docstring for
+    # the unbounded-DB-growth problem it fixes.
+    scheduler.add_job(cleanup_old_usage_logs, "cron", hour=3, minute=45, id="cleanup_old_usage_logs", replace_existing=True)
     # Once a day - quota/expiry reminder messages via the sales bot
     # (best-effort no-op if the bot isn't running/configured).
     scheduler.add_job(run_daily_notify_job, "cron", hour=10, minute=0, id="daily_notify", replace_existing=True)

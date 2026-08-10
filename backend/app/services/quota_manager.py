@@ -102,6 +102,41 @@ def _apply_delta(db: Session, connection: models.Connection, rx: int, tx: int):
         _atomic_increment(db, models.AdminUser, admin.id, "volume_balance_gb", -(delta / (1024 ** 3)))
 
 
+# models.UsageLog gets ONE row per connection per poll cycle that moved any
+# bytes - at the default 30s interval that's ~2,880 rows/day for a single
+# busy connection, so a few hundred active services write millions of rows
+# a month. Nothing ever deleted them, which is what silently filled the
+# panel server's disk (the DB file only ever grows). Everything that READS
+# this table only looks at the last 24 hours (dashboard.py's usage chart)
+# or the last 60 seconds (its live-throughput figure), so anything older is
+# pure dead weight - kept for a week anyway as headroom.
+USAGE_LOG_KEEP_DAYS = 7
+
+
+def cleanup_old_usage_logs(keep_days: int = USAGE_LOG_KEEP_DAYS) -> int:
+    """Deletes UsageLog rows older than `keep_days`. Called daily from the
+    scheduler (see main.py's _start_full_services), same shape as
+    radius_server.py's cleanup_old_radius_limit_logs."""
+    db = SessionLocal()
+    try:
+        cutoff = dt.datetime.utcnow() - dt.timedelta(days=keep_days)
+        deleted = (
+            db.query(models.UsageLog)
+            .filter(models.UsageLog.created_at < cutoff)
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+        if deleted:
+            logger.info("cleaned up %d old usage log row(s) (older than %d day(s))", deleted, keep_days)
+        return deleted
+    except Exception:
+        logger.exception("failed to clean up old usage logs")
+        db.rollback()
+        return 0
+    finally:
+        db.close()
+
+
 def _enforce_user_limits(db: Session, user: models.User):
     """Enforces the user's own COMBINED quota/expiry - only ever governs
     connections with no purchase_id (see Connection.purchase_id's

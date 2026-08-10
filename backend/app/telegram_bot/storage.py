@@ -185,6 +185,20 @@ def release_pending(request_id: int):
         )
 
 
+def list_recent(limit: int = 15) -> list[dict]:
+    """The most recently HANDLED requests (approved/rejected) - the bot's
+    admin «🗂 تاریخچه درخواست‌ها» screen. list_pending() below only ever
+    shows what's still waiting, so once an admin acted there was no way to
+    look back at what was decided."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM pending_purchases WHERE status IN ('approved','rejected') "
+            "ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def list_pending() -> list[dict]:
     with _conn() as conn:
         rows = conn.execute(

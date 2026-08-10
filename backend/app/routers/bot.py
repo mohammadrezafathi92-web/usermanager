@@ -151,7 +151,17 @@ def list_packages(owner_admin_id: Optional[int] = None, db: Session = Depends(ge
     own number instead of their parent Admin's base price."""
     q = (
         db.query(models.Package)
-        .options(joinedload(models.Package.connections), joinedload(models.Package.files))
+        .options(
+            joinedload(models.Package.connections),
+            joinedload(models.Package.files),
+            # ovpn_templates MUST be eager-loaded too - PackageOut reads it,
+            # and panel_bridge.py closes the DB session before converting
+            # the result to a schema, so a lazy load here raises
+            # DetachedInstanceError and takes down the whole "خرید/تمدید"
+            # flow (exactly the trap this docstring already warns about -
+            # it caught `files` once and caught this field too).
+            joinedload(models.Package.ovpn_templates),
+        )
         .filter(models.Package.bot_enabled == True)  # noqa: E712
     )
 
@@ -265,6 +275,37 @@ def record_payment_card_use(card_id: int, payload: schemas.BotRecordCardPaymentR
     no-op for a pool in "manual"/"rotate" mode)."""
     payment_cards.advance_after_payment(db, card_id, payload.amount)
     return {"ok": True}
+
+
+@router.get("/sales-stats")
+def get_sales_stats(owner_admin_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """Compact sales summary for the bot's admin «📊 گزارش فروش» screen -
+    today / last 7 days / last 30 days, read off the accounting ledger
+    (see services/accounting.py) and scoped to whichever admin's bot is
+    asking, exactly like list_packages/get_payment_info are."""
+    now = dt.datetime.utcnow()
+    windows = {
+        "today": now.replace(hour=0, minute=0, second=0, microsecond=0),
+        "week": now - dt.timedelta(days=7),
+        "month": now - dt.timedelta(days=30),
+    }
+    out: dict = {}
+    for key, since in windows.items():
+        q = db.query(models.LedgerEntry).filter(
+            models.LedgerEntry.created_at >= since,
+            models.LedgerEntry.kind.in_(accounting.SALE_KINDS),
+        )
+        if owner_admin_id is not None:
+            q = q.filter(models.LedgerEntry.admin_id == owner_admin_id)
+        rows = q.all()
+        out[key] = {"total": sum(r.amount or 0 for r in rows), "count": len(rows)}
+
+    user_q = db.query(models.User)
+    if owner_admin_id is not None:
+        user_q = user_q.filter(models.User.owner_admin_id == owner_admin_id)
+    out["users_total"] = user_q.count()
+    out["users_active"] = user_q.filter(models.User.status == models.UserStatus.active).count()
+    return out
 
 
 @router.get("/customer-menu-config")

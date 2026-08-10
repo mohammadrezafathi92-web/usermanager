@@ -23,8 +23,27 @@ class AdminListPageCB(CallbackData, prefix="alp"):
 
 
 class AdminUserCB(CallbackData, prefix="au"):
-    action: str  # view, toggle, renew, resetusage, delete, delete_confirm, back_list
+    # view, toggle, renew, resetusage, delete, delete_confirm, back_list,
+    # addpkg (give an existing user another package), balance (wallet
+    # top-up/deduct), sendcfg (re-send their configs)
+    action: str
     username: str
+
+
+class AdminServiceCB(CallbackData, prefix="asvc"):
+    """Picks ONE of a customer's independent services (models.Purchase) in
+    the bot's admin screens - renewal continues that SAME service (see
+    routers/bot.py's renew_service), never creating a new one."""
+    action: str  # renew
+    username: str
+    purchase_id: int
+
+
+class AdminPkgPickCB(CallbackData, prefix="apkg"):
+    """Package chosen while giving an EXISTING user an additional package
+    from the bot (admin side)."""
+    username: str
+    package_id: int
 
 
 class NodeCB(CallbackData, prefix="node"):

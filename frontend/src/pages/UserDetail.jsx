@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import QRCode from "qrcode";
-import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, ShieldCheck, Lock, Save, KeyRound, Power, ShieldEllipsis, RefreshCw, Pencil, Package, LogOut } from "lucide-react";
+import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, ShieldCheck, Lock, Save, KeyRound, Power, ShieldEllipsis, RefreshCw, Pencil, Package, LogOut, Send } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
@@ -30,6 +30,7 @@ import {
   renewPurchase,
   convertLegacyGroup,
   updatePurchaseComment,
+  bulkNotifyUsers,
   fetchSubscriptionLink,
   regenerateSubscriptionLink,
 } from "../api/client.js";
@@ -152,6 +153,30 @@ export default function UserDetail() {
       load();
     } catch (err) {
       setError(err?.response?.data?.detail || "خطا در ذخیره یادداشت");
+    }
+  };
+
+  // Send a Telegram message to THIS one customer - reuses the existing
+  // bulk-notify endpoint (already scope-checked and delivery-tested) with
+  // a single id, rather than adding a parallel single-user code path.
+  const [msgOpen, setMsgOpen] = useState(false);
+  const [msgText, setMsgText] = useState("");
+  const [msgSending, setMsgSending] = useState(false);
+  const [msgResult, setMsgResult] = useState(null);
+  const sendMessage = async () => {
+    if (!msgText.trim()) return;
+    setMsgSending(true);
+    setMsgResult(null);
+    try {
+      const res = await bulkNotifyUsers([user.id], msgText.trim());
+      setMsgResult(res.data);
+      if (res.data?.sent) {
+        setMsgText("");
+      }
+    } catch (err) {
+      setError(err?.response?.data?.detail || t("userDetail.messageError"));
+    } finally {
+      setMsgSending(false);
     }
   };
 
@@ -677,6 +702,14 @@ export default function UserDetail() {
           ) : (
             <div className="text-xs text-gray-400 text-center">{t("userDetail.renewPerServiceHint")}</div>
           )}
+          <button
+            className="btn-secondary"
+            disabled={!user.telegram_id}
+            title={user.telegram_id ? "" : t("userDetail.noTelegramLinked")}
+            onClick={() => { setMsgOpen(true); setMsgResult(null); }}
+          >
+            <Send size={14} /> {t("userDetail.sendMessage")}
+          </button>
         </div>
       </div>
 
@@ -973,6 +1006,27 @@ export default function UserDetail() {
 
       {/* Manual conversion of a leftover shared-pool group into its own
           independent service (see routers/users.py's convert_legacy_group). */}
+      <Modal open={msgOpen} onClose={() => setMsgOpen(false)} title={t("userDetail.sendMessage")}>
+        <div className="space-y-3">
+          <div className="text-xs text-gray-400">{t("userDetail.sendMessageHint", { username: user.username })}</div>
+          <textarea
+            className="input w-full"
+            rows={5}
+            placeholder={t("userDetail.messagePlaceholder")}
+            value={msgText}
+            onChange={(e) => setMsgText(e.target.value)}
+          />
+          {msgResult && (
+            <div className={`text-xs ${msgResult.sent ? "text-emerald-600" : "text-red-500"}`}>
+              {msgResult.sent ? t("userDetail.messageSent") : t("userDetail.messageFailed")}
+            </div>
+          )}
+          <button className="btn-primary w-full" disabled={msgSending || !msgText.trim()} onClick={sendMessage}>
+            {msgSending ? "..." : t("userDetail.sendMessage")}
+          </button>
+        </div>
+      </Modal>
+
       <Modal open={!!convertGroup} onClose={() => setConvertGroup(null)} title={t("userDetail.convertToService")}>
         <div className="space-y-3">
           <div className="text-xs text-gray-400">{t("userDetail.convertHint")}</div>

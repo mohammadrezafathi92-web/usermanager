@@ -133,6 +133,11 @@ class PanelBridge:
         row = await _call(bot_router.get_payment_info, owner_admin_id=_scope(owner_admin_id))
         return _dump(schemas.PanelSettingsOut.model_validate(row))
 
+    async def get_sales_stats(self, owner_admin_id: Optional[int] = None) -> dict:
+        """Sales summary for the bot's admin report screen - see
+        routers/bot.py's get_sales_stats."""
+        return _dump(await _call(bot_router.get_sales_stats, owner_admin_id=_scope(owner_admin_id))) or {}
+
     async def get_customer_menu_disabled_items(self) -> list[str]:
         """Which customer main-menu buttons an admin has hidden from
         Settings > ربات (see telegram_bot/keyboards.py's CUSTOMER_MENU_ITEMS

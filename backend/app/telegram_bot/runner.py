@@ -121,6 +121,7 @@ ADMIN_EXTRA_COMMANDS = [
     BotCommand(command="users", description="📋 لیست کاربران"),
     BotCommand(command="pending", description="📥 درخواست‌های در انتظار"),
     BotCommand(command="broadcast", description="📢 پیام همگانی"),
+    BotCommand(command="dm", description="✉️ پیام به یک کاربر"),
 ]
 
 

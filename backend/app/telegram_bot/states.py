@@ -10,11 +10,16 @@ class AdminCreateUserStates(StatesGroup):
 
 
 class AdminSearchStates(StatesGroup):
+    # username fragment the admin types to filter the bot's user list
     waiting_username = State()
 
 
 class AdminRenewStates(StatesGroup):
     waiting_values = State()  # "<add_gb> <add_days>"
+
+
+class AdminBalanceStates(StatesGroup):
+    waiting_amount = State()  # signed toman amount to add to (or take off) a customer's wallet
 
 
 class CustomerLinkStates(StatesGroup):
@@ -45,3 +50,10 @@ class CustomerTopupStates(StatesGroup):
 class AdminBroadcastStates(StatesGroup):
     waiting_text = State()   # the message to send to every telegram-linked user
     waiting_confirm = State()  # a "بله/انصراف" confirmation before actually sending
+
+
+class AdminDirectMessageStates(StatesGroup):
+    """«✉️ پیام به یک کاربر» - send a message to ONE specific customer
+    instead of everyone (see handlers/admin_broadcast.py)."""
+    waiting_target = State()  # username (or numeric telegram id) typed by the admin
+    waiting_text = State()    # the message body

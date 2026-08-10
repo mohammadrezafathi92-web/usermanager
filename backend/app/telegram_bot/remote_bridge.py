@@ -100,6 +100,10 @@ class RemoteBridge:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         return await self._call("GET", "/payment-info", params=params)
 
+    async def get_sales_stats(self, owner_admin_id: Optional[int] = None) -> dict:
+        params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
+        return await self._call("GET", "/sales-stats", params=params) or {}
+
     async def get_customer_menu_disabled_items(self) -> list[str]:
         row = await self._call("GET", "/customer-menu-config")
         return (row or {}).get("disabled_items", [])

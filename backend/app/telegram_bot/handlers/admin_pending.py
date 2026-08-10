@@ -355,3 +355,25 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
     except Exception:
         pass
     await call.answer("تایید شد")
+
+
+@router.callback_query(MenuCB.filter(F.action == "admin_history"))
+async def cb_admin_history(call: CallbackQuery) -> None:
+    """«🗂 تاریخچه درخواست‌ها» - what was approved/rejected recently. The
+    pending list only ever shows what's still waiting, so without this an
+    admin had no way to check back on a decision they already made."""
+    items = storage.list_recent()
+    if not items:
+        await call.message.edit_text("هنوز درخواست رسیدگی‌شده‌ای ثبت نشده.", reply_markup=home_kb())
+        await call.answer()
+        return
+    lines = ["🗂 <b>آخرین درخواست‌های رسیدگی‌شده</b>", ""]
+    for p in items:
+        icon = "✅" if p["status"] == "approved" else "❌"
+        kind_txt = {"new": "خرید جدید", "renew": "تمدید", "topup": "افزایش اعتبار", "link": "اتصال حساب"}.get(p["kind"], p["kind"])
+        amount = p.get("final_price") if p.get("final_price") is not None else p.get("price")
+        when = (p.get("created_at") or "")[:16].replace("T", " ")
+        lines.append(f"{icon} #{p['id']} · {kind_txt} · {p['target_username']}")
+        lines.append(f"    {amount:,} تومان · {when}")
+    await call.message.edit_text("\n".join(lines), reply_markup=home_kb())
+    await call.answer()

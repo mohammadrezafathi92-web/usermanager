@@ -1,10 +1,13 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from .utils import fmt_date_jalali
 from .callbacks import (
     MenuCB,
     AdminListPageCB,
     AdminUserCB,
+    AdminServiceCB,
+    AdminPkgPickCB,
     NodeCB,
     ProtocolCB,
     PackageCB,
@@ -62,10 +65,15 @@ async def main_menu_kb(scope: dict | None) -> InlineKeyboardMarkup:
         kb.button(text="📋 لیست کاربران", callback_data=MenuCB(action="admin_list"))
         kb.button(text="📥 درخواست‌های در انتظار", callback_data=MenuCB(action="admin_pending"))
         kb.button(text="📢 پیام همگانی", callback_data=MenuCB(action="admin_broadcast"))
-        kb.adjust(2, 2)
+        kb.button(text="✉️ پیام به یک کاربر", callback_data=MenuCB(action="admin_dm"))
+        kb.button(text="🔎 جستجوی کاربر", callback_data=MenuCB(action="admin_search"))
+        kb.button(text="📊 گزارش فروش", callback_data=MenuCB(action="admin_stats"))
+        kb.button(text="🗂 تاریخچه درخواست‌ها", callback_data=MenuCB(action="admin_history"))
+        kb.adjust(2, 2, 2, 2)
     elif scope:
         kb.button(text="➕ ساخت کاربر", callback_data=MenuCB(action="admin_create"))
         kb.button(text="📋 لیست کاربران من", callback_data=MenuCB(action="admin_list"))
+        kb.button(text="🔎 جستجوی کاربر", callback_data=MenuCB(action="admin_search"))
         kb.adjust(1)
     else:
         # local import - avoids a circular import at module load (panel_bridge
@@ -132,12 +140,52 @@ def admin_user_detail_kb(username: str, enabled_status: bool) -> InlineKeyboardM
     kb = InlineKeyboardBuilder()
     toggle_text = "⛔️ غیرفعال‌سازی" if enabled_status else "✅ فعال‌سازی"
     kb.button(text=toggle_text, callback_data=AdminUserCB(action="toggle", username=username))
-    kb.button(text="♻️ تمدید / افزودن حجم", callback_data=AdminUserCB(action="renew", username=username))
+    kb.button(text="♻️ تمدید سرویس", callback_data=AdminUserCB(action="renew", username=username))
+    kb.button(text="📦 افزودن پکیج", callback_data=AdminUserCB(action="addpkg", username=username))
+    kb.button(text="💰 اعتبار کیف پول", callback_data=AdminUserCB(action="balance", username=username))
+    kb.button(text="📤 ارسال مجدد کانفیگ", callback_data=AdminUserCB(action="sendcfg", username=username))
     kb.button(text="🔄 ریست مصرف", callback_data=AdminUserCB(action="resetusage", username=username))
     kb.button(text="🗑 حذف کاربر", callback_data=AdminUserCB(action="delete", username=username))
     kb.button(text="🔃 بروزرسانی", callback_data=AdminUserCB(action="view", username=username))
     kb.button(text="🏠 منوی اصلی", callback_data=MenuCB(action="home"))
-    kb.adjust(1, 1, 1, 1, 1, 1)
+    kb.adjust(2, 2, 1, 2, 1, 1)
+    return kb.as_markup()
+
+
+def admin_services_kb(username: str, purchases: list[dict], action: str) -> InlineKeyboardMarkup:
+    """Lists a customer's independent services so the admin can act on ONE
+    of them (see AdminServiceCB) - used by "تمدید سرویس", which must
+    continue an existing service rather than create a new one."""
+    kb = InlineKeyboardBuilder()
+    for p in purchases:
+        name = p.get("package_name_snapshot") or "سرویس"
+        if p.get("quota_bytes"):
+            left = max(0, p["quota_bytes"] - (p.get("used_bytes") or 0)) / (1024 ** 3)
+            detail = f"{left:.1f}GB مانده"
+        else:
+            detail = "نامحدود"
+        kb.button(
+            text=f"{name} · {detail}",
+            callback_data=AdminServiceCB(action=action, username=username, purchase_id=p["id"]),
+        )
+    kb.button(text="✖️ انصراف", callback_data=AdminUserCB(action="view", username=username))
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def admin_packages_kb(username: str, packages: list[dict]) -> InlineKeyboardMarkup:
+    """Package picker for giving an EXISTING customer another package from
+    the bot's admin side (mirrors the panel's «افزودن پکیج»)."""
+    kb = InlineKeyboardBuilder()
+    for p in packages:
+        quota = f"{p.get('quota_gb') or 0:g}GB" if p.get("quota_gb") else "نامحدود"
+        days = f"{p.get('duration_days')} روز" if p.get("duration_days") else "بدون انقضا"
+        kb.button(
+            text=f"{p['name']} · {quota} / {days}",
+            callback_data=AdminPkgPickCB(username=username, package_id=p["id"]),
+        )
+    kb.button(text="✖️ انصراف", callback_data=AdminUserCB(action="view", username=username))
+    kb.adjust(1)
     return kb.as_markup()
 
 
@@ -297,7 +345,11 @@ def group_connections_by_purchase(connections: list[dict]) -> list[dict]:
 
     for g in result:
         conns = g["connections"]
-        date_label = str(g["created_at"])[:10] if g["created_at"] else ""
+        # Jalali, not the raw ISO/Gregorian prefix - this string is
+        # customer-facing (purchase-date line under "📊 مصرف" and every
+        # purchase button label), and a Persian customer reading
+        # "2026-07-23" has to convert it in their head.
+        date_label = fmt_date_jalali(g["created_at"], with_time=False) if g["created_at"] else ""
         g["date_label"] = date_label  # kept separate from label - see standalone_usage_text, which
         # shows the package name on its own line instead of joined with the date (button labels
         # below still use the combined single-line `label`, since a button can't wrap nicely).

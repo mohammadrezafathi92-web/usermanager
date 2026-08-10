@@ -375,6 +375,20 @@ def send_backup_to_telegram(path: Path) -> tuple[int, int]:
 
     size_mb = path.stat().st_size / (1024 ** 2)
     if size_mb > 50:
+        # Tell the admins IN TELEGRAM, not just in a log file nobody reads:
+        # this failure mode is completely silent from the admin's side
+        # (backups keep being created on disk, they just never arrive), so
+        # it can go unnoticed for weeks - exactly what happened here, where
+        # an unpruned usage_logs table had inflated the database until
+        # every backup crossed the limit.
+        alert = (
+            f"⚠️ بک‌آپ ساخته شد ولی ارسال نشد.\n\n"
+            f"حجم فایل {size_mb:.0f} مگابایت است و تلگرام اجازه ارسال فایل بیشتر از ۵۰ مگابایت "
+            f"توسط ربات را نمی‌دهد.\n\n"
+            f"فایل روی سرور ذخیره شده: <code>{path.name}</code>"
+        )
+        for chat_id in admin_ids:
+            telegram_bot_runner.send_message_sync(chat_id, alert)
         # Telegram's Bot API hard-caps uploads sent BY a bot at 50MB - past
         # that, every send below fails the exact same way regardless of
         # token/proxy health, and (before send_document_sync started

@@ -693,7 +693,12 @@ export default function Users() {
                 </td>
                 {isSuperadmin && (
                   <td className="px-4 py-3 text-xs text-gray-500">
-                    {u.owner_admin_username || <span className="text-gray-300">—</span>}
+                    {u.owner_admin_username ||
+                      (u.created_via === "bot" ? (
+                        <span className="text-gray-400">{t("userDetail.ownerBot")}</span>
+                      ) : (
+                        <span className="text-gray-300">—</span>
+                      ))}
                   </td>
                 )}
                 <td className="px-4 py-3">

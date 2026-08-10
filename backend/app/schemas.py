@@ -435,6 +435,10 @@ class UserOut(UserBase):
     # router (not a real relationship traversal here) so the UI doesn't
     # need a second request just to show "کدام ادمین".
     owner_admin_username: Optional[str] = None
+    # See models.User.created_via - "bot" for a sales-bot signup.
+    created_via: Optional[str] = None
+    # See models.User.created_via - "bot" for a sales-bot signup.
+    created_via: Optional[str] = None
     package_id: Optional[int] = None
     # Referral program (کد دعوت) - see models.User/PanelSettings
     referral_code: Optional[str] = None

@@ -464,6 +464,14 @@ class User(Base):
     # migration (see fix_telegram_id_unique.py) - this column definition
     # alone does not retroactively change an already-created SQLite table.
     telegram_id = Column(BigInteger, nullable=True, index=True)
+    # How this customer first entered the system: "bot" when the sales bot
+    # created them (see routers/bot.py's create_user), NULL/"panel" for an
+    # admin-created one. Purely informational - it does NOT affect
+    # ownership/scoping (owner_admin_id still decides that) - but a
+    # bot-signed-up customer has no owning reseller, and showing them as
+    # «بدون ادمین» read like a misconfiguration rather than the normal
+    # thing it is. The panel shows «ربات» for these instead.
+    created_via = Column(String(20), nullable=True)
 
     # Which admin "owns" (manages) this customer - set once, at creation
     # time, from the creating admin's own id (a superadmin can pick a

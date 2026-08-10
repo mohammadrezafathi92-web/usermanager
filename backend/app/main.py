@@ -331,6 +331,29 @@ def on_startup():
     finally:
         db.close()
 
+    # One-time labelling of existing sales-bot signups (see
+    # models.User.created_via) - a customer with a linked telegram id and
+    # no owning reseller can only have come from the bot's own signup flow,
+    # since every panel-created user is stamped with its creator's admin id.
+    db = SessionLocal()
+    try:
+        marked = (
+            db.query(models.User)
+            .filter(
+                models.User.created_via.is_(None),
+                models.User.telegram_id.isnot(None),
+                models.User.owner_admin_id.is_(None),
+            )
+            .update({models.User.created_via: "bot"}, synchronize_session=False)
+        )
+        if marked:
+            db.commit()
+            logging.info("%s کاربر قدیمی به‌عنوان «ثبت‌نام از ربات» علامت خورد", marked)
+    except Exception:
+        logging.exception("خطا در علامت‌گذاری کاربران ثبت‌نام‌شده از ربات")
+    finally:
+        db.close()
+
     # One-time move of the old single Package.ovpn_template column into the
     # multi-file PackageOvpnTemplate table (see that model's docstring) -
     # the column is cleared afterwards, so this can't run twice.

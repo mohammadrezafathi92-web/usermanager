@@ -84,10 +84,19 @@ async def main_menu_kb(scope: dict | None) -> InlineKeyboardMarkup:
             disabled = set(await api.get_customer_menu_disabled_items())
         except ApiError:
             disabled = set()
+        shown = 0
         for action, label in CUSTOMER_MENU_ITEMS:
             if action not in disabled:
                 kb.button(text=label, callback_data=MenuCB(action=action))
-        kb.adjust(1)
+                shown += 1
+        # Two per row - the list is long enough (up to 10 items) that one
+        # button per row pushed the bottom half off-screen on a phone. An
+        # odd count leaves the LAST button full-width on its own row rather
+        # than half-width next to empty space.
+        rows = [2] * (shown // 2)
+        if shown % 2:
+            rows.append(1)
+        kb.adjust(*(rows or [1]))
     return kb.as_markup()
 
 

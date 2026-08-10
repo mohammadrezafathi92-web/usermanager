@@ -445,6 +445,10 @@ def create_user(payload: schemas.BotCreateUserRequest, db: Session = Depends(get
         telegram_id=payload.telegram_id, owner_admin_id=payload.owner_admin_id,
         package_id=payload.package_id,
     )
+    # Marks where this customer came from, so the panel can show «ربات»
+    # instead of «بدون ادمین» for a bot signup that legitimately has no
+    # owning reseller - see models.User.created_via.
+    user.created_via = "bot"
     # Every connection in this one request is one purchase - share a single
     # batch (see models.Connection.purchase_batch) so the bot's "اکانت من"
     # groups them together instead of listing each service separately.

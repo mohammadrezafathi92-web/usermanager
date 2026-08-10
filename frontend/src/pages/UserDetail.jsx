@@ -676,7 +676,14 @@ export default function UserDetail() {
             </span>
             {isSuperadmin && (
               <span className="badge bg-gray-50 text-gray-600 dark:bg-slate-800 dark:text-gray-300">
-                {t("userDetail.ownerAdmin", { value: user.owner_admin_username || t("userDetail.noAdmin") })}
+                {t("userDetail.ownerAdmin", {
+                  value:
+                    user.owner_admin_username ||
+                    // A bot signup legitimately has no owning reseller -
+                    // saying «بدون ادمین» read like a misconfiguration
+                    // (see models.User.created_via).
+                    (user.created_via === "bot" ? t("userDetail.ownerBot") : t("userDetail.noAdmin")),
+                })}
               </span>
             )}
           </div>

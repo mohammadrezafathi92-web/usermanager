@@ -350,10 +350,11 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
         await send_connections(bot, pending["telegram_id"], new_connections)
     if pkg:
         await send_package_extras(bot, pending["telegram_id"], pkg)
-    try:
-        await bot.send_message(pending["telegram_id"], "🏠 منو:", reply_markup=home_kb())
-    except Exception:
-        pass
+    # Full menu (not just a "back home" button) - the config messages above
+    # are new messages, so whatever menu the customer had is now scrolled
+    # out of view; see customer.py's _send_menu_footer.
+    from .customer import _send_menu_footer  # local import - avoids a circular import at module load
+    await _send_menu_footer(bot, pending["telegram_id"])
     await call.answer("تایید شد")
 
 

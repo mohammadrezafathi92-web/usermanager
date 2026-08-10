@@ -32,6 +32,17 @@ from ..connection_sender import send_connection, send_connections
 router = Router(name="customer")
 
 
+async def _send_menu_footer(bot: Bot, chat_id: int) -> None:
+    """Re-posts the main menu AFTER a batch of config/document messages.
+    Those are sent as fresh messages, which pushes the previous menu out of
+    view - without this the customer is left staring at the last config
+    with the menu stranded somewhere above it."""
+    try:
+        await bot.send_message(chat_id, "🏠 منو:", reply_markup=await main_menu_kb(None))
+    except Exception:
+        pass
+
+
 def _sale_info(data: dict, final_price: int, method: str) -> dict:
     """Exact-amount accounting details passed through to routers/bot.py's
     ledger hook (see services/accounting.py) - the bot is the only place
@@ -501,6 +512,11 @@ async def cb_view_connection(call: CallbackQuery, callback_data: ConnectionCB, s
         return
     await call.answer()
     await send_connection(bot, call.from_user.id, conn)
+    # The config messages are sent as NEW messages below the menu, so the
+    # menu ends up scrolled off above them and the customer is left with
+    # no way forward. Re-post it underneath (same thing pay_with_balance
+    # already does after sending a purchase's configs).
+    await _send_menu_footer(bot, call.from_user.id)
 
 
 @router.callback_query(SwitchAccountCB.filter())
@@ -1047,10 +1063,7 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
     if new_connections:
         await send_connections(bot, call.from_user.id, new_connections)
     await send_package_extras(bot, call.from_user.id, pkg)
-    try:
-        await bot.send_message(call.from_user.id, "🏠 منو:", reply_markup=home_kb())
-    except Exception:
-        pass
+    await _send_menu_footer(bot, call.from_user.id)
     await call.answer("پرداخت شد")
 
 

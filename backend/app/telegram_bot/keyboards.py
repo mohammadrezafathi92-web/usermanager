@@ -187,10 +187,9 @@ def admin_packages_kb(username: str, packages: list[dict]) -> InlineKeyboardMark
     the bot's admin side (mirrors the panel's «افزودن پکیج»)."""
     kb = InlineKeyboardBuilder()
     for p in packages:
-        quota = f"{p.get('quota_gb') or 0:g}GB" if p.get("quota_gb") else "نامحدود"
-        days = f"{p.get('duration_days')} روز" if p.get("duration_days") else "بدون انقضا"
+        # Same compact one-line format the customer picker uses.
         kb.button(
-            text=f"{p['name']} · {quota} / {days}",
+            text=package_button_label(p),
             callback_data=AdminPkgPickCB(username=username, package_id=p["id"]),
         )
     kb.button(text="✖️ انصراف", callback_data=AdminUserCB(action="view", username=username))
@@ -251,14 +250,30 @@ def session_count_kb(counts: list[int], kind: str) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+def _fa_digits(value) -> str:
+    return str(value).translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+
+
+def package_button_label(p: dict) -> str:
+    """One short line per package: just its NAME and its PRICE.
+
+    The old label crammed name + quota + days + price between "|" pipes,
+    which wrapped onto two lines on a phone and repeated numbers most
+    package names already state ("۲۰ گیگ ۱ ماه"). The panel owner's call
+    (2026-08-10): the name is the description, so the button only needs
+    that plus what it costs - anything else belongs on the package's own
+    detail//payment screen, not on a button."""
+    name = (p.get("name") or "").strip()
+    price = p.get("price") or 0
+    price_txt = f"{_fa_digits(format(price, ','))} تومان" if price else "رایگان"
+    return f"{name} · {price_txt}"
+
+
 def packages_kb(packages: list[dict], kind: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for p in packages:
-        quota_txt = f"{p['quota_gb']}GB" if p["quota_gb"] else "نامحدود"
-        days_txt = f"{p['duration_days']} روز" if p.get("duration_days") else "بدون انقضا"
-        price_txt = f"{p['price']:,} تومان" if p["price"] else "رایگان"
         kb.button(
-            text=f"{p['name']} | {quota_txt} | {days_txt} | {price_txt}",
+            text=package_button_label(p),
             callback_data=PackageCB(kind=kind, package_id=p["id"]),
         )
     kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))

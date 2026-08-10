@@ -18,7 +18,7 @@ import datetime as dt
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import require_admin_or_above, require_superadmin, get_current_admin
+from ..deps import require_admin_or_above, require_superadmin, get_current_admin, require_confirm_password
 from ..services import backup as backup_service
 from ..services import local_deploy
 from ..services import hierarchy
@@ -125,7 +125,7 @@ def update_payment_card(card_id: int, payload: schemas.PaymentCardUpdate, db: Se
 
 
 @router.delete("/payment-cards/{card_id}")
-def delete_payment_card(card_id: int, db: Session = Depends(get_db)):
+def delete_payment_card(card_id: int, db: Session = Depends(get_db), _confirm=Depends(require_confirm_password)):
     card = db.get(models.PaymentCard, card_id)
     if not card or card.owner_admin_id is not None:
         raise HTTPException(404, "کارت پیدا نشد")
@@ -308,6 +308,7 @@ def update_my_payment_card(
 @my_payment_router.delete("/cards/{card_id}")
 def delete_my_payment_card(
     card_id: int, admin: models.AdminUser = Depends(get_current_admin), db: Session = Depends(get_db),
+    _confirm=Depends(require_confirm_password),
 ):
     _require_not_superadmin(admin)
     card = _get_own_card_or_404(db, admin, card_id)

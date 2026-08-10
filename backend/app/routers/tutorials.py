@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import require_permission, require_admin_or_above, get_current_admin
+from ..deps import require_permission, require_admin_or_above, get_current_admin, require_confirm_password
 from ..services import hierarchy
 
 # Router-level gate is "view_tutorials" (every endpoint at minimum needs
@@ -109,7 +109,7 @@ def update_tutorial(tutorial_id: int, payload: schemas.TutorialUpdate, db: Sessi
 
 
 @router.delete("/{tutorial_id}")
-def delete_tutorial(tutorial_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_delete):
+def delete_tutorial(tutorial_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_delete, _confirm=Depends(require_confirm_password)):
     t = _get_owned_tutorial(db, tutorial_id, admin)
     for m in t.media:
         _unlink_quiet(m.stored_path)
@@ -172,7 +172,7 @@ def upload_tutorial_media(
 
 
 @router.delete("/{tutorial_id}/media/{media_id}")
-def delete_tutorial_media(tutorial_id: int, media_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_delete):
+def delete_tutorial_media(tutorial_id: int, media_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_delete, _confirm=Depends(require_confirm_password)):
     _get_owned_tutorial(db, tutorial_id, admin)  # ownership check, 404s if out of scope
     m = db.get(models.TutorialMedia, media_id)
     if not m or m.tutorial_id != tutorial_id:
@@ -253,7 +253,7 @@ def upload_tutorial_software_file(
 
 
 @router.delete("/{tutorial_id}/software/{software_id}")
-def delete_tutorial_software(tutorial_id: int, software_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_delete):
+def delete_tutorial_software(tutorial_id: int, software_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_delete, _confirm=Depends(require_confirm_password)):
     _get_owned_tutorial(db, tutorial_id, admin)  # ownership check, 404s if out of scope
     s = db.get(models.TutorialSoftware, software_id)
     if not s or s.tutorial_id != tutorial_id:

@@ -2,15 +2,71 @@ import axios from "axios";
 
 const client = axios.create({ baseURL: "/api" });
 
-client.interceptors.request.use((config) => {
+// --- password-confirmed deletes -------------------------------------
+// The backend re-checks the admin's own password on every destructive
+// endpoint (see deps.require_confirm_password). Rather than wiring a
+// dialog into each of the ~17 delete buttons, this interceptor asks once
+// per delete via the prompt that components/ConfirmPasswordGate.jsx
+// registers here, so any delete added later is covered automatically.
+let _passwordPrompt = null;
+export const setPasswordPrompt = (fn) => {
+  _passwordPrompt = fn;
+};
+
+// Remembered briefly so deleting several things in a row doesn't re-ask
+// on every single click. Kept in memory only - never persisted anywhere.
+let _cachedPassword = null;
+let _cachedAt = 0;
+const PASSWORD_TTL_MS = 2 * 60 * 1000;
+
+export const forgetConfirmPassword = () => {
+  _cachedPassword = null;
+  _cachedAt = 0;
+};
+
+const needsConfirmPassword = (config) => {
+  const method = (config.method || "").toLowerCase();
+  if (method === "delete") return true;
+  // Bulk user deletion is a POST by necessity (it carries a body), but
+  // it's the single most destructive action in the panel.
+  return method === "post" && (config.url || "").includes("/bulk-delete");
+};
+
+client.interceptors.request.use(async (config) => {
   const token = localStorage.getItem("um_token");
   if (token) config.headers.Authorization = `Bearer ${token}`;
+
+  if (needsConfirmPassword(config) && !config.headers["X-Confirm-Password"]) {
+    const fresh = _cachedPassword && Date.now() - _cachedAt < PASSWORD_TTL_MS;
+    if (fresh) {
+      config.headers["X-Confirm-Password"] = _cachedPassword;
+    } else if (_passwordPrompt) {
+      // Throwing here aborts the request cleanly when the admin cancels.
+      const pw = await _passwordPrompt({ retry: config._pwRetry === true });
+      _cachedPassword = pw;
+      _cachedAt = Date.now();
+      config.headers["X-Confirm-Password"] = pw;
+    }
+  }
   return config;
 });
 
 client.interceptors.response.use(
   (res) => res,
-  (err) => {
+  async (err) => {
+    // A rejected confirm-password means the admin typed it wrong - drop the
+    // cached value and ask again once, instead of surfacing a bare 403.
+    if (err.response && err.response.status === 403 && err.config && !err.config._pwRetry
+        && needsConfirmPassword(err.config)) {
+      forgetConfirmPassword();
+      err.config._pwRetry = true;
+      delete err.config.headers["X-Confirm-Password"];
+      try {
+        return await client.request(err.config);
+      } catch (retryErr) {
+        return Promise.reject(retryErr);
+      }
+    }
     if (err.response && err.response.status === 401) {
       localStorage.removeItem("um_token");
       if (!location.pathname.includes("/login")) {
@@ -321,3 +377,8 @@ export const updatePurchaseComment = (userId, purchaseId, comment) =>
 // Re-pushes every stored Xray client back onto a node with its original
 // uuid - recovery after the node's panel was wiped/reinstalled.
 export const rebuildNodeClients = (id) => client.post(`/nodes/${id}/rebuild-clients`);
+
+// Deletes one of a customer's independent services (its connections are
+// removed from the nodes too) - see routers/users.py's delete_purchase.
+export const deletePurchase = (userId, purchaseId) =>
+  client.delete(`/users/${userId}/purchases/${purchaseId}`);

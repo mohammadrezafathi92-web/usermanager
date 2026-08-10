@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import get_current_admin
+from ..deps import get_current_admin, require_confirm_password
 from ..services import user_ops, hierarchy, accounting
 
 router = APIRouter(prefix="/api/users", tags=["users"], dependencies=[Depends(get_current_admin)])
@@ -376,8 +376,7 @@ def bulk_update_users(
 def bulk_delete_users(
     payload: schemas.BulkDeleteUsersRequest,
     db: Session = Depends(get_db),
-    admin: models.AdminUser = Depends(get_current_admin),
-):
+    admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password)):
     return user_ops.bulk_delete_users(db, user_ids=payload.user_ids, admin=admin)
 
 
@@ -674,7 +673,7 @@ def reset_usage(user_id: int, db: Session = Depends(get_db), admin: models.Admin
 
 
 @router.delete("/{user_id}")
-def delete_user(user_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+def delete_user(user_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password)):
     user = _get_owned_user(db, admin, user_id)
     user_ops.delete_user_cascade(db, user)
     return {"ok": True}
@@ -858,6 +857,40 @@ def renew_purchase_endpoint(
         add_gb=payload.add_gb, add_days=payload.add_days,
         reset_usage=payload.reset_usage, package_id=payload.package_id,
     )
+
+
+@router.delete("/{user_id}/purchases/{purchase_id}")
+def delete_purchase(
+    user_id: int,
+    purchase_id: int,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+    _confirm=Depends(require_confirm_password),
+):
+    """Deletes ONE of a customer's services: its connections are removed
+    from the real nodes first (user_ops.delete_connection deprovisions each
+    one), then the Purchase row itself. Everything else the customer has -
+    their other services, wallet, telegram link - is untouched.
+
+    Password-confirmed like every other delete in the panel (see
+    deps.require_confirm_password)."""
+    user = _get_owned_user(db, admin, user_id)
+    purchase = db.get(models.Purchase, purchase_id)
+    if not purchase or purchase.user_id != user.id:
+        raise HTTPException(404, "سرویس پیدا نشد")
+
+    removed = 0
+    failed: list[str] = []
+    for conn in list(purchase.connections):
+        try:
+            user_ops.delete_connection(db, conn)
+            removed += 1
+        except Exception as exc:  # noqa: BLE001 - one unreachable node must
+            # not strand the whole service half-deleted; report and go on.
+            failed.append(f"{conn.type.value}: {exc}")
+    db.delete(purchase)
+    db.commit()
+    return {"ok": True, "connections_removed": removed, "failed": failed}
 
 
 @router.put("/{user_id}/purchases/{purchase_id}/comment", response_model=schemas.PurchaseOut)
@@ -1074,8 +1107,7 @@ def delete_connection(
     user_id: int,
     connection_id: int,
     db: Session = Depends(get_db),
-    admin: models.AdminUser = Depends(get_current_admin),
-):
+    admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password)):
     _get_owned_user(db, admin, user_id)
     conn = db.get(models.Connection, connection_id)
     if not conn or conn.user_id != user_id:

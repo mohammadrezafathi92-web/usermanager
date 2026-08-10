@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import get_current_admin
+from ..deps import get_current_admin, require_confirm_password
 from ..services import hierarchy
 
 router = APIRouter(
@@ -108,7 +108,7 @@ def update_discount_code(code_id: int, payload: schemas.DiscountCodeUpdate, db: 
 
 
 @router.delete("/{code_id}")
-def delete_discount_code(code_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+def delete_discount_code(code_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password)):
     row = _get_owned_code(db, code_id, admin)
     db.delete(row)
     db.commit()

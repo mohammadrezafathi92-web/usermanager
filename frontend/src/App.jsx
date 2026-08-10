@@ -14,6 +14,7 @@ import Admins from "./pages/Admins.jsx";
 import RadiusLogs from "./pages/RadiusLogs.jsx";
 import DiscountCodes from "./pages/DiscountCodes.jsx";
 import Accounting from "./pages/Accounting.jsx";
+import ConfirmPasswordGate from "./components/ConfirmPasswordGate.jsx";
 import Subscription from "./pages/Subscription.jsx";
 
 function Protected({ children }) {
@@ -57,7 +58,11 @@ function PermRoute({ perm, children }) {
 
 export default function App() {
   return (
-    <Routes>
+    <>
+      {/* Global password prompt for destructive actions - see the component
+          and api/client.js's request interceptor. */}
+      <ConfirmPasswordGate />
+      <Routes>
       <Route path="/login" element={<Login />} />
       <Route
         path="/"
@@ -155,6 +160,7 @@ export default function App() {
       <Route path="/s/:token" element={<Subscription />} />
       <Route path="/a/:slug" element={<Navigate to="/login" replace />} />
       <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+      </Routes>
+    </>
   );
 }

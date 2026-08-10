@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import get_current_admin, require_superadmin
+from ..deps import get_current_admin, require_superadmin, require_confirm_password
 from ..services import accounting, hierarchy
 
 router = APIRouter(prefix="/api/accounting", tags=["accounting"])
@@ -120,8 +120,7 @@ def create_expense(
 def delete_expense(
     entry_id: int,
     db: Session = Depends(get_db),
-    current: models.AdminUser = Depends(require_superadmin),
-):
+    current: models.AdminUser = Depends(require_superadmin), _confirm=Depends(require_confirm_password)):
     """Only manual expense rows are deletable - automatic sale/credit rows
     are the books themselves and stay immutable."""
     entry = db.get(models.LedgerEntry, entry_id)

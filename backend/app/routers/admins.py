@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import require_admin_or_above, require_superadmin
+from ..deps import require_admin_or_above, require_superadmin, require_confirm_password
 from ..security import hash_password
 from ..services import hierarchy, accounting
 from ..permissions import PERMISSION_CHOICES, PERMISSION_GROUPS, parse_permissions, format_permissions, effective_permissions
@@ -195,7 +195,7 @@ def update_group(group_id: int, payload: schemas.AdminGroupUpdate, db: Session =
 
 
 @router.delete("/groups/{group_id}")
-def delete_group(group_id: int, db: Session = Depends(get_db), _s=Depends(require_superadmin)):
+def delete_group(group_id: int, db: Session = Depends(get_db), _s=Depends(require_superadmin), _confirm=Depends(require_confirm_password)):
     group = db.get(models.AdminPermissionGroup, group_id)
     if not group:
         raise HTTPException(404, "گروه پیدا نشد")
@@ -599,8 +599,7 @@ def list_login_logs(
 def delete_admin(
     admin_id: int,
     db: Session = Depends(get_db),
-    current: models.AdminUser = Depends(require_admin_or_above),
-):
+    current: models.AdminUser = Depends(require_admin_or_above), _confirm=Depends(require_confirm_password)):
     admin = db.get(models.AdminUser, admin_id)
     if not admin:
         raise HTTPException(404, "ادمین پیدا نشد")

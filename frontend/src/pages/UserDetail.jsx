@@ -31,6 +31,7 @@ import {
   convertLegacyGroup,
   updatePurchaseComment,
   bulkNotifyUsers,
+  deletePurchase,
   fetchSubscriptionLink,
   regenerateSubscriptionLink,
 } from "../api/client.js";
@@ -177,6 +178,24 @@ export default function UserDetail() {
       setError(err?.response?.data?.detail || t("userDetail.messageError"));
     } finally {
       setMsgSending(false);
+    }
+  };
+
+  const [deletingPurchaseId, setDeletingPurchaseId] = useState(null);
+  const removePurchase = async (purchase) => {
+    const label = purchase.package_name_snapshot || t("userDetail.purchaseUsageHeading");
+    if (!confirm(t("userDetail.deleteServiceConfirm", { name: label }))) return;
+    setDeletingPurchaseId(purchase.id);
+    try {
+      await deletePurchase(user.id, purchase.id);
+      load();
+    } catch (err) {
+      // A cancelled password prompt rejects with a plain Error (no
+      // response) - that's the admin backing out, not a failure worth
+      // showing as one.
+      if (err?.response) setError(err?.response?.data?.detail || t("userDetail.deleteServiceError"));
+    } finally {
+      setDeletingPurchaseId(null);
     }
   };
 
@@ -885,6 +904,14 @@ export default function UserDetail() {
                   </button>
                   <button className="btn-primary flex-1" onClick={() => openRenewPurchase(purchase)}>
                     <RefreshCw size={14} /> {t("userDetail.renewPurchase")}
+                  </button>
+                  <button
+                    className="btn-danger"
+                    title={t("userDetail.deleteService")}
+                    disabled={deletingPurchaseId === purchase.id}
+                    onClick={() => removePurchase(purchase)}
+                  >
+                    {deletingPurchaseId === purchase.id ? "..." : <Trash2 size={14} />}
                   </button>
                 </div>
               </div>

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..config import settings
 from ..database import get_db
-from ..deps import get_current_admin, require_permission
+from ..deps import get_current_admin, require_permission, require_confirm_password
 from ..services.mikrotik_client import MikrotikClient, MikrotikError
 from ..services.xray_client import XrayError, client_for_node
 from ..services import user_ops, hierarchy
@@ -122,7 +122,7 @@ def update_node(node_id: int, payload: schemas.NodeUpdate, db: Session = Depends
 
 
 @router.delete("/{node_id}")
-def delete_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+def delete_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password)):
     node = db.get(models.Node, node_id)
     if not node:
         raise HTTPException(404, "نود پیدا نشد")

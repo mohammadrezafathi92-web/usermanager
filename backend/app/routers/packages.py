@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import get_current_admin, require_permission
+from ..deps import get_current_admin, require_permission, require_confirm_password
 from ..services import hierarchy
 
 # Router-level dependency is just "logged in" - listing packages is
@@ -172,7 +172,7 @@ def update_package(package_id: int, payload: schemas.PackageUpdate, db: Session 
 
 
 @router.delete("/{package_id}")
-def delete_package(package_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_delete):
+def delete_package(package_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_delete, _confirm=Depends(require_confirm_password)):
     _require_package_manager(admin)
     pkg = _get_scoped_package(db, package_id, admin)
     for f in pkg.files:
@@ -278,7 +278,7 @@ def upload_package_file(package_id: int, file: UploadFile = File(...), db: Sessi
 
 
 @router.delete("/{package_id}/files/{file_id}")
-def delete_package_file(package_id: int, file_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+def delete_package_file(package_id: int, file_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit, _confirm=Depends(require_confirm_password)):
     _require_package_manager(admin)
     _get_scoped_package(db, package_id, admin)  # scope check, 404s if out of reach
     pf = db.get(models.PackageFile, file_id)

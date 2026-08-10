@@ -98,3 +98,30 @@ def get_bot_api_key(
         key.last_used_at = now
         db.commit()
     return key
+
+
+def require_confirm_password(
+    x_confirm_password: str = Header(None, alias="X-Confirm-Password"),
+    admin: models.AdminUser = Depends(get_current_admin),
+) -> models.AdminUser:
+    """Re-asks for the logged-in admin's OWN password before a destructive
+    action goes through (panel owner's request, 2026-08-10). Deletions here
+    are irreversible and often wide-reaching - a whole customer, a service
+    and its live connections, a node every customer depends on - so a
+    stolen/borrowed open session, or a mis-click on a confirm dialog,
+    shouldn't be enough on its own.
+
+    The password travels in the X-Confirm-Password header rather than the
+    body so it works uniformly for DELETE requests (which don't reliably
+    carry a body) and never ends up in a URL/query string that could be
+    logged. It's verified against the same hash used at login and is never
+    stored anywhere.
+    """
+    from .security import verify_password  # local import - keeps deps import-light
+
+    if not x_confirm_password or not verify_password(x_confirm_password, admin.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="برای انجام این عملیات باید رمز عبور خودتان را وارد کنید",
+        )
+    return admin

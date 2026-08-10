@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import require_superadmin
+from ..deps import require_superadmin, require_confirm_password
 from ..services.keys import generate_api_key
 
 # Superadmin-only (like routers/backup.py's full-DB backup and
@@ -49,7 +49,7 @@ def toggle_key(key_id: int, db: Session = Depends(get_db)):
 
 
 @router.delete("/{key_id}")
-def delete_key(key_id: int, db: Session = Depends(get_db)):
+def delete_key(key_id: int, db: Session = Depends(get_db), _confirm=Depends(require_confirm_password)):
     key = db.get(models.ApiKey, key_id)
     if not key:
         raise HTTPException(404, "کلید پیدا نشد")

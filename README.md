@@ -260,16 +260,18 @@ npm run dev
 | `TUTORIAL_MEDIA_DIR` | `/app/data/tutorial_media` | مسیر ذخیره عکس/ویدیوهای آموزش. |
 | `BOT_STANDALONE_MODE` | `false` | فقط روی سرور دوم، توسط فرآیند نصب خودکار تنظیم می‌شود - دستی لازم نیست. |
 | `BOT_TOKEN` / `BOT_ADMIN_IDS` / `BOT_APPROVAL_CHAT_IDS` | - | فقط در حالت `BOT_STANDALONE_MODE=true` استفاده می‌شوند؛ در حالت عادی، توکن/ادمین‌های ربات از **پنل → تنظیمات → ربات تلگرام** ذخیره می‌شوند، نه از `.env`. |
-| `SENTRY_DSN` | *(خالی = غیرفعال)* | اگر پر شود، خطاهای بک‌اند (API، ربات تلگرام، RADIUS، کارهای زمان‌بندی‌شده) به‌جای اینکه فقط در `docker compose logs` گم شوند، با استک‌تریس کامل ارسال می‌شوند. DSN را از سرور **GlitchTip** خودتان (سلف‌هاست و سازگار با Sentry - چون sentry.io از ایران در دسترس نیست) یا از sentry.io بگیرید: Settings ← پروژه ← Client Keys. نمونه: `http://<key>@<host>:9000/<project-id>` |
+| `SENTRY_DSN` | *(خالی = غیرفعال)* | اگر پر شود، خطاهای بک‌اند (API، ربات تلگرام، RADIUS، کارهای زمان‌بندی‌شده) به‌جای اینکه فقط در `docker compose logs` گم شوند، با استک‌تریس کامل ارسال می‌شوند. DSN را از **sentry.io** یا از یک سرور **GlitchTip** سلف‌هاست (سازگار با همان پروتکل) بگیرید: Settings ← پروژه ← Client Keys. نمونه‌ها: `https://<key>@o<org>.ingest.de.sentry.io/<project-id>` یا `https://<key>@<your-host>/<project-id>` |
 | `SENTRY_ENVIRONMENT` | `production` | برچسب محیط در Sentry (مثلا برای جدا کردن سرور اصلی از یک سرور تست). |
-| `SENTRY_TRACES_SAMPLE_RATE` | `0` | درصد ردیابی کارایی (performance tracing) - `0` یعنی فقط خطاها ثبت شوند، بدون overhead اضافه. برای GlitchTip همین `0` را نگه دارید؛ GlitchTip یک ابزار ردیابی **خطا** است و داده‌ی کارایی را نمایش نمی‌دهد، پس فرستادنش فقط ترافیک اضافه است. |
+| `SENTRY_TRACES_SAMPLE_RATE` | `0` | درصد ردیابی کارایی (performance tracing). روی **sentry.io** واقعاً نمایش داده می‌شود و `1.0` یعنی همه‌ی درخواست‌ها؛ روی **GlitchTip** چیزی نشان داده نمی‌شود، پس آنجا `0` بماند. |
 | `SENTRY_SEND_PII` | `false` | افزودن هدرها، کوکی‌ها و آی‌پی کاربر به رویدادهای خطا. **عمداً خاموش است**: درخواست‌های این پنل حاوی توکن ادمین، رمز میکروتیک/SSH و کلید RADIUS هستند و روشن کردن این گزینه آن‌ها را همراه هر خطا ارسال می‌کند. فقط اگر این ریسک را می‌پذیرید روشنش کنید. |
-| `SENTRY_ENABLE_LOGS` | `false` | ارسال لاگ‌ها به‌صورت ساختاریافته. GlitchTip این‌ها را نمایش نمی‌دهد، پس خاموش است. |
-| `SENTRY_PROFILE_SESSION_SAMPLE_RATE` | `0` | پروفایلینگ مداوم (اندازه‌گیری زمان اجرای کد). مثل تریسینگ، در GlitchTip دیده نمی‌شود. |
+| `SENTRY_ENABLE_LOGS` | `false` | ارسال لاگ‌ها به‌صورت ساختاریافته. روی sentry.io قابل مشاهده است؛ GlitchTip نمایششان نمی‌دهد. |
+| `SENTRY_PROFILE_SESSION_SAMPLE_RATE` | `0` | پروفایلینگ مداوم (اندازه‌گیری زمان اجرای کد). مثل تریسینگ: روی sentry.io کار می‌کند، در GlitchTip دیده نمی‌شود. |
 
-> **نکته درباره GlitchTip:** مقدار `SENTRY_DSN` را فقط در فایل `backend/.env` روی سرور بگذارید - نه در `docker-compose.yml`. سرویس بک‌اند از طریق `env_file: ./backend/.env` همه‌ی متغیرها را می‌خواند، و اگر همان متغیر را در بخش `environment:` کامپوز هم بنویسید، مقدار کامپوز روی فایل `.env` را بازنویسی می‌کند (همان تله‌ای که برای `DATABASE_URL` در کامنت داخل `docker-compose.yml` توضیح داده شده).
+> **نکته:** مقدار `SENTRY_DSN` را فقط در فایل `backend/.env` روی سرور بگذارید - نه در `docker-compose.yml`. سرویس بک‌اند از طریق `env_file: ./backend/.env` همه‌ی متغیرها را می‌خواند، و اگر همان متغیر را در بخش `environment:` کامپوز هم بنویسید، مقدار کامپوز روی فایل `.env` را بازنویسی می‌کند (همان تله‌ای که برای `DATABASE_URL` در کامنت داخل `docker-compose.yml` توضیح داده شده).
 
-برای تست اینکه اتصال به GlitchTip برقرار است، بدون اینکه لازم باشد خطای تستی به کد اضافه کنید:
+> **اگر سرور در ایران است:** قبل از سوییچ به sentry.io دسترسی شبکه را تست کنید (`curl --max-time 10 https://de.sentry.io/api/0/`). اگر در دسترس نبود، ارسال خطاها بی‌صدا شکست می‌خورد و باید یا پروکسی تنظیم کنید یا روی GlitchTip سلف‌هاست بمانید.
+
+برای تست اینکه اتصال برقرار است، بدون اینکه لازم باشد خطای تستی به کد اضافه کنید:
 
 ```bash
 docker compose exec backend python -c "
@@ -279,7 +281,7 @@ print('DSN:', settings.sentry_dsn or '(خالی - تنظیم نشده)')
 sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.sentry_environment)
 sentry_sdk.capture_message('تست اتصال از پنل')
 sentry_sdk.flush(timeout=10)
-print('ارسال شد - داشبورد GlitchTip را چک کنید')
+print('ارسال شد - داشبورد Sentry/GlitchTip را چک کنید')
 "
 ```
 

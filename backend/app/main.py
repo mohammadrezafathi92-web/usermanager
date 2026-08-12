@@ -381,6 +381,10 @@ def on_startup():
         converted, skipped = purchase_migration.migrate_if_needed(db)
         if converted or skipped:
             logging.info("مهاجرت سرویس‌ها: %s تبدیل شد، %s اشتراکی ماند", converted, skipped)
+        # Repairs anyone left with BOTH a Purchase and shared-pool
+        # connections - see fix_mixed_users' docstring for why that state
+        # silently strands the leftover connections.
+        purchase_migration.fix_mixed_users(db)
     except Exception:
         logging.exception("خطا در مهاجرت سرویس‌های قدیمی به Purchase مستقل")
     finally:

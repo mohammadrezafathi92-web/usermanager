@@ -260,9 +260,25 @@ npm run dev
 | `TUTORIAL_MEDIA_DIR` | `/app/data/tutorial_media` | مسیر ذخیره عکس/ویدیوهای آموزش. |
 | `BOT_STANDALONE_MODE` | `false` | فقط روی سرور دوم، توسط فرآیند نصب خودکار تنظیم می‌شود - دستی لازم نیست. |
 | `BOT_TOKEN` / `BOT_ADMIN_IDS` / `BOT_APPROVAL_CHAT_IDS` | - | فقط در حالت `BOT_STANDALONE_MODE=true` استفاده می‌شوند؛ در حالت عادی، توکن/ادمین‌های ربات از **پنل → تنظیمات → ربات تلگرام** ذخیره می‌شوند، نه از `.env`. |
-| `SENTRY_DSN` | *(خالی = غیرفعال)* | اگر پر شود، خطاهای بک‌اند (API، ربات تلگرام، RADIUS، کارهای زمان‌بندی‌شده) به‌جای اینکه فقط در `docker compose logs` گم شوند، با استک‌تریس کامل به Sentry ارسال می‌شوند. DSN را از sentry.io (یا نسخه self-hosted) → Settings → پروژه → Client Keys بگیرید. |
+| `SENTRY_DSN` | *(خالی = غیرفعال)* | اگر پر شود، خطاهای بک‌اند (API، ربات تلگرام، RADIUS، کارهای زمان‌بندی‌شده) به‌جای اینکه فقط در `docker compose logs` گم شوند، با استک‌تریس کامل ارسال می‌شوند. DSN را از سرور **GlitchTip** خودتان (سلف‌هاست و سازگار با Sentry - چون sentry.io از ایران در دسترس نیست) یا از sentry.io بگیرید: Settings ← پروژه ← Client Keys. نمونه: `http://<key>@<host>:9000/<project-id>` |
 | `SENTRY_ENVIRONMENT` | `production` | برچسب محیط در Sentry (مثلا برای جدا کردن سرور اصلی از یک سرور تست). |
-| `SENTRY_TRACES_SAMPLE_RATE` | `0` | درصد ردیابی کارایی (performance tracing) - `0` یعنی فقط خطاها ثبت شوند، بدون overhead اضافه؛ برای نصب‌های کوچک نیازی به تغییرش نیست. |
+| `SENTRY_TRACES_SAMPLE_RATE` | `0` | درصد ردیابی کارایی (performance tracing) - `0` یعنی فقط خطاها ثبت شوند، بدون overhead اضافه. برای GlitchTip همین `0` را نگه دارید؛ GlitchTip یک ابزار ردیابی **خطا** است و داده‌ی کارایی را نمایش نمی‌دهد، پس فرستادنش فقط ترافیک اضافه است. |
+
+> **نکته درباره GlitchTip:** مقدار `SENTRY_DSN` را فقط در فایل `backend/.env` روی سرور بگذارید - نه در `docker-compose.yml`. سرویس بک‌اند از طریق `env_file: ./backend/.env` همه‌ی متغیرها را می‌خواند، و اگر همان متغیر را در بخش `environment:` کامپوز هم بنویسید، مقدار کامپوز روی فایل `.env` را بازنویسی می‌کند (همان تله‌ای که برای `DATABASE_URL` در کامنت داخل `docker-compose.yml` توضیح داده شده).
+
+برای تست اینکه اتصال به GlitchTip برقرار است، بدون اینکه لازم باشد خطای تستی به کد اضافه کنید:
+
+```bash
+docker compose exec backend python -c "
+import sentry_sdk
+from app.config import settings
+print('DSN:', settings.sentry_dsn or '(خالی - تنظیم نشده)')
+sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.sentry_environment)
+sentry_sdk.capture_message('تست اتصال از پنل')
+sentry_sdk.flush(timeout=10)
+print('ارسال شد - داشبورد GlitchTip را چک کنید')
+"
+```
 
 ## ویژگی‌های پنل مدیریت
 

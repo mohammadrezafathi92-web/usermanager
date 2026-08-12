@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# ============================================================
+#  نصب GlitchTip (ردیاب خطای سلف‌هاست، جایگزین Sentry)
+#  دامنه: errors.netcip.ir
+#  این اسکریپت رو با SSH روی همون سروری که NetCip روشه اجرا کن.
+#  اجرا: sudo bash install-glitchtip.sh
+# ============================================================
+set -e
+say() { echo -e "\n\033[1;36m$1\033[0m"; }
+
+DOMAIN="errors.netcip.ir"
+DIR="/opt/glitchtip"
+
+if [ "$EUID" -ne 0 ]; then
+  echo "❌ این اسکریپت رو با sudo اجرا کن: sudo bash install-glitchtip.sh"
+  exit 1
+fi
+
+if ! command -v docker &>/dev/null; then
+  echo "❌ Docker روی این سرور نصب نیست. اول Docker رو نصب کن، بعد دوباره این اسکریپت رو بزن."
+  exit 1
+fi
+
+say "📁 ساخت پوشه و فایل docker-compose برای GlitchTip..."
+mkdir -p "$DIR"
+cd "$DIR"
+
+SECRET=$(openssl rand -hex 32)
+
+cat > docker-compose.yml <<EOF
+x-environment: &default-environment
+  DATABASE_URL: postgres://postgres:postgres@postgres:5432/postgres
+  VALKEY_URL: redis://valkey:6379
+  SECRET_KEY: ${SECRET}
+  EMAIL_URL: consolemail://
+  GLITCHTIP_DOMAIN: https://${DOMAIN}
+  DEFAULT_FROM_EMAIL: admin@${DOMAIN}
+  ENABLE_ADMIN: "False"
+  ENABLE_OPENAPI: "False"
+
+x-depends_on: &default-depends_on
+  - postgres
+  - valkey
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: "trust"
+    restart: unless-stopped
+    volumes:
+      - pg-data:/var/lib/postgresql
+  valkey:
+    image: valkey/valkey:9
+    restart: unless-stopped
+  web:
+    image: glitchtip/glitchtip:6
+    depends_on: *default-depends_on
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      <<: *default-environment
+      SERVER_ROLE: all_in_one
+    restart: unless-stopped
+    volumes:
+      - uploads:/code/uploads
+
+volumes:
+  pg-data:
+  uploads:
+EOF
+
+say "🐳 بالا آوردن GlitchTip (ممکنه یکی-دو دقیقه طول بکشه)..."
+docker compose up -d
+
+say "🌐 تنظیم nginx برای دامنه ${DOMAIN}..."
+cat > /etc/nginx/sites-available/glitchtip <<EOF
+server {
+    listen 80;
+    server_name ${DOMAIN};
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+
+ln -sf /etc/nginx/sites-available/glitchtip /etc/nginx/sites-enabled/glitchtip
+nginx -t
+systemctl reload nginx
+
+say "🔒 گرفتن گواهی SSL رایگان (Let's Encrypt)..."
+if ! command -v certbot &>/dev/null; then
+  say "نصب certbot..."
+  apt-get update -y
+  apt-get install -y certbot python3-certbot-nginx
+fi
+certbot --nginx -d "${DOMAIN}" --non-interactive --agree-tos -m "admin@${DOMAIN}" --redirect || {
+  echo "⚠️  گرفتن SSL خودکار جواب نداد. مطمئن شو DNS دامنه ${DOMAIN} به IP همین سرور اشاره می‌کنه، بعد دستی بزن:"
+  echo "    certbot --nginx -d ${DOMAIN}"
+}
+
+say "👤 حالا باید یه کاربر ادمین بسازی (این بخش تعاملیه، ازت ایمیل/رمز می‌خواد):"
+docker compose exec web ./manage.py createsuperuser
+
+say "🎉 تمومه! برو به https://${DOMAIN} و با همون کاربری که ساختی وارد شو."
+echo "بعدش یه Organization و Project بساز — یه DSN بهت می‌ده که باید توی کد NetCip (پایتون/FastAPI) و بقیه پروژه‌ها ست بشه."
+echo "DSN رو برام بفرست تا کمکت کنم به کد NetCip و تابش‌تک وصلش کنیم."

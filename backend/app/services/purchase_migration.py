@@ -154,6 +154,42 @@ def migrate_user(db: Session, user: models.User) -> tuple[int, int]:
     return len(converted), skipped
 
 
+def fix_mixed_users(db: Session) -> int:
+    """Repairs customers left in the "mixed" state - some connections on an
+    independent Purchase, some still on the shared user pool. See
+    user_ops.absorb_legacy_pool_into_purchase for why that state is a trap
+    (renewals go to the Purchase; the leftover connections stay pinned to a
+    frozen user-level expiry and get cut off with no way to renew them).
+
+    Runs on every startup, not once: it's a cheap query, and it also
+    cleans up after any code path that might still produce the state.
+    Returns how many customers were repaired."""
+    fixed = 0
+    for user in db.query(models.User).all():
+        if not user.purchases:
+            continue  # legacy-only customer - their pool is still live, leave it alone
+        if not any(c.purchase_id is None for c in user.connections):
+            continue  # already fully on the per-service model
+        try:
+            if user_ops_absorb(db, user) is not None:
+                fixed += 1
+        except Exception:
+            logger.exception("failed to absorb the legacy pool for user %s", user.username)
+            db.rollback()
+    if fixed:
+        db.commit()
+        logger.info("%s کاربر ترکیبی اصلاح شد (اتصال‌های قدیمی به سرویس مستقل منتقل شدند)", fixed)
+    return fixed
+
+
+def user_ops_absorb(db: Session, user: models.User):
+    # Imported lazily - user_ops imports plenty at module load, and this
+    # module is itself imported from main.py's startup path.
+    from .user_ops import absorb_legacy_pool_into_purchase
+
+    return absorb_legacy_pool_into_purchase(db, user)
+
+
 def migrate_if_needed(db: Session) -> tuple[int, int]:
     """Entry point called from main.py's on_startup. Returns totals of
     (purchases created, groups left shared)."""

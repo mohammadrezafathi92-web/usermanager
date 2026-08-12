@@ -1086,6 +1086,59 @@ def provision_package_connections(db: Session, user: models.User, package: model
     return {"created": created, "skipped": skipped}
 
 
+def absorb_legacy_pool_into_purchase(db: Session, user: models.User) -> Optional[models.Purchase]:
+    """Moves a customer's leftover shared-pool connections into a Purchase
+    of their own, carrying the user-level quota/usage/expiry across 1:1.
+
+    Prevents the "mixed" state - some connections on an independent
+    Purchase, some still on the user's combined pool - which is a trap
+    (found 2026-08-10): once a customer has ANY Purchase, renewals target
+    that Purchase, so the user-level expiry freezes at whatever it was and
+    the leftover legacy connections get cut off at that stale date with no
+    way to ever renew them. Called right before a new independent Purchase
+    is created for a user (below) and once at startup for anyone already
+    in that state (services/purchase_migration.py).
+
+    No-op for a customer with no legacy connections, or one who has ONLY
+    legacy connections (nothing has changed for them - their pool is still
+    live and their renewals still update it).
+
+    Returns the created Purchase, or None when nothing needed doing."""
+    legacy = [c for c in user.connections if c.purchase_id is None]
+    if not legacy:
+        return None
+
+    package = db.get(models.Package, user.package_id) if user.package_id else None
+    purchase = models.Purchase(
+        user_id=user.id,
+        package_id=user.package_id,
+        package_name_snapshot=(
+            (package.name if package else None)
+            or next((c.package_name_snapshot for c in legacy if c.package_name_snapshot), None)
+            or "سرویس قبلی"
+        ),
+        quota_bytes=user.total_quota_bytes or 0,
+        used_bytes=user.used_bytes or 0,
+        expire_at=user.expire_at,
+        expire_days_after_first_use=user.expire_days_after_first_use,
+        max_concurrent_sessions=user.max_concurrent_sessions,
+        status=user.status if user.status != models.UserStatus.disabled else models.UserStatus.active,
+        reserved_quota_bytes=user.reserved_quota_bytes,
+        reserved_duration_days=user.reserved_duration_days,
+        reserved_created_at=user.reserved_created_at,
+        created_at=min((c.created_at for c in legacy if c.created_at), default=user.created_at),
+    )
+    db.add(purchase)
+    db.flush()  # assigns purchase.id for the links below
+    for conn in legacy:
+        conn.purchase_id = purchase.id
+    # The reservation now belongs to the purchase - never to both.
+    user.reserved_quota_bytes = None
+    user.reserved_duration_days = None
+    user.reserved_created_at = None
+    return purchase
+
+
 def apply_package_as_purchase(
     db: Session, user: models.User, package: models.Package,
     connections_override: Optional[list[dict]] = None,
@@ -1118,6 +1171,12 @@ def apply_package_as_purchase(
     pre-bundled specific servers into the package. None (the default, and
     always the case for the web panel's apply_package endpoint) uses
     package.connections as before."""
+    # Never leave this customer half-on-the-old-model: any connections
+    # still on the shared pool get their own Purchase first, so adding this
+    # new one can't strand them under a frozen expiry (see
+    # absorb_legacy_pool_into_purchase).
+    absorb_legacy_pool_into_purchase(db, user)
+
     purchase = models.Purchase(
         user_id=user.id,
         package_id=package.id,

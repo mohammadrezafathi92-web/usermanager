@@ -137,6 +137,35 @@ def cleanup_old_usage_logs(keep_days: int = USAGE_LOG_KEEP_DAYS) -> int:
         db.close()
 
 
+def _user_status_from_purchases(user: models.User) -> models.UserStatus:
+    """The account-level badge for a customer whose services are ALL
+    independent Purchases - derived from those services rather than from
+    the user's own combined fields.
+
+    Fixes a real confusion (2026-08-10): after services/purchase_migration
+    moved everything to per-service quotas, User.expire_at/used_bytes
+    stopped being updated (renewals now extend the PURCHASE), so a customer
+    who had renewed and had a perfectly valid service still showed
+    «منقضی‌شده» on their account forever, because that frozen old expiry
+    date is still in the past and always will be. Their service worked -
+    _enforce_user_limits never disables purchase-linked connections - but
+    the status said otherwise.
+
+    Any active service means the account is active. Otherwise it reports
+    whichever reason the services actually ended for; with no services at
+    all, the account is simply active (nothing to enforce)."""
+    statuses = [p.status for p in user.purchases]
+    if not statuses:
+        return models.UserStatus.active
+    if models.UserStatus.active in statuses:
+        return models.UserStatus.active
+    if models.UserStatus.quota_exceeded in statuses:
+        return models.UserStatus.quota_exceeded
+    if models.UserStatus.expired in statuses:
+        return models.UserStatus.expired
+    return models.UserStatus.active
+
+
 def _enforce_user_limits(db: Session, user: models.User):
     """Enforces the user's own COMBINED quota/expiry - only ever governs
     connections with no purchase_id (see Connection.purchase_id's
@@ -145,6 +174,16 @@ def _enforce_user_limits(db: Session, user: models.User):
     user-level check decides."""
     if user.status == models.UserStatus.disabled:
         return  # manually disabled by admin - do not touch
+
+    # No legacy connections left => the user-level pool governs NOTHING, so
+    # judging the account by it would just show a stale verdict forever
+    # (see _user_status_from_purchases). Mirror the services instead, and
+    # touch no connections - each one is already handled per-purchase.
+    if not any(c.purchase_id is None for c in user.connections):
+        target = _user_status_from_purchases(user)
+        if target != user.status:
+            user.status = target
+        return
 
     exceeded = user.total_quota_bytes and user.used_bytes >= user.total_quota_bytes
     expired = user.expire_at and user.expire_at < dt.datetime.utcnow()

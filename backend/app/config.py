@@ -83,6 +83,22 @@ class Settings(BaseSettings):
     # single-server deployment; raise it only if you actually want latency
     # breakdowns in Sentry).
     sentry_traces_sample_rate: float = float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0"))
+    # Attach request headers/cookies/client IP to events. Sentry's own
+    # docs suggest turning this ON, but it stays OFF here by default on
+    # purpose: this panel's requests carry admin JWTs, MikroTik/SSH
+    # passwords, RADIUS secrets and API keys, and send_default_pii would
+    # ship those to the error tracker with every captured exception. Turn
+    # it on only if you accept that (SENTRY_SEND_PII=true).
+    sentry_send_pii: bool = os.environ.get("SENTRY_SEND_PII", "").strip().lower() in ("1", "true", "yes")
+    # Forward log records as structured logs. GlitchTip currently ignores
+    # these (it's an error tracker), so it's off unless asked for.
+    sentry_enable_logs: bool = os.environ.get("SENTRY_ENABLE_LOGS", "").strip().lower() in ("1", "true", "yes")
+    # Continuous profiling. Same story as tracing/logs on GlitchTip -
+    # nothing renders them there, so 0 = off by default.
+    sentry_profile_session_sample_rate: float = float(os.environ.get("SENTRY_PROFILE_SESSION_SAMPLE_RATE", "0"))
+    # "trace" = profile automatically whenever a transaction is active
+    # (only meaningful when the sample rate above is > 0).
+    sentry_profile_lifecycle: str = os.environ.get("SENTRY_PROFILE_LIFECYCLE", "trace")
 
     class Config:
         env_file = ".env"

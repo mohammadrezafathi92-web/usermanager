@@ -33,19 +33,57 @@ def _init_sentry() -> None:
     started after this point (including new threads) is automatically
     covered, not just request handlers.
 
-    send_default_pii stays False on purpose: this panel's own data
-    (MikroTik/SSH credentials, API keys, customer wallet balances, RADIUS
-    secrets) is sensitive - Sentry gets exception type/traceback/request
-    path, never request bodies/headers/user IP by default."""
+    Every knob Sentry's own FastAPI quickstart shows is wired up here, but
+    driven by env vars (see config.py) rather than hardcoded, because the
+    quickstart's defaults are written for sentry.io and this deployment
+    points at a self-hosted GlitchTip:
+
+    - send_default_pii defaults to FALSE, unlike the quickstart. This
+      panel's requests carry admin JWTs, MikroTik/SSH passwords, RADIUS
+      secrets and API keys; turning it on ships those to the error tracker
+      with every captured exception. SENTRY_SEND_PII=true opts in.
+    - enable_logs / profiling default to off: GlitchTip is an error
+      tracker and renders neither, so sending them is pure extra traffic.
+      Both become available the moment the DSN points at something that
+      does support them.
+
+    The FastAPI/Starlette integrations are NOT passed explicitly - the SDK
+    auto-enables them when fastapi is installed (confirmed in the received
+    events' `integrations` list), and naming them by hand only risks
+    breaking on an SDK upgrade that moves them."""
     if not settings.sentry_dsn:
         return
-    sentry_sdk.init(
-        dsn=settings.sentry_dsn,
-        environment=settings.sentry_environment,
-        traces_sample_rate=settings.sentry_traces_sample_rate,
-        send_default_pii=False,
+
+    options = {
+        "dsn": settings.sentry_dsn,
+        "environment": settings.sentry_environment,
+        "traces_sample_rate": settings.sentry_traces_sample_rate,
+        "send_default_pii": settings.sentry_send_pii,
+        "enable_logs": settings.sentry_enable_logs,
+    }
+    if settings.sentry_profile_session_sample_rate > 0:
+        options["profile_session_sample_rate"] = settings.sentry_profile_session_sample_rate
+        options["profile_lifecycle"] = settings.sentry_profile_lifecycle
+
+    try:
+        sentry_sdk.init(**options)
+    except TypeError:
+        # An older sentry-sdk that doesn't know one of the newer options -
+        # fall back to the core set rather than leaving monitoring off
+        # entirely (the errors matter more than the extras).
+        logging.warning("این نسخه sentry-sdk همه گزینه‌ها را پشتیبانی نمی‌کند - با تنظیمات پایه فعال شد")
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            environment=settings.sentry_environment,
+            traces_sample_rate=settings.sentry_traces_sample_rate,
+            send_default_pii=settings.sentry_send_pii,
+        )
+
+    logging.info(
+        "ردیابی خطا فعال شد (environment=%s, pii=%s, logs=%s, traces=%s)",
+        settings.sentry_environment, settings.sentry_send_pii,
+        settings.sentry_enable_logs, settings.sentry_traces_sample_rate,
     )
-    logging.info("Sentry error monitoring فعال شد (environment=%s)", settings.sentry_environment)
 
 
 _init_sentry()

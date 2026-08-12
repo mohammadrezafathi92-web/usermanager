@@ -149,7 +149,32 @@ def update_my_bot(
     _require_admin_tier(admin)
     data = payload.model_dump(exclude_unset=True)
     if "bot_token" in data:
-        admin.own_bot_token = data["bot_token"] or None
+        token = (data["bot_token"] or "").strip()
+        # Telegram permits exactly ONE getUpdates poller per token. Saving a
+        # token that another admin (or the shared bot) already uses doesn't
+        # create a second bot - the instances knock each other offline in a
+        # loop and none of them receives anything. Caught here rather than
+        # left to fail silently at runtime; see main.py's startup loop for
+        # the matching guard on rows that predate this check.
+        if token:
+            clash = (
+                db.query(models.AdminUser)
+                .filter(models.AdminUser.own_bot_token == token, models.AdminUser.id != admin.id)
+                .first()
+            )
+            if clash is not None:
+                raise HTTPException(
+                    400,
+                    f"این توکن ربات هم‌اکنون برای ادمین «{clash.username}» ثبت شده است. "
+                    "تلگرام اجازه‌ی اجرای همزمان یک توکن را نمی‌دهد - برای هر ادمین از @BotFather یک ربات جدا بسازید.",
+                )
+            shared = db.get(models.BotSettings, 1)
+            if shared is not None and (shared.bot_token or "").strip() == token:
+                raise HTTPException(
+                    400,
+                    "این توکن همان ربات مشترک پنل است. برای ربات اختصاصی باید از @BotFather یک ربات جدا بسازید.",
+                )
+        admin.own_bot_token = token or None
     if "enabled" in data:
         admin.own_bot_enabled = bool(data["enabled"])
     db.commit()

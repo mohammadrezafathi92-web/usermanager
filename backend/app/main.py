@@ -519,15 +519,42 @@ def _start_full_services() -> None:
         # multi-instance registry) - every level-2 Admin who's configured
         # and enabled their own bot gets it started here too, running
         # concurrently with the shared bot above and every other admin's.
+        #
+        # Deliberately de-duplicated by token: Telegram allows exactly ONE
+        # getUpdates poller per bot token, so starting the same token twice
+        # doesn't give you two bots - the two instances kick each other off
+        # in a loop and NEITHER receives messages. That really happened here
+        # (2026-08-12): one token was saved on three different admin rows,
+        # the panel started three pollers, and that admin's bot silently
+        # received nothing for weeks while flooding the logs with
+        # TelegramConflictError several times a second. routers/
+        # telegram_bot_settings.py now rejects a duplicate token at save
+        # time; this is the belt-and-braces half for rows that predate that
+        # check (or get there via direct DB edits).
         own_bot_admins = (
             db.query(models.AdminUser)
             .filter(models.AdminUser.own_bot_token.isnot(None), models.AdminUser.own_bot_enabled == True)  # noqa: E712
+            .order_by(models.AdminUser.id)  # lowest id wins - it's the original owner
             .all()
         )
+        seen_tokens: set[str] = set()
+        if bot_row and bot_row.enabled and bot_row.bot_token:
+            seen_tokens.add(bot_row.bot_token.strip())
+        started = 0
         for admin in own_bot_admins:
-            telegram_bot_runner.start_admin_bot(admin.id, admin.own_bot_token, admin.telegram_id)
-        if own_bot_admins:
-            logging.info("started %d per-admin dedicated telegram bot(s)", len(own_bot_admins))
+            token = (admin.own_bot_token or "").strip()
+            if token in seen_tokens:
+                logging.warning(
+                    "ربات اختصاصی ادمین #%s استارت نشد: توکن %s قبلاً برای یک ربات دیگر در حال اجراست "
+                    "(تلگرام فقط یک نمونه به‌ازای هر توکن را می‌پذیرد)",
+                    admin.id, token.split(":")[0] or "?",
+                )
+                continue
+            seen_tokens.add(token)
+            telegram_bot_runner.start_admin_bot(admin.id, token, admin.telegram_id)
+            started += 1
+        if started:
+            logging.info("started %d per-admin dedicated telegram bot(s)", started)
     finally:
         db.close()
 

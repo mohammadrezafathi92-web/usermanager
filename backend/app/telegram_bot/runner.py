@@ -23,6 +23,8 @@ import logging
 import threading
 from dataclasses import dataclass, field
 
+import sentry_sdk
+
 from aiogram import BaseMiddleware, Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -171,6 +173,9 @@ class _Instance:
     status: dict = field(default_factory=lambda: {"running": False, "last_error": None, "bot_username": None})
     bot: Bot | None = None
     loop: asyncio.AbstractEventLoop | None = None
+    # This bot thread's Sentry scope, so the bot's @username can be added as
+    # a tag once get_me() has told us what it is (see _run_loop/_main).
+    sentry_scope: object | None = None
 
 
 _registry_lock = threading.Lock()
@@ -358,11 +363,24 @@ def _run_loop(
     asyncio.set_event_loop(loop)
     inst.loop = loop
     try:
-        loop.run_until_complete(
-            _main(inst, token, admin_ids, approval_chat_ids, stop_event, customer_bot_enabled, bot_owner_admin_id)
-        )
+        # Everything this bot logs or raises gets tagged with WHICH bot it
+        # was. Several bots poll concurrently, each on its own thread, and
+        # aiogram's own errors ("Failed to fetch updates - ...") carry no
+        # hint of the instance - so an error tracker just shows N identical
+        # messages and the only way to tell whose bot is broken is guessing.
+        # An explicit isolation scope rather than a bare set_tag: it is
+        # entered on this thread and torn down with it, so the tags cannot
+        # leak into the web request handlers or another bot's thread.
+        with sentry_sdk.isolation_scope() as scope:
+            scope.set_tag("bot.owner_admin_id", bot_owner_admin_id if bot_owner_admin_id is not None else "shared")
+            scope.set_tag("bot.token_id", (token or "").split(":")[0] or "unknown")
+            inst.sentry_scope = scope
+            loop.run_until_complete(
+                _main(inst, token, admin_ids, approval_chat_ids, stop_event, customer_bot_enabled, bot_owner_admin_id)
+            )
     finally:
         inst.loop = None
+        inst.sentry_scope = None
         loop.close()
 
 
@@ -389,6 +407,10 @@ async def _main(
 
     inst.bot = bot
     inst.status.update(running=True, last_error=None, bot_username=me.username)
+    if inst.sentry_scope is not None:
+        # Only knowable after get_me(); the numeric tags were set at thread
+        # start so that even a bot that FAILS to start is still identifiable.
+        inst.sentry_scope.set_tag("bot.username", me.username)
     logger.info("Telegram bot started: @%s (owner_admin_id=%s)", me.username, bot_owner_admin_id)
     await _set_bot_commands(bot, admin_ids)
 

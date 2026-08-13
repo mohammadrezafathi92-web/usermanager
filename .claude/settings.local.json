@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/mac/Claude/Claude/Projects/user maneger/**)",
+      "Read(//Users/mac/second-brain/**)"
+    ]
+  }
+}

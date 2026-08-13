@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from .. import models, schemas
 from ..database import get_db
+from ..services.jalali import fmt_jalali
 from ..deps import get_current_admin, require_confirm_password
 from ..services import user_ops, hierarchy, accounting
 
@@ -525,11 +526,11 @@ def export_users(
         ws.cell(row=row, column=4, value=_STATUS_LABELS_FA.get(u.status.value if hasattr(u.status, "value") else u.status, str(u.status)))
         ws.cell(row=row, column=5, value=round((u.used_bytes or 0) / 1024 ** 3, 2))
         ws.cell(row=row, column=6, value=round((u.total_quota_bytes or 0) / 1024 ** 3, 2) if u.total_quota_bytes else "نامحدود")
-        ws.cell(row=row, column=7, value=u.expire_at.strftime("%Y-%m-%d %H:%M") if u.expire_at else "بدون انقضا")
+        ws.cell(row=row, column=7, value=fmt_jalali(u.expire_at) if u.expire_at else "بدون انقضا")
         ws.cell(row=row, column=8, value=u.balance or 0)
         ws.cell(row=row, column=9, value=len(u.connections))
         ws.cell(row=row, column=10, value=u.owner_admin.username if u.owner_admin else "")
-        ws.cell(row=row, column=11, value=u.created_at.strftime("%Y-%m-%d %H:%M") if u.created_at else "")
+        ws.cell(row=row, column=11, value=fmt_jalali(u.created_at) if u.created_at else "")
         for col in range(1, len(headers) + 1):
             ws.cell(row=row, column=col).alignment = Alignment(horizontal="center")
 

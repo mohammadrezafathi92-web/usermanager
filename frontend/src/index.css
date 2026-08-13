@@ -2,15 +2,70 @@
 @tailwind components;
 @tailwind utilities;
 
-* {
-  font-family: "Vazirmatn", system-ui, sans-serif;
-}
+/* ============================================================================
+   Design foundation
+   ----------------------------------------------------------------------------
+   Every page in this panel is styled almost entirely through the component
+   classes defined here (.card / .btn* / .input / .badge* / .table-wrap ...)
+   rather than through per-page utility soup - an audit on 2026-08-12 found
+   178 <input> tags of which essentially all already used .input, and only 6
+   hardcoded hex colours in the whole of src/pages. That is deliberate and
+   worth preserving: it means the entire panel can be restyled from this one
+   file without touching page logic, which is exactly what a redesign on a
+   live production panel needs.
 
-body {
-  background-color: #f3f4f8;
-}
-.dark body {
-  background-color: #0f1117;
+   Two hard constraints anything added here must respect:
+
+   1. RTL. The UI is Persian; never use left/right-specific utilities in
+      shared classes (ml-*, pl-*, text-left, rounded-l-*). Use logical
+      properties (margin-inline-start, padding-inline, text-start) so the
+      layout keeps working if an LTR language is selected in i18n.
+
+   2. Touch targets. Admins and sellers use this panel from phones, so
+      interactive elements are >=44px tall on small screens (min-h-11) and
+      may shrink to a denser 36px only from sm: upwards, where a mouse is
+      the likely input device.
+   ========================================================================= */
+
+@layer base {
+  * {
+    font-family: "Vazirmatn", system-ui, sans-serif;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-slate-100 text-gray-800 antialiased dark:bg-[#0b0d13] dark:text-gray-100;
+  }
+
+  /* Keyboard-only focus ring. Applied globally so every button/link/field is
+     reachable without a mouse - previously only .input had any focus style,
+     which made keyboard navigation effectively invisible. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand-500/60 ring-offset-2 ring-offset-white dark:ring-offset-slate-900;
+    border-radius: 0.5rem;
+  }
+
+  /* Digits in a financial panel must not jitter as values change, and Persian
+     text mixes Latin numerals freely - tabular figures keep table columns and
+     money totals aligned. */
+  table,
+  .tnum {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
 
 ::-webkit-scrollbar {
@@ -21,47 +76,202 @@ body {
   background: #c9cee0;
   border-radius: 8px;
 }
+::-webkit-scrollbar-thumb:hover {
+  background: #aab2ca;
+}
 .dark ::-webkit-scrollbar-thumb {
   background: #333846;
 }
-
-.card {
-  @apply bg-white rounded-2xl shadow-sm border border-gray-100 p-5 dark:bg-slate-900 dark:border-slate-800;
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #444b5c;
 }
 
-.btn {
-  @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
-}
-.btn-primary {
-  @apply btn bg-brand-600 text-white hover:bg-brand-700;
-}
-.btn-secondary {
-  @apply btn bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-slate-800 dark:text-gray-200 dark:hover:bg-slate-700;
-}
-.btn-danger {
-  @apply btn bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-950 dark:text-red-400 dark:hover:bg-red-900;
+@layer components {
+  /* ---------------------------------------------------------------- surfaces */
+  .card {
+    @apply bg-white rounded-2xl shadow-sm border border-gray-200/70 p-4 sm:p-5
+           dark:bg-slate-900 dark:border-slate-800;
+  }
+  /* For cards that are themselves clickable (list rows, node tiles). */
+  .card-hover {
+    @apply transition-shadow hover:shadow-md hover:border-gray-300/70
+           dark:hover:border-slate-700;
+  }
+  .card-muted {
+    @apply bg-gray-50/70 rounded-xl border border-gray-200/70 p-4
+           dark:bg-slate-950/40 dark:border-slate-800;
+  }
+
+  /* ---------------------------------------------------------------- buttons */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 text-sm font-medium
+           min-h-11 sm:min-h-9 transition-colors select-none
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  /* Dense variant for buttons inside table rows / toolbars. Still 40px on
+     touch screens - only the desktop size drops. */
+  .btn-sm {
+    @apply px-3 text-xs gap-1.5 min-h-10 sm:min-h-8 rounded-lg;
+  }
+  .btn-icon {
+    @apply px-0 w-11 sm:w-9 shrink-0;
+  }
+  .btn-primary {
+    @apply btn bg-brand-600 text-white shadow-sm hover:bg-brand-700 active:bg-brand-800;
+  }
+  .btn-secondary {
+    @apply btn bg-gray-100 text-gray-700 hover:bg-gray-200 active:bg-gray-300
+           dark:bg-slate-800 dark:text-gray-200 dark:hover:bg-slate-700;
+  }
+  .btn-outline {
+    @apply btn border border-gray-200 bg-white text-gray-700 hover:bg-gray-50
+           dark:bg-slate-900 dark:border-slate-700 dark:text-gray-200 dark:hover:bg-slate-800;
+  }
+  .btn-ghost {
+    @apply btn text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-slate-800;
+  }
+  .btn-danger {
+    @apply btn bg-red-50 text-red-600 hover:bg-red-100 active:bg-red-200
+           dark:bg-red-950 dark:text-red-400 dark:hover:bg-red-900;
+  }
+  .btn-success {
+    @apply btn bg-emerald-50 text-emerald-700 hover:bg-emerald-100
+           dark:bg-emerald-950 dark:text-emerald-400 dark:hover:bg-emerald-900;
+  }
+
+  /* ----------------------------------------------------------------- fields */
+  .input {
+    @apply w-full rounded-xl border border-gray-200 bg-white px-3 text-sm min-h-11 sm:min-h-9
+           placeholder:text-gray-400 transition-shadow
+           focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent
+           disabled:opacity-60 disabled:cursor-not-allowed
+           dark:bg-slate-900 dark:border-slate-700 dark:text-gray-100;
+  }
+  /* <textarea> needs padding rather than a min height that fights `rows`. */
+  .input-area {
+    @apply input py-2 min-h-0;
+  }
+  /* Dense field for tight chrome - the Jalali calendar's month/year selects,
+     inline price editors in a table row. These sit inside compact popovers
+     where the 44px default would dominate the surrounding layout, and they
+     are never the primary target on a page. */
+  .input-sm {
+    @apply input px-2 text-xs min-h-9 sm:min-h-8 rounded-lg;
+  }
+  /* Number fields keep their numeric keypad and their minus sign, but lose the
+     browser's up/down steppers. Nothing in this panel is meaningfully edited
+     by nudging one unit at a time - the values are tomans, gigabytes and port
+     numbers - while the arrows eat horizontal space, sit on the wrong side in
+     an RTL layout, and invite mis-clicks on a money field. Typing still works
+     exactly as before. */
+  .input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+  .input[type="number"]::-webkit-outer-spin-button,
+  .input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    appearance: none;
+    margin: 0;
+  }
+
+  .label {
+    @apply block text-xs font-medium text-gray-500 mb-1.5;
+  }
+  .hint {
+    @apply text-xs text-gray-400 mt-1;
+  }
+
+  /* ----------------------------------------------------------------- badges */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium
+           whitespace-nowrap;
+  }
+  .badge-success {
+    @apply badge bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400;
+  }
+  .badge-warn {
+    @apply badge bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-400;
+  }
+  .badge-danger {
+    @apply badge bg-red-50 text-red-600 dark:bg-red-950 dark:text-red-400;
+  }
+  .badge-info {
+    @apply badge bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300;
+  }
+  .badge-neutral {
+    @apply badge bg-gray-100 text-gray-600 dark:bg-slate-800 dark:text-gray-300;
+  }
+
+  /* ----------------------------------------------------------------- tables */
+  /* Wraps every <table>. Without this a wide table simply overflows its card
+     and the last columns become unreachable on a phone - the audit found
+     four pages (Users, Admins, Packages, Tutorials) doing exactly that. */
+  .table-wrap {
+    @apply -mx-4 sm:mx-0 overflow-x-auto;
+  }
+  .table-wrap > table {
+    @apply w-full min-w-[40rem] text-sm;
+  }
+  .table-wrap th {
+    @apply text-start text-xs font-medium text-gray-500 whitespace-nowrap px-3 py-2.5;
+  }
+  .table-wrap td {
+    @apply px-3 py-2.5 align-middle;
+  }
+  .table-wrap tbody tr {
+    @apply border-t border-gray-100 dark:border-slate-800;
+  }
+  .table-wrap tbody tr:hover {
+    @apply bg-gray-50/70 dark:bg-slate-800/40;
+  }
+
+  /* ------------------------------------------------------------ page layout */
+  .page-title {
+    @apply text-xl sm:text-2xl font-bold text-gray-900;
+  }
+  .page-subtitle {
+    @apply text-sm text-gray-500 mt-1;
+  }
+  .section-title {
+    @apply text-sm font-semibold text-gray-700;
+  }
+  /* Standard responsive stat strip: 1 column on the narrowest phones so the
+     numbers stay readable, 2 from 480px, 4 on desktop. */
+  .stat-grid {
+    @apply grid grid-cols-1 xs:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4;
+  }
+  .empty-state {
+    @apply text-center text-sm text-gray-400 py-10;
+  }
+
+  /* Horizontally scrollable tab/filter strip - long Persian labels overflow
+     on a phone otherwise. */
+  .scroll-x {
+    @apply flex gap-2 overflow-x-auto pb-1 -mx-4 px-4 sm:mx-0 sm:px-0;
+    scrollbar-width: none;
+  }
+  .scroll-x::-webkit-scrollbar {
+    display: none;
+  }
+
+  .skeleton {
+    @apply animate-pulse rounded-lg bg-gray-200/80 dark:bg-slate-800;
+  }
 }
 
-.input {
-  @apply w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent dark:bg-slate-900 dark:border-slate-700 dark:text-gray-100;
-}
-
-.badge {
-  @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
-}
-
-/* Dark-mode text contrast fix: most pages predate the dark-mode toggle and
-   only ever used light-mode text-gray-* utility classes with no dark:
-   variant - fine on white/light-gray backgrounds, but nearly unreadable
-   once .card/.dark body switch to a dark slate background (e.g. the
-   username link in Users.jsx used text-gray-800, close to black, on top of
-   dark:bg-slate-900 - reported as "username not visible in dark mode").
-   Rather than hand-editing dark: variants onto ~380 separate text-gray-*
-   usages across 17 files, remap the whole gray scale once here under
-   .dark - keeps the same visual hierarchy (darker gray = more muted text)
-   just inverted for a dark background, so every page gets readable text
-   in dark mode at once instead of only the couple of pages that had been
-   manually given dark: classes before. */
+/* ============================================================================
+   Dark-mode text contrast remap
+   ----------------------------------------------------------------------------
+   Most pages predate the dark-mode toggle and use bare light-mode text-gray-*
+   utilities with no dark: variant - fine on white, nearly invisible on a dark
+   slate card (the username link in Users.jsx used text-gray-800 on
+   dark:bg-slate-900, reported as "username not visible in dark mode").
+   Remapping the whole scale once here keeps the intended hierarchy (darker
+   gray = more muted) inverted for a dark background, instead of hand-editing
+   dark: variants onto ~380 separate usages across 17 files. Keep this - a
+   large amount of the panel still depends on it.
+   ========================================================================= */
 .dark .text-gray-900,
 .dark .text-gray-800 {
   color: #f1f5f9;
@@ -80,11 +290,17 @@ body {
   color: #475569;
 }
 .dark .border-gray-50,
-.dark .border-gray-100 {
+.dark .border-gray-100,
+.dark .border-gray-200 {
   border-color: #1e293b;
 }
+.dark .bg-gray-50,
+.dark .bg-gray-50\/70 {
+  background-color: rgba(148, 163, 184, 0.06);
+}
 .dark .hover\:bg-gray-50:hover,
-.dark .hover\:bg-gray-50\/60:hover {
+.dark .hover\:bg-gray-50\/60:hover,
+.dark .hover\:bg-gray-50\/70:hover {
   background-color: rgba(148, 163, 184, 0.08);
 }
 .dark .hover\:bg-gray-100:hover {

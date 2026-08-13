@@ -48,6 +48,11 @@ export const translations = {
     "login.submit": "ورود",
     "login.submitting": "در حال ورود...",
     "login.error": "نام کاربری یا رمز عبور اشتباه است",
+    // Shown when the request never reached the server at all. Previously this
+    // case fell back to login.error, whose Persian text is word-for-word the
+    // backend's own 401 detail - so an unreachable API looked exactly like a
+    // wrong password and sent people off resetting credentials that were fine.
+    "login.networkError": "ارتباط با سرور برقرار نشد - آدرس سرور یا اتصال اینترنت را بررسی کنید",
     "dashboard.title": "داشبورد",
     "dashboard.subtitle": "نمای کلی مصرف و وضعیت کاربران",
     "dashboard.totalUsers": "کل کاربران",
@@ -319,7 +324,12 @@ export const translations = {
     "nodes.stepBasic": "نوع سرور",
     "nodes.stepConnection": "اتصال",
     "nodes.stepWireguard": "وایرگارد",
-    "nodes.stepRadius": "RADIUS و پروتکل‌ها",
+    "nodes.stepRadius": "RADIUS",
+    "nodes.stepProtocols": "پروتکل‌ها",
+    "nodes.stepImport": "ایمپورت کاربران",
+    "nodes.protocolsSectionTitle": "پورت‌ها و کلیدهای پروتکل‌ها",
+    "nodes.protocolsSectionNote": "این مقادیر باید دقیقا با چیزی که روی روتر تنظیم کرده‌اید یکی باشند - پنل از آن‌ها فقط برای ساخت کانفیگ درست کاربر استفاده می‌کند و خودش چیزی روی روتر عوض نمی‌کند.",
+    "nodes.importSectionTitle": "ایمپورت کاربران قبلی از روتر",
     "nodes.stepPublic": "تنظیمات عمومی",
     "nodes.stepOf": "مرحله {current} از {total}",
     "nodes.fieldName": "نام سرور *",
@@ -583,7 +593,12 @@ export const translations = {
     "userDetail.fieldFullName": "نام کامل",
     "userDetail.fieldQuota": "حجم مجاز (گیگابایت)",
     "userDetail.quotaPlaceholder": "0 = نامحدود",
-    "userDetail.fieldMaxConcurrent": "تعداد اتصال هم‌زمان (کل سرویس‌های کاربر - OpenVPN/L2TP/WireGuard/Xray)",
+    // Kept to one line: this label sits in a two-column grid beside the quota
+    // field, and the previous sentence-length version wrapped to three lines
+    // and pushed its own input a row lower than its neighbour. The detail now
+    // lives in maxConcurrentHint, under the field where it reads better.
+    "userDetail.fieldMaxConcurrent": "اتصال هم‌زمان",
+    "userDetail.maxConcurrentHint": "روی مجموع سرویس‌های کاربر (OpenVPN/L2TP/WireGuard/Xray)",
     "userDetail.noChangePlaceholder": "بدون تغییر",
     "userDetail.fieldBalance": "موجودی اعتبار (تومان)",
     "userDetail.fieldOwnerAdmin": "متعلق به ادمین",
@@ -1096,6 +1111,7 @@ export const translations = {
     "login.submit": "Sign in",
     "login.submitting": "Signing in...",
     "login.error": "Incorrect username or password",
+    "login.networkError": "Could not reach the server - check the server address or your connection",
     "dashboard.title": "Dashboard",
     "dashboard.subtitle": "Overview of usage and user status",
     "dashboard.totalUsers": "Total users",
@@ -1367,7 +1383,12 @@ export const translations = {
     "nodes.stepBasic": "Server type",
     "nodes.stepConnection": "Connection",
     "nodes.stepWireguard": "WireGuard",
-    "nodes.stepRadius": "RADIUS & protocols",
+    "nodes.stepRadius": "RADIUS",
+    "nodes.stepProtocols": "Protocols",
+    "nodes.stepImport": "Import users",
+    "nodes.protocolsSectionTitle": "Protocol ports and keys",
+    "nodes.protocolsSectionNote": "These must match exactly what is configured on the router - the panel only uses them to build the correct client config, it never changes anything on the router itself.",
+    "nodes.importSectionTitle": "Import existing users from the router",
     "nodes.stepPublic": "General settings",
     "nodes.stepOf": "Step {current} of {total}",
     "nodes.fieldName": "Server name *",
@@ -1630,7 +1651,8 @@ export const translations = {
     "userDetail.fieldFullName": "Full name",
     "userDetail.fieldQuota": "Quota (GB)",
     "userDetail.quotaPlaceholder": "0 = unlimited",
-    "userDetail.fieldMaxConcurrent": "Concurrent connections (across all of the user's services - OpenVPN/L2TP/WireGuard/Xray)",
+    "userDetail.fieldMaxConcurrent": "Concurrent connections",
+    "userDetail.maxConcurrentHint": "Across all of the user's services (OpenVPN/L2TP/WireGuard/Xray)",
     "userDetail.noChangePlaceholder": "No change",
     "userDetail.fieldBalance": "Balance (Toman)",
     "userDetail.fieldOwnerAdmin": "Belongs to admin",

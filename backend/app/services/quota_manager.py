@@ -7,7 +7,7 @@ import datetime as dt
 import logging
 
 from sqlalchemy import update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .. import models
 from ..database import SessionLocal
@@ -423,11 +423,20 @@ def poll_all():
             elif node.type == models.NodeType.xray:
                 poll_xray_node(db, node)
 
-        users = db.query(models.User).all()
+        # selectinload, not lazy loading: both enforce functions walk
+        # `.connections`, so plain .all() issued one extra SELECT per user and
+        # per purchase - ~1,200 queries every poll. At the default 30s
+        # interval and the current 609 customers that is roughly 2.3 million
+        # redundant queries a day, the same shape of problem as the 3X-UI
+        # per-client polling storm. selectinload is SQLAlchemy's recommended
+        # strategy for one-to-many collections (a JOIN would duplicate parent
+        # rows); this turns the whole loop into 2 queries per collection.
+        users = db.query(models.User).options(selectinload(models.User.connections)).all()
         for user in users:
             _enforce_user_limits(db, user)
 
-        for purchase in db.query(models.Purchase).all():
+        purchases = db.query(models.Purchase).options(selectinload(models.Purchase.connections)).all()
+        for purchase in purchases:
             _enforce_purchase_limits(db, purchase)
 
         db.commit()

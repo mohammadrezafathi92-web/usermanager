@@ -45,6 +45,7 @@ import logging
 import os
 import shutil
 import sqlite3
+from .jalali import fmt_jalali_long
 import subprocess
 import tempfile
 from pathlib import Path
@@ -340,7 +341,7 @@ def send_admin_backup_to_telegram(path: Path, admin: models.AdminUser) -> bool:
         return False
     from ..telegram_bot import runner as telegram_bot_runner  # local import: avoids import cycle at module load
 
-    caption = f"💾 بک‌آپ اختصاصی شما — {dt.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
+    caption = f"💾 بک‌آپ اختصاصی شما — {fmt_jalali_long(dt.datetime.utcnow(), with_time=True)}"
     return telegram_bot_runner.send_document_sync(admin.telegram_id, str(path), caption=caption, token=admin.own_bot_token)
 
 
@@ -400,7 +401,7 @@ def send_backup_to_telegram(path: Path) -> tuple[int, int]:
             path.name, size_mb,
         )
 
-    caption = f"💾 بک‌آپ دیتابیس — {dt.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
+    caption = f"💾 بک‌آپ دیتابیس — {fmt_jalali_long(dt.datetime.utcnow(), with_time=True)}"
     sent = 0
     for chat_id in admin_ids:
         ok = telegram_bot_runner.send_document_sync(chat_id, str(path), caption=caption)

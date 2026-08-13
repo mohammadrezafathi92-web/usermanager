@@ -4,6 +4,13 @@ export default {
   content: ["./index.html", "./src/**/*.{js,jsx}"],
   theme: {
     extend: {
+      // Small phones are a real target here (sellers work from their phones),
+      // and Tailwind's smallest built-in breakpoint is 640px - far too late
+      // for deciding between a 1- and 2-column stat strip. `xs` covers the
+      // 360-480px band where most of that decision actually happens.
+      screens: {
+        xs: "480px",
+      },
       fontFamily: {
         sans: ["Vazirmatn", "system-ui", "sans-serif"],
       },

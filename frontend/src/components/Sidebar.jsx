@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { LayoutDashboard, Users, Server, Settings, Network, Package, GraduationCap, ShieldCheck, ShieldAlert, Ticket, Sun, Moon, X, Languages, Calculator } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
@@ -42,9 +42,17 @@ const allLinks = [
   { to: "/admins", labelKey: "nav.admins", icon: ShieldCheck, perm: "__admin_or_above__" },
 ];
 
+const navItemClass = ({ isActive }) =>
+  `flex items-center gap-3 rounded-xl px-3 min-h-11 text-sm font-medium transition-colors ${
+    isActive
+      ? "bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400"
+      : "text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-800"
+  }`;
+
 export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
   const { canAny, isSuperadmin, isAdminOrAbove } = useAuth();
-  const { t, toggleLanguage } = useLanguage();
+  const { t, toggleLanguage, dir } = useLanguage();
+  const panelRef = useRef(null);
   const [dark, setDark] = useState(() => {
     try {
       return localStorage.getItem("theme") === "dark";
@@ -62,6 +70,29 @@ export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
     }
   }, [dark]);
 
+  // Mobile drawer behaviour. Without these two the drawer was openable but
+  // not properly dismissible: Escape did nothing, and the page underneath
+  // kept scrolling behind the overlay, so closing it could leave you at a
+  // completely different scroll position than where you opened it.
+  useEffect(() => {
+    if (!mobileOpen) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    panelRef.current?.focus();
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [mobileOpen, onClose]);
+
+  // Which edge the closed drawer parks on. Both are plain utilities, so the
+  // md: rule below reliably overrides them on desktop.
+  const offCanvas = dir === "ltr" ? "-translate-x-full" : "translate-x-full";
+
   const links = allLinks.filter((l) => {
     if (l.perm === null) return true;
     if (l.perm === "__superadmin__") return isSuperadmin;
@@ -73,64 +104,83 @@ export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
     <>
       {/* Mobile-only backdrop - tapping it closes the drawer, same as X */}
       {mobileOpen && (
-        <div className="fixed inset-0 bg-black/40 z-40 md:hidden" onClick={onClose} />
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-[1px] z-40 md:hidden" onClick={onClose} />
       )}
 
+      {/*
+        Positioning is direction-agnostic on purpose. This panel supports both
+        Persian (RTL) and English (LTR) via i18n, and the previous
+        `right-0 / translate-x-full` pair was hardcoded for RTL: switching the
+        panel to English left the sidebar pinned to the right of an LTR layout
+        and made the closed drawer slide off the wrong edge.
+
+        The slide-out direction is chosen in JS (offCanvas below) rather than
+        with Tailwind's rtl:/ltr: variants. Those compile to `:where([dir=...])`
+        selectors, which carry ZERO specificity and are emitted after the
+        responsive variants - so they both lost to, and won over, the md:
+        reset depending only on file order, and cost two rounds of "the
+        sidebar vanished on desktop" / "the drawer won't slide away on mobile".
+        A plain unscoped utility has predictable precedence against the md:
+        rule (media query, emitted later, wins), which is exactly how this
+        worked before. `end-0` + `border-s` stay logical because those are
+        ordinary properties with no such ordering trap. `end-0` +
+        `border-s` are logical properties, and the rtl:/ltr: variants pick the
+        matching slide-out direction, since CSS transforms have no logical
+        equivalent.
+      */}
       <aside
-        className={`fixed md:sticky top-0 right-0 z-50 md:z-auto h-screen w-64 flex flex-col
-        bg-white border-l border-gray-100 dark:bg-slate-900 dark:border-slate-800
-        transition-transform duration-200 md:translate-x-0
-        ${mobileOpen ? "translate-x-0" : "translate-x-full"}`}
+        ref={panelRef}
+        tabIndex={-1}
+        role={mobileOpen ? "dialog" : undefined}
+        aria-modal={mobileOpen ? true : undefined}
+        aria-label={t("nav.appName")}
+        className={`fixed md:sticky top-0 end-0 z-50 md:z-auto h-screen w-72 sm:w-64 flex flex-col
+        bg-white border-s border-gray-200/70 dark:bg-slate-900 dark:border-slate-800
+        transition-transform duration-200 md:translate-x-0 focus:outline-none
+        ${mobileOpen ? "translate-x-0" : offCanvas}`}
       >
-        <div className="flex items-center gap-2 px-6 py-5">
-          <div className="w-9 h-9 rounded-xl bg-brand-600 flex items-center justify-center text-white">
+        <div className="flex items-center gap-2 px-5 py-5">
+          <div className="w-9 h-9 rounded-xl bg-brand-600 flex items-center justify-center text-white shrink-0">
             <Network size={18} />
           </div>
-          <div className="flex-1">
-            <div className="font-bold text-gray-800 dark:text-gray-100 leading-none">{t("nav.appName")}</div>
-            <div className="text-xs text-gray-400 mt-1">{t("nav.tagline")}</div>
+          <div className="flex-1 min-w-0">
+            <div className="font-bold text-gray-800 dark:text-gray-100 leading-none truncate">{t("nav.appName")}</div>
+            <div className="text-xs text-gray-400 mt-1 truncate">{t("nav.tagline")}</div>
           </div>
-          <button type="button" onClick={onClose} className="md:hidden text-gray-400 hover:text-gray-600 dark:hover:text-gray-200" aria-label={t("nav.closeMenu")}>
+          <button
+            type="button"
+            onClick={onClose}
+            className="md:hidden btn-ghost btn-icon shrink-0"
+            aria-label={t("nav.closeMenu")}
+          >
             <X size={20} />
           </button>
         </div>
 
         <nav className="flex-1 px-3 space-y-1 mt-2 overflow-y-auto">
           {links.map(({ to, labelKey, icon: Icon, end }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={end}
-              onClick={onClose}
-              className={({ isActive }) =>
-                `flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors ${
-                  isActive
-                    ? "bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400"
-                    : "text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-800"
-                }`
-              }
-            >
-              <Icon size={18} />
-              {t(labelKey)}
+            <NavLink key={to} to={to} end={end} onClick={onClose} className={navItemClass}>
+              <Icon size={18} className="shrink-0" />
+              <span className="truncate">{t(labelKey)}</span>
             </NavLink>
           ))}
         </nav>
 
-        <div className="px-3 pb-2 space-y-1">
+        <div className="px-3 pb-2 space-y-1 border-t border-gray-100 pt-2 dark:border-slate-800">
           <button
             type="button"
             onClick={toggleLanguage}
-            className="w-full flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-800 transition-colors"
+            className="w-full flex items-center gap-3 rounded-xl px-3 min-h-11 text-sm font-medium text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-800 transition-colors"
           >
-            <Languages size={18} />
+            <Languages size={18} className="shrink-0" />
             {t("nav.language")}
           </button>
           <button
             type="button"
             onClick={() => setDark((d) => !d)}
-            className="w-full flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-800 transition-colors"
+            className="w-full flex items-center gap-3 rounded-xl px-3 min-h-11 text-sm font-medium text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-800 transition-colors"
           >
-            {dark ? <Sun size={18} /> : <Moon size={18} />}
+            {dark ? <Sun size={18} className="shrink-0" /> : <Moon size={18} className="shrink-0" />}
             {dark ? t("nav.lightMode") : t("nav.darkMode")}
           </button>
         </div>

@@ -185,8 +185,8 @@ export default function Tutorials() {
       </div>
       )}
 
-      <div className="card !p-0 overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="card !p-0 overflow-x-auto">
+        <table className="w-full text-sm min-w-[40rem]">
           <thead className="bg-gray-50 text-gray-500 text-xs">
             <tr>
               <th className="text-right font-medium px-4 py-3">{t("tutorials.colTitle")}</th>
@@ -251,7 +251,7 @@ export default function Tutorials() {
             <label className="block text-sm text-gray-600 mb-1">{t("tutorials.fieldText")}</label>
             <textarea className="input" rows={5} value={form.text} onChange={(e) => set("text", e.target.value)} />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("tutorials.fieldOrder")}</label>
               <input type="number" className="input" value={form.sort_order} onChange={(e) => set("sort_order", Number(e.target.value))} />

@@ -496,8 +496,8 @@ export default function Admins() {
         </button>
       </div>
 
-      <div className="card !p-0 overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="card !p-0 overflow-x-auto">
+        <table className="w-full text-sm min-w-[48rem]">
           <thead className="bg-gray-50 text-gray-500 text-xs">
             <tr>
               <th className="text-right font-medium px-4 py-3">{t("admins.colUsername")}</th>
@@ -640,8 +640,8 @@ export default function Admins() {
               ) : loginLogs.length === 0 ? (
                 <div className="text-sm text-gray-400 text-center py-6">{t("admins.noResults")}</div>
               ) : (
-                <div className="max-h-96 overflow-y-auto">
-                  <table className="w-full text-xs">
+                <div className="max-h-96 overflow-auto">
+                  <table className="w-full text-xs min-w-[32rem]">
                     <thead className="bg-gray-50 text-gray-500 sticky top-0">
                       <tr>
                         <th className="text-right font-medium px-3 py-2">{t("admins.colTime")}</th>

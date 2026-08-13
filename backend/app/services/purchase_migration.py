@@ -43,7 +43,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .. import models
 from .user_ops import gb_to_bytes
@@ -165,7 +165,16 @@ def fix_mixed_users(db: Session) -> int:
     cleans up after any code path that might still produce the state.
     Returns how many customers were repaired."""
     fixed = 0
-    for user in db.query(models.User).all():
+    # Eager-loaded: the two guards below read `.purchases` and `.connections`
+    # on every single customer, so the plain query cost 1 + 2N statements
+    # (measured: 1,219 for 609 users) on every backend start just to decide
+    # that almost nobody needs repairing.
+    users = (
+        db.query(models.User)
+        .options(selectinload(models.User.purchases), selectinload(models.User.connections))
+        .all()
+    )
+    for user in users:
         if not user.purchases:
             continue  # legacy-only customer - their pool is still live, leave it alone
         if not any(c.purchase_id is None for c in user.connections):
@@ -199,7 +208,12 @@ def migrate_if_needed(db: Session) -> tuple[int, int]:
 
     total_converted = 0
     total_skipped = 0
-    for user in db.query(models.User).all():
+    users = (
+        db.query(models.User)
+        .options(selectinload(models.User.connections))
+        .all()
+    )
+    for user in users:
         try:
             converted, skipped = migrate_user(db, user)
             total_converted += converted

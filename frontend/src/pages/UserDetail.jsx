@@ -3,6 +3,8 @@ import { useParams, useNavigate, useLocation } from "react-router-dom";
 import QRCode from "qrcode";
 import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, ShieldCheck, Lock, Save, KeyRound, Power, ShieldEllipsis, RefreshCw, Pencil, Package, LogOut, Send } from "lucide-react";
 import Layout from "../components/Layout.jsx";
+import JalaliDateInput from "../components/JalaliDateInput.jsx";
+import MoneyInput from "../components/MoneyInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import QuotaBar from "../components/QuotaBar.jsx";
@@ -821,7 +823,7 @@ export default function UserDetail() {
               <div className="card mb-3 border-r-2 border-amber-300">
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="text-sm font-semibold text-amber-700">{t("userDetail.sharedPoolHeading")}</h4>
-                  <button className="btn-secondary !py-1 !px-3 text-xs" onClick={() => { setConvertGroup(group); setConvertForm({ quota_gb: "", expire_days: "", name: group.packageName || "" }); }}>
+                  <button className="btn-secondary btn-sm" onClick={() => { setConvertGroup(group); setConvertForm({ quota_gb: "", expire_days: "", name: group.packageName || "" }); }}>
                     {t("userDetail.convertToService")}
                   </button>
                 </div>
@@ -877,10 +879,10 @@ export default function UserDetail() {
                         value={commentDraft}
                         onChange={(e) => setCommentDraft(e.target.value)}
                       />
-                      <button className="btn-primary !py-1 !px-3 text-xs" onClick={() => saveComment(purchase)}>
+                      <button className="btn-primary btn-sm" onClick={() => saveComment(purchase)}>
                         {t("common.save")}
                       </button>
-                      <button className="btn-secondary !py-1 !px-3 text-xs" onClick={() => setEditingCommentId(null)}>
+                      <button className="btn-secondary btn-sm" onClick={() => setEditingCommentId(null)}>
                         {t("common.cancel")}
                       </button>
                     </div>
@@ -1157,13 +1159,16 @@ export default function UserDetail() {
             <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldFullName")}</label>
             <input className="input" value={editForm.full_name} onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })} />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          {/* items-start keeps both inputs on the same line even if one label
+              or hint ever wraps - the alignment shouldn't depend on the two
+              sides happening to have equal-length text. */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldQuota")}</label>
+              <label className="block text-sm text-gray-600 mb-1 truncate">{t("userDetail.fieldQuota")}</label>
               <input type="number" step="0.1" min="0" className="input" placeholder={t("userDetail.quotaPlaceholder")} value={editForm.quota_gb} onChange={(e) => setEditForm({ ...editForm, quota_gb: e.target.value })} />
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldMaxConcurrent")}</label>
+              <label className="block text-sm text-gray-600 mb-1 truncate">{t("userDetail.fieldMaxConcurrent")}</label>
               <input
                 type="number"
                 min="0"
@@ -1172,16 +1177,15 @@ export default function UserDetail() {
                 value={editForm.max_concurrent_sessions}
                 onChange={(e) => setEditForm({ ...editForm, max_concurrent_sessions: e.target.value })}
               />
+              <div className="hint">{t("userDetail.maxConcurrentHint")}</div>
             </div>
           </div>
 
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldBalance")}</label>
-            <input
-              type="number"
-              className="input"
+            <MoneyInput
               value={editForm.balance}
-              onChange={(e) => setEditForm({ ...editForm, balance: e.target.value })}
+              onChange={(v) => setEditForm({ ...editForm, balance: v })}
             />
           </div>
 
@@ -1232,12 +1236,13 @@ export default function UserDetail() {
             </select>
 
             {editForm.expire_mode === "date" && (
-              <input
-                type="date"
-                className="input mt-2"
-                value={editForm.expire_at}
-                onChange={(e) => setEditForm({ ...editForm, expire_at: e.target.value })}
-              />
+              <div className="mt-2">
+                <JalaliDateInput
+                  lang={language}
+                  value={editForm.expire_at}
+                  onChange={(v) => setEditForm({ ...editForm, expire_at: v })}
+                />
+              </div>
             )}
 
             {editForm.expire_mode === "days_from_now" && (
@@ -1290,7 +1295,7 @@ export default function UserDetail() {
           <p className="text-xs text-gray-400">
             {t("userDetail.renewNote")}
           </p>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldAddGb")}</label>
               <input
@@ -1343,7 +1348,7 @@ export default function UserDetail() {
       <Modal open={!!purchaseRenewTarget} onClose={() => setPurchaseRenewTarget(null)} title={t("userDetail.renewPurchaseModalTitle")}>
         <form onSubmit={submitRenewPurchase} className="space-y-4">
           <p className="text-xs text-gray-400">{t("userDetail.renewPurchaseNote")}</p>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldAddGb")}</label>
               <input
@@ -1449,7 +1454,7 @@ export default function UserDetail() {
                   onChange={(e) => setConnMaxSessions(e.target.value)}
                 />
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 xs:grid-cols-3 gap-2">
                 <button disabled={saving} className="btn-secondary" onClick={() => addConnection("wireguard")}>
                   <Wifi size={16} /> WireGuard
                 </button>

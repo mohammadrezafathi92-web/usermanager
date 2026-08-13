@@ -11,6 +11,7 @@ function randomUsername() {
   return out;
 }
 import Layout from "../components/Layout.jsx";
+import JalaliDateInput from "../components/JalaliDateInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import QuotaBar from "../components/QuotaBar.jsx";
@@ -578,7 +579,7 @@ export default function Users() {
             </select>
             <button
               type="button"
-              className="btn-secondary !px-2.5"
+              className="btn-secondary btn-icon"
               title={sortDir === "asc" ? t("users.ascending") : t("users.descending")}
               onClick={() => {
                 toggleSortDir();
@@ -659,8 +660,8 @@ export default function Users() {
         </div>
       </div>
 
-      <div className="card !p-0 overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="card !p-0 overflow-x-auto">
+        <table className="w-full text-sm min-w-[48rem]">
           <thead className="bg-gray-50 text-gray-500 text-xs">
             <tr>
               <th className="text-right font-medium px-4 py-3 w-8">
@@ -845,7 +846,7 @@ export default function Users() {
 
           {isSuperadmin && !form.package_id && (
             <>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm text-gray-600 mb-1">{t("users.fieldQuota")}</label>
                   <input
@@ -885,12 +886,13 @@ export default function Users() {
                 </select>
 
                 {form.expire_mode === "date" && (
-                  <input
-                    type="date"
-                    className="input mt-2"
-                    value={form.expire_at}
-                    onChange={(e) => setForm({ ...form, expire_at: e.target.value })}
-                  />
+                  <div className="mt-2">
+                    <JalaliDateInput
+                      lang={language}
+                      value={form.expire_at}
+                      onChange={(v) => setForm({ ...form, expire_at: v })}
+                    />
+                  </div>
                 )}
 
                 {form.expire_mode === "days_from_now" && (
@@ -943,7 +945,7 @@ export default function Users() {
       {/* Bulk create modal */}
       <Modal open={bulkCreateOpen} onClose={() => setBulkCreateOpen(false)} title={t("users.bulkCreateModalTitle")} width="max-w-2xl">
         <form onSubmit={submitBulkCreate} className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("users.fieldUsernamePrefix")}</label>
               <input
@@ -1053,7 +1055,7 @@ export default function Users() {
               </button>
             </div>
             {bulkCreateForm.connections.map((c, idx) => (
-              <div key={idx} className="grid grid-cols-4 gap-2 mb-2 items-center">
+              <div key={idx} className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2 items-center">
                 <select className="input col-span-2" value={c.node_id} onChange={(e) => updateBulkConn(idx, "node_id", e.target.value)}>
                   <option value="">{t("users.selectServerPlaceholder")}</option>
                   {nodes.map((n) => (
@@ -1138,7 +1140,7 @@ export default function Users() {
               </div>
             )}
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("users.fieldAddGb")}</label>
               <input

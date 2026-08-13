@@ -183,6 +183,16 @@ export default function Nodes() {
   // Which wizard steps exist for the currently-selected server type, and
   // what each one is called - the "basic" step (name + type picker) is
   // shared by both types and always comes first.
+  //
+  // The MikroTik path used to end on a single "RADIUS و پروتکل‌ها" step that
+  // held three unrelated jobs at once - the RADIUS secret and its push to the
+  // router, every protocol's ports/certs/keys, and the two bulk user imports -
+  // which made the last screen several times longer than all the others put
+  // together. They are split out here so each step asks one question.
+  //
+  // The import step only exists while editing: those panels are all guarded by
+  // `editingId` (you cannot read users off a router that hasn't been saved
+  // yet), so on a brand-new node it would render an empty step.
   const stepsFor = (type) =>
     type === "mikrotik"
       ? [
@@ -190,6 +200,8 @@ export default function Nodes() {
           { key: "connection", label: t("nodes.stepConnection") },
           { key: "wireguard", label: t("nodes.stepWireguard") },
           { key: "radius", label: t("nodes.stepRadius") },
+          { key: "protocols", label: t("nodes.stepProtocols") },
+          ...(editingId ? [{ key: "import", label: t("nodes.stepImport") }] : []),
         ]
       : [
           { key: "basic", label: t("nodes.stepBasic") },
@@ -529,8 +541,8 @@ export default function Nodes() {
 
           {form.type === "mikrotik" ? (
             <div className="space-y-4">
-              {step === 1 && (
-              <div className="grid grid-cols-2 gap-3">
+              {steps[step]?.key === "connection" && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldRouterIp")}</label>
                   <input className="input" required value={form.mt_host} onChange={(e) => set("mt_host", e.target.value)} />
@@ -562,10 +574,10 @@ export default function Nodes() {
               </div>
               )}
 
-              {step === 2 && (
+              {steps[step]?.key === "wireguard" && (
               <div className="border-t-0 pt-0">
                 <div className="text-sm font-medium text-gray-700 mb-2">{t("nodes.wireguardSettings")}</div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldInterfaceName")}</label>
                     <input className="input" value={form.mt_wireguard_interface} onChange={(e) => set("mt_wireguard_interface", e.target.value)} />
@@ -592,7 +604,7 @@ export default function Nodes() {
                           />
                           <button
                             type="button"
-                            className="btn-secondary !px-2.5 shrink-0"
+                            className="btn-secondary btn-icon shrink-0"
                             title={t("nodes.removeDns")}
                             onClick={() => removeDnsRow(i)}
                             disabled={dnsRows.length <= 1}
@@ -610,47 +622,17 @@ export default function Nodes() {
               </div>
               )}
 
-              {step === 3 && (
+              {/* Step 4 - RADIUS only: the shared secret, and pushing it to
+                  the router. Everything protocol-specific moved to step 5. */}
+              {steps[step]?.key === "radius" && (
               <div className="border-t-0 pt-0">
                 <div className="text-sm font-medium text-gray-700 mb-2">{t("nodes.radiusSectionTitle")}</div>
                 <p className="text-xs text-gray-400 mb-3">
                   {t("nodes.radiusSectionNote")}
                 </p>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldRadiusSecret")}</label>
-                    <input className="input" placeholder={t("nodes.radiusSecretPlaceholder")} value={form.mt_radius_secret} onChange={(e) => set("mt_radius_secret", e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldOvpnPort")}</label>
-                    <input type="number" className="input" value={form.mt_ovpn_port} onChange={(e) => set("mt_ovpn_port", Number(e.target.value))} />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldOvpnCert")}</label>
-                    <input className="input" placeholder={t("nodes.certPlaceholder")} value={form.mt_ovpn_certificate} onChange={(e) => set("mt_ovpn_certificate", e.target.value)} />
-                  </div>
-                  <div className="col-span-2 flex items-center gap-2">
-                    <input type="checkbox" id="l2tp_ipsec" checked={form.mt_l2tp_use_ipsec} onChange={(e) => set("mt_l2tp_use_ipsec", e.target.checked)} />
-                    <label htmlFor="l2tp_ipsec" className="text-sm text-gray-600">{t("nodes.l2tpIpsecLabel")}</label>
-                  </div>
-                  {form.mt_l2tp_use_ipsec && (
-                    <div className="col-span-2">
-                      <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldIpsecSecret")}</label>
-                      <input className="input" value={form.mt_l2tp_ipsec_secret} onChange={(e) => set("mt_l2tp_ipsec_secret", e.target.value)} />
-                    </div>
-                  )}
-                  <div className="col-span-2">
-                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldIkev2Psk")}</label>
-                    <input className="input" placeholder={t("nodes.ikev2PskPlaceholder")} value={form.mt_ikev2_psk} onChange={(e) => set("mt_ikev2_psk", e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldSstpPort")}</label>
-                    <input type="number" className="input" value={form.mt_sstp_port} onChange={(e) => set("mt_sstp_port", Number(e.target.value))} />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldSstpCert")}</label>
-                    <input className="input" placeholder={t("nodes.certPlaceholder")} value={form.mt_sstp_certificate} onChange={(e) => set("mt_sstp_certificate", e.target.value)} />
-                  </div>
+                <div>
+                  <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldRadiusSecret")}</label>
+                  <input className="input" placeholder={t("nodes.radiusSecretPlaceholder")} value={form.mt_radius_secret} onChange={(e) => set("mt_radius_secret", e.target.value)} />
                 </div>
 
                 {editingId && (
@@ -688,12 +670,57 @@ export default function Nodes() {
                     {radiusStatus && radiusStatus !== "loading" && (
                       <div className="text-xs mt-2 text-gray-600">{radiusStatus}</div>
                     )}
+                  </div>
+                )}
+              </div>
+              )}
 
-                    <div className="grid grid-cols-3 gap-2 mt-3 pt-3 border-t border-gray-200">
+              {steps[step]?.key === "protocols" && (
+              <div className="border-t-0 pt-0">
+                <div className="text-sm font-medium text-gray-700 mb-2">{t("nodes.protocolsSectionTitle")}</div>
+                <p className="text-xs text-gray-400 mb-3">
+                  {t("nodes.protocolsSectionNote")}
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldOvpnPort")}</label>
+                    <input type="number" className="input" value={form.mt_ovpn_port} onChange={(e) => set("mt_ovpn_port", Number(e.target.value))} />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldOvpnCert")}</label>
+                    <input className="input" placeholder={t("nodes.certPlaceholder")} value={form.mt_ovpn_certificate} onChange={(e) => set("mt_ovpn_certificate", e.target.value)} />
+                  </div>
+                  <div className="col-span-2 flex items-center gap-2">
+                    <input type="checkbox" id="l2tp_ipsec" checked={form.mt_l2tp_use_ipsec} onChange={(e) => set("mt_l2tp_use_ipsec", e.target.checked)} />
+                    <label htmlFor="l2tp_ipsec" className="text-sm text-gray-600">{t("nodes.l2tpIpsecLabel")}</label>
+                  </div>
+                  {form.mt_l2tp_use_ipsec && (
+                    <div className="col-span-2">
+                      <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldIpsecSecret")}</label>
+                      <input className="input" value={form.mt_l2tp_ipsec_secret} onChange={(e) => set("mt_l2tp_ipsec_secret", e.target.value)} />
+                    </div>
+                  )}
+                  <div className="col-span-2">
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldIkev2Psk")}</label>
+                    <input className="input" placeholder={t("nodes.ikev2PskPlaceholder")} value={form.mt_ikev2_psk} onChange={(e) => set("mt_ikev2_psk", e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldSstpPort")}</label>
+                    <input type="number" className="input" value={form.mt_sstp_port} onChange={(e) => set("mt_sstp_port", Number(e.target.value))} />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldSstpCert")}</label>
+                    <input className="input" placeholder={t("nodes.certPlaceholder")} value={form.mt_sstp_certificate} onChange={(e) => set("mt_sstp_certificate", e.target.value)} />
+                  </div>
+                </div>
+
+                {editingId && (
+                  <div className="mt-3 bg-gray-50 rounded-lg p-3">
+                    <div className="grid grid-cols-1 xs:grid-cols-3 gap-2">
                       <div>
                         <button
                           type="button"
-                          className="btn-secondary w-full !text-xs"
+                          className="btn-secondary btn-sm w-full"
                           onClick={onPushSstp}
                           disabled={sstpStatus === "loading"}
                         >
@@ -706,7 +733,7 @@ export default function Nodes() {
                       <div>
                         <button
                           type="button"
-                          className="btn-secondary w-full !text-xs"
+                          className="btn-secondary btn-sm w-full"
                           onClick={onPushL2tp}
                           disabled={l2tpStatus === "loading"}
                         >
@@ -719,7 +746,7 @@ export default function Nodes() {
                       <div>
                         <button
                           type="button"
-                          className="btn-secondary w-full !text-xs"
+                          className="btn-secondary btn-sm w-full"
                           onClick={onPushIkev2}
                           disabled={ikev2Status === "loading"}
                         >
@@ -735,9 +762,18 @@ export default function Nodes() {
                     </div>
                   </div>
                 )}
+              </div>
+              )}
+
+              {/* Step 6 - bulk import of whatever users already exist on the
+                  router. Only reachable while editing, since both endpoints
+                  read from a node that must already be saved. */}
+              {steps[step]?.key === "import" && (
+              <div className="border-t-0 pt-0">
+                <div className="text-sm font-medium text-gray-700 mb-3">{t("nodes.importSectionTitle")}</div>
 
                 {editingId && (
-                  <div className="mt-3 bg-gray-50 rounded-lg p-3">
+                  <div className="bg-gray-50 rounded-lg p-3">
                     <div className="text-xs text-gray-500 mb-2">
                       {t("nodes.importPppNote")}
                     </div>
@@ -820,7 +856,7 @@ export default function Nodes() {
               </div>
 
               {form.xr_panel_mode === "3xui" ? (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div className="col-span-2">
                     <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldPanelUrl")}</label>
                     <input
@@ -908,7 +944,7 @@ export default function Nodes() {
                   )}
                 </div>
               ) : (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldSshHost")}</label>
                     <input className="input" required value={form.xr_ssh_host} onChange={(e) => set("xr_ssh_host", e.target.value)} />
@@ -947,7 +983,7 @@ export default function Nodes() {
               )}
 
               {step === 2 && (
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldPublicHost")}</label>
                   <input className="input" value={form.xr_public_host} onChange={(e) => set("xr_public_host", e.target.value)} />

@@ -52,6 +52,49 @@ export function bytesToGb(bytes) {
   return +(bytes / (1024 * 1024 * 1024)).toFixed(2);
 }
 
+// ---------------------------------------------------------------- money input
+// Toman amounts in this panel run to eight digits (a 10,000,000 balance is
+// ordinary), and an unseparated "10000000" is genuinely hard to read back -
+// off-by-one-digit mistakes on a credit top-up are expensive. These two are a
+// pair: groupDigits() is what the user sees, digitsOnly() is what gets stored
+// and sent. A grouped value can never live in an <input type="number"> (the
+// comma makes it invalid and the browser silently reports an empty value), so
+// fields using these must be type="text" with inputMode="numeric".
+//
+// A leading "-" survives both directions on purpose: a negative amount is how
+// the credit screen expresses a DEDUCTION, so stripping it would quietly turn
+// a deduction into a top-up.
+// Persian (۰-۹) and Arabic-Indic (٠-٩) digits normalised to ASCII. A Persian
+// keyboard produces these by default, and without this step an amount typed as
+// "۱۲۳" was stripped to an empty field with no explanation.
+const NON_ASCII_DIGITS = /[۰-۹٠-٩]/g;
+const toAsciiDigits = (s) =>
+  s.replace(NON_ASCII_DIGITS, (d) => {
+    const code = d.charCodeAt(0);
+    return String(code >= 0x06f0 ? code - 0x06f0 : code - 0x0660);
+  });
+
+function splitAmount(raw) {
+  const s = toAsciiDigits(String(raw ?? ""));
+  const negative = s.trimStart().startsWith("-");
+  // Leading zeros go: typing over an existing value easily produces "000123",
+  // which grouped as "000,123" and read as a completely different number.
+  const digits = s.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
+  return { negative, digits };
+}
+
+export function groupDigits(raw) {
+  const { negative, digits } = splitAmount(raw);
+  if (!digits) return negative ? "-" : "";
+  return (negative ? "-" : "") + digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+export function digitsOnly(raw) {
+  const { negative, digits } = splitAmount(raw);
+  if (!digits) return negative ? "-" : "";
+  return (negative ? "-" : "") + digits;
+}
+
 // STATUS_LABELS used to be a plain Persian-only lookup object, which meant
 // the status badge shown across Users/UserDetail always rendered in Persian
 // even in English mode. It's now a function keyed off the same status.*

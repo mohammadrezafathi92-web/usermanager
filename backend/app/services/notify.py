@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from ..database import SessionLocal
+from .jalali import fmt_jalali_long
 from ..telegram_bot import runner as telegram_bot_runner
 
 logger = logging.getLogger("notify")
@@ -57,7 +58,7 @@ def _expiry_message(user: models.User, holder, expire_at: dt.datetime, days_left
     when = "امروز/فردا" if days_left <= 1 else f"{days_left} روز دیگر"
     return (
         f"⏰ سرویس <b>{_service_label(user, holder)}</b> {when} منقضی می‌شود "
-        f"(تاریخ انقضا: {expire_at.strftime('%Y-%m-%d')}).\n\n"
+        f"(تاریخ انقضا: {fmt_jalali_long(expire_at)}).\n\n"
         "برای جلوگیری از قطع سرویس، از طریق ربات تمدید کنید."
     )
 

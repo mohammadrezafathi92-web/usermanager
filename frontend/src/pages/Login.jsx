@@ -21,7 +21,11 @@ export default function Login() {
       await login(username, password);
       navigate("/");
     } catch (err) {
-      setError(err?.response?.data?.detail || t("login.error"));
+      // No `response` at all means the request never got an HTTP answer -
+      // DNS, TLS, a dead proxy, no network. That is a very different problem
+      // from a rejected credential and must not be reported as one.
+      if (!err?.response) setError(t("login.networkError"));
+      else setError(err.response?.data?.detail || t("login.error"));
     } finally {
       setLoading(false);
     }

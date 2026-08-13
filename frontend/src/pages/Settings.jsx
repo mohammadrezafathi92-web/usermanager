@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { KeyRound, Info, Plus, Trash2, Copy, Power, CreditCard, Bot, RefreshCw, DatabaseBackup, Download, Server, Eye, EyeOff, Upload, Repeat, ChevronDown } from "lucide-react";
 import Layout from "../components/Layout.jsx";
+import MoneyInput from "../components/MoneyInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import {
@@ -717,10 +718,9 @@ export default function Settings() {
           </div>
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("settings.referralReferrerCredit")}</label>
-            <input
-              type="number" min="0" className="input" dir="ltr"
+            <MoneyInput
               value={payment.referral_referrer_reward_credit ?? 0}
-              onChange={(e) => setPayment((p) => ({ ...p, referral_referrer_reward_credit: Number(e.target.value) }))}
+              onChange={(v) => setPayment((p) => ({ ...p, referral_referrer_reward_credit: v === "" ? 0 : Number(v) }))}
             />
           </div>
           <div>
@@ -733,10 +733,9 @@ export default function Settings() {
           </div>
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("settings.referralNewUserCredit")}</label>
-            <input
-              type="number" min="0" className="input" dir="ltr"
+            <MoneyInput
               value={payment.referral_new_user_reward_credit ?? 0}
-              onChange={(e) => setPayment((p) => ({ ...p, referral_new_user_reward_credit: Number(e.target.value) }))}
+              onChange={(v) => setPayment((p) => ({ ...p, referral_new_user_reward_credit: v === "" ? 0 : Number(v) }))}
             />
           </div>
           <div>
@@ -763,10 +762,9 @@ export default function Settings() {
           <div />
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("settings.loyaltyRewardCredit")}</label>
-            <input
-              type="number" min="0" className="input" dir="ltr"
+            <MoneyInput
               value={payment.loyalty_reward_credit ?? 0}
-              onChange={(e) => setPayment((p) => ({ ...p, loyalty_reward_credit: Number(e.target.value) }))}
+              onChange={(v) => setPayment((p) => ({ ...p, loyalty_reward_credit: v === "" ? 0 : Number(v) }))}
             />
           </div>
           <div>
@@ -884,7 +882,7 @@ export default function Settings() {
           </div>
           <div className="md:col-span-2">
             <div className="text-sm text-gray-600 mb-2">{t("settings.customerMenuItemsLabel")}</div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {CUSTOMER_MENU_ITEM_KEYS.map((key) => {
                 const disabledSet = new Set((botForm.customer_menu_disabled_items || "").split(",").map((x) => x.trim()).filter(Boolean));
                 const checked = !disabledSet.has(key);
@@ -1507,14 +1505,11 @@ function PaymentCardsManager({
         {localMode === "threshold" && (
           <div>
             <label className="block text-xs text-gray-500 mb-1">{t("settings.cardThresholdLabel")}</label>
-            <input
-              className="input w-auto"
-              dir="ltr"
-              type="number"
-              min="0"
+            <MoneyInput
+              className="w-auto"
               placeholder={t("settings.cardThresholdPlaceholder")}
               value={localThreshold}
-              onChange={(e) => setLocalThreshold(e.target.value)}
+              onChange={setLocalThreshold}
             />
           </div>
         )}

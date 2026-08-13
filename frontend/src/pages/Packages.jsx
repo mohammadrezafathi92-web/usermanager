@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Plus, Pencil, Trash2, Power, Package as PackageIcon, Server, Paperclip, Download, Check, X, Tag } from "lucide-react";
 import Layout from "../components/Layout.jsx";
+import MoneyInput from "../components/MoneyInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import {
@@ -217,8 +218,8 @@ export default function Packages() {
         <div className="text-xs text-gray-400 mb-4">{t("packages.sellerPriceHint")}</div>
       )}
 
-      <div className="card !p-0 overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="card !p-0 overflow-x-auto">
+        <table className="w-full text-sm min-w-[48rem]">
           <thead className="bg-gray-50 text-gray-500 text-xs">
             <tr>
               <th className="text-right font-medium px-4 py-3">{t("packages.colName")}</th>
@@ -273,13 +274,12 @@ export default function Packages() {
                   )}
                   {isSeller && editingPriceId === p.id && (
                     <div className="flex items-center gap-1" dir="ltr">
-                      <input
-                        type="number"
-                        min="0"
+                      <MoneyInput
                         autoFocus
-                        className="input !py-1 !px-2 w-28 text-sm"
+                        small
+                        className="w-28"
                         value={priceDraft}
-                        onChange={(e) => setPriceDraft(e.target.value)}
+                        onChange={setPriceDraft}
                       />
                       <button disabled={priceSaving} title={t("common.save")} onClick={() => saveMyPrice(p.id)} className="text-emerald-500 hover:text-emerald-600">
                         <Check size={16} />
@@ -341,7 +341,7 @@ export default function Packages() {
             <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldName")}</label>
             <input className="input" required placeholder={t("packages.fieldNamePlaceholder")} value={form.name} onChange={(e) => set("name", e.target.value)} />
           </div>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldQuota")}</label>
               <input type="number" step="0.1" min="0" className="input" value={form.quota_gb} onChange={(e) => set("quota_gb", Number(e.target.value))} />
@@ -354,19 +354,16 @@ export default function Packages() {
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldPrice")}</label>
-              <input type="number" min="0" className="input" value={form.price} onChange={(e) => set("price", Number(e.target.value))} />
+              <MoneyInput value={form.price} onChange={(v) => set("price", v === "" ? 0 : Number(v))} />
             </div>
           </div>
 
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldCooperationPrice")}</label>
-            <input
-              type="number"
-              min="0"
-              className="input"
+            <MoneyInput
               placeholder={t("packages.cooperationPricePlaceholder")}
               value={form.cooperation_price}
-              onChange={(e) => set("cooperation_price", e.target.value)}
+              onChange={(v) => set("cooperation_price", v)}
             />
             <div className="text-xs text-gray-400 mt-1">
               {t("packages.cooperationHint")}
@@ -376,13 +373,13 @@ export default function Packages() {
             <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldDescription")}</label>
             <textarea className="input" rows={2} value={form.description || ""} onChange={(e) => set("description", e.target.value)} />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldOrder")}</label>
               <input type="number" className="input" value={form.sort_order} onChange={(e) => set("sort_order", Number(e.target.value))} />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="flex items-center gap-2 text-sm text-gray-600">
               <input type="checkbox" checked={form.enabled} onChange={(e) => set("enabled", e.target.checked)} />
               {t("packages.showInPanel")}
@@ -434,7 +431,7 @@ export default function Packages() {
               <div className="text-xs text-gray-400">{t("packages.noServices")}</div>
             )}
             {form.connections.map((c, idx) => (
-              <div key={idx} className="grid grid-cols-4 gap-2 mb-2 items-center">
+              <div key={idx} className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2 items-center">
                 <select className="input col-span-2" value={c.node_id} onChange={(e) => updateConn(idx, "node_id", e.target.value)}>
                   <option value="">{t("packages.selectServer")}</option>
                   {nodes.map((n) => (

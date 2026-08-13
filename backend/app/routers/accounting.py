@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
+from ..services.jalali import fmt_jalali
 from ..deps import get_current_admin, require_superadmin, require_confirm_password
 from ..services import accounting, hierarchy
 
@@ -172,7 +173,7 @@ def export_xlsx(
         ws.cell(row=row, column=10, value=e.discount_amount)
         ws.cell(row=row, column=11, value=e.category)
         ws.cell(row=row, column=12, value=e.note)
-        ws.cell(row=row, column=13, value=e.created_at.strftime("%Y-%m-%d %H:%M") if e.created_at else None)
+        ws.cell(row=row, column=13, value=fmt_jalali(e.created_at) if e.created_at else None)
 
     fd, path = tempfile.mkstemp(suffix=".xlsx")
     os.close(fd)

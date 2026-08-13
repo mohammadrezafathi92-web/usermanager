@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { Plus, Trash2, Pencil, Ticket, Power, Users } from "lucide-react";
 import Layout from "../components/Layout.jsx";
+import JalaliDateInput from "../components/JalaliDateInput.jsx";
+import MoneyInput from "../components/MoneyInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import { fetchDiscountCodes, createDiscountCode, updateDiscountCode, deleteDiscountCode, fetchDiscountCodeRedemptions } from "../api/client.js";
@@ -264,11 +266,15 @@ export default function DiscountCodes() {
             <label className="block text-sm text-gray-600 mb-1">
               {form.kind === "percent" ? t("discountCodes.valuePercent") : t("discountCodes.valueFixed")}
             </label>
-            <input
-              type="number" min="0" step={form.kind === "percent" ? "1" : "1000"} className="input" dir="ltr"
-              value={form.value}
-              onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))}
-            />
+            {form.kind === "percent" ? (
+              <input
+                type="number" min="0" step="1" className="input" dir="ltr"
+                value={form.value}
+                onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))}
+              />
+            ) : (
+              <MoneyInput value={form.value} onChange={(v) => setForm((f) => ({ ...f, value: v }))} />
+            )}
           </div>
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("discountCodes.maxUses")}</label>
@@ -281,10 +287,10 @@ export default function DiscountCodes() {
           </div>
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("discountCodes.expiresAt")}</label>
-            <input
-              type="datetime-local" className="input" dir="ltr"
-              value={form.expires_at}
-              onChange={(e) => setForm((f) => ({ ...f, expires_at: e.target.value }))}
+            <JalaliDateInput
+              lang={language}
+              value={(form.expires_at || "").slice(0, 10)}
+              onChange={(v) => setForm((f) => ({ ...f, expires_at: v ? `${v}T23:59` : "" }))}
             />
           </div>
           <div className="md:col-span-2">

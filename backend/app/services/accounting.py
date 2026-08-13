@@ -19,7 +19,7 @@ import datetime as dt
 from typing import Optional
 
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from .. import models
 from . import hierarchy
@@ -301,7 +301,12 @@ def backfill_if_needed(db: Session) -> int:
             unmatched_redemptions.setdefault(red.user_id, []).append(red)
 
     imported = 0
-    for purchase in db.query(models.Purchase).all():
+    purchases = (
+        db.query(models.Purchase)
+        .options(joinedload(models.Purchase.user), joinedload(models.Purchase.package))
+        .all()
+    )
+    for purchase in purchases:
         user = purchase.user
         owner_admin_id = user.owner_admin_id if user else None
         package = purchase.package

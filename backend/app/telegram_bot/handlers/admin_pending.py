@@ -11,6 +11,7 @@ from ..keyboards import approval_kb, home_kb
 from .. import storage
 from .customer import send_package_extras
 from ..connection_sender import send_connections
+from ..utils import fmt_date_jalali
 
 logger = logging.getLogger("telegram_bot")
 
@@ -373,7 +374,7 @@ async def cb_admin_history(call: CallbackQuery) -> None:
         icon = "✅" if p["status"] == "approved" else "❌"
         kind_txt = {"new": "خرید جدید", "renew": "تمدید", "topup": "افزایش اعتبار", "link": "اتصال حساب"}.get(p["kind"], p["kind"])
         amount = p.get("final_price") if p.get("final_price") is not None else p.get("price")
-        when = (p.get("created_at") or "")[:16].replace("T", " ")
+        when = fmt_date_jalali(p.get("created_at"))
         lines.append(f"{icon} #{p['id']} · {kind_txt} · {p['target_username']}")
         lines.append(f"    {amount:,} تومان · {when}")
     await call.message.edit_text("\n".join(lines), reply_markup=home_kb())

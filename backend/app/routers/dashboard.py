@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_admin
-from ..services import accounting, hierarchy, system_stats
+from ..services import accounting, hierarchy, jalali, system_stats
 
 # How far ahead the dashboard looks for services about to lapse. A week is
 # long enough to act on and short enough that the number stays meaningful.
@@ -158,10 +158,19 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
     ledger_q = accounting.scoped_query(db, admin).filter(
         models.LedgerEntry.kind.in_(("sale_new", "sale_renew"))
     )
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    month_start = today_start.replace(day=1)
+    # "Today" and "this month" must be bounded by the LOCAL day, not the UTC
+    # one. Rows are stored in UTC, so the local midnight is computed and then
+    # converted back to UTC for the comparison. Without this, at 00:52 UTC -
+    # which is 04:22 in Tehran - everything sold since the local midnight
+    # (i.e. after 20:30 UTC yesterday) counted as yesterday, and "sales today"
+    # read 0 next to a healthy monthly total.
+    offset = dt.timedelta(minutes=jalali.get_display_offset())
+    local_now = now + offset
+    today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0) - offset
+    local_month_start = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_start = local_month_start - offset
     prev_month_end = month_start
-    prev_month_start = (month_start - dt.timedelta(days=1)).replace(day=1)
+    prev_month_start = (local_month_start - dt.timedelta(days=1)).replace(day=1) - offset
 
     def _sum(q):
         return int(q.with_entities(func.coalesce(func.sum(models.LedgerEntry.amount), 0)).scalar() or 0)

@@ -6,7 +6,7 @@ import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import StatCard from "../components/StatCard.jsx";
 import { fetchDashboard } from "../api/client.js";
-import { formatBytes, formatBitrate, formatUptime } from "../utils.js";
+import { formatBytes, formatBitrate, formatUptime, toDisplayDate } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
 const PROTOCOL_LABELS = { wireguard: "WireGuard", openvpn: "OpenVPN", l2tp: "L2TP", ikev2: "IKEv2", sstp: "SSTP", xray: "V2Ray/Xray" };
@@ -82,11 +82,18 @@ export default function Dashboard() {
     return () => clearInterval(timer);
   }, []);
 
-  const chartData = (stats?.usage_last_24h || []).map((d) => ({
-    time: d.bucket.slice(11, 16),
-    bytes: d.bytes,
-    label: formatBytes(d.bytes),
-  }));
+  // The bucket keys are UTC hours ("2026-08-13 14:00"). Slicing the hour
+  // straight out of the string labelled the axis in UTC, so the traffic peak
+  // appeared 3.5 hours away from when it actually happened locally. The space
+  // becomes a "T" first so toDisplayDate gets a value Date can parse.
+  const chartData = (stats?.usage_last_24h || []).map((d) => {
+    const at = toDisplayDate(String(d.bucket).replace(" ", "T"));
+    return {
+      time: at ? `${String(at.getUTCHours()).padStart(2, "0")}:00` : d.bucket.slice(11, 16),
+      bytes: d.bytes,
+      label: formatBytes(d.bytes),
+    };
+  });
 
   return (
     <Layout>

@@ -41,8 +41,6 @@ def _get_or_create(db: Session) -> models.PanelSettings:
         db.add(row)
         db.commit()
         db.refresh(row)
-        # Keep the cached render offset in step with what was just saved.
-        jalali.set_display_offset(row.display_utc_offset_minutes)
     return row
 
 
@@ -80,6 +78,11 @@ def update_settings(payload: schemas.PanelSettingsUpdate, db: Session = Depends(
         setattr(row, k, v)
     db.commit()
     db.refresh(row)
+    # services/jalali.py caches this offset in a module global (it is read
+    # per rendered date, far too often for a DB lookup each time), so it has
+    # to be told when the stored value changes - otherwise a new timezone
+    # would only take effect at the next restart.
+    jalali.set_display_offset(row.display_utc_offset_minutes)
     return _settings_out(db, row)
 
 

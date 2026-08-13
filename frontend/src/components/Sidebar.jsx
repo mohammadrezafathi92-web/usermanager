@@ -50,7 +50,7 @@ const navItemClass = ({ isActive }) =>
   }`;
 
 export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
-  const { canAny, isSuperadmin, isAdminOrAbove } = useAuth();
+  const { canAny, isSuperadmin, isAdminOrAbove, build } = useAuth();
   const { t, toggleLanguage, dir } = useLanguage();
   const panelRef = useRef(null);
   const [dark, setDark] = useState(() => {
@@ -133,11 +133,10 @@ export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
         sidebar vanished on desktop" / "the drawer won't slide away on mobile".
         A plain unscoped utility has predictable precedence against the md:
         rule (media query, emitted later, wins), which is exactly how this
-        worked before. `end-0` + `border-s` stay logical because those are
-        ordinary properties with no such ordering trap. `end-0` +
-        `border-s` are logical properties, and the rtl:/ltr: variants pick the
-        matching slide-out direction, since CSS transforms have no logical
-        equivalent.
+        worked before. `start-0` and `border-e` stay logical, because those
+        are ordinary properties with no such ordering trap - only the
+        transform variants have it, since CSS transforms have no logical
+        equivalent and are always physical.
       */}
       <aside
         ref={panelRef}
@@ -196,7 +195,14 @@ export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
           </button>
         </div>
 
-        <div className="p-4 text-xs text-gray-300 dark:text-gray-600 text-center">{t("nav.version")}</div>
+        {/* Was a hardcoded "نسخه ۱.۰" translation string that had never once
+            changed. Now the real thing, straight from the running backend -
+            with the commit id for superadmins, which is what actually answers
+            "is my change deployed?". */}
+        <div className="p-4 text-xs text-gray-300 dark:text-gray-600 text-center" dir="ltr">
+          {build?.version ? `v${build.version}` : t("nav.version")}
+          {build?.commit && <span className="opacity-70"> · {build.commit}</span>}
+        </div>
       </aside>
     </>
   );

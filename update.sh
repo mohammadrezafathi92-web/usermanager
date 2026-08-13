@@ -27,5 +27,9 @@ git pull --no-rebase origin main
 echo "==> در حال ری‌بیلد و ری‌استارت بک‌اند و فرانت‌اند ..."
 docker compose up -d --build
 
-echo "==> انجام شد. آخرین لاگ بک‌اند:"
+echo "==> انجام شد."
+echo "    نسخه: $(cat VERSION 2>/dev/null || echo '?')   کامیت: $(git rev-parse --short HEAD)"
+echo "    (همین دو مقدار پایین سایدبار پنل هم نشان داده می‌شوند - اگر با هم"
+echo "     نخواندند، یعنی مرورگر نسخه‌ی قدیمی را از کش می‌آورد.)"
+echo "==> آخرین لاگ بک‌اند:"
 docker compose logs --tail 20 backend

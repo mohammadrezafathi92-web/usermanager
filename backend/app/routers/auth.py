@@ -11,6 +11,7 @@ from ..security import verify_password, create_access_token, hash_password
 from ..deps import get_current_admin
 from ..permissions import effective_permissions
 from ..services import hierarchy, jalali
+from ..services import version as version_info
 
 
 class ChangePasswordRequest(BaseModel):
@@ -90,6 +91,7 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db
 
 @router.get("/me")
 def me(admin: models.AdminUser = Depends(get_current_admin)):
+    build = version_info.get_build_info()
     # `role` (see services/hierarchy.py) tells the frontend which of the
     # 3 tiers this admin is on - AuthContext.can() treats a level-2 Admin
     # the same as a superadmin (full menu access within their own tree, no
@@ -107,6 +109,12 @@ def me(admin: models.AdminUser = Depends(get_current_admin)):
         # than from /api/settings because that router is admin-tier-only,
         # while a level-3 seller still needs correct timestamps.
         "display_utc_offset_minutes": jalali.get_display_offset(),
+        # What is actually deployed (see services/version.py). The release
+        # number is shown to everyone; the commit id only to a superadmin,
+        # since it means nothing to a seller and is really a deploy-debugging
+        # aid ("is my change live?").
+        "app_version": build["version"],
+        "app_commit": build["commit_short"] if admin.is_superadmin else None,
     }
 
 

@@ -15,6 +15,9 @@ export function AuthProvider({ children }) {
   // only a level-3 "seller" is ever actually gated by `permissions` below.
   const [role, setRole] = useState("seller");
   const [permissions, setPermissions] = useState([]);
+  // What is actually deployed - see backend services/version.py. Held
+  // here rather than fetched separately because /me already carries it.
+  const [build, setBuild] = useState({ version: null, commit: null });
   const [loading, setLoading] = useState(true);
 
   const applyMe = (data) => {
@@ -28,6 +31,7 @@ export function AuthProvider({ children }) {
     setIsSuperadmin(!!data.is_superadmin);
     setRole(data.role || (data.is_superadmin ? "superadmin" : "seller"));
     setPermissions(data.permissions || []);
+    setBuild({ version: data.app_version || null, commit: data.app_commit || null });
   };
 
   useEffect(() => {
@@ -81,7 +85,7 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider
-      value={{ token, adminId, username, isSuperadmin, role, isAdminOrAbove, permissions, can, canAny, loading, login, logout }}
+      value={{ build, token, adminId, username, isSuperadmin, role, isAdminOrAbove, permissions, can, canAny, loading, login, logout }}
     >
       {children}
     </AuthContext.Provider>

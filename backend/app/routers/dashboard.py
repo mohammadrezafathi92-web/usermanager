@@ -8,7 +8,11 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_admin
-from ..services import hierarchy, system_stats
+from ..services import accounting, hierarchy, system_stats
+
+# How far ahead the dashboard looks for services about to lapse. A week is
+# long enough to act on and short enough that the number stays meaningful.
+EXPIRING_SOON_DAYS = 7
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"], dependencies=[Depends(get_current_admin)])
 
@@ -120,7 +124,77 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
     # level-2 Admin (see schemas.DashboardStats' docstring on these fields).
     sys_stats = system_stats.get_system_stats() if hierarchy.role(admin) != hierarchy.ROLE_SELLER else None
 
+    # ---- "what needs me today" ------------------------------------------
+    # The dashboard used to be a wall of totals with nothing actionable on
+    # it. These four groups answer the questions actually asked when the
+    # panel is opened in the morning: what is waiting on me, what can I
+    # sell, how did we do, and is anything broken.
+    now = dt.datetime.utcnow()
+    soon = now + dt.timedelta(days=EXPIRING_SOON_DAYS)
+
+    # Services about to lapse - each one is a renewal conversation. Counted
+    # per Purchase (the per-service model) plus legacy users still on the
+    # shared pool, so nobody is missed during the transition.
+    expiring_purchases = (
+        db.query(func.count(models.Purchase.id))
+        .join(models.User, models.User.id == models.Purchase.user_id)
+        .filter(visibility)
+        .filter(models.Purchase.status == models.UserStatus.active)
+        .filter(models.Purchase.expire_at.isnot(None))
+        .filter(models.Purchase.expire_at > now, models.Purchase.expire_at <= soon)
+        .scalar() or 0
+    )
+    expiring_legacy = (
+        db.query(func.count(models.User.id))
+        .filter(visibility)
+        .filter(models.User.status == models.UserStatus.active)
+        .filter(models.User.expire_at.isnot(None))
+        .filter(models.User.expire_at > now, models.User.expire_at <= soon)
+        .scalar() or 0
+    )
+
+    # Money. Scoped exactly like the accounting section, so a seller sees
+    # their own numbers and never the panel's.
+    ledger_q = accounting.scoped_query(db, admin).filter(
+        models.LedgerEntry.kind.in_(("sale_new", "sale_renew"))
+    )
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start = today_start.replace(day=1)
+    prev_month_end = month_start
+    prev_month_start = (month_start - dt.timedelta(days=1)).replace(day=1)
+
+    def _sum(q):
+        return int(q.with_entities(func.coalesce(func.sum(models.LedgerEntry.amount), 0)).scalar() or 0)
+
+    sales_today = _sum(ledger_q.filter(models.LedgerEntry.created_at >= today_start))
+    sales_month = _sum(ledger_q.filter(models.LedgerEntry.created_at >= month_start))
+    sales_prev_month = _sum(
+        ledger_q.filter(
+            models.LedgerEntry.created_at >= prev_month_start,
+            models.LedgerEntry.created_at < prev_month_end,
+        )
+    )
+
+    # Infrastructure: which nodes are actually down, by name - a bare
+    # "2/3 online" tells you something is wrong but not what.
+    offline_node_names = [
+        name for (name,) in (
+            db.query(models.Node.name)
+            .filter(models.Node.enabled == True)  # noqa: E712
+            # Same definition of "online" as the count above: seen at least
+            # once, and not currently reporting an error.
+            .filter(or_(models.Node.last_error.isnot(None), models.Node.last_seen.is_(None)))
+            .all()
+        )
+    ]
+
     return schemas.DashboardStats(
+        expiring_soon_users=expiring_purchases + expiring_legacy,
+        expiring_soon_days=EXPIRING_SOON_DAYS,
+        sales_today=sales_today,
+        sales_month=sales_month,
+        sales_prev_month=sales_prev_month,
+        offline_node_names=offline_node_names,
         total_users=total_users,
         active_users=counts_by_status.get(models.UserStatus.active, 0),
         disabled_users=counts_by_status.get(models.UserStatus.disabled, 0),

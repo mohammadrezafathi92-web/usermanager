@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { KeyRound, Info, Plus, Trash2, Copy, Power, CreditCard, Bot, RefreshCw, DatabaseBackup, Download, Server, Eye, EyeOff, Upload, Repeat, ChevronDown } from "lucide-react";
+import { KeyRound, Info, Plus, Trash2, Copy, Power, CreditCard, Bot, RefreshCw, DatabaseBackup, Download, Server, Eye, EyeOff, Upload, Repeat, ChevronDown, Clock } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
 import Topbar from "../components/Topbar.jsx";
@@ -41,7 +41,7 @@ import {
   resolveHaFailover,
   changePanelPort,
 } from "../api/client.js";
-import { formatDateTime, formatBytes, copyText, downloadBlob } from "../utils.js";
+import { formatDateTime, formatBytes, copyText, downloadBlob, getDisplayOffset, setDisplayOffset } from "../utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
@@ -59,6 +59,61 @@ const CUSTOMER_MENU_ITEM_KEYS = [
   "cust_link",
   "cust_myid",
 ];
+
+function TimezoneCard({ t }) {
+  // Common offsets rather than a free-form number: the value is minutes from
+  // UTC, and a typo there quietly moves every date in the panel.
+  const OPTIONS = [
+    { v: 210, label: "UTC+3:30 — تهران" },
+    { v: 240, label: "UTC+4:00 — دبی" },
+    { v: 270, label: "UTC+4:30 — کابل" },
+    { v: 0, label: "UTC+0:00" },
+    { v: 180, label: "UTC+3:00 — مسکو / استانبول" },
+    { v: 330, label: "UTC+5:30 — دهلی" },
+    { v: -300, label: "UTC-5:00 — نیویورک" },
+  ];
+  const [value, setValue] = useState(getDisplayOffset());
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    setSaved(false);
+    try {
+      await updatePanelSettings({ display_utc_offset_minutes: Number(value) });
+      // Apply immediately so the dates already on screen are right without a
+      // reload - AuthContext only sets this once, at login.
+      setDisplayOffset(Number(value));
+      setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="card mb-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Clock size={18} className="text-brand-600" />
+        <h3 className="font-bold text-gray-700">{t("settings.timezoneTitle")}</h3>
+      </div>
+      <p className="text-xs text-gray-400 mb-4">{t("settings.timezoneHint")}</p>
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">{t("settings.timezoneLabel")}</label>
+          <select className="input w-auto" value={value} onChange={(e) => setValue(Number(e.target.value))}>
+            {OPTIONS.map((o) => (
+              <option key={o.v} value={o.v}>{o.label}</option>
+            ))}
+          </select>
+        </div>
+        <button type="button" className="btn-primary" disabled={saving} onClick={save}>
+          {saving ? "..." : t("common.save")}
+        </button>
+        {saved && <span className="text-xs text-emerald-600">{t("settings.timezoneSaved")}</span>}
+      </div>
+    </div>
+  );
+}
 
 export default function Settings() {
   const { isSuperadmin, isAdminOrAbove } = useAuth();
@@ -615,6 +670,8 @@ export default function Settings() {
           anyone who hasn't set their own, and what the shared bot shows);
           everyone else gets OwnPaymentCard instead, which only ever
           touches their own AdminUser.own_payment_* fields. */}
+      {isSuperadmin && <TimezoneCard t={t} />}
+
       {isSuperadmin && (
       <div className="card mb-4">
         <div className="flex items-center gap-2 mb-4">

@@ -114,18 +114,56 @@ export const STATUS_STYLES = {
 // calendar + Persian digits) regardless of the active language, so every
 // date on the page stayed Persian even in English mode. They now accept the
 // active language and switch locale/fallback text accordingly.
+// ---------- display timezone ----------
+// The API sends naive UTC timestamps ("2026-08-13T14:30:00", no suffix),
+// because the backend computes in UTC throughout. `new Date()` reads a
+// suffix-less string as LOCAL time, so every date in the panel rendered 3.5
+// hours early for a viewer in Tehran: it showed the UTC clock reading as
+// though it were already local.
+//
+// toDisplayDate fixes both halves - it pins a suffix-less value to UTC, then
+// shifts it by the panel's configured offset (PanelSettings.
+// display_utc_offset_minutes, primed after login via setDisplayOffset). The
+// result is then read with the getUTC* getters so the browser's own timezone
+// never enters into it, and an admin travelling abroad sees the same clock as
+// everyone else.
+export const DEFAULT_UTC_OFFSET_MINUTES = 210; // Asia/Tehran, +03:30, no DST
+let displayOffsetMinutes = DEFAULT_UTC_OFFSET_MINUTES;
+
+export function setDisplayOffset(minutes) {
+  if (minutes === null || minutes === undefined || Number.isNaN(Number(minutes))) return;
+  displayOffsetMinutes = Number(minutes);
+}
+
+export function getDisplayOffset() {
+  return displayOffsetMinutes;
+}
+
+export function toDisplayDate(value) {
+  if (!value) return null;
+  let s = String(value);
+  if (!/([zZ]|[+-]\d{2}:?\d{2})$/.test(s)) s = `${s}Z`;  // no marker -> it is UTC
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Date(d.getTime() + displayOffsetMinutes * 60000);
+}
+
+const pad2 = (n) => String(n).padStart(2, "0");
+
 export function formatDate(value, lang = "fa") {
   if (!value) return translate(lang, "userDetail.noExpiry");
-  const d = new Date(value);
-  return lang === "en"
-    ? d.toLocaleDateString("en-US", { year: "numeric", month: "2-digit", day: "2-digit" })
-    : d.toLocaleDateString("fa-IR", { year: "numeric", month: "2-digit", day: "2-digit" });
+  const d = toDisplayDate(value);
+  if (!d) return "-";
+  if (lang === "en") return `${pad2(d.getUTCMonth() + 1)}/${pad2(d.getUTCDate())}/${d.getUTCFullYear()}`;
+  const [jy, jm, jd] = gregorianToJalali(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
+  return `${jy}/${pad2(jm)}/${pad2(jd)}`;
 }
 
 export function formatDateTime(value, lang = "fa") {
   if (!value) return "-";
-  const d = new Date(value);
-  return lang === "en" ? d.toLocaleString("en-US") : d.toLocaleString("fa-IR");
+  const d = toDisplayDate(value);
+  if (!d) return "-";
+  return `${formatDate(value, lang)} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
 }
 
 // navigator.clipboard.writeText only works in a "secure context" (https or
@@ -235,7 +273,21 @@ export function jalaliToGregorian(jy, jm, jd) {
 // "2026-08-09" (or full ISO datetime) -> "1405/05/18"
 export function isoToJalali(iso) {
   if (!iso) return "";
-  const [gy, gm, gd] = String(iso).slice(0, 10).split("-").map(Number);
+  const raw = String(iso);
+  // A date-only value ("2026-08-13") is a calendar date the admin typed into
+  // a filter - shifting it by a timezone would move it to the wrong day. A
+  // full timestamp is a real moment in UTC and does need shifting.
+  const hasTime = raw.includes("T") || raw.includes(" ");
+  let gy;
+  let gm;
+  let gd;
+  if (hasTime) {
+    const d = toDisplayDate(raw);
+    if (!d) return "";
+    [gy, gm, gd] = [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()];
+  } else {
+    [gy, gm, gd] = raw.slice(0, 10).split("-").map(Number);
+  }
   if (!gy || !gm || !gd) return "";
   const [jy, jm, jd] = gregorianToJalali(gy, gm, gd);
   return `${jy}/${String(jm).padStart(2, "0")}/${String(jd).padStart(2, "0")}`;

@@ -12,6 +12,7 @@ from .database import Base, engine, SessionLocal
 from . import models
 from .security import hash_password
 from .services.quota_manager import poll_all, cleanup_old_usage_logs
+from .services import jalali
 from .services.radius_server import start_radius_server_in_background, cleanup_stale_radius_sessions, cleanup_old_radius_limit_logs
 from .services.notify import run_daily_notify_job
 from .services.backup import run_scheduled_backup, ha_healthcheck, ha_pull_and_apply, notify_admins_text
@@ -409,6 +410,19 @@ def on_startup():
             logging.info("انتقال %s فایل ovpn قدیمی پکیج‌ها به جدول جدید", len(legacy_pkgs))
     except Exception:
         logging.exception("خطا در انتقال فایل ovpn قدیمی پکیج‌ها")
+    finally:
+        db.close()
+
+    # Prime the display timezone before anything can render a date. Cheap,
+    # and it has to happen before the scheduler's first notify run.
+    db = SessionLocal()
+    try:
+        row = db.query(models.PanelSettings).first()
+        if row is not None:
+            jalali.set_display_offset(row.display_utc_offset_minutes)
+        logging.info("منطقه‌زمانی نمایش: UTC%+d:%02d", jalali.get_display_offset() // 60, abs(jalali.get_display_offset()) % 60)
+    except Exception:
+        logging.exception("خطا در خواندن منطقه‌زمانی نمایش - مقدار پیش‌فرض تهران استفاده می‌شود")
     finally:
         db.close()
 

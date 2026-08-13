@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 import datetime as dt
 
 from .. import models, schemas
+from ..services import jalali
 from ..database import get_db
 from ..deps import require_admin_or_above, require_superadmin, get_current_admin, require_confirm_password
 from ..services import backup as backup_service
@@ -40,6 +41,8 @@ def _get_or_create(db: Session) -> models.PanelSettings:
         db.add(row)
         db.commit()
         db.refresh(row)
+        # Keep the cached render offset in step with what was just saved.
+        jalali.set_display_offset(row.display_utc_offset_minutes)
     return row
 
 

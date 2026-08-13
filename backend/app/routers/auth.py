@@ -10,7 +10,7 @@ from ..database import get_db
 from ..security import verify_password, create_access_token, hash_password
 from ..deps import get_current_admin
 from ..permissions import effective_permissions
-from ..services import hierarchy
+from ..services import hierarchy, jalali
 
 
 class ChangePasswordRequest(BaseModel):
@@ -102,6 +102,11 @@ def me(admin: models.AdminUser = Depends(get_current_admin)):
         "is_superadmin": admin.is_superadmin,
         "role": hierarchy.role(admin),
         "permissions": sorted(effective_permissions(admin)),
+        # Rendering offset for every date in the UI (see services/jalali.py
+        # and frontend utils.js's setDisplayOffset). Delivered here rather
+        # than from /api/settings because that router is admin-tier-only,
+        # while a level-3 seller still needs correct timestamps.
+        "display_utc_offset_minutes": jalali.get_display_offset(),
     }
 
 

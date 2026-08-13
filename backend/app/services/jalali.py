@@ -7,12 +7,17 @@ printing Gregorian dates at a Persian-speaking audience. It lives here now so
 there is exactly one implementation; telegram_bot/utils.py re-exports it under
 its original names so existing bot code is unaffected.
 
-A note on time zones, deliberately not hidden: the whole project stores and
-computes in UTC (`datetime.utcnow()` throughout). These helpers convert
-whatever datetime they are handed, so a UTC timestamp between 20:30 and 24:00
-UTC renders as the PREVIOUS Persian day relative to Tehran local time. Fixing
-that properly means introducing a real timezone for display, which touches far
-more than formatting - it is called out here rather than papered over.
+Time zones: the whole project STORES and computes in UTC (`datetime.utcnow()`
+throughout) and that does not change - only rendering shifts, by the offset in
+PanelSettings.display_utc_offset_minutes (Tehran = 210). Before this existed,
+anything timestamped between 20:30 and 24:00 UTC printed the PREVIOUS Persian
+day to a reader in Tehran.
+
+The offset is cached in a module global rather than looked up per call: these
+formatters run inside bot message rendering and row-by-row spreadsheet export,
+where a database round-trip per date would be absurd. main.py primes it at
+startup and routers/panel_settings.py refreshes it whenever the setting is
+saved - see set_display_offset below.
 """
 from __future__ import annotations
 
@@ -66,22 +71,52 @@ def gregorian_to_jalali(gy: int, gm: int, gd: int) -> tuple[int, int, int]:
     return jy, jm, jd
 
 
+DEFAULT_UTC_OFFSET_MINUTES = 210  # Asia/Tehran, +03:30, no DST since 2022
+_display_offset_minutes = DEFAULT_UTC_OFFSET_MINUTES
+
+
+def set_display_offset(minutes: int | None) -> None:
+    """Called once at startup and again whenever the panel setting changes."""
+    global _display_offset_minutes
+    if minutes is None:
+        return
+    try:
+        _display_offset_minutes = int(minutes)
+    except (TypeError, ValueError):
+        pass
+
+
+def get_display_offset() -> int:
+    return _display_offset_minutes
+
+
 def _coerce(value):
     """Accepts a datetime, a date, or an ISO string (with or without a
-    trailing Z). Returns None if it cannot be understood, so callers can fall
-    back rather than raise on a stray value from an old row."""
+    trailing Z), and returns it shifted into the display timezone. Returns
+    None if it cannot be understood, so callers can fall back rather than
+    raise on a stray value from an old row.
+
+    A naive datetime is assumed to be UTC, because that is what every writer
+    in this project produces. A value that already carries a timezone is
+    converted properly rather than blindly shifted."""
     if value is None or value == "":
         return None
     if isinstance(value, dt.datetime):
-        return value
-    if isinstance(value, dt.date):
+        parsed = value
+    elif isinstance(value, dt.date):
+        # A bare date has no time to shift - moving it would change the day.
         return dt.datetime(value.year, value.month, value.day)
-    if isinstance(value, str):
+    elif isinstance(value, str):
         try:
-            return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+            parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
             return None
-    return None
+    else:
+        return None
+
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    return parsed + dt.timedelta(minutes=_display_offset_minutes)
 
 
 def fmt_jalali(value, with_time: bool = True, empty: str = "بدون انقضا") -> str:

@@ -595,6 +595,17 @@ class BulkNotifyUsersResult(BaseModel):
 
 # ---------- Dashboard ----------
 class DashboardStats(BaseModel):
+    # --- actionable groups (see routers/dashboard.py) ---
+    # Services lapsing within expiring_soon_days - each is a renewal to chase.
+    expiring_soon_users: int = 0
+    expiring_soon_days: int = 7
+    # Sales in Toman, scoped by role exactly like the accounting section.
+    sales_today: int = 0
+    sales_month: int = 0
+    sales_prev_month: int = 0
+    # Enabled nodes that are unreachable or reporting an error, BY NAME - a
+    # bare "2/3 online" says something broke but not what.
+    offline_node_names: List[str] = []
     total_users: int
     active_users: int
     disabled_users: int
@@ -897,6 +908,7 @@ class PaymentCardUpdate(BaseModel):
 
 class PanelSettingsOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+    display_utc_offset_minutes: Optional[int] = 210
     payment_card_number: Optional[str] = None
     payment_card_holder: Optional[str] = None
     payment_instructions: Optional[str] = None
@@ -946,6 +958,7 @@ class PanelSettingsOut(BaseModel):
 
 
 class PanelSettingsUpdate(BaseModel):
+    display_utc_offset_minutes: Optional[int] = None
     payment_card_number: Optional[str] = None
     payment_card_holder: Optional[str] = None
     payment_instructions: Optional[str] = None

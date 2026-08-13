@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { login as apiLogin, fetchMe } from "../api/client.js";
+import { setDisplayOffset } from "../utils.js";
 
 const AuthContext = createContext(null);
 
@@ -17,6 +18,11 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   const applyMe = (data) => {
+    // Every date in the UI is rendered through utils.js's formatters, which
+    // read this module-level offset. Setting it here means it is in place
+    // before any page mounts, so nothing ever renders with the wrong clock
+    // and then corrects itself.
+    setDisplayOffset(data.display_utc_offset_minutes);
     setAdminId(data.id ?? null);
     setUsername(data.username);
     setIsSuperadmin(!!data.is_superadmin);

@@ -24,6 +24,51 @@ function UsageBar({ percent }) {
   );
 }
 
+
+const toman = (n) => Number(n || 0).toLocaleString("en-US");
+
+// One actionable tile: a number that means "go do something", with the page
+// it should take you to. Muted (not alarming) when the count is zero, so a
+// clean panel reads as calm rather than as four red boxes at 0.
+function ActionCard({ icon: Icon, label, hint, value, tone, onClick }) {
+  const idle = !value;
+  const tones = {
+    amber: "bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400",
+    red: "bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400",
+    brand: "bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400",
+  };
+  const muted = "bg-gray-100 text-gray-400 dark:bg-slate-800 dark:text-gray-500";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={idle}
+      className={`card flex items-center gap-3 sm:gap-4 w-full text-start ${idle ? "opacity-70" : "card-hover cursor-pointer"}`}
+    >
+      <div className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 ${idle ? muted : tones[tone]}`}>
+        <Icon size={20} />
+      </div>
+      <div className="min-w-0">
+        <div className="text-xl font-bold text-gray-800 dark:text-gray-100 tnum">{value}</div>
+        <div className="text-sm text-gray-400 truncate">{label}</div>
+        {hint && <div className="text-xs text-gray-400 truncate">{hint}</div>}
+      </div>
+    </button>
+  );
+}
+
+function MoneyTile({ label, value, t, sub }) {
+  return (
+    <div className="card">
+      <div className="text-sm text-gray-400">{label}</div>
+      <div className="text-xl sm:text-2xl font-bold text-gray-800 dark:text-gray-100 tnum mt-1" dir="ltr">
+        {toman(value)} <span className="text-sm font-normal text-gray-400">{t("dashboard.toman")}</span>
+      </div>
+      {sub}
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const navigate = useNavigate();
@@ -51,6 +96,56 @@ export default function Dashboard() {
         <div className="text-gray-400">{t("common.loading")}</div>
       ) : (
         <>
+          {/* What needs doing, before the totals. Ordered by urgency:
+              something broken, then money about to walk out the door. */}
+          <div className="section-title mb-2">{t("dashboard.needsYou")}</div>
+          <div className="grid grid-cols-1 xs:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 mb-6">
+            <ActionCard
+              icon={ShieldOff}
+              tone="red"
+              label={t("dashboard.offlineNodes")}
+              hint={(stats.offline_node_names || []).join("، ") || t("dashboard.allNodesOnline")}
+              value={(stats.offline_node_names || []).length}
+              onClick={() => navigate("/nodes")}
+            />
+            <ActionCard
+              icon={AlertTriangle}
+              tone="amber"
+              label={t("dashboard.quotaExceeded")}
+              hint={t("dashboard.renewalChance")}
+              value={stats.quota_exceeded_users}
+              onClick={() => navigate("/users?status=quota_exceeded")}
+            />
+            <ActionCard
+              icon={Clock}
+              tone="brand"
+              label={t("dashboard.expiringSoon")}
+              hint={t("dashboard.expiringSoonHint", { days: stats.expiring_soon_days })}
+              value={stats.expiring_soon_users}
+              onClick={() => navigate("/users?status=active")}
+            />
+          </div>
+
+          <div className="section-title mb-2">{t("dashboard.money")}</div>
+          <div className="grid grid-cols-1 xs:grid-cols-3 gap-3 sm:gap-4 mb-6">
+            <MoneyTile label={t("dashboard.salesToday")} value={stats.sales_today} t={t} />
+            <MoneyTile
+              label={t("dashboard.salesMonth")}
+              value={stats.sales_month}
+              t={t}
+              sub={
+                stats.sales_prev_month > 0 ? (
+                  <div className={`text-xs mt-1 ${stats.sales_month >= stats.sales_prev_month ? "text-emerald-600" : "text-red-500"}`}>
+                    {t("dashboard.vsPrevMonth", {
+                      percent: Math.round(((stats.sales_month - stats.sales_prev_month) / stats.sales_prev_month) * 100),
+                    })}
+                  </div>
+                ) : null
+              }
+            />
+            <MoneyTile label={t("dashboard.salesPrevMonth")} value={stats.sales_prev_month} t={t} />
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
             <StatCard icon={Users} label={t("dashboard.totalUsers")} value={stats.total_users} tone="brand" onClick={() => navigate("/users")} />
             <StatCard icon={UserCheck} label={t("dashboard.activeUsers")} value={stats.active_users} tone="emerald" onClick={() => navigate("/users?status=active")} />

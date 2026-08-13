@@ -1254,6 +1254,13 @@ class PanelSettings(Base):
     # flipped to True after historical Purchases/AdminBalanceLogs have been
     # copied into the accounting ledger once, so a restart never
     # double-imports them.
+    # Display-only UTC offset in minutes (Tehran = +3:30 = 210). Everything
+    # is STORED in UTC and stays that way - only rendering shifts. Kept as an
+    # offset rather than a zone name so the slim Python image needs no tzdata
+    # package, which is also exact for Iran: DST was abolished in 2022, so
+    # Asia/Tehran is a constant +03:30 with no transitions to model.
+    display_utc_offset_minutes = Column(Integer, default=210)
+
     accounting_backfilled = Column(Boolean, nullable=False, default=False)
     # One-shot guard for services/purchase_migration.py - flipped to True
     # after legacy shared-pool connection groups have been converted into

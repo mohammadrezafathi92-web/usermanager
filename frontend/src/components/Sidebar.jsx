@@ -114,6 +114,17 @@ export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
         panel to English left the sidebar pinned to the right of an LTR layout
         and made the closed drawer slide off the wrong edge.
 
+        It anchors to inline-START, which is the RIGHT edge in Persian and the
+        left edge in English - i.e. exactly where a sidebar belongs in each.
+        Worth stating plainly because the intuition runs the other way: an
+        earlier attempt used `end-0`, reasoning "the sidebar is on the right,
+        so it is the end". In RTL inline-end is the LEFT edge, so on mobile the
+        drawer pinned itself to the left and the hide transform then pushed it
+        into the middle of the screen instead of off it - visible as a panel
+        stuck open over the page, with the hamburger buried underneath.
+        `border-e` follows for the same reason: the border faces the content,
+        which sits on the sidebar's inline-end side.
+
         The slide-out direction is chosen in JS (offCanvas below) rather than
         with Tailwind's rtl:/ltr: variants. Those compile to `:where([dir=...])`
         selectors, which carry ZERO specificity and are emitted after the
@@ -134,8 +145,8 @@ export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
         role={mobileOpen ? "dialog" : undefined}
         aria-modal={mobileOpen ? true : undefined}
         aria-label={t("nav.appName")}
-        className={`fixed md:sticky top-0 end-0 z-50 md:z-auto h-screen w-72 sm:w-64 flex flex-col
-        bg-white border-s border-gray-200/70 dark:bg-slate-900 dark:border-slate-800
+        className={`fixed md:sticky top-0 start-0 z-50 md:z-auto h-screen w-72 sm:w-64 flex flex-col
+        bg-white border-e border-gray-200/70 dark:bg-slate-900 dark:border-slate-800
         transition-transform duration-200 md:translate-x-0 focus:outline-none
         ${mobileOpen ? "translate-x-0" : offCanvas}`}
       >

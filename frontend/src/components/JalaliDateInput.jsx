@@ -146,21 +146,4 @@ export function JalaliDateInput({ value, onChange, lang }) {
   );
 }
 
-function DateFilters({ dateFrom, dateTo, setDateFrom, setDateTo, t, lang, children }) {
-  return (
-    <div className="flex flex-wrap items-end gap-3 mb-4">
-      <div>
-        <label className="block text-xs text-gray-400 mb-1">{t("accounting.filterFrom")}</label>
-        <JalaliDateInput value={dateFrom} onChange={setDateFrom} lang={lang} />
-      </div>
-      <div>
-        <label className="block text-xs text-gray-400 mb-1">{t("accounting.filterTo")}</label>
-        <JalaliDateInput value={dateTo} onChange={setDateTo} lang={lang} />
-      </div>
-      {children}
-    </div>
-  );
-}
-
-
 export default JalaliDateInput;

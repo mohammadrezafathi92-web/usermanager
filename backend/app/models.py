@@ -1577,6 +1577,14 @@ class AdChannel(Base):
     # interval is something a non-technical admin can set correctly.
     interval_hours = Column(Integer, default=6)
 
+    # Quiet hours, in the panel's DISPLAY timezone (see services/jalali.py),
+    # not UTC - an admin setting "09 to 23" means their own clock. Outside
+    # this window a due advert simply waits: a marketing post at 4am is not
+    # read, and it trains members to mute the channel.
+    # Equal values (e.g. 0 and 0) mean no restriction, all day.
+    active_from_hour = Column(Integer, default=9)
+    active_to_hour = Column(Integer, default=23)
+
     # False routes each post to the admin in the bot for approval first
     # instead of straight to the channel (see services/ads.py).
     auto_send = Column(Boolean, default=True)

@@ -38,6 +38,8 @@ class ChannelOut(BaseModel):
     chat_id: Optional[str] = None
     enabled: bool = False
     interval_hours: int = 6
+    active_from_hour: int = 9
+    active_to_hour: int = 23
     auto_send: bool = True
     delete_previous: bool = True
     last_sent_at: Optional[dt.datetime] = None
@@ -49,6 +51,8 @@ class ChannelUpdate(BaseModel):
     chat_id: Optional[str] = None
     enabled: Optional[bool] = None
     interval_hours: Optional[int] = None
+    active_from_hour: Optional[int] = None
+    active_to_hour: Optional[int] = None
     auto_send: Optional[bool] = None
     delete_previous: Optional[bool] = None
 
@@ -117,6 +121,9 @@ def update_channel(
         # An interval below an hour would be spam and would also outpace the
         # 10-minute scheduler tick, making the setting meaningless.
         data["interval_hours"] = max(1, min(int(data["interval_hours"]), 24 * 14))
+    for key in ("active_from_hour", "active_to_hour"):
+        if key in data and data[key] is not None:
+            data[key] = max(0, min(int(data[key]), 23))
     if "chat_id" in data and data["chat_id"] is not None:
         data["chat_id"] = data["chat_id"].strip() or None
     for k, v in data.items():
@@ -261,3 +268,22 @@ def send_now(post_id: int, db: Session = Depends(get_db), admin: models.AdminUse
     if not ok:
         raise HTTPException(400, error or "ارسال ناموفق بود")
     return {"ok": True}
+
+
+@router.get("/schedule")
+def get_schedule(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    """Which advert goes out when, for the next few slots.
+
+    Produced by simulating the real rotation (services/ads.upcoming) rather
+    than by describing it in words, so the panel can never drift from what
+    the scheduler actually does.
+    """
+    channel = _channel_for(db, admin)
+    enabled_posts = [p for p in channel.posts if p.enabled and not (p.package_id and p.package is None)]
+    return {
+        "total_posts": len(channel.posts),
+        "enabled_posts": len(enabled_posts),
+        "interval_hours": channel.interval_hours,
+        "in_window_now": ads.in_active_window(channel, dt.datetime.utcnow()),
+        "upcoming": ads.upcoming(channel, count=6),
+    }

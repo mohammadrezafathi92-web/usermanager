@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from "react";
-import { Megaphone, Plus, Pencil, Trash2, Send, Eye, Image as ImageIcon, X, Check } from "lucide-react";
+import { Megaphone, Plus, Pencil, Trash2, Send, Eye, Image as ImageIcon, X, Check, CalendarClock } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import {
   fetchAdChannel, updateAdChannel, fetchAdPlaceholders, fetchAdPosts, createAdPost,
-  updateAdPost, deleteAdPost, previewAdPost, sendAdPostNow, uploadAdPostImage, deleteAdPostImage,
+  updateAdPost, deleteAdPost, previewAdPost, sendAdPostNow, uploadAdPostImage, deleteAdPostImage, fetchAdSchedule,
   fetchPackages, fetchDiscountCodes,
 } from "../api/client.js";
 import { formatDateTime } from "../utils.js";
@@ -26,8 +26,13 @@ export default function Ads() {
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState("");
+  const [schedule, setSchedule] = useState(null);
 
-  const loadPosts = () => fetchAdPosts().then((r) => setPosts(r.data));
+  // The schedule is derived from the channel settings AND the posts, so it
+  // is refreshed alongside them rather than on its own timer - a stale
+  // "next post at ..." is worse than none.
+  const loadSchedule = () => fetchAdSchedule().then((r) => setSchedule(r.data)).catch(() => {});
+  const loadPosts = () => fetchAdPosts().then((r) => setPosts(r.data)).then(loadSchedule);
 
   useEffect(() => {
     fetchAdChannel().then((r) => setChannel(r.data));
@@ -42,6 +47,7 @@ export default function Ads() {
     setChannel(next);                       // optimistic - a toggle that lags feels broken
     const res = await updateAdChannel(patch);
     setChannel(res.data);
+    loadSchedule();
   };
 
   const openNew = () => { setEditingId(null); setForm(EMPTY); setOpen(true); };
@@ -132,6 +138,27 @@ export default function Ads() {
               />
             </div>
 
+            <div className="sm:col-span-2">
+              <label className="block text-sm text-gray-600 mb-1">{t("ads.activeHours")}</label>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-400">{t("ads.from")}</span>
+                <input
+                  type="number" min="0" max="23" className="input-sm w-20" dir="ltr"
+                  value={channel.active_from_hour ?? 9}
+                  onChange={(e) => setChannel({ ...channel, active_from_hour: Number(e.target.value) })}
+                  onBlur={(e) => saveChannel({ active_from_hour: Number(e.target.value) })}
+                />
+                <span className="text-xs text-gray-400">{t("ads.to")}</span>
+                <input
+                  type="number" min="0" max="23" className="input-sm w-20" dir="ltr"
+                  value={channel.active_to_hour ?? 23}
+                  onChange={(e) => setChannel({ ...channel, active_to_hour: Number(e.target.value) })}
+                  onBlur={(e) => saveChannel({ active_to_hour: Number(e.target.value) })}
+                />
+              </div>
+              <div className="hint">{t("ads.activeHoursHint")}</div>
+            </div>
+
             <div className="sm:col-span-2 space-y-2 pt-1">
               <label className="flex items-center gap-2 text-sm text-gray-600">
                 <input type="checkbox" checked={!!channel.enabled} onChange={(e) => saveChannel({ enabled: e.target.checked })} />
@@ -163,6 +190,42 @@ export default function Ads() {
           </div>
         )}
       </div>
+
+      {/* Answers the two questions an admin actually has: how many adverts
+          are in rotation, and which one goes out when. Produced by
+          simulating the real rotation on the server, so it cannot drift
+          from what the scheduler does. */}
+      {schedule && (
+        <div className="card mb-6">
+          <div className="flex items-center gap-2 mb-1">
+            <CalendarClock size={18} className="text-brand-600" />
+            <h3 className="font-bold text-gray-700">{t("ads.schedule")}</h3>
+          </div>
+          <div className="text-xs text-gray-400 mb-3">
+            {t("ads.scheduleSummary", {
+              enabled: schedule.enabled_posts,
+              total: schedule.total_posts,
+              hours: schedule.interval_hours,
+            })}
+            {!schedule.in_window_now && <span className="text-amber-600"> · {t("ads.outsideWindow")}</span>}
+          </div>
+          {schedule.upcoming?.length ? (
+            <ol className="space-y-1.5">
+              {schedule.upcoming.map((s, i) => (
+                <li key={i} className="flex items-center gap-3 text-sm">
+                  <span className="w-6 h-6 rounded-lg bg-gray-100 dark:bg-slate-800 text-xs text-gray-500 flex items-center justify-center shrink-0 tnum">
+                    {i + 1}
+                  </span>
+                  <span className="text-gray-500 tnum shrink-0" dir="ltr">{formatDateTime(s.at, language)}</span>
+                  <span className="text-gray-800 dark:text-gray-100 truncate">{s.title}</span>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <div className="empty-state">{t("ads.noSchedule")}</div>
+          )}
+        </div>
+      )}
 
       <div className="flex items-center justify-between mb-2 gap-2">
         <div>

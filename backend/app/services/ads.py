@@ -173,12 +173,89 @@ def send_post(db: Session, channel: models.AdChannel, post: models.AdPost, *, ma
     return True, None
 
 
+def _local(now: dt.datetime) -> dt.datetime:
+    """UTC -> the panel's display timezone. Quiet hours are set by a human
+    against their own clock, so the comparison has to happen there."""
+    from .jalali import get_display_offset
+
+    return now + dt.timedelta(minutes=get_display_offset())
+
+
+def in_active_window(channel: models.AdChannel, now: dt.datetime) -> bool:
+    """Whether local time is inside the channel's allowed posting hours.
+
+    Handles a window that wraps past midnight (e.g. 21 to 2) as well as the
+    ordinary case, and treats from == to as "no restriction" rather than as
+    a zero-length window - the latter reading would silently stop a channel
+    forever, and an admin who sets both to the same value clearly means
+    "any time", not "never"."""
+    start = channel.active_from_hour if channel.active_from_hour is not None else 0
+    end = channel.active_to_hour if channel.active_to_hour is not None else 0
+    if start == end:
+        return True
+    hour = _local(now).hour
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end      # wraps past midnight
+
+
+def next_allowed_time(channel: models.AdChannel, at: dt.datetime) -> dt.datetime:
+    """The first moment from `at` onwards that falls inside the window - used
+    to predict the schedule shown in the panel."""
+    if in_active_window(channel, at):
+        return at
+    # At most 24 hourly steps: the window is defined in whole hours, so a
+    # scan is exact here and far clearer than modular arithmetic.
+    probe = at.replace(minute=0, second=0, microsecond=0)
+    for _ in range(25):
+        probe += dt.timedelta(hours=1)
+        if in_active_window(channel, probe):
+            return probe
+    return at
+
+
 def _due(channel: models.AdChannel, now: dt.datetime) -> bool:
     if not channel.enabled or not channel.chat_id:
+        return False
+    if not in_active_window(channel, now):
         return False
     if channel.last_sent_at is None:
         return True
     return now - channel.last_sent_at >= dt.timedelta(hours=max(1, channel.interval_hours or 6))
+
+
+def upcoming(channel: models.AdChannel, count: int = 6) -> list[dict]:
+    """Which advert goes out when, for the next `count` slots.
+
+    Simulates the real rotation rather than describing it, so what the panel
+    shows cannot drift from what the scheduler actually does - the two would
+    otherwise be two implementations of the same rule.
+    """
+    posts = [
+        p for p in channel.posts
+        if p.enabled and not (p.package_id and p.package is None)
+    ]
+    if not posts:
+        return []
+
+    interval = dt.timedelta(hours=max(1, channel.interval_hours or 6))
+    now = dt.datetime.utcnow()
+    at = (channel.last_sent_at + interval) if channel.last_sent_at else now
+    if at < now:
+        at = now
+
+    # Copy of the ordering keys so the simulation can advance them without
+    # touching the database rows.
+    state = [[p.last_sent_at or dt.datetime.min, p.sort_order or 0, p.id, p] for p in posts]
+    out = []
+    for _ in range(count):
+        at = next_allowed_time(channel, at)
+        state.sort(key=lambda s: (s[0], s[1], s[2]))
+        chosen = state[0]
+        out.append({"at": at, "post_id": chosen[3].id, "title": chosen[3].title or f"#{chosen[3].id}"})
+        chosen[0] = at          # it has now "been sent" at this slot
+        at = at + interval
+    return out
 
 
 def run_due_campaigns() -> int:

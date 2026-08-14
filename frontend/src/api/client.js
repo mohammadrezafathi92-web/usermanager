@@ -387,6 +387,7 @@ export const deletePurchase = (userId, purchaseId) =>
 export const fetchAdChannel = () => client.get("/ads/channel");
 export const updateAdChannel = (data) => client.put("/ads/channel", data);
 export const fetchAdPlaceholders = () => client.get("/ads/placeholders");
+export const fetchAdSchedule = () => client.get("/ads/schedule");
 export const fetchAdPosts = () => client.get("/ads/posts");
 export const createAdPost = (data) => client.post("/ads/posts", data);
 export const updateAdPost = (id, data) => client.put(`/ads/posts/${id}`, data);

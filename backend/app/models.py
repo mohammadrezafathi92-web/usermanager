@@ -1545,3 +1545,94 @@ class TutorialSoftware(Base):
     created_at = Column(DateTime, default=now)
 
     tutorial = relationship("Tutorial", back_populates="software")
+
+
+# ---------------------------------------------------------------------------
+# Channel advertising (بخش تبلیغات)
+# ---------------------------------------------------------------------------
+class AdChannel(Base):
+    """One advertising channel per admin - the superadmin's, and one for each
+    level-2 Admin who runs their own bot and their own customer channel.
+
+    Posts are sent by THAT admin's own bot (AdminUser.own_bot_token) when they
+    have one, falling back to the shared bot, so an Admin advertises their own
+    packages at their own prices to their own audience. The bot must be an
+    administrator of the channel with permission to post - Telegram gives no
+    way to check that in advance, so a failure is recorded in last_error for
+    the panel to show rather than being retried blindly.
+    """
+
+    __tablename__ = "ad_channels"
+
+    id = Column(Integer, primary_key=True)
+    owner_admin_id = Column(Integer, ForeignKey("admin_users.id"), unique=True, index=True)
+
+    # Either a numeric channel id (-100...) or a @username. Kept as text so
+    # both forms work; Telegram accepts either.
+    chat_id = Column(String(120), nullable=True)
+    enabled = Column(Boolean, default=False)
+
+    # How often to post. Hours rather than a cron expression: this is a
+    # marketing cadence ("every 6 hours"), not a precise schedule, and an
+    # interval is something a non-technical admin can set correctly.
+    interval_hours = Column(Integer, default=6)
+
+    # False routes each post to the admin in the bot for approval first
+    # instead of straight to the channel (see services/ads.py).
+    auto_send = Column(Boolean, default=True)
+
+    # Removes the previously sent ad when the next one goes out, so a channel
+    # of real content doesn't slowly turn into a wall of adverts.
+    delete_previous = Column(Boolean, default=True)
+    last_message_id = Column(Integer, nullable=True)
+
+    last_sent_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+    sent_count = Column(Integer, default=0)
+
+    created_at = Column(DateTime, default=now)
+    updated_at = Column(DateTime, default=now, onupdate=now)
+
+    owner_admin = relationship("AdminUser")
+    posts = relationship("AdPost", back_populates="channel", cascade="all, delete-orphan")
+
+
+class AdPost(Base):
+    """One advert in an admin's rotation.
+
+    `body` is a template rendered at send time (see services/ads.py's
+    PLACEHOLDERS), not a frozen string - so a price change in Packages is
+    reflected in the next post automatically instead of quietly advertising
+    last month's price. A post tied to a package that is later deleted is
+    skipped rather than sent with holes in it.
+    """
+
+    __tablename__ = "ad_posts"
+
+    id = Column(Integer, primary_key=True)
+    channel_id = Column(Integer, ForeignKey("ad_channels.id"), index=True)
+
+    title = Column(String(200), nullable=True)  # admin-facing label only, never sent
+    body = Column(Text, nullable=False, default="")
+
+    # Optional package whose live name/quota/duration/price fill the
+    # placeholders. NULL = a free-text post with no package data in it.
+    package_id = Column(Integer, ForeignKey("packages.id", ondelete="SET NULL"), nullable=True)
+    # Optional discount code to advertise; its code and expiry fill placeholders.
+    discount_code_id = Column(Integer, ForeignKey("discount_codes.id", ondelete="SET NULL"), nullable=True)
+
+    image_path = Column(String(500), nullable=True)
+    image_name = Column(String(255), nullable=True)
+
+    # Inline "buy" button under the post, deep-linking into the bot.
+    button_text = Column(String(80), nullable=True, default="🛒 خرید و اطلاعات بیشتر")
+
+    enabled = Column(Boolean, default=True)
+    sort_order = Column(Integer, default=0)
+    sent_count = Column(Integer, default=0)
+    last_sent_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=now)
+
+    channel = relationship("AdChannel", back_populates="posts")
+    package = relationship("Package")
+    discount_code = relationship("DiscountCode")

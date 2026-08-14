@@ -13,10 +13,11 @@ from . import models
 from .security import hash_password
 from .services.quota_manager import poll_all, cleanup_old_usage_logs
 from .services import jalali
+from .services.ads import run_due_campaigns
 from .services.radius_server import start_radius_server_in_background, cleanup_stale_radius_sessions, cleanup_old_radius_limit_logs
 from .services.notify import run_daily_notify_job
 from .services.backup import run_scheduled_backup, ha_healthcheck, ha_pull_and_apply, notify_admins_text
-from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, tutorials, backup, remote_bot, admins, radius_logs, discount_codes, subscription, accounting as accounting_router
+from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, tutorials, backup, remote_bot, admins, radius_logs, discount_codes, subscription, accounting as accounting_router, ads as ads_router
 from .services import accounting as accounting_service
 from .services import purchase_migration
 from .telegram_bot import runner as telegram_bot_runner
@@ -119,6 +120,7 @@ app.include_router(panel_settings.my_payment_router)
 app.include_router(panel_settings.ha_router)
 app.include_router(subscription.router)
 app.include_router(accounting_router.router)
+app.include_router(ads_router.router)
 
 scheduler = BackgroundScheduler()
 
@@ -514,6 +516,12 @@ def _start_full_services() -> None:
     # (best-effort no-op if the bot isn't running/configured - see
     # services/backup.py). Also triggerable on-demand from Settings.
     scheduler.add_job(run_scheduled_backup, "cron", hour="0,6,12,18", minute=0, id="auto_backup", replace_existing=True)
+    # Channel adverts (see services/ads.py). One frequent tick that asks
+    # each channel whether ITS interval has elapsed, rather than a
+    # scheduler job per channel - channels are created and reconfigured
+    # from the panel at runtime, and re-registering jobs on every
+    # settings change is a synchronisation problem with nothing to gain.
+    scheduler.add_job(run_due_campaigns, "interval", minutes=10, id="ad_campaigns", replace_existing=True)
 
     start_radius_server_in_background()
 

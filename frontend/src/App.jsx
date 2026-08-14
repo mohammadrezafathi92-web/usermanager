@@ -14,6 +14,7 @@ import Admins from "./pages/Admins.jsx";
 import RadiusLogs from "./pages/RadiusLogs.jsx";
 import DiscountCodes from "./pages/DiscountCodes.jsx";
 import Accounting from "./pages/Accounting.jsx";
+import Ads from "./pages/Ads.jsx";
 import ConfirmPasswordGate from "./components/ConfirmPasswordGate.jsx";
 import Subscription from "./pages/Subscription.jsx";
 
@@ -152,6 +153,16 @@ export default function App() {
           <Protected>
             <Accounting />
           </Protected>
+        }
+      />
+      {/* تبلیغات - admin tier and above: the feature is one channel per
+          admin, and a level-3 seller has no channel or bot of their own. */}
+      <Route
+        path="/ads"
+        element={
+          <AdminOrAboveOnly>
+            <Ads />
+          </AdminOrAboveOnly>
         }
       />
       {/* Public customer subscription panel - no auth, gated only by the

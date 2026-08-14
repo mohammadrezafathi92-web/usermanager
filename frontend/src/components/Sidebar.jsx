@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, Users, Server, Settings, Network, Package, GraduationCap, ShieldCheck, ShieldAlert, Ticket, Sun, Moon, X, Languages, Calculator } from "lucide-react";
+import { LayoutDashboard, Users, Server, Settings, Network, Package, GraduationCap, ShieldCheck, ShieldAlert, Ticket, Sun, Moon, X, Languages, Calculator, Megaphone } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
@@ -35,6 +35,9 @@ const allLinks = [
   // cover (superadmin: whole panel; level-2 Admin: own tree; Seller: self) -
   // see routers/accounting.py.
   { to: "/accounting", labelKey: "nav.accounting", icon: Calculator, perm: null },
+  // One channel per admin - a level-3 Seller has neither a channel nor a
+  // bot of their own, so this is Admin-tier-only like Nodes.
+  { to: "/ads", labelKey: "nav.ads", icon: Megaphone, perm: "__admin_or_above__" },
   { to: "/settings", labelKey: "nav.settings", icon: Settings, perm: null },
   // Superadmins manage level-2 Admins here; level-2 Admins ALSO see this
   // page (to manage their OWN level-3 Sellers - see routers/admins.py's

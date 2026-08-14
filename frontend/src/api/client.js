@@ -382,3 +382,20 @@ export const rebuildNodeClients = (id) => client.post(`/nodes/${id}/rebuild-clie
 // removed from the nodes too) - see routers/users.py's delete_purchase.
 export const deletePurchase = (userId, purchaseId) =>
   client.delete(`/users/${userId}/purchases/${purchaseId}`);
+
+// ---------- تبلیغات (channel adverts - see backend routers/ads.py) ----------
+export const fetchAdChannel = () => client.get("/ads/channel");
+export const updateAdChannel = (data) => client.put("/ads/channel", data);
+export const fetchAdPlaceholders = () => client.get("/ads/placeholders");
+export const fetchAdPosts = () => client.get("/ads/posts");
+export const createAdPost = (data) => client.post("/ads/posts", data);
+export const updateAdPost = (id, data) => client.put(`/ads/posts/${id}`, data);
+export const deleteAdPost = (id) => client.delete(`/ads/posts/${id}`);
+export const previewAdPost = (id) => client.get(`/ads/posts/${id}/preview`);
+export const sendAdPostNow = (id) => client.post(`/ads/posts/${id}/send`);
+export const uploadAdPostImage = (id, file) => {
+  const form = new FormData();
+  form.append("file", file);
+  return client.post(`/ads/posts/${id}/image`, form, { headers: { "Content-Type": "multipart/form-data" } });
+};
+export const deleteAdPostImage = (id) => client.delete(`/ads/posts/${id}/image`);

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 from dataclasses import dataclass, field
 
@@ -31,7 +32,10 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, CallbackQuery, FSInputFile
+from aiogram.types import (
+    BotCommand, BotCommandScopeChat, BotCommandScopeDefault, CallbackQuery, FSInputFile,
+    InlineKeyboardButton, InlineKeyboardMarkup,
+)
 
 from .config import config
 from .handlers import build_router
@@ -312,6 +316,91 @@ def send_message_sync(
         # Unauthorized, ...) available via `docker compose logs` instead of
         # pure guesswork.
         logger.debug("send_message_sync to %s failed: %s: %s", chat_id, type(exc).__name__, exc)
+        return False
+
+
+def send_post_sync(
+    chat_id: str | int,
+    text: str,
+    photo_path: str | None = None,
+    button_text: str | None = None,
+    button_url: str | None = None,
+    token: str | None = None,
+    timeout: float = 30.0,
+) -> tuple[bool, int | None, str | None]:
+    """Posts a channel advert (see services/ads.py) and reports back the
+    message id so the previous one can be removed on the next run.
+
+    Returns (ok, message_id, error). The error string is kept rather than
+    swallowed because the most common failure here is entirely actionable and
+    invisible otherwise: the bot has not been made an administrator of the
+    channel, or was added without permission to post. Telegram gives no way
+    to check that up front, so the panel surfaces whatever it says.
+
+    chat_id is str|int on purpose - a channel is addressed either numerically
+    (-100...) or as @username, and admins will paste both.
+    """
+    token = token or _lookup_bot_token()
+    if not token:
+        return False, None, "توکن ربات تنظیم نشده است"
+
+    markup = None
+    if button_text and button_url:
+        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=button_text, url=button_url)]])
+
+    result: dict = {}
+
+    async def _send():
+        bot = _make_bot(token)
+        try:
+            if photo_path and os.path.exists(photo_path):
+                # Telegram caps a photo caption at 1024 characters, well below
+                # the 4096 of a plain message - a long advert silently fails
+                # as a photo but is perfectly fine as text, so fall back
+                # rather than refusing to post at all.
+                if len(text) <= 1024:
+                    msg = await asyncio.wait_for(
+                        bot.send_photo(chat_id, FSInputFile(photo_path), caption=text, reply_markup=markup),
+                        timeout=timeout,
+                    )
+                else:
+                    msg = await asyncio.wait_for(
+                        bot.send_message(chat_id, text, reply_markup=markup), timeout=timeout
+                    )
+            else:
+                msg = await asyncio.wait_for(bot.send_message(chat_id, text, reply_markup=markup), timeout=timeout)
+            result["message_id"] = msg.message_id
+        finally:
+            await bot.session.close()
+
+    try:
+        asyncio.run(_send())
+        return True, result.get("message_id"), None
+    except Exception as exc:
+        logger.warning("send_post_sync to %s failed: %s: %s", chat_id, type(exc).__name__, exc)
+        return False, None, f"{type(exc).__name__}: {exc}"
+
+
+def delete_message_sync(chat_id: str | int, message_id: int, token: str | None = None, timeout: float = 10.0) -> bool:
+    """Best-effort removal of a previously posted advert. Failure is normal
+    and ignored: Telegram refuses to delete a message older than 48 hours,
+    and the post may have been removed by hand already."""
+    token = token or _lookup_bot_token()
+    if not token or not message_id:
+        return False
+
+    async def _delete():
+        bot = _make_bot(token)
+        try:
+            await asyncio.wait_for(bot.delete_message(chat_id, message_id), timeout=timeout)
+        finally:
+            await bot.session.close()
+
+    try:
+        asyncio.run(_delete())
+        return True
+    except Exception as exc:
+        logger.debug("delete_message_sync(%s, %s) failed: %s", chat_id, message_id, exc)
         return False
 
 

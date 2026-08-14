@@ -1,7 +1,7 @@
 import datetime as dt
 from typing import Optional, List
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .models import NodeType, ConnectionType, UserStatus
 
@@ -456,14 +456,23 @@ class UserOut(UserBase):
 
 
 class UserListItem(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    # populate_by_name keeps the plain field names usable for any caller that
+    # builds this by hand rather than from an ORM row.
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
     id: int
     username: str
     full_name: Optional[str] = None
-    total_quota_bytes: int
-    used_bytes: int
+    # Sourced from models.User.effective_* (see that block's comment), NOT
+    # from the columns of the same name: after the per-service migration the
+    # columns froze, and this list was showing a customer 22GB/50GB while
+    # their detail page correctly summed the purchases to 173GB.
+    total_quota_bytes: int = Field(validation_alias="effective_quota_bytes")
+    used_bytes: int = Field(validation_alias="effective_used_bytes")
     status: UserStatus
-    expire_at: Optional[dt.datetime] = None
+    expire_at: Optional[dt.datetime] = Field(default=None, validation_alias="effective_expire_at")
+    # Services (purchases), not connections - a package bundling three
+    # protocols is ONE service.
+    service_count: int = 0
     # If set (and expire_at is still null), this user's expiry hasn't
     # started yet - it activates on their first successful RADIUS login.
     # The users list needs this to show "pending activation" instead of
@@ -1220,6 +1229,9 @@ class BotUserResponse(BaseModel):
     status: UserStatus
     total_quota_bytes: int
     used_bytes: int
+    # Services (purchases), not connections - the bot was labelling a
+    # customer's 12 connections as "12 سرویس" when they had bought 3.
+    service_count: int = 0
     remaining_bytes: Optional[int] = None
     expire_at: Optional[dt.datetime] = None
     telegram_id: Optional[int] = None

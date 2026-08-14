@@ -127,7 +127,14 @@ def _account_text(user: dict) -> str:
         # account view with numbers that belong in the usage view instead.
         # "اکانت من" now only lists which services exist / their config
         # buttons; per-service byte counts live exclusively under "مصرف".
-        lines.append(f"\n<b>خریدهای شما ({len(user['connections'])} سرویس):</b> روی هرکدوم از دکمه‌های پایین بزنید 👇")
+        # service_count, not len(connections): one purchase can bundle
+        # several connections (a package with WireGuard + OpenVPN + Xray is
+        # ONE service, three connections), and telling a customer who bought
+        # 3 packages that they have "12 سرویس" is simply false. Falls back to
+        # the connection count for a legacy user with no purchases, where the
+        # two are the same thing anyway.
+        count = user.get("service_count") or len(user["connections"])
+        lines.append(f"\n<b>خریدهای شما ({count} سرویس):</b> روی هرکدوم از دکمه‌های پایین بزنید 👇")
     return "\n".join(lines)
 
 

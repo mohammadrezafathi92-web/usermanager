@@ -608,6 +608,72 @@ class User(Base):
             return None
         return max(self.total_quota_bytes - self.used_bytes, 0)
 
+    # ---------------------------------------------------------------- totals
+    # THE source of truth for "how much has this customer used / how much do
+    # they have / when do they run out", for every view that shows one
+    # combined figure per customer.
+    #
+    # It cannot be the total_quota_bytes/used_bytes/expire_at COLUMNS any
+    # more. Once services/purchase_migration.py moved customers onto
+    # independent Purchases, usage started accruing on Purchase.used_bytes
+    # and renewals started extending Purchase.expire_at - the user-level
+    # columns simply stopped being written and froze at whatever they held
+    # on migration day. Reading them produced exactly the report that led
+    # here (2026-08-14, customer tg480344422): the detail page summed the
+    # purchases and said 173GB across 3 services, while the users list and
+    # the bot both read the frozen columns and said 22GB of 50GB - three
+    # views, three different answers, all for the same customer.
+    #
+    # Purchase-less (never-migrated) customers still run entirely on the
+    # user-level pool, so those columns remain correct for them and are
+    # used unchanged - which is why this is a fallback, not a replacement.
+    @property
+    def _has_purchases(self) -> bool:
+        return bool(self.purchases)
+
+    @property
+    def effective_used_bytes(self) -> int:
+        if not self._has_purchases:
+            return self.used_bytes or 0
+        return sum(p.used_bytes or 0 for p in self.purchases)
+
+    @property
+    def effective_quota_bytes(self) -> int:
+        """0 means unlimited, matching the column's own convention. A single
+        unlimited service makes the whole account unlimited - capping the
+        total at the sum of the limited ones would understate it."""
+        if not self._has_purchases:
+            return self.total_quota_bytes or 0
+        if any(not p.quota_bytes for p in self.purchases):
+            return 0
+        return sum(p.quota_bytes or 0 for p in self.purchases)
+
+    @property
+    def effective_expire_at(self):
+        """The LAST service to lapse - that is when the customer actually
+        stops having service. The soonest date is what the detail page shows
+        separately as "نزدیک‌ترین انقضا"; using it here would tell a customer
+        with a fresh purchase that their account expires next week."""
+        if not self._has_purchases:
+            return self.expire_at
+        dates = [p.expire_at for p in self.purchases if p.expire_at]
+        if not dates:
+            return None if any(not p.expire_at for p in self.purchases) else self.expire_at
+        # A service with no expiry at all means the account never lapses.
+        if any(p.expire_at is None for p in self.purchases):
+            return None
+        return max(dates)
+
+    @property
+    def service_count(self) -> int:
+        """Services, NOT connections. One purchase can bundle several
+        connections (a package with WireGuard + OpenVPN + Xray is one
+        service, three connections), and calling those "12 سرویس" to a
+        customer who bought 3 is simply wrong."""
+        if not self._has_purchases:
+            return len(self.connections)
+        return len(self.purchases)
+
     @property
     def owner_admin_username(self) -> Optional[str]:
         return self.owner_admin.username if self.owner_admin else None

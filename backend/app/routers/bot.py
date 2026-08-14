@@ -58,10 +58,19 @@ def _user_response(user: models.User) -> schemas.BotUserResponse:
         username=user.username,
         full_name=user.full_name,
         status=user.status,
-        total_quota_bytes=user.total_quota_bytes,
-        used_bytes=user.used_bytes,
-        remaining_bytes=user.remaining_bytes,
-        expire_at=user.expire_at,
+        # models.User.effective_* rather than the columns - see that block's
+        # comment. This is the customer-facing number, and it was the one
+        # most visibly wrong: the bot told a customer "21.9 GB / 50 GB" from
+        # the frozen pool while they actually had three services totalling
+        # 173GB across 130GB of quota.
+        total_quota_bytes=user.effective_quota_bytes,
+        used_bytes=user.effective_used_bytes,
+        remaining_bytes=(
+            max(user.effective_quota_bytes - user.effective_used_bytes, 0)
+            if user.effective_quota_bytes else None
+        ),
+        expire_at=user.effective_expire_at,
+        service_count=user.service_count,
         telegram_id=user.telegram_id,
         balance=user.balance or 0,
         connections=[_connection_info(c) for c in user.connections],

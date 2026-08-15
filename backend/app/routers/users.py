@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy import func, nullsfirst, nullslast, or_
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from .. import models, schemas
 from ..database import get_db
@@ -245,7 +245,17 @@ def list_users(
     order_by_cols.append(models.User.id.desc())  # stable tiebreaker for equal/NULL values
 
     users = (
-        query.options(joinedload(models.User.connections), joinedload(models.User.owner_admin))
+        # purchases is eager-loaded because UserListItem's totals come from
+        # models.User.effective_* (added 2026-08-14 so the list, the detail
+        # page and the bot stop disagreeing), and those read .purchases -
+        # without this the list costs one extra query per row. selectinload
+        # rather than joinedload for the collections: a JOIN across two
+        # one-to-many relationships multiplies the rows out.
+        query.options(
+            selectinload(models.User.connections),
+            selectinload(models.User.purchases),
+            joinedload(models.User.owner_admin),
+        )
         .order_by(*order_by_cols)
         .offset((page - 1) * page_size)
         .limit(page_size)

@@ -15,6 +15,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 import datetime as dt
+import secrets
 
 from .. import models, schemas
 from ..services import jalali
@@ -55,15 +56,53 @@ def _settings_out(db: Session, row: models.PanelSettings) -> schemas.PanelSettin
     return out
 
 
+def _is_private_host(url: str) -> bool:
+    """True for loopback/RFC1918/link-local hosts, where plain HTTP between
+    two servers is acceptable. A hostname that does not parse as an IP is
+    treated as public - guessing at DNS here would be worse than being
+    strict."""
+    import ipaddress
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").strip()
+    if not host:
+        return False
+    if host in ("localhost", "127.0.0.1", "::1"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local
+
 @router.get("", response_model=schemas.PanelSettingsOut)
 def get_settings(db: Session = Depends(get_db)):
     return _settings_out(db, _get_or_create(db))
 
 
 @router.put("", response_model=schemas.PanelSettingsOut)
-def update_settings(payload: schemas.PanelSettingsUpdate, db: Session = Depends(get_db)):
+def update_settings(
+    payload: schemas.PanelSettingsUpdate,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+):
     row = _get_or_create(db)
     data = payload.model_dump(exclude_unset=True)
+
+    # HA settings are superadmin-only, even though this whole router is
+    # otherwise open to a level-2 Admin.
+    #
+    # /api/ha/snapshot serves a gzip of the ENTIRE database - every admin's
+    # password hash, every tenant's node SSH/API credentials, every bot
+    # token - and it authenticates against PanelSettings.ha_peer_api_key.
+    # That key is a field on this very endpoint. So a level-2 Admin (or a
+    # stolen level-2 session) could simply PUT a key of their choosing and
+    # then fetch the whole database with it. No peer server, no failover, no
+    # exploit needed - just two ordinary API calls.
+    ha_fields = {k: v for k, v in data.items() if k.startswith("ha_")}
+    if ha_fields and not admin.is_superadmin:
+        raise HTTPException(403, "تنظیمات HA فقط توسط سوپرادمین قابل تغییر است")
+
     if data.get("ha_peer_url"):
         # Admins commonly type just "IP:8000" - requests then raises
         # MissingSchema on every health-check/pull, which ha_tick can only
@@ -73,6 +112,20 @@ def update_settings(payload: schemas.PanelSettingsUpdate, db: Session = Depends(
         url = data["ha_peer_url"].strip()
         if url and "://" not in url:
             url = f"http://{url}"
+        # Plain HTTP is refused for a peer reachable over the public
+        # internet: the HA key travels in that request's header and the
+        # response is the entire database, both in clear text on the wire.
+        # A private/loopback address is still allowed, because two servers
+        # on the same private network is a legitimate setup and forcing TLS
+        # there would mean certificates for RFC1918 addresses - friction
+        # with no attacker to stop.
+        if url.startswith("http://") and not _is_private_host(url):
+            raise HTTPException(
+                400,
+                "برای سرور HA روی اینترنت باید از https استفاده شود - "
+                "کلید HA و کل دیتابیس از این مسیر رد می‌شوند. "
+                "برای شبکه‌ی داخلی، آدرس خصوصی (۱۹۲.۱۶۸.x.x، ۱۰.x.x.x یا localhost) مجاز است.",
+            )
         data["ha_peer_url"] = url
     for k, v in data.items():
         setattr(row, k, v)
@@ -362,7 +415,12 @@ def _require_ha_peer_key(
     value on both servers, see models.py's docstring), nothing else."""
     row = db.get(models.PanelSettings, 1)
     expected = (row.ha_peer_api_key or "") if row else ""
-    if not expected or not x_api_key or x_api_key != expected:
+    # compare_digest, not ==: a plain comparison returns as soon as two bytes
+    # differ, so response time leaks how much of the key was guessed right.
+    # This is the one endpoint where that matters - it hands out the whole
+    # database - and it is called unattended, so nobody would notice the
+    # thousands of probes a timing attack needs.
+    if not expected or not x_api_key or not secrets.compare_digest(x_api_key, expected):
         raise HTTPException(status_code=401, detail="کلید HA نامعتبر است")
 
 

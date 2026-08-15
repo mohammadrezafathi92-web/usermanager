@@ -1,5 +1,65 @@
+import logging
 import os
+import secrets
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
+
+
+_DEFAULT_SECRET_KEY = "change-this-secret-in-production"
+# Lives on the data volume (docker-compose mounts ./backend/data:/app/data),
+# so it survives container rebuilds - a key regenerated on every boot would
+# log every admin out on every deploy.
+_SECRET_KEY_FILE = os.environ.get("SECRET_KEY_FILE", "/app/data/.secret_key")
+
+
+def _resolve_secret_key() -> str:
+    """SECRET_KEY from the environment, or a persisted random one.
+
+    Order: an explicitly configured key always wins. Otherwise a previously
+    generated key is reused, and only if neither exists is one created.
+
+    Deliberately not fail-closed. Refusing to start would be the textbook
+    answer, but this panel is upgraded in place on a live server carrying
+    real customers, and "the panel will not come back up after this deploy"
+    is a worse outcome than it sounds - it also takes the Telegram bot and
+    the RADIUS server down with it, so customers cannot connect at all. A
+    generated key removes the vulnerability just as completely; the only
+    cost is that sessions signed with the old default stop validating, i.e.
+    everyone logs in once more.
+    """
+    configured = os.environ.get("SECRET_KEY", "")
+    if configured and configured != _DEFAULT_SECRET_KEY:
+        return configured
+
+    try:
+        with open(_SECRET_KEY_FILE, "r", encoding="utf-8") as fh:
+            existing = fh.read().strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+
+    generated = secrets.token_urlsafe(48)
+    try:
+        os.makedirs(os.path.dirname(_SECRET_KEY_FILE), exist_ok=True)
+        # 0600 before writing, not after - a world-readable window, however
+        # brief, defeats the point.
+        fd = os.open(_SECRET_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(generated)
+        logging.warning(
+            "SECRET_KEY تنظیم نشده بود - یک کلید تصادفی ساخته و در %s ذخیره شد. "
+            "همه باید یک‌بار دوباره وارد شوند. برای کنترل کامل، SECRET_KEY را در backend/.env بگذارید.",
+            _SECRET_KEY_FILE,
+        )
+    except OSError:
+        # An unwritable data volume must not stop the panel; the key still
+        # protects this process, it just will not survive a restart.
+        logging.error(
+            "SECRET_KEY تنظیم نشده و ذخیره‌ی کلید تصادفی هم ممکن نشد - "
+            "با هر ری‌استارت همه از حساب خارج می‌شوند. SECRET_KEY را در backend/.env تنظیم کنید."
+        )
+    return generated
 
 
 class Settings(BaseSettings):
@@ -9,7 +69,30 @@ class Settings(BaseSettings):
     app_name: str = "User Manager"
 
     # Security
-    secret_key: str = os.environ.get("SECRET_KEY", "change-this-secret-in-production")
+    #
+    # The default is a PUBLICLY KNOWN string - anyone who has seen this
+    # repository can sign a valid admin JWT with it and log in as anyone.
+    # Rather than refusing to boot (which would take a running panel offline
+    # the moment it is upgraded), _resolve_secret_key generates a random key
+    # on first use and persists it, so an install that never set one stops
+    # being forgeable without any downtime. See its docstring.
+    secret_key: str = _DEFAULT_SECRET_KEY
+
+    @field_validator("secret_key")
+    @classmethod
+    def _never_use_the_published_key(cls, value: str) -> str:
+        """Runs AFTER the environment is read, which is the whole point.
+
+        Computing this as a field default does not work: pydantic-settings
+        maps SECRET_KEY from the environment on top of the default, and
+        backend/.env.example ships the placeholder string verbatim - so the
+        most common installation has the published key explicitly set in its
+        own .env and would sail straight past a default-only check.
+        """
+        if (value or "").strip() in ("", _DEFAULT_SECRET_KEY):
+            return _resolve_secret_key()
+        return value
+
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 12  # 12 hours
 

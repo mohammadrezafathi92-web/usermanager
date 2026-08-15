@@ -1,5 +1,7 @@
 import datetime as dt
 import logging
+import os
+import secrets
 
 import sentry_sdk
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -143,16 +145,41 @@ def _warn_if_insecure_defaults() -> None:
     defaults. Anyone who knows the default SECRET_KEY can forge a valid
     admin session token; anyone who knows the default admin password can
     just log in."""
-    if settings.secret_key == _DEFAULT_SECRET_KEY:
+    # config._resolve_secret_key now replaces the published default with a
+    # generated, persisted key, so `secret_key == _DEFAULT_SECRET_KEY` can
+    # never be true here any more and checking it would be a warning that
+    # never fires. What is still worth saying is that the key is not under
+    # the operator's control - it lives in a file rather than their .env,
+    # so it is absent from their backups and from a rebuilt server.
+    if not (os.environ.get("SECRET_KEY", "") or "").strip():
         logging.warning(
-            "!!! هشدار امنیتی: SECRET_KEY تنظیم نشده و مقدار پیش‌فرض ناامن در حال استفاده است - "
-            "یک مقدار تصادفی و طولانی در backend/.env با کلید SECRET_KEY تنظیم کنید و سرویس را ری‌استارت کنید !!!"
+            "SECRET_KEY در backend/.env تنظیم نشده - یک کلید تصادفی روی دیسک استفاده می‌شود. "
+            "اگر سرور را از نو بسازید یا فایل داده را از دست بدهید، همه از حساب خارج می‌شوند. "
+            "برای کنترل کامل، SECRET_KEY را در backend/.env بگذارید."
         )
+    # The generated first-run password (see on_startup) means a fresh
+    # install is no longer born with a known password. This warning is for
+    # the case that matters now: an install created BEFORE that change,
+    # whose superadmin may still be sitting on admin123.
     if settings.default_admin_password == _DEFAULT_ADMIN_PASSWORD:
-        logging.warning(
-            "!!! هشدار امنیتی: رمز عبور پیش‌فرض ادمین (admin123) هنوز در حال استفاده است - "
-            "حتما از پنل وارد شوید و رمز عبور را تغییر دهید، یا DEFAULT_ADMIN_PASSWORD را در backend/.env قبل از اولین اجرا تنظیم کنید !!!"
-        )
+        db = SessionLocal()
+        try:
+            from .security import verify_password
+
+            weak = [
+                a.username for a in db.query(models.AdminUser).filter(models.AdminUser.is_superadmin == True).all()  # noqa: E712
+                if verify_password(_DEFAULT_ADMIN_PASSWORD, a.hashed_password)
+            ]
+            if weak:
+                logging.warning(
+                    "!!! هشدار امنیتی: این حساب(های) سوپرادمین هنوز رمز عبور «admin123» دارند: %s - "
+                    "همین حالا از پنل عوضشان کنید !!!",
+                    "، ".join(weak),
+                )
+        except Exception:
+            logging.debug("could not check for the default admin password", exc_info=True)
+        finally:
+            db.close()
     if settings.cors_origins == ["*"]:
         logging.warning(
             "!!! هشدار امنیتی: CORS برای همه دامنه‌ها باز است (*) - "
@@ -325,9 +352,24 @@ def on_startup():
     db = SessionLocal()
     try:
         if not db.query(models.AdminUser).first():
+            # A fresh install with no DEFAULT_ADMIN_PASSWORD set used to get
+            # the hardcoded "admin123" - published in this repository, so
+            # anyone who found the panel could simply log in. A generated
+            # password is printed ONCE here instead: it exists nowhere else,
+            # so the operator must read it out of the first-boot log, and
+            # there is no known value to try.
+            initial_password = (settings.default_admin_password or "").strip()
+            # Empty counts as "generate one", not as "an empty password".
+            # .env.example now ships DEFAULT_ADMIN_PASSWORD= with no value,
+            # and os.environ.get returns "" for that - not the fallback - so
+            # without this check a fresh install would create a superadmin
+            # whose password is the empty string.
+            generated = initial_password in ("", _DEFAULT_ADMIN_PASSWORD)
+            if generated:
+                initial_password = secrets.token_urlsafe(12)
             admin = models.AdminUser(
                 username=settings.default_admin_username,
-                hashed_password=hash_password(settings.default_admin_password),
+                hashed_password=hash_password(initial_password),
                 is_superadmin=True,
             )
             db.add(admin)
@@ -338,10 +380,26 @@ def on_startup():
             # flagged loudly by _warn_if_insecure_defaults above); echoing
             # secrets into logs is itself a leak vector (log files, log
             # aggregators, `docker compose logs` output shared for support).
-            logging.info(
-                "ادمین پیش‌فرض ساخته شد -> username=%s (رمز عبور از DEFAULT_ADMIN_PASSWORD خوانده شد - حتما بعد از ورود تغییرش دهید)",
-                settings.default_admin_username,
-            )
+            if generated:
+                # The one place a secret is deliberately logged. It is the
+                # only copy that exists, it is shown once on a brand-new
+                # install with no data in it yet, and the alternative is a
+                # password everybody already knows.
+                logging.warning(
+                    "\n" + "=" * 62
+                    + "\n  ادمین اولیه ساخته شد"
+                    + "\n  نام کاربری: %s"
+                    + "\n  رمز عبور  : %s"
+                    + "\n  این رمز فقط همین یک‌بار نمایش داده می‌شود - همین حالا"
+                    + "\n  یادداشتش کنید و بعد از ورود عوضش کنید."
+                    + "\n" + "=" * 62,
+                    settings.default_admin_username, initial_password,
+                )
+            else:
+                logging.info(
+                    "ادمین پیش‌فرض ساخته شد -> username=%s (رمز عبور از DEFAULT_ADMIN_PASSWORD خوانده شد - حتما بعد از ورود تغییرش دهید)",
+                    settings.default_admin_username,
+                )
         elif not db.query(models.AdminUser).filter(models.AdminUser.is_superadmin == True).first():  # noqa: E712
             # Upgrade path: admin(s) already existed before is_superadmin
             # was introduced, so they all default to False (see the column

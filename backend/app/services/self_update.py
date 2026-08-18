@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -70,6 +71,59 @@ def _git(*args: str, timeout: int = GIT_TIMEOUT) -> tuple[int, str]:
         return 124, "زمان اجرای git تمام شد"
 
 
+_COMPOSE_PORT_RE = re.compile(r'"(\d+):80"')
+
+
+def _compose_path() -> str:
+    return os.path.join(HOST_PROJECT_DIR, "docker-compose.yml")
+
+
+def _frontend_port() -> str | None:
+    """The host-side port the frontend is published on, read straight from
+    docker-compose.yml - the same single mapping local_deploy.py rewrites."""
+    try:
+        with open(_compose_path(), encoding="utf-8") as f:
+            match = _COMPOSE_PORT_RE.search(f.read())
+    except OSError:
+        return None
+    return match.group(1) if match else None
+
+
+def _restore_frontend_port(port: str) -> None:
+    """Re-applies a custom panel port to the freshly pulled compose file.
+
+    Failure here is logged, never raised: the update itself has already
+    succeeded at this point, and the worst case is that the panel comes back
+    on the default port - recoverable from the panel's own port setting,
+    unlike a half-finished update.
+    """
+    try:
+        path = _compose_path()
+        with open(path, encoding="utf-8") as f:
+            content = f.read()
+        match = _COMPOSE_PORT_RE.search(content)
+        if not match:
+            logger.warning("بروزرسانی: نگاشت پورت در docker-compose.yml جدید پیدا نشد - پورت %s اعمال نشد", port)
+            return
+        if match.group(1) == port:
+            return
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content.replace(match.group(0), f'"{port}:80"', 1))
+        logger.info("بروزرسانی: پورت پنل %s دوباره اعمال شد", port)
+    except OSError:
+        logger.exception("بروزرسانی: اعمال دوباره‌ی پورت پنل ناموفق بود")
+
+
+def _porcelain_name(line: str) -> str:
+    """Filename out of one `git status --porcelain` line, offset-free."""
+    rest = line.strip().split(" ", 1)
+    name = rest[1].strip() if len(rest) > 1 else rest[0].strip()
+    # Renames read "old -> new"; the new path is the one that matters here.
+    if " -> " in name:
+        name = name.split(" -> ", 1)[1].strip()
+    return name.strip('"')
+
+
 def _repo_is_git() -> bool:
     """A tarball/zip install has no .git, so every command below would fail
     with git's own wording ("not a git repository"), which does not tell an
@@ -87,7 +141,14 @@ def current_revision() -> dict:
     """What is checked out right now, plus whether anything newer exists."""
     _, local = _git("rev-parse", "--short", "HEAD")
     _, branch = _git("rev-parse", "--abbrev-ref", "HEAD")
-    _, dirty = _git("status", "--porcelain")
+    # --untracked-files=no is the important part. A fast-forward pull does
+    # not care about untracked files (git refuses on its own, with a clear
+    # message, in the one case where it would overwrite one), yet the
+    # previous check counted them - so a stray log, a leftover .zip, or a
+    # mistyped scp target sitting in the directory was enough to disable
+    # updates forever with a message about "manual changes" that named
+    # nothing and was not even true.
+    _, dirty = _git("status", "--porcelain", "--untracked-files=no")
     return {
         "commit": local.strip() or None,
         "branch": branch.strip() or None,
@@ -95,6 +156,14 @@ def current_revision() -> dict:
         # pull would fail anyway, so it is surfaced BEFORE the admin presses
         # the button rather than as a confusing git error afterwards.
         "dirty": bool(dirty.strip()),
+        # The list itself, so the admin can be told WHAT changed instead of
+        # being sent to run git status over SSH.
+        # NOT line[3:]. Porcelain lines start with a two-character status
+        # and a space (" M file"), but _git strips the whole output, which
+        # eats the leading space of the FIRST line only - so a fixed offset
+        # silently ate the first letter of one filename and the comparison
+        # against ["docker-compose.yml"] below never matched.
+        "dirty_files": [_porcelain_name(line) for line in dirty.splitlines() if line.strip()],
     }
 
 
@@ -146,10 +215,28 @@ def apply_update() -> dict:
         raise DeployError(NOT_A_CLONE, "")
 
     info = current_revision()
+    # docker-compose.yml is a special case, and the reason this whole branch
+    # exists: the panel's OWN "پورت پنل وب" feature rewrites that tracked
+    # file (services/local_deploy.change_panel_port_local). So an admin who
+    # ever changed the port from the panel had permanently disabled the
+    # panel's update button - one feature silently switching another off.
+    # The port is preserved across the pull rather than the update refused.
+    saved_port = None
+    dirty_files = list(info.get("dirty_files") or [])
+    if dirty_files == ["docker-compose.yml"]:
+        saved_port = _frontend_port()
+        code, out = _git("checkout", "--", "docker-compose.yml")
+        if code != 0:
+            raise DeployError("بازگرداندن docker-compose.yml ناموفق بود", out)
+        logger.info("بروزرسانی: تغییر پورت پنل (%s) کنار گذاشته شد تا بعد از دریافت کد دوباره اعمال شود", saved_port)
+        info = current_revision()
+
     if info["dirty"]:
         raise DeployError(
-            "روی سرور فایل‌هایی دستی تغییر کرده‌اند و بروزرسانی روی آن‌ها می‌نویسد. "
-            "اول با SSH آن‌ها را بررسی کنید (git status).",
+            "روی سرور این فایل‌ها دستی تغییر کرده‌اند و بروزرسانی روی آن‌ها می‌نویسد:\n"
+            + "\n".join(f"• {f}" for f in (info.get("dirty_files") or [])[:15])
+            + "\n\nاگر تغییرات لازم نیستند، با SSH این را اجرا کنید و دوباره امتحان کنید:\n"
+            "cd /root/usermanager && git checkout -- .",
             "",
         )
 
@@ -166,6 +253,9 @@ def apply_update() -> dict:
     after = current_revision()["commit"]
     if after == before:
         return {"updated": False, "commit": after, "message": "همین حالا آخرین نسخه است"}
+
+    if saved_port:
+        _restore_frontend_port(saved_port)
 
     # Build first, restart second - a broken commit must not be able to take
     # the panel down, and a failed build here leaves everything running.

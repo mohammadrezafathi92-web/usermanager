@@ -1524,6 +1524,30 @@ class BotSettings(Base):
     # directly, unchanged default behavior.
     telegram_api_proxy_url = Column(String(255), nullable=True)
 
+    # A TRANSPORT proxy - a different mechanism from telegram_api_proxy_url
+    # above, and the two are easy to confuse.
+    #
+    #   telegram_api_proxy_url  replaces the API ADDRESS. The bot talks plain
+    #                           HTTPS to your own nginx, which relays to
+    #                           Telegram. Telegram never sees your server.
+    #   telegram_proxy_url      keeps api.telegram.org as the address, and
+    #                           TUNNELS the connection through a proxy.
+    #
+    # Use whichever you have. A reverse proxy needs a server you control with
+    # a working route to Telegram; a SOCKS5 proxy needs nothing but the proxy
+    # itself, which is why it is usually the easier of the two to obtain.
+    #
+    # Accepted schemes: socks5://, socks5h://, socks4://, http://. Credentials
+    # go inline (socks5://user:pass@host:1080). socks5h:// resolves DNS at the
+    # proxy rather than locally - the right choice when local DNS is what is
+    # being interfered with.
+    #
+    # Requires aiohttp-socks for the socks schemes (see requirements.txt);
+    # aiogram raises at bot construction time without it, which is caught and
+    # surfaced in the panel rather than silently leaving the bot down.
+    # Empty/NULL = direct connection, unchanged default behaviour.
+    telegram_proxy_url = Column(String(255), nullable=True)
+
 
 class Tutorial(Base):
     """An admin-authored help/tutorial entry (e.g. "نصب WireGuard روی

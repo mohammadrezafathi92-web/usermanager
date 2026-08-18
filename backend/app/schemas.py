@@ -1033,6 +1033,9 @@ class BotSettingsOut(BaseModel):
     # instance (this shared one + every Admin/Seller's own bot), for a main
     # server with no direct outbound route to api.telegram.org.
     telegram_api_proxy_url: Optional[str] = None
+    # Transport proxy (socks5:// or http://) - a different mechanism from the
+    # reverse proxy above; see models.BotSettings.telegram_proxy_url.
+    telegram_proxy_url: Optional[str] = None
 
 
 class BotSettingsUpdate(BaseModel):
@@ -1043,6 +1046,9 @@ class BotSettingsUpdate(BaseModel):
     customer_bot_enabled: Optional[bool] = None
     customer_menu_disabled_items: Optional[str] = None
     telegram_api_proxy_url: Optional[str] = None
+    # Transport proxy (socks5:// or http://) - a different mechanism from the
+    # reverse proxy above; see models.BotSettings.telegram_proxy_url.
+    telegram_proxy_url: Optional[str] = None
 
 
 # ---------- Per-admin dedicated bot (3-tier hierarchy - see AdminUser.own_bot_token) ----------

@@ -15,6 +15,10 @@ bcrypt==4.1.3
 pyrad==2.4
 requests==2.32.3
 aiogram==3.15.0
+# Needed for SOCKS5 bot proxies. aiogram's AiohttpSession(proxy=...) accepts
+# a socks5:// URL but raises RuntimeError at bot construction time if this
+# is missing - aiohttp itself only speaks HTTP CONNECT proxies.
+aiohttp-socks==0.9.0
 qrcode[pil]==7.4.2
 openpyxl==3.1.5
 psutil==6.0.0

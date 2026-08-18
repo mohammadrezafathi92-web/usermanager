@@ -49,6 +49,50 @@ def _get_or_create(db: Session) -> models.BotSettings:
     return row
 
 
+# Schemes aiogram/aiohttp-socks can actually dial. Anything else is a typo
+# that would only surface as "the bot silently stopped receiving messages",
+# which is the hardest class of failure to diagnose in this project.
+_PROXY_SCHEMES = ("socks5://", "socks4://", "http://", "https://")
+
+
+def _validate_proxy_url(url: str) -> str:
+    """Normalises and sanity-checks a transport proxy URL.
+
+    Bare `host:port` is accepted and assumed to be socks5, because that is
+    the form every proxy provider hands out and typing the scheme is the
+    step people forget.
+    """
+    url = (url or "").strip()
+    if not url:
+        return ""
+    if "://" not in url:
+        url = f"socks5://{url}"
+    # socks5h is what curl and most proxy providers call "SOCKS5 with remote
+    # DNS", and people paste it verbatim - but aiohttp-socks rejects the
+    # scheme outright with a ValueError deep inside bot construction. It is
+    # rewritten rather than refused because the distinction does not exist
+    # here anyway: python-socks resolves at the proxy for SOCKS5 already.
+    if url.startswith("socks5h://"):
+        url = "socks5://" + url[len("socks5h://"):]
+    if not url.startswith(_PROXY_SCHEMES):
+        raise HTTPException(
+            400,
+            "آدرس پروکسی باید با socks5:// یا http:// شروع شود. "
+            "نمونه: socks5://user:pass@1.2.3.4:1080",
+        )
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        raise HTTPException(400, "آدرس پروکسی معتبر نیست - میزبان مشخص نشده است")
+    if not parsed.port:
+        raise HTTPException(
+            400,
+            "پورت پروکسی را هم بنویسید. نمونه: socks5://1.2.3.4:1080",
+        )
+    return url
+
+
 def _response(row: models.BotSettings) -> schemas.BotSettingsOut:
     status = runner.get_status()
     return schemas.BotSettingsOut(
@@ -68,6 +112,7 @@ def _response(row: models.BotSettings) -> schemas.BotSettingsOut:
         customer_bot_enabled=row.customer_bot_enabled if row.customer_bot_enabled is not None else True,
         customer_menu_disabled_items=row.customer_menu_disabled_items or "",
         telegram_api_proxy_url=row.telegram_api_proxy_url or "",
+        telegram_proxy_url=row.telegram_proxy_url or "",
     )
 
 
@@ -79,7 +124,10 @@ def get_settings(db: Session = Depends(get_db), _s=_superadmin):
 @router.put("", response_model=schemas.BotSettingsOut)
 def update_settings(payload: schemas.BotSettingsUpdate, db: Session = Depends(get_db), _s=_superadmin):
     row = _get_or_create(db)
-    for k, v in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    if "telegram_proxy_url" in data:
+        data["telegram_proxy_url"] = _validate_proxy_url(data["telegram_proxy_url"]) or None
+    for k, v in data.items():
         setattr(row, k, v)
     row.last_error = None
     db.commit()

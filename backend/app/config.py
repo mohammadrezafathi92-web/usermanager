@@ -152,6 +152,11 @@ class Settings(BaseSettings):
     # this is a network-transport setting only ever needed once at Bot
     # object construction (bot start/restart), unlike a per-update check.
     bot_standalone_telegram_api_proxy_url: str = os.environ.get("BOT_TELEGRAM_API_PROXY_URL", "")
+    # Same split as BotSettings.telegram_api_proxy_url vs telegram_proxy_url:
+    # the first replaces the API address, this one tunnels the connection.
+    # A remote bot deployment has no BotSettings row to read, so both come
+    # from its environment instead.
+    bot_standalone_telegram_proxy_url: str = os.environ.get("BOT_TELEGRAM_PROXY_URL", "")
 
     # Error monitoring (optional - completely off unless a DSN is set, see
     # main.py's _init_sentry). Covers request handlers, the RADIUS server

@@ -246,6 +246,27 @@ def _lookup_telegram_api_proxy_url() -> str | None:
         db.close()
 
 
+def _lookup_transport_proxy_url() -> str | None:
+    """SOCKS5/HTTP proxy to TUNNEL through - see
+    models.BotSettings.telegram_proxy_url, and note it is a different
+    mechanism from the reverse proxy above (address vs tunnel)."""
+    from ..config import settings
+
+    if settings.bot_standalone_mode:
+        return (settings.bot_standalone_telegram_proxy_url or "").strip() or None
+
+    from ..database import SessionLocal
+    from .. import models
+
+    db = SessionLocal()
+    try:
+        row = db.get(models.BotSettings, 1)
+        url = (row.telegram_proxy_url or "").strip() if row else ""
+        return url or None
+    finally:
+        db.close()
+
+
 def _make_bot(token: str) -> Bot:
     """Single choke point for constructing an aiogram Bot - every bot
     instance (shared, every own-bot, and the one-off sends in
@@ -254,7 +275,30 @@ def _make_bot(token: str) -> Bot:
     _lookup_telegram_api_proxy_url) is applied uniformly everywhere,
     instead of only some call sites remembering to check for it."""
     proxy_base = _lookup_telegram_api_proxy_url()
-    session = AiohttpSession(api=TelegramAPIServer.from_base(proxy_base)) if proxy_base else None
+    transport_proxy = _lookup_transport_proxy_url()
+
+    # The two are independent and may be combined: a reverse proxy changes
+    # WHERE the bot connects, a transport proxy changes HOW it gets there.
+    session_kwargs: dict = {}
+    if proxy_base:
+        session_kwargs["api"] = TelegramAPIServer.from_base(proxy_base)
+    if transport_proxy:
+        session_kwargs["proxy"] = transport_proxy
+
+    session = None
+    if session_kwargs:
+        try:
+            session = AiohttpSession(**session_kwargs)
+        except RuntimeError as exc:
+            # aiogram raises this when a socks:// proxy is configured but
+            # aiohttp-socks is not installed (an image built before that
+            # dependency was added). Falling back to a direct connection is
+            # wrong here - the proxy exists precisely because direct does not
+            # work - so fail loudly instead of leaving a bot that appears to
+            # start and then never receives anything.
+            logger.error("راه‌اندازی نشست ربات با پروکسی ناموفق بود: %s", exc)
+            raise
+
     return Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML), session=session)
 
 

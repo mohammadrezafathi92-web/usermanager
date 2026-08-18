@@ -106,12 +106,110 @@ def ensure_docker_compose_cli() -> str:
     return _COMPOSE_BIN
 
 
+# --------------------------------------------------- host vs container paths
+# The single most dangerous assumption in this file. Everything below that
+# hands a path to the docker DAEMON is handing it a path on the HOST, while
+# every path this process opens is a path inside THIS CONTAINER. The project
+# is bind-mounted at `.:/root/usermanager`, so the container path is always
+# /root/usermanager - but the host path is wherever the admin installed it,
+# and install.sh picks /opt/usermanager on a fresh box.
+#
+# When the two differ, `docker compose up -d` issued from in here tells the
+# daemon to bind-mount a host directory that does not exist. Docker happily
+# creates it, empty, and recreates the containers around it - the panel comes
+# back up with no database, no .env and no code. That is not theoretical: it
+# happened on 2026-08-18 the moment the self-update button was first used on
+# an /opt install.
+#
+# So the mismatch is DETECTED and the operation REFUSED. Rewriting paths on
+# the fly was considered and rejected: `build` must read contexts and
+# env_files from the container filesystem while `up` must resolve binds
+# against the host, and no single --project-directory satisfies both. A
+# guard that stops is worth more than a clever fix that might take the panel
+# down a second time.
+
+BACKEND_CONTAINER_NAME = "usermanager-backend"
+DOCKER_SOCK = "/var/run/docker.sock"
+
+
+def _docker_api(path: str) -> dict | None:
+    """One GET against the docker daemon over its unix socket.
+
+    Hand-rolled instead of pulling in the docker SDK: this is the only API
+    call the project makes, and http.client speaks the protocol fine once
+    given the right socket.
+    """
+    import http.client
+    import json
+    import socket as _socket
+
+    class _UnixConnection(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            self.sock.settimeout(5)
+            self.sock.connect(DOCKER_SOCK)
+
+    try:
+        conn = _UnixConnection("localhost", timeout=5)
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        if resp.status != 200:
+            return None
+        return json.loads(resp.read())
+    except Exception:
+        logger.warning("پرسش از داکر ناموفق بود: %s", path, exc_info=True)
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def detect_host_project_dir() -> str | None:
+    """Where this container's project mount actually lives on the host.
+
+    Asked of the daemon rather than guessed, because the daemon is the only
+    party that knows both sides of a bind mount. Returns None when the answer
+    cannot be established - callers treat that as "unknown", not as "fine".
+    """
+    info = _docker_api(f"/containers/{BACKEND_CONTAINER_NAME}/json")
+    if not info:
+        return None
+    for mount in info.get("Mounts") or []:
+        if mount.get("Destination") == HOST_PROJECT_DIR and mount.get("Source"):
+            return mount["Source"]
+    return None
+
+
+def verify_host_path() -> str:
+    """Raises DeployError unless the daemon-visible host path matches the
+    path this container will hand it. Returns the confirmed host path."""
+    actual = detect_host_project_dir()
+    if actual is None:
+        raise DeployError(
+            "مسیر واقعی پروژه روی سرور قابل تشخیص نیست، و اجرای این عملیات بدون آن "
+            "می‌تواند کانتینرها را با پوشه‌ی خالی بالا بیاورد. لطفا این کار را با SSH انجام دهید.",
+            "",
+        )
+    if actual != HOST_PROJECT_DIR:
+        raise DeployError(
+            f"پروژه روی سرور در «{actual}» نصب شده ولی این کانتینر با مسیر «{HOST_PROJECT_DIR}» کار می‌کند. "
+            "اگر از داخل پنل ادامه دهیم، داکر یک پوشه‌ی خالی می‌سازد و پنل بدون دیتابیس بالا می‌آید. "
+            f"این کار را با SSH انجام دهید:\ncd {actual} && git pull && docker compose up -d --build",
+            "",
+        )
+    return actual
+
+
+
 def change_panel_port_local(current_port: int, new_port: int) -> str:
     """Rewrites the frontend service's host-side port mapping in
     docker-compose.yml (only the exact "CURRENT:80" string, same
     conservative approach the old SSH version used - never a generic port
     regex) and recreates just that one container via the local docker
     socket. Raises DeployError with a Persian message on any failure."""
+    verify_host_path()
     compose_path = os.path.join(HOST_PROJECT_DIR, "docker-compose.yml")
     log_lines: list[str] = []
 

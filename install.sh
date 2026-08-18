@@ -131,6 +131,16 @@ else
 fi
 log_info "Install directory: ${INSTALL_DIR}"
 
+# docker-compose.yml bind-mounts the project at $HOST_PROJECT_DIR *inside*
+# the container, and the panel's own update/port features hand that same
+# path to the host's docker daemon. The two must be identical or the daemon
+# bind-mounts a directory that does not exist and the panel comes back up
+# empty. Compose reads this file automatically from the project directory.
+mkdir -p "$INSTALL_DIR"
+if ! grep -q "^HOST_PROJECT_DIR=" "$INSTALL_DIR/.env" 2>/dev/null; then
+    echo "HOST_PROJECT_DIR=$INSTALL_DIR" >> "$INSTALL_DIR/.env"
+fi
+
 STATE_DIR="/etc/usermanager"
 mkdir -p "$STATE_DIR"
 echo "$INSTALL_DIR" > "$STATE_DIR/install_dir"

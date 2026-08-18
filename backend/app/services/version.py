@@ -33,6 +33,10 @@ from pathlib import Path
 # - it is the code that was actually pulled), then a copy baked into the
 # image, then the source tree itself when running outside Docker.
 _CANDIDATE_ROOTS = (
+    # Wherever the repository is actually mounted - the compose file now
+    # mounts it at the host's own path, so this is no longer always
+    # /root/usermanager (install.sh picks /opt/usermanager on a fresh box).
+    Path(os.environ.get("HOST_PROJECT_DIR", "/root/usermanager")),
     Path("/root/usermanager"),
     Path("/app"),
     Path(__file__).resolve().parents[3],

@@ -34,7 +34,7 @@ import subprocess
 import threading
 import time
 
-from .local_deploy import HOST_PROJECT_DIR, DeployError, ensure_docker_compose_cli
+from .local_deploy import HOST_PROJECT_DIR, DeployError, ensure_docker_compose_cli, verify_host_path
 
 logger = logging.getLogger("self_update")
 
@@ -213,6 +213,11 @@ def apply_update() -> dict:
     the running panel has not been touched."""
     if not _repo_is_git():
         raise DeployError(NOT_A_CLONE, "")
+
+    # Before anything is pulled or built: if the daemon would resolve this
+    # project to a different host directory than the one we are about to
+    # hand it, stop here. See local_deploy.verify_host_path.
+    verify_host_path()
 
     info = current_revision()
     # docker-compose.yml is a special case, and the reason this whole branch

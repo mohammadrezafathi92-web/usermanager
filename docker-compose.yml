@@ -28,7 +28,13 @@ services:
       # paths in this very docker-compose.yml still resolve correctly when
       # the daemon acts on them.
       - /var/run/docker.sock:/var/run/docker.sock
-      - .:/root/usermanager
+      # Mounted at the SAME absolute path the host uses, which is what
+      # makes it safe for this container to drive `docker compose` on
+      # the host daemon. install.sh writes HOST_PROJECT_DIR into the
+      # .env next to this file; /root/usermanager is only the fallback
+      # for installs that predate that (see services/local_deploy.py's
+      # verify_host_path for what goes wrong when they disagree).
+      - .:${HOST_PROJECT_DIR:-/root/usermanager}
     environment:
       # DATABASE_URL deliberately NOT set here (unlike before this comment
       # existed) - it now comes from backend/.env (via env_file: above) so
@@ -37,7 +43,7 @@ services:
       # precedence over `env_file:` ones for the same variable, so setting
       # DATABASE_URL here would silently override whatever backend/.env
       # says, no matter what the admin picked at install time.
-      - HOST_PROJECT_DIR=/root/usermanager
+      - HOST_PROJECT_DIR=${HOST_PROJECT_DIR:-/root/usermanager}
     ports:
       - "8000:8000"
       - "1812:1812/udp"

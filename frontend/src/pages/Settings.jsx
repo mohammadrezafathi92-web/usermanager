@@ -1036,6 +1036,41 @@ export default function Settings() {
             />
             <label htmlFor="bot_enabled" className="text-sm text-gray-600">{t("settings.botEnabledLabel")}</label>
           </div>
+          <div className="md:col-span-2 flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="customer_bot_enabled"
+              checked={botForm.customer_bot_enabled !== false}
+              onChange={(e) => setBotForm((f) => ({ ...f, customer_bot_enabled: e.target.checked }))}
+            />
+            <label htmlFor="customer_bot_enabled" className="text-sm text-gray-600">
+              {t("settings.customerBotEnabledLabel")}
+            </label>
+          </div>
+          <div className="md:col-span-2">
+            <div className="text-sm text-gray-600 mb-2">{t("settings.customerMenuItemsLabel")}</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {CUSTOMER_MENU_ITEM_KEYS.map((key) => {
+                const disabledSet = new Set((botForm.customer_menu_disabled_items || "").split(",").map((x) => x.trim()).filter(Boolean));
+                const checked = !disabledSet.has(key);
+                return (
+                  <label key={key} className="flex items-center gap-2 text-sm text-gray-600">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        const next = new Set(disabledSet);
+                        if (e.target.checked) next.delete(key);
+                        else next.add(key);
+                        setBotForm((f) => ({ ...f, customer_menu_disabled_items: Array.from(next).join(",") }));
+                      }}
+                    />
+                    {t(`settings.customerMenuItem.${key}`)}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
           {/* تایید خودکار رسید. The sub-settings stay VISIBLE but disabled
               when the master switch is off, so an admin can see what the
               rules will be before turning it on - hiding them makes the
@@ -1094,41 +1129,6 @@ export default function Settings() {
             </div>
             <div className={`text-xs text-gray-500 mt-3 ${botForm.auto_approve_enabled ? "" : "opacity-50"}`}>
               {t("settings.autoApproveWindowNote")}
-            </div>
-          </div>
-          <div className="md:col-span-2 flex items-center gap-2">
-            <input
-              type="checkbox"
-              id="customer_bot_enabled"
-              checked={botForm.customer_bot_enabled !== false}
-              onChange={(e) => setBotForm((f) => ({ ...f, customer_bot_enabled: e.target.checked }))}
-            />
-            <label htmlFor="customer_bot_enabled" className="text-sm text-gray-600">
-              {t("settings.customerBotEnabledLabel")}
-            </label>
-          </div>
-          <div className="md:col-span-2">
-            <div className="text-sm text-gray-600 mb-2">{t("settings.customerMenuItemsLabel")}</div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {CUSTOMER_MENU_ITEM_KEYS.map((key) => {
-                const disabledSet = new Set((botForm.customer_menu_disabled_items || "").split(",").map((x) => x.trim()).filter(Boolean));
-                const checked = !disabledSet.has(key);
-                return (
-                  <label key={key} className="flex items-center gap-2 text-sm text-gray-600">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(e) => {
-                        const next = new Set(disabledSet);
-                        if (e.target.checked) next.delete(key);
-                        else next.add(key);
-                        setBotForm((f) => ({ ...f, customer_menu_disabled_items: Array.from(next).join(",") }));
-                      }}
-                    />
-                    {t(`settings.customerMenuItem.${key}`)}
-                  </label>
-                );
-              })}
             </div>
           </div>
           {botMsg && (

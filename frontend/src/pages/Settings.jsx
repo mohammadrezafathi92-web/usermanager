@@ -48,6 +48,8 @@ import { useLanguage } from "../context/LanguageContext.jsx";
 
 // Same action keys/order as backend/app/telegram_bot/keyboards.py's
 // CUSTOMER_MENU_ITEMS - keep in sync if a menu item is ever added/removed.
+const HOURS = Array.from({ length: 24 }, (_, i) => i);
+
 const CUSTOMER_MENU_ITEM_KEYS = [
   "cust_account",
   "cust_usage",
@@ -1033,6 +1035,66 @@ export default function Settings() {
               onChange={(e) => setBotForm((f) => ({ ...f, enabled: e.target.checked }))}
             />
             <label htmlFor="bot_enabled" className="text-sm text-gray-600">{t("settings.botEnabledLabel")}</label>
+          </div>
+          {/* تایید خودکار رسید. The sub-settings stay VISIBLE but disabled
+              when the master switch is off, so an admin can see what the
+              rules will be before turning it on - hiding them makes the
+              switch feel like an unknown. */}
+          <div className="md:col-span-2 rounded-xl border border-amber-200 bg-amber-50/60 p-4">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={!!botForm.auto_approve_enabled}
+                onChange={(e) => setBotForm((f) => ({ ...f, auto_approve_enabled: e.target.checked }))}
+              />
+              <span className="text-sm font-medium text-gray-800">{t("settings.autoApproveLabel")}</span>
+            </label>
+            <div className="text-xs text-gray-500 mt-1">{t("settings.autoApproveHint")}</div>
+
+            <div className={`grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4 ${botForm.auto_approve_enabled ? "" : "opacity-50 pointer-events-none"}`}>
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveFromHour")}</label>
+                <select
+                  className="input input-sm"
+                  value={botForm.auto_approve_from_hour ?? 9}
+                  onChange={(e) => setBotForm((f) => ({ ...f, auto_approve_from_hour: Number(e.target.value) }))}
+                >
+                  {HOURS.map((h) => <option key={h} value={h}>{String(h).padStart(2, "0")}:00</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveToHour")}</label>
+                <select
+                  className="input input-sm"
+                  value={botForm.auto_approve_to_hour ?? 23}
+                  onChange={(e) => setBotForm((f) => ({ ...f, auto_approve_to_hour: Number(e.target.value) }))}
+                >
+                  {HOURS.map((h) => <option key={h} value={h}>{String(h).padStart(2, "0")}:00</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveMaxAmount")}</label>
+                <MoneyInput
+                  small
+                  value={botForm.auto_approve_max_amount ?? 0}
+                  onChange={(v) => setBotForm((f) => ({ ...f, auto_approve_max_amount: v === "" ? 0 : Number(v) }))}
+                />
+                <div className="text-xs text-gray-400 mt-1">{t("settings.autoApproveMaxAmountHint")}</div>
+              </div>
+              <div className="flex items-start pt-5">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={botForm.auto_approve_returning_only !== false}
+                    onChange={(e) => setBotForm((f) => ({ ...f, auto_approve_returning_only: e.target.checked }))}
+                  />
+                  <span className="text-sm text-gray-700">{t("settings.autoApproveReturningOnly")}</span>
+                </label>
+              </div>
+            </div>
+            <div className={`text-xs text-gray-500 mt-3 ${botForm.auto_approve_enabled ? "" : "opacity-50"}`}>
+              {t("settings.autoApproveWindowNote")}
+            </div>
           </div>
           <div className="md:col-span-2 flex items-center gap-2">
             <input

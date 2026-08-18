@@ -113,6 +113,11 @@ def _response(row: models.BotSettings) -> schemas.BotSettingsOut:
         customer_menu_disabled_items=row.customer_menu_disabled_items or "",
         telegram_api_proxy_url=row.telegram_api_proxy_url or "",
         telegram_proxy_url=row.telegram_proxy_url or "",
+        auto_approve_enabled=bool(row.auto_approve_enabled),
+        auto_approve_from_hour=row.auto_approve_from_hour if row.auto_approve_from_hour is not None else 9,
+        auto_approve_to_hour=row.auto_approve_to_hour if row.auto_approve_to_hour is not None else 23,
+        auto_approve_max_amount=row.auto_approve_max_amount or 0,
+        auto_approve_returning_only=row.auto_approve_returning_only if row.auto_approve_returning_only is not None else True,
     )
 
 
@@ -127,6 +132,15 @@ def update_settings(payload: schemas.BotSettingsUpdate, db: Session = Depends(ge
     data = payload.model_dump(exclude_unset=True)
     if "telegram_proxy_url" in data:
         data["telegram_proxy_url"] = _validate_proxy_url(data["telegram_proxy_url"]) or None
+    # Auto-approve values are clamped rather than rejected: an out-of-range
+    # hour is a typo, and refusing the whole save would also throw away the
+    # other settings the admin just edited. The clamp cannot widen the
+    # window, only keep it inside a real 24h clock.
+    for key in ("auto_approve_from_hour", "auto_approve_to_hour"):
+        if data.get(key) is not None:
+            data[key] = max(0, min(int(data[key]), 23))
+    if data.get("auto_approve_max_amount") is not None:
+        data["auto_approve_max_amount"] = max(0, int(data["auto_approve_max_amount"]))
     for k, v in data.items():
         setattr(row, k, v)
     row.last_error = None

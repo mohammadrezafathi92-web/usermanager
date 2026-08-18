@@ -90,47 +90,19 @@ async def cmd_admin_pending(message: Message) -> None:
         await message.answer(_pending_summary(p), reply_markup=approval_kb(p["id"]))
 
 
-@router.callback_query(ApprovalCB.filter())
-async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) -> None:
-    if not config.is_admin(call.from_user.id):
-        await call.answer("دسترسی ندارید", show_alert=True)
-        return
 
-    pending = storage.get_pending(callback_data.request_id)
-    if not pending or pending["status"] != "pending":
-        await call.answer("این درخواست قبلا رسیدگی شده است", show_alert=True)
-        return
+async def perform_approval(pending: dict, bot: Bot) -> tuple[bool, str]:
+    """Everything an approval actually DOES - provisioning, crediting,
+    accounting, and messaging the customer - with no UI in it.
 
-    # Atomically claim this request before doing anything else - if two
-    # admins tap Approve/Reject on the same request at nearly the same time
-    # (or one admin double-taps on a slow connection), only the first claim
-    # wins; the loser gets a clean "already handled" instead of both
-    # provisioning/crediting the customer twice. See storage.claim_pending.
-    if not storage.claim_pending(pending["id"]):
-        await call.answer("این درخواست همین الان توسط ادمین دیگری در حال بررسی است", show_alert=True)
-        return
+    Extracted so the automatic path (services/auto_approve.py) runs this
+    exact code rather than a parallel copy of it. Two implementations of
+    'approve a payment' would drift, and the half that drifts is the half
+    nobody is watching.
 
-    async def _finish(result_text: str):
-        if call.message.photo:
-            await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n" + result_text)
-        else:
-            await call.message.edit_text((call.message.text or "") + "\n\n" + result_text)
-
-    if callback_data.action == "reject":
-        storage.set_status(pending["id"], "rejected")
-        await _finish("❌ رد شد.")
-        reject_msg = (
-            "متاسفانه درخواست اتصال حساب شما تایید نشد. اگر واقعا صاحب آن حساب هستید، برای پیگیری با پشتیبانی در تماس باشید."
-            if pending["kind"] == "link"
-            else "متاسفانه پرداخت شما تایید نشد. برای پیگیری با پشتیبانی در تماس باشید."
-        )
-        try:
-            await bot.send_message(pending["telegram_id"], reject_msg, reply_markup=home_kb())
-        except Exception:
-            pass
-        await call.answer("رد شد")
-        return
-
+    The caller is responsible for claiming the request first
+    (storage.claim_pending) and for reporting the returned message.
+    Returns (ok, message)."""
     # approve
     pkg = None
     if pending["kind"] in ("new", "renew"):
@@ -143,8 +115,7 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
             packages = await api.list_packages()
         except ApiError as exc:
             storage.release_pending(pending["id"])
-            await call.answer(f"خطا: {exc}", show_alert=True)
-            return
+            return False, f"خطا: {exc}"
         pkg = next((p for p in packages if p["id"] == pending["package_id"]), None)
 
     new_connections = None
@@ -290,8 +261,7 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
             )
     except ApiError as exc:
         storage.release_pending(pending["id"])
-        await call.answer(f"خطا: {exc}", show_alert=True)
-        return
+        return False, f"خطا: {exc}"
     except Exception:
         # Anything NOT wrapped as ApiError (a bug here, an unexpected None,
         # a raw network/timeout error slipping past panel_bridge/
@@ -304,8 +274,7 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
         # back to 'pending' and an admin can simply tap Approve again.
         logger.exception("Unexpected error approving pending request %s", pending["id"])
         storage.release_pending(pending["id"])
-        await call.answer("خطای غیرمنتظره - دوباره تلاش کنید", show_alert=True)
-        return
+        return False, "خطای غیرمنتظره - دوباره تلاش کنید"
 
     # Best-effort "threshold" mode bookkeeping (see services/
     # payment_cards.py's advance_after_payment) - which card this request's
@@ -337,7 +306,6 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
                 logger.exception("pending request %s: record_card_payment failed for card %s", pending["id"], card_id)
 
     storage.set_status(pending["id"], "approved")
-    await _finish("✅ تایید و فعال‌سازی شد.")
     # customer_msg intentionally has no keyboard here - if connections/files
     # follow it below, THEY become the last messages in the chat, so the
     # "🏠 منوی اصلی" button has to live on whatever truly is the last
@@ -356,6 +324,55 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
     # out of view; see customer.py's _send_menu_footer.
     from .customer import _send_menu_footer  # local import - avoids a circular import at module load
     await _send_menu_footer(bot, pending["telegram_id"])
+    return True, "✅ تایید و فعال‌سازی شد."
+
+
+@router.callback_query(ApprovalCB.filter())
+async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) -> None:
+    if not config.is_admin(call.from_user.id):
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+
+    pending = storage.get_pending(callback_data.request_id)
+    if not pending or pending["status"] != "pending":
+        await call.answer("این درخواست قبلا رسیدگی شده است", show_alert=True)
+        return
+
+    # Atomically claim this request before doing anything else - if two
+    # admins tap Approve/Reject on the same request at nearly the same time
+    # (or one admin double-taps on a slow connection), only the first claim
+    # wins; the loser gets a clean "already handled" instead of both
+    # provisioning/crediting the customer twice. See storage.claim_pending.
+    if not storage.claim_pending(pending["id"]):
+        await call.answer("این درخواست همین الان توسط ادمین دیگری در حال بررسی است", show_alert=True)
+        return
+
+    async def _finish(result_text: str):
+        if call.message.photo:
+            await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n" + result_text)
+        else:
+            await call.message.edit_text((call.message.text or "") + "\n\n" + result_text)
+
+    if callback_data.action == "reject":
+        storage.set_status(pending["id"], "rejected")
+        await _finish("❌ رد شد.")
+        reject_msg = (
+            "متاسفانه درخواست اتصال حساب شما تایید نشد. اگر واقعا صاحب آن حساب هستید، برای پیگیری با پشتیبانی در تماس باشید."
+            if pending["kind"] == "link"
+            else "متاسفانه پرداخت شما تایید نشد. برای پیگیری با پشتیبانی در تماس باشید."
+        )
+        try:
+            await bot.send_message(pending["telegram_id"], reject_msg, reply_markup=home_kb())
+        except Exception:
+            pass
+        await call.answer("رد شد")
+        return
+
+    ok, result = await perform_approval(pending, bot)
+    if not ok:
+        await call.answer(result, show_alert=True)
+        return
+    await _finish(result)
     await call.answer("تایید شد")
 
 

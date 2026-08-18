@@ -1,3 +1,4 @@
+import logging
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -28,6 +29,8 @@ from ..states import CustomerLinkStates, CustomerPurchaseStates, CustomerTopupSt
 from ..utils import fmt_bytes, fmt_date, fmt_date_jalali, STATUS_LABELS
 from .. import storage
 from ..connection_sender import send_connection, send_connections
+
+logger = logging.getLogger("telegram_bot")
 
 router = Router(name="customer")
 
@@ -1165,7 +1168,22 @@ async def receive_receipt(message: Message, state: FSMContext, bot: Bot) -> None
     from .admin_pending import _pending_summary  # local import avoids a circular import at module load
     from ..keyboards import approval_kb
 
-    caption = "🧾 رسید پرداخت جدید\n\n" + _pending_summary(storage.get_pending(request_id))
+    pending_row = storage.get_pending(request_id)
+
+    # Auto-approval (see services/auto_approve.py) is attempted BEFORE the
+    # admins are notified, so a qualifying request never produces an approval
+    # prompt that is already stale by the time anyone opens Telegram. It
+    # fails closed - anything it declines simply falls through to the normal
+    # notification below.
+    from ...services import auto_approve
+
+    try:
+        if await auto_approve.try_auto_approve(pending_row, bot):
+            return
+    except Exception:
+        logger.exception("auto-approve raised - falling back to manual approval")
+
+    caption = "🧾 رسید پرداخت جدید\n\n" + _pending_summary(pending_row)
     for admin_id in config.approval_targets():
         try:
             await bot.send_photo(admin_id, message.photo[-1].file_id, caption=caption, reply_markup=approval_kb(request_id))

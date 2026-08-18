@@ -1042,6 +1042,12 @@ class BotSettingsOut(BaseModel):
     # Transport proxy (socks5:// or http://) - a different mechanism from the
     # reverse proxy above; see models.BotSettings.telegram_proxy_url.
     telegram_proxy_url: Optional[str] = None
+    # تایید خودکار رسید - see models.BotSettings for why the two limits exist
+    auto_approve_enabled: Optional[bool] = False
+    auto_approve_from_hour: Optional[int] = 9
+    auto_approve_to_hour: Optional[int] = 23
+    auto_approve_max_amount: Optional[int] = 0
+    auto_approve_returning_only: Optional[bool] = True
 
 
 class BotSettingsUpdate(BaseModel):
@@ -1055,6 +1061,12 @@ class BotSettingsUpdate(BaseModel):
     # Transport proxy (socks5:// or http://) - a different mechanism from the
     # reverse proxy above; see models.BotSettings.telegram_proxy_url.
     telegram_proxy_url: Optional[str] = None
+    # تایید خودکار رسید - see models.BotSettings for why the two limits exist
+    auto_approve_enabled: Optional[bool] = False
+    auto_approve_from_hour: Optional[int] = 9
+    auto_approve_to_hour: Optional[int] = 23
+    auto_approve_max_amount: Optional[int] = 0
+    auto_approve_returning_only: Optional[bool] = True
 
 
 # ---------- Per-admin dedicated bot (3-tier hierarchy - see AdminUser.own_bot_token) ----------

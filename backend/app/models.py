@@ -1576,6 +1576,29 @@ class BotSettings(Base):
     # Empty/NULL = direct connection, unchanged default behaviour.
     telegram_proxy_url = Column(String(255), nullable=True)
 
+    # ---- تایید خودکار رسید ----------------------------------------------
+    # Approves payment receipts without a human looking at the photo. This
+    # hands out paid service on an UNVERIFIED receipt, so it ships off by
+    # default and with two independent limits, either of which alone sends
+    # the request back to manual approval:
+    #
+    #   auto_approve_max_amount     0 = no cap. Above it, a human decides.
+    #                               Small packages flow, large ones do not.
+    #   auto_approve_returning_only Only customers with a previously
+    #                               APPROVED purchase. A first-time buyer is
+    #                               always reviewed by hand - they are the
+    #                               ones with nothing to lose by sending a
+    #                               fake receipt.
+    #
+    # Outside the active hours the toggle is effectively off and everything
+    # goes back to manual, which is the point of having a window: unattended
+    # hours are exactly when nobody would notice a bad approval.
+    auto_approve_enabled = Column(Boolean, default=False)
+    auto_approve_from_hour = Column(Integer, default=9)
+    auto_approve_to_hour = Column(Integer, default=23)
+    auto_approve_max_amount = Column(Integer, default=0)
+    auto_approve_returning_only = Column(Boolean, default=True)
+
 
 class Tutorial(Base):
     """An admin-authored help/tutorial entry (e.g. "نصب WireGuard روی

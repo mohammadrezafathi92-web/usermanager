@@ -305,3 +305,42 @@ export function jalaliToIso(str) {
   const [gy, gm, gd] = jalaliToGregorian(jy, jm, jd);
   return `${gy}-${String(gm).padStart(2, "0")}-${String(gd).padStart(2, "0")}`;
 }
+
+/** Any axios error -> one readable Persian line.
+ *
+ * `err.response.data.detail` alone was not enough and hid two real cases:
+ *
+ *   - FastAPI validation errors put an ARRAY of objects in `detail`. Passing
+ *     that straight into JSX renders nothing useful at best and throws
+ *     "Objects are not valid as a React child" at worst - so the one class of
+ *     error that says exactly which field is wrong was the one class nobody
+ *     could read.
+ *   - A gateway timeout, a 502, or a dropped connection has no JSON body at
+ *     all, so `detail` is undefined and the caller falls back to a generic
+ *     "خطا در ذخیره" that is indistinguishable from a rejected value.
+ */
+export function errorText(err, fallback = "خطا") {
+  const res = err?.response;
+  if (!res) {
+    return err?.code === "ECONNABORTED"
+      ? "پاسخی از سرور نرسید (زمان انتظار تمام شد). ممکن است عملیات همچنان در حال انجام باشد."
+      : "ارتباط با سرور برقرار نشد. اتصال اینترنت یا در دسترس بودن پنل را بررسی کنید.";
+  }
+  const detail = res.data?.detail;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((d) => {
+        const field = Array.isArray(d?.loc) ? d.loc.filter((x) => x !== "body").join(".") : "";
+        return field ? `${field}: ${d?.msg || ""}` : d?.msg || "";
+      })
+      .filter(Boolean);
+    if (parts.length) return `مقدار نامعتبر - ${parts.join(" | ")}`;
+  }
+  if (res.status === 502 || res.status === 504) {
+    return `سرور پاسخ نداد (${res.status}). درخواست ممکن است بیش از حد طول کشیده باشد.`;
+  }
+  if (res.status === 401) return "نشست شما منقضی شده - دوباره وارد شوید.";
+  if (res.status === 403) return "برای این کار دسترسی ندارید.";
+  return `${fallback} (کد ${res.status})`;
+}

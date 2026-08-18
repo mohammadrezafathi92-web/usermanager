@@ -42,7 +42,7 @@ import {
   changePanelPort,
   checkPanelUpdate, applyPanelUpdate, fetchMe,
 } from "../api/client.js";
-import { formatDateTime, formatBytes, copyText, downloadBlob, getDisplayOffset, setDisplayOffset } from "../utils.js";
+import { formatDateTime, formatBytes, copyText, downloadBlob, getDisplayOffset, setDisplayOffset, errorText } from "../utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
@@ -530,7 +530,7 @@ export default function Settings() {
       setBotStatus({ running, last_error, bot_username });
       setBotMsg({ type: "ok", text: t("settings.msgBotSaved") });
     } catch (err) {
-      setBotMsg({ type: "err", text: err?.response?.data?.detail || t("settings.msgSaveError") });
+      setBotMsg({ type: "err", text: errorText(err, t("settings.msgSaveError")) });
     } finally {
       setSavingBot(false);
     }

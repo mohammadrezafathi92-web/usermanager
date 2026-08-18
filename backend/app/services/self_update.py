@@ -55,9 +55,32 @@ def _git(*args: str, timeout: int = GIT_TIMEOUT) -> tuple[int, str]:
         )
         return proc.returncode, (proc.stdout + proc.stderr).strip()
     except FileNotFoundError:
-        return 127, "git روی این سرور نصب نیست"
+        # This says "container", not "server", on purpose. git IS normally
+        # installed on the host; what is missing is the binary inside this
+        # image - a distinction that sent at least one admin looking in the
+        # wrong place. Images built before git was added to the Dockerfile
+        # cannot update themselves, so the way out is named here.
+        return 127, (
+            "git داخل کانتینر پنل نصب نیست (روی خود سرور احتمالا هست). "
+            "این نسخه‌ی پنل قبل از اضافه‌شدن git ساخته شده، پس نمی‌تواند خودش را بروز کند. "
+            "یک‌بار با SSH این را اجرا کنید و بعد از آن دکمه‌ی بروزرسانی کار می‌کند:\n"
+            "cd /root/usermanager && git pull && docker compose up -d --build"
+        )
     except subprocess.TimeoutExpired:
         return 124, "زمان اجرای git تمام شد"
+
+
+def _repo_is_git() -> bool:
+    """A tarball/zip install has no .git, so every command below would fail
+    with git's own wording ("not a git repository"), which does not tell an
+    admin what to do about it. Checked once, up front."""
+    return os.path.isdir(os.path.join(HOST_PROJECT_DIR, ".git"))
+
+
+NOT_A_CLONE = (
+    "این نصب از فایل فشرده انجام شده و تاریخچه‌ی گیت ندارد، پس بروزرسانی خودکار ممکن نیست. "
+    "یک‌بار با SSH پروژه را با git clone نصب کنید (راهنما در update.sh) تا این دکمه فعال شود."
+)
 
 
 def current_revision() -> dict:
@@ -78,6 +101,9 @@ def current_revision() -> dict:
 def check_for_update() -> dict:
     """Fetches from the remote WITHOUT changing the working tree, and reports
     how many commits behind this deployment is."""
+    if not _repo_is_git():
+        raise DeployError(NOT_A_CLONE, "")
+
     code, out = _git("fetch", "--quiet", "origin")
     if code != 0:
         raise DeployError("دریافت اطلاعات از گیت‌هاب ناموفق بود", out)
@@ -116,6 +142,9 @@ def apply_update() -> dict:
     """Pull, build, then restart in the background. Raises DeployError with
     the captured log if either of the first two steps fails - in which case
     the running panel has not been touched."""
+    if not _repo_is_git():
+        raise DeployError(NOT_A_CLONE, "")
+
     info = current_revision()
     if info["dirty"]:
         raise DeployError(

@@ -66,6 +66,12 @@ class NodeBase(BaseModel):
     xr_network: Optional[str] = "tcp"
     xr_security: Optional[str] = "tls"
     xr_sni: Optional[str] = None
+    # External Proxy - what the customer's config points at (see
+    # models.Node). Never overwritten by the 3X-UI sync, unlike xr_public_*.
+    xr_external_host: Optional[str] = None
+    xr_external_port: Optional[int] = None
+    # A working client URI used as the source of truth for generated configs.
+    xr_link_template: Optional[str] = None
 
     @field_validator(*_PORT_FIELDS)
     @classmethod

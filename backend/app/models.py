@@ -410,6 +410,34 @@ class Node(Base):
     xr_security = Column(String(64), nullable=True, default="tls")
     xr_sni = Column(String(255), nullable=True)
 
+    # ---- External Proxy (خروجی کانفیگ کلاینت) ----------------------------
+    # What the CUSTOMER's config points at, which is not necessarily where
+    # the inbound actually lives. Set these to publish a CDN subdomain, a
+    # relay, or a different port from the one Xray listens on.
+    #
+    # Separate columns rather than reusing xr_public_host/xr_public_port
+    # because those are SYNCED: routers/nodes.py overwrites xr_public_host
+    # from the 3X-UI panel on every refresh, so a subdomain typed there
+    # survives only until the next sync - which looks exactly like the panel
+    # "randomly forgetting" the setting. These are never written by sync.
+    # Empty = fall back to the synced values, unchanged behaviour.
+    xr_external_host = Column(String(255), nullable=True)
+    xr_external_port = Column(Integer, nullable=True)
+
+    # A full, working client URI (vless://... or vmess://...) copied out of a
+    # client that already connects. Every generated config is built from it -
+    # only the UUID and the remark are replaced, plus host/port when the
+    # External Proxy fields above are set.
+    #
+    # This exists because the builder below only ever understood five
+    # parameters (type/encryption/security/sni/flow), while real inbounds
+    # routinely need path, host, fp, alpn, pbk, sid, spx, serviceName,
+    # headerType and more. Rather than growing a column per parameter and
+    # still lagging behind whatever Xray adds next, one known-good config is
+    # taken as the source of truth. Empty = build the link field by field as
+    # before.
+    xr_link_template = Column(Text, nullable=True)
+
     last_seen = Column(DateTime, nullable=True)
     last_error = Column(Text, nullable=True)
 

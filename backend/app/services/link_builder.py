@@ -19,7 +19,71 @@ PersistentKeepalive = 25
 """
 
 
+def client_endpoint(node: models.Node) -> tuple[str, int]:
+    """Where the CUSTOMER's config should point.
+
+    External Proxy wins over everything: it is the only value a human typed
+    on purpose, and unlike xr_public_host it is never overwritten by the
+    3X-UI sync (see models.Node's comment on those columns).
+    """
+    host = (node.xr_external_host or "").strip() or node.xr_public_host or _fallback_host(node)
+    port = node.xr_external_port or node.xr_public_port or 443
+    return host, port
+
+
+def _apply_template(template: str, connection: models.Connection, node: models.Node) -> str:
+    """Rebuilds a known-good client URI for THIS connection.
+
+    Everything about the template is preserved - scheme, every query
+    parameter, transport settings the panel has no column for - and only the
+    identity is swapped: the UUID, the remark, and the host/port when an
+    External Proxy is configured. That is what makes this work for inbounds
+    the field-by-field builder below cannot express.
+
+    vmess:// is deliberately NOT handled here: its payload is a
+    base64-encoded JSON object, not a URI, so the same string surgery would
+    silently produce a corrupt link. It falls through to the plain builder
+    instead of being mangled.
+    """
+    template = template.strip()
+    if not template or "://" not in template or template.lower().startswith("vmess://"):
+        return ""
+
+    scheme, rest = template.split("://", 1)
+
+    # Strip the remark first - it is free text and may itself contain @, ?
+    # or #, which would otherwise confuse every split below.
+    if "#" in rest:
+        rest = rest.split("#", 1)[0]
+
+    query = ""
+    if "?" in rest:
+        rest, query = rest.split("?", 1)
+
+    # userinfo@host:port - rsplit because a UUID never contains @, but the
+    # userinfo of some schemes can.
+    if "@" not in rest:
+        return ""
+    _old_id, hostport = rest.rsplit("@", 1)
+
+    t_host, _, t_port = hostport.partition(":")
+    host = (node.xr_external_host or "").strip() or t_host
+    port = node.xr_external_port or (int(t_port) if t_port.isdigit() else 443)
+
+    remark = quote(connection.xr_email or "")
+    out = f"{scheme}://{connection.xr_uuid}@{host}:{port}"
+    if query:
+        out += f"?{query}"
+    return f"{out}#{remark}"
+
+
 def build_vless_link(connection: models.Connection, node: models.Node) -> str:
+    # A template, when present, is the source of truth - see _apply_template.
+    if node.xr_link_template:
+        from_template = _apply_template(node.xr_link_template, connection, node)
+        if from_template:
+            return from_template
+
     remark = quote(f"{connection.xr_email}")
     params = (
         f"type={node.xr_network or 'tcp'}"
@@ -30,8 +94,7 @@ def build_vless_link(connection: models.Connection, node: models.Node) -> str:
         params += f"&sni={node.xr_sni}"
     if connection.xr_flow:
         params += f"&flow={connection.xr_flow}"
-    host = node.xr_public_host or _fallback_host(node)
-    port = node.xr_public_port or 443
+    host, port = client_endpoint(node)
     return f"vless://{connection.xr_uuid}@{host}:{port}?{params}#{remark}"
 
 

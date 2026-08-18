@@ -49,6 +49,9 @@ const emptyForm = {
   xr_network: "tcp",
   xr_security: "tls",
   xr_sni: "",
+  xr_external_host: "",
+  xr_external_port: null,
+  xr_link_template: "",
 };
 
 // Live node resource monitor helpers (see services/node_monitor.py).
@@ -995,6 +998,42 @@ export default function Nodes() {
                 <div>
                   <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldSni")}</label>
                   <input className="input" value={form.xr_sni} onChange={(e) => set("xr_sni", e.target.value)} />
+                </div>
+
+                {/* External Proxy - deliberately separate from the two fields
+                    above, which the 3X-UI sync overwrites. */}
+                <div className="sm:col-span-2 pt-3 mt-1 border-t border-gray-100 dark:border-slate-800">
+                  <div className="section-title mb-1">{t("nodes.externalProxyTitle")}</div>
+                  <div className="hint mb-3">{t("nodes.externalProxyHint")}</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm text-gray-600 mb-1">{t("nodes.externalHost")}</label>
+                      <input
+                        className="input" dir="ltr" placeholder="cdn.example.com"
+                        value={form.xr_external_host || ""}
+                        onChange={(e) => set("xr_external_host", e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm text-gray-600 mb-1">{t("nodes.externalPort")}</label>
+                      <input
+                        type="number" min="1" max="65535" className="input" dir="ltr" placeholder="2087"
+                        value={form.xr_external_port ?? ""}
+                        onChange={(e) => set("xr_external_port", e.target.value ? Number(e.target.value) : null)}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="sm:col-span-2 pt-3 mt-1 border-t border-gray-100 dark:border-slate-800">
+                  <div className="section-title mb-1">{t("nodes.linkTemplateTitle")}</div>
+                  <div className="hint mb-2">{t("nodes.linkTemplateHint")}</div>
+                  <textarea
+                    className="input-area" dir="ltr" rows={3}
+                    placeholder="vless://uuid@host:443?type=tcp&security=reality&pbk=...&fp=chrome&sni=...#name"
+                    value={form.xr_link_template || ""}
+                    onChange={(e) => set("xr_link_template", e.target.value)}
+                  />
                 </div>
               </div>
               )}

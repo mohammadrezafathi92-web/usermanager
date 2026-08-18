@@ -400,3 +400,7 @@ export const uploadAdPostImage = (id, file) => {
   return client.post(`/ads/posts/${id}/image`, form, { headers: { "Content-Type": "multipart/form-data" } });
 };
 export const deleteAdPostImage = (id) => client.delete(`/ads/posts/${id}/image`);
+
+// ---------- بروزرسانی پنل (see backend services/self_update.py) ----------
+export const checkPanelUpdate = () => client.get("/settings/update/check");
+export const applyPanelUpdate = () => client.post("/settings/update/apply", {}, { timeout: 900000 });

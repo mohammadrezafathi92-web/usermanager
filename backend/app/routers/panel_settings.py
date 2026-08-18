@@ -19,6 +19,7 @@ import secrets
 
 from .. import models, schemas
 from ..services import jalali
+from ..services.local_deploy import DeployError
 from ..database import get_db
 from ..deps import require_admin_or_above, require_superadmin, get_current_admin, require_confirm_password
 from ..services import backup as backup_service
@@ -448,3 +449,34 @@ def ha_resolve(db: Session = Depends(get_db)):
     row.ha_last_error = None
     db.commit()
     return {"ok": True}
+
+
+# --------------------------------------------------------------- self update
+@router.get("/update/check", dependencies=[Depends(require_superadmin)])
+def check_update():
+    """What is running, and what is waiting on GitHub. Superadmin only: this
+    is panel-wide infrastructure, the same reason the HA settings above are
+    restricted - a level-2 Admin has no business rebuilding the server every
+    other tenant is also running on."""
+    from ..services import self_update
+
+    try:
+        return self_update.check_for_update()
+    except DeployError as exc:
+        raise HTTPException(400, f"{exc} - {exc.log[-300:]}" if exc.log else str(exc))
+
+
+@router.post("/update/apply", dependencies=[Depends(require_superadmin)])
+def apply_update():
+    """Pulls, rebuilds, and restarts. The response is returned BEFORE the
+    restart happens (see services/self_update.py) - the restart kills this
+    very process, so a response sent afterwards could never arrive. The
+    frontend polls /api/auth/me until the commit it reports changes."""
+    from ..services import self_update
+
+    try:
+        return self_update.apply_update()
+    except DeployError as exc:
+        raise HTTPException(400, str(exc), headers={"X-Update-Log": ""}) if not exc.log else HTTPException(
+            400, f"{exc}\n\n{exc.log[-1500:]}"
+        )

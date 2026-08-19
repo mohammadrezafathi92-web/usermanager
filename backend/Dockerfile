@@ -50,7 +50,11 @@ WORKDIR /app
 # installs that predate this line. Roughly 20MB with --no-install-recommends
 # (no perl tooling, no docs) - the price of not needing SSH to update.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends default-mysql-client git \
+# wireguard-tools + iproute2: services/wg_tunnel.py drives `wg` and `ip`
+# directly (not wg-quick, which is a bash script wanting resolvconf and
+# its own state files - state that would not survive this container
+# being recreated on every deploy). Together well under 5MB.
+    && apt-get install -y --no-install-recommends default-mysql-client git wireguard-tools iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=pydeps /install /usr/local

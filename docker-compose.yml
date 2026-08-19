@@ -18,6 +18,17 @@ services:
     logging: *default-logging
     env_file:
       - ./backend/.env
+    # NET_ADMIN + /dev/net/tun: the panel brings up its own WireGuard
+    # interface INSIDE this container to reach Telegram (see
+    # services/wg_tunnel.py). Kept here rather than in a separate container
+    # on purpose - sharing a network namespace with a second container
+    # would mean moving this one's published ports (8000, RADIUS) onto it,
+    # which is a large change to a live panel for no gain. The interface
+    # routes ONLY Telegram's ranges; the host's default route is untouched.
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
     volumes:
       - ./backend/data:/app/data
       # Let the backend change the panel's own web port with no SSH/password

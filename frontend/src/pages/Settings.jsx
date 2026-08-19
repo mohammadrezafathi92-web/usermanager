@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { KeyRound, Info, Plus, Trash2, Copy, Power, CreditCard, Bot, RefreshCw, DatabaseBackup, Download, Server, Eye, EyeOff, Upload, Repeat, ChevronDown, Clock } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
+import TelegramTunnelCard from "../components/TelegramTunnelCard.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import {
@@ -990,6 +991,11 @@ export default function Settings() {
         </>
       )}
 
+      {activeTab === "bot" && isSuperadmin && (
+        <div className="mb-5">
+          <TelegramTunnelCard />
+        </div>
+      )}
       {activeTab === "bot" && (
         <>
       {isSuperadmin && (

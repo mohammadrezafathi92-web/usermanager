@@ -1505,6 +1505,58 @@ class LedgerEntry(Base):
     actor_admin = relationship("AdminUser", foreign_keys=[actor_admin_id])
 
 
+class TelegramTunnel(Base):
+    """The WireGuard tunnel this panel uses to reach api.telegram.org.
+
+    Exists because the panel's own network cannot reach Telegram directly,
+    and every TCP-based workaround tried before this one failed the same
+    way: the connection is accepted and then goes silent, which is the
+    signature of an inspecting middlebox rather than a misconfiguration.
+    WireGuard is UDP and encrypted end to end, so there is no handshake for
+    a middlebox to complete and abandon - and the same tunnels already
+    carry this panel's own customers, so the path is proven rather than
+    hoped for.
+
+    One row, id=1. A second tunnel would mean two default answers to "how
+    do I reach Telegram", and the failure mode of picking the wrong one is
+    a bot that silently stops receiving messages.
+    """
+    __tablename__ = "telegram_tunnel"
+
+    id = Column(Integer, primary_key=True, default=1)
+
+    # Which node terminates the tunnel. Nullable so a tunnel can also point
+    # at an endpoint that is not one of this panel's nodes.
+    node_id = Column(Integer, ForeignKey("nodes.id", ondelete="SET NULL"), nullable=True)
+    node = relationship("Node")
+
+    interface_name = Column(String(15), nullable=False, default="wg-tg")
+
+    # This panel's own keypair. The private key never leaves this row and is
+    # never shown in any API response - see routers/tg_tunnel.py.
+    private_key = Column(String(64), nullable=True)
+    public_key = Column(String(64), nullable=True)
+
+    # The panel's address INSIDE the tunnel, with prefix ("10.10.10.2/30").
+    address = Column(String(64), nullable=True)
+
+    peer_public_key = Column(String(64), nullable=True)
+    peer_endpoint = Column(String(128), nullable=True)          # host:port
+    persistent_keepalive = Column(Integer, nullable=False, default=25)
+
+    # Comma-separated CIDRs routed through the tunnel. Deliberately NOT
+    # 0.0.0.0/0: sending the panel's default route down a tunnel would put
+    # customer traffic, node management and the operator's own SSH at the
+    # mercy of one peer. Only Telegram's published ranges go this way, so a
+    # dead tunnel costs the bot and nothing else.
+    allowed_ips = Column(Text, nullable=True)
+    cidrs_updated_at = Column(DateTime, nullable=True)
+
+    enabled = Column(Boolean, nullable=False, default=False)
+    last_error = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=now, onupdate=now)
+
+
 class BotSettings(Base):
     """Singleton row (always id=1) holding the built-in Telegram sales/admin
     bot's configuration. The bot runs in-process (see app/telegram_bot) so

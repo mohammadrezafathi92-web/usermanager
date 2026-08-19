@@ -286,6 +286,15 @@ export const listTelegramProxyNodes = () => client.get("/telegram-proxy/nodes");
 export const checkTelegramProxyNode = (nodeId) => client.post(`/telegram-proxy/check/${nodeId}`);
 export const setupTelegramProxy = (data) => client.post("/telegram-proxy/setup", data);
 export const disableTelegramProxy = (nodeId) => client.post(`/telegram-proxy/disable/${nodeId}`);
+
+// تونل وایرگارد تلگرام - داخل همین کانتینر بک‌اند بالا می‌آید
+export const getTelegramTunnel = () => client.get("/telegram-tunnel");
+export const listTunnelNodes = () => client.get("/telegram-tunnel/nodes");
+export const setupTelegramTunnel = (data) => client.post("/telegram-tunnel/setup", data);
+export const tunnelUp = () => client.post("/telegram-tunnel/up");
+export const tunnelDown = () => client.post("/telegram-tunnel/down");
+export const tunnelTest = () => client.post("/telegram-tunnel/test");
+export const tunnelRefreshCidrs = () => client.post("/telegram-tunnel/refresh-cidrs");
 export const restartTelegramBot = () => client.post("/telegram-bot/restart");
 
 // Level-2 Admin's OWN dedicated bot (3-tier hierarchy - separate from the

@@ -19,7 +19,7 @@ from .services.ads import run_due_campaigns
 from .services.radius_server import start_radius_server_in_background, cleanup_stale_radius_sessions, cleanup_old_radius_limit_logs
 from .services.notify import run_daily_notify_job
 from .services.backup import run_scheduled_backup, ha_healthcheck, ha_pull_and_apply, notify_admins_text
-from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, telegram_proxy, tutorials, backup, remote_bot, admins, radius_logs, discount_codes, subscription, accounting as accounting_router, ads as ads_router
+from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, telegram_proxy, tg_tunnel, tutorials, backup, remote_bot, admins, radius_logs, discount_codes, subscription, accounting as accounting_router, ads as ads_router
 from .services import accounting as accounting_service
 from .services import purchase_migration
 from .telegram_bot import runner as telegram_bot_runner
@@ -112,6 +112,7 @@ app.include_router(packages.router)
 app.include_router(panel_settings.router)
 app.include_router(telegram_bot_settings.router)
 app.include_router(telegram_proxy.router)
+app.include_router(tg_tunnel.router)
 app.include_router(tutorials.router)
 app.include_router(backup.router)
 app.include_router(backup.my_router)
@@ -424,6 +425,19 @@ def on_startup():
     _auto_migrate_missing_columns()
     _backfill_hierarchy_node_access(_admin_node_access_is_new)
     _backfill_roles_and_paths()
+
+    # The container is recreated on every deploy and takes the WireGuard
+    # interface with it, so the tunnel is rebuilt from the database here.
+    # Never fatal - see services/wg_tunnel.ensure_up.
+    try:
+        from .services import wg_tunnel
+        _tdb = SessionLocal()
+        try:
+            wg_tunnel.ensure_up(_tdb.get(models.TelegramTunnel, 1))
+        finally:
+            _tdb.close()
+    except Exception:
+        logging.exception("بالا آوردن دوباره‌ی تونل تلگرام ناموفق بود")
 
     db = SessionLocal()
     try:

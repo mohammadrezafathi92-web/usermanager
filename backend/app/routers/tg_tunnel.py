@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..database import get_db
 from ..deps import require_superadmin
-from ..services import wg_tunnel
+from ..services import user_ops, wg_tunnel
 from ..services.mikrotik_client import MikrotikClient, MikrotikError
 
 logger = logging.getLogger("tg_tunnel")
@@ -47,6 +47,16 @@ router = APIRouter(prefix="/api/telegram-tunnel", tags=["telegram-tunnel"],
 # each one that is missed fails silently - which is exactly how this feature
 # spent a day not working.
 FALLBACK_SUBNET = "10.77.0.0/30"
+
+# The panel provisions itself as an ordinary customer under this username.
+#
+# Not a hand-rolled peer: services/user_ops.provision_wireguard is the exact
+# function that serves paying customers, so the address comes from the node's
+# real pool, the interface address and peer entry are written the same way,
+# and every NAT rule, routing mark and firewall policy the node already has
+# for its customers applies without a single line being added. Anything the
+# panel did differently was one more thing that could be - and was - wrong.
+TUNNEL_USERNAME = "panel-telegram-tunnel"
 
 
 class SetupIn(BaseModel):
@@ -186,66 +196,62 @@ def setup(payload: SetupIn, db: Session = Depends(get_db)):
         raise HTTPException(400, "این نود میکروتیک نیست - تونل فقط روی نودهای میکروتیک ساخته می‌شود")
 
     row = _row(db)
-    iface = (payload.wg_interface or node.mt_wireguard_interface or "wireguard1").strip()
-
-    # A fresh keypair on every setup. Reusing the old one would silently
-    # keep working against a peer entry that was meant to be replaced, and
-    # the cost of rotating is nil.
-    private_key, public_key = wg_tunnel.generate_keypair()
-
     log: list[str] = []
+
+    tunnel_user = db.query(models.User).filter(models.User.username == TUNNEL_USERNAME).first()
+    if tunnel_user is None:
+        tunnel_user = models.User(
+            username=TUNNEL_USERNAME,
+            full_name="اتصال داخلی پنل برای دسترسی ربات به تلگرام",
+        )
+        db.add(tunnel_user)
+        db.commit()
+        db.refresh(tunnel_user)
+        log.append("کاربر داخلی تونل ساخته شد")
+
+    # Old connections first. provision_wireguard reserves a NEW address every
+    # time, so skipping this would leave a peer and a reserved IP behind on
+    # the node for every retry - and a day of retries is exactly what this
+    # feature has already had.
+    stale = (
+        db.query(models.Connection)
+        .filter(models.Connection.user_id == tunnel_user.id)
+        .all()
+    )
+    for conn in stale:
+        try:
+            user_ops.delete_connection(db, conn)
+        except Exception:  # noqa: BLE001 - a stale peer is not worth failing over
+            logger.warning("حذف اتصال قبلی تونل ناموفق بود (id=%s)", conn.id)
+    if stale:
+        log.append(f"{len(stale)} اتصال قبلی تونل حذف شد")
+
     try:
-        with MikrotikClient.for_node(node) as client:
-            client.ensure_wireguard_interface(iface)
-            peer_public = client.get_public_key(iface)
-            if not peer_public:
-                raise HTTPException(
-                    400,
-                    f"اینترفیس «{iface}» روی نود کلید عمومی ندارد. یک‌بار در خود روتر بسازیدش و دوباره امتحان کنید.",
-                )
-            own_addr, subnet, borrowed = (
-                (payload.address, payload.address.split("/")[0] + "/32", False)
-                if payload.address else _pick_tunnel_address(client, node)
-            )
-            listen_port = payload.endpoint_port or node.mt_endpoint_port or 13231
-
-            existing = [p for p in client.list_peers(iface) if (p.get("comment") or "") == _PEER_COMMENT]
-            for p in existing:
-                client.remove_peer(p[".id"])
-            client.add_peer(
-                interface=iface,
-                public_key=public_key,
-                allowed_address=own_addr.split("/")[0] + "/32",
-                comment=_PEER_COMMENT,
-            )
-            log.append(f"پیر روی نود «{node.name}» ثبت شد (اینترفیس {iface})")
-
-            if borrowed:
-                # Nothing to add. The node already NATs, marks and routes this
-                # subnet for its own customers, and those rules are proven
-                # working by every customer currently online. Adding our own
-                # would at best duplicate them and at worst take precedence
-                # over a more specific rule that exists for a reason.
-                log.append(f"آدرس از ساب‌نت مشتریان نود گرفته شد ({subnet}) - "
-                           "قوانین NAT و مسیریابی موجود همین حالا شامل آن می‌شوند")
-            elif client.ensure_masquerade(subnet):
-                log.append(f"قانون NAT برای {subnet} روی نود اضافه شد")
-            else:
-                log.append("قانون NAT از قبل روی نود بود")
+        conn = user_ops.provision_wireguard(db, tunnel_user, node)
     except HTTPException:
         raise
-    except MikrotikError as exc:
-        raise HTTPException(400, str(exc))
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(400, f"اتصال به نود «{node.name}» ناموفق بود: {exc}")
+        raise HTTPException(400, f"ساخت اتصال وایرگارد روی نود «{node.name}» ناموفق بود: {exc}")
+
+    log.append(f"اتصال وایرگارد از همان مسیر مشتریان ساخته شد ({conn.wg_client_address})")
+
+    try:
+        with MikrotikClient.for_node(node) as client:
+            peer_public = client.get_public_key(node.mt_wireguard_interface)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"خواندن کلید عمومی نود ناموفق بود: {exc}")
+    if not peer_public:
+        raise HTTPException(400, f"اینترفیس «{node.mt_wireguard_interface}» روی نود کلید عمومی ندارد")
 
     row.node_id = node.id
     row.interface_name = "wg-tg"
-    row.private_key = private_key
-    row.public_key = public_key
-    row.address = own_addr
+    row.private_key = conn.wg_private_key
+    row.public_key = conn.wg_public_key
+    row.address = conn.wg_client_address
     row.peer_public_key = peer_public
-    row.peer_endpoint = f"{node.mt_endpoint_host or node.mt_host}:{listen_port}"
+    row.peer_endpoint = (
+        f"{node.mt_endpoint_host or node.mt_host}:{node.mt_endpoint_port or 13231}"
+    )
     if not (row.allowed_ips or "").strip():
         row.allowed_ips = ",".join(wg_tunnel.DEFAULT_CIDRS)
     row.last_error = None

@@ -11,7 +11,9 @@ from fastapi import APIRouter, Depends
 
 from .. import models, schemas
 from ..database import get_db
+from ..services import hierarchy
 from ..deps import get_current_admin
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/api/radius-logs", tags=["radius-logs"], dependencies=[Depends(get_current_admin)])
@@ -41,13 +43,29 @@ def list_radius_logs(
     event_type: Optional[str] = None,
     limit: int = 200,
 ):
-    """Scoped the same way the Users list is: a non-superadmin only ever
-    sees events for users they own (owner_admin_id, stamped at write time -
-    see radius_server.py), a superadmin sees everyone unless user_id
-    narrows it further."""
-    query = db.query(models.RadiusLimitEventLog)
-    if not admin.is_superadmin:
-        query = query.filter(models.RadiusLimitEventLog.owner_admin_id == admin.id)
+    """Scoped the same way the Users list is - which, until now, the claim
+    in this docstring only DESCRIBED and the code below did not do.
+
+    Two separate ways it diverged from services/hierarchy.py:
+
+      - A level-2 Admin matched `owner_admin_id == admin.id`, so they saw
+        events for their own direct customers but none for their Sellers'
+        customers, even though every other view in the panel rolls the
+        whole tree up for them. This was the only router in the project
+        that never consulted hierarchy at all.
+      - A superadmin skipped the filter entirely and saw EVERY Admin's
+        customer activity, which contradicts the two-way isolation the
+        rest of the panel enforces (see owned_admin_ids' docstring: each
+        Admin's customer base is private to their own tree, superadmin
+        included). Orphaned rows - owner_admin_id IS NULL, left by a
+        deleted admin - stay visible to a superadmin, since they are the
+        only one who can act on them, mirroring user_visibility_clause.
+    """
+    owned = hierarchy.owned_admin_ids(db, admin)
+    scope = models.RadiusLimitEventLog.owner_admin_id.in_(owned)
+    if admin.is_superadmin:
+        scope = or_(scope, models.RadiusLimitEventLog.owner_admin_id.is_(None))
+    query = db.query(models.RadiusLimitEventLog).filter(scope)
     if user_id:
         query = query.filter(models.RadiusLimitEventLog.user_id == user_id)
     if event_type:

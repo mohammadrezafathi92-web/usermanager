@@ -562,13 +562,30 @@ class MikrotikClient:
         """
         log: list[str] = []
         try:
-            list(self._api("/ip/socks/set", **{
+            base = {
                 "enabled": "yes",
                 "port": str(port),
                 "connection-idle-timeout": idle_timeout,
                 "max-connections": str(max_connections),
-            }))
-            log.append(f"سرویس SOCKS روی پورت {port} فعال شد (مهلت بیکاری {idle_timeout})")
+            }
+            # version=5 is not optional and is not the default: RouterOS
+            # ships SOCKS4, and a v4 server rejects the v5 handshake that
+            # both curl and aiohttp-socks send. The symptom is a bare
+            # connection failure with nothing logged anywhere - the router
+            # looks configured, the port is open, and every client fails.
+            # Found the hard way on a live router that read "enabled: yes".
+            try:
+                list(self._api("/ip/socks/set", **base, **{"version": "5"}))
+                log.append(f"سرویس SOCKS نسخه ۵ روی پورت {port} فعال شد (مهلت بیکاری {idle_timeout})")
+            except Exception:
+                # RouterOS 6 has no `version` property at all. There the
+                # server is SOCKS4-only and this feature cannot work, so the
+                # admin is told rather than left with a silent failure.
+                list(self._api("/ip/socks/set", **base))
+                log.append(
+                    f"سرویس SOCKS روی پورت {port} فعال شد، ولی این نسخه‌ی RouterOS تنظیم version "
+                    "ندارد و فقط SOCKS4 می‌دهد - ربات به آن وصل نمی‌شود. برای این کار RouterOS 7 لازم است."
+                )
 
             access = self._api.path("ip", "socks", "access")
             for row in list(access):

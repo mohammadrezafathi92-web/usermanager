@@ -71,6 +71,32 @@ class AdminUser(Base):
     # of `permissions` below, and is the only role allowed to manage other
     # admins. The very first admin ever created (see main.py's bootstrap)
     # is always a superadmin.
+    # نقش صریح. Until now the role was DERIVED from parent_admin_id alone
+    # (services/hierarchy.role): an account with a parent was a Seller, one
+    # without was an Admin. That conflates two different things - WHERE an
+    # account sits in the tree, and WHAT it is allowed to be - so simply
+    # giving an account a parent silently demoted it, and a reseller
+    # created directly under the superadmin came out as a level-3 Seller
+    # with no node access no matter what the person creating it intended.
+    # Stored explicitly from now on; hierarchy.role() still falls back to
+    # the old derivation for rows that predate this column, so nothing
+    # changes for an existing install until the backfill in main.py runs.
+    role = Column(String(16), nullable=True)
+
+    # Materialised path of ancestor ids, "/1/5/12/" style, including this
+    # account's own id last. Two reasons it exists rather than walking
+    # parent_admin_id in a loop:
+    #   - subtree queries become a single indexed LIKE '/1/5/%' instead of
+    #     one query per level, which is what makes unlimited depth
+    #     affordable at all;
+    #   - the depth is readable without any query, so a configurable
+    #     maximum depth can be enforced cheaply at creation time.
+    # Kept in sync by services/hierarchy.rebuild_path - never written by
+    # hand, since a stale path silently widens or narrows what an account
+    # can see.
+    tree_path = Column(String(255), nullable=True, index=True)
+    depth = Column(Integer, nullable=True)
+
     is_superadmin = Column(Boolean, default=False, nullable=False)
 
     # Comma-separated subset of PERMISSION_CHOICES (see app/permissions.py)

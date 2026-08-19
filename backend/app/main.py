@@ -341,6 +341,80 @@ def _seed_default_permission_groups() -> None:
         db.close()
 
 
+def _backfill_roles_and_paths() -> None:
+    """Seeds AdminUser.role/tree_path/depth for rows created before those
+    columns existed.
+
+    Deliberately writes the role that the OLD derivation would have
+    produced, not the role anyone thinks the account should have. This is a
+    data-shape migration, not a policy change: an account that behaves as a
+    Seller today must still behave as a Seller after restart, or an admin
+    would find their permissions silently altered by a deploy. Correcting
+    a genuinely mis-classified account is a separate, deliberate action in
+    the panel.
+
+    Idempotent - only rows with a NULL role or NULL path are touched, so
+    every subsequent startup is a no-op and an operator's later correction
+    is never overwritten.
+    """
+    from .services import hierarchy
+
+    db = SessionLocal()
+    try:
+        admins = db.query(models.AdminUser).all()
+        if not admins:
+            return
+        by_id = {a.id: a for a in admins}
+
+        role_filled = 0
+        for a in admins:
+            if not (a.role or "").strip():
+                a.role = hierarchy.derive_role(a)
+                role_filled += 1
+
+        # Paths are built parents-first: a child's path is its parent's
+        # path plus its own id, so computing them in id order would embed
+        # a not-yet-written parent path. Sorting by ancestor count is the
+        # cheap way to guarantee the parent is always done first.
+        def ancestor_count(a: models.AdminUser) -> int:
+            n, seen, cur = 0, {a.id}, a
+            while cur.parent_admin_id and cur.parent_admin_id in by_id:
+                cur = by_id[cur.parent_admin_id]
+                if cur.id in seen:
+                    logging.error(
+                        "hierarchy backfill: چرخه در درخت ادمین‌ها از %s - مسیر این شاخه ساخته نشد", a.username
+                    )
+                    return n
+                seen.add(cur.id)
+                n += 1
+            return n
+
+        path_filled = 0
+        for a in sorted(admins, key=ancestor_count):
+            if a.tree_path:
+                continue
+            parent = by_id.get(a.parent_admin_id) if a.parent_admin_id else None
+            a.tree_path = hierarchy.build_path(parent.tree_path if parent else None, a.id)
+            a.depth = hierarchy.path_depth(a.tree_path)
+            path_filled += 1
+
+        if role_filled or path_filled:
+            db.commit()
+            logging.info(
+                "hierarchy backfill: نقش برای %d حساب و مسیر درخت برای %d حساب نوشته شد",
+                role_filled, path_filled,
+            )
+    except Exception:
+        db.rollback()
+        # A failed backfill must not stop the panel from booting: the
+        # fallback in hierarchy.role() keeps every existing account
+        # working exactly as before, so this is degraded, not broken.
+        logging.exception("hierarchy backfill ناموفق بود - رفتار قبلی دست‌نخورده باقی می‌ماند")
+    finally:
+        db.close()
+
+
+
 @app.on_event("startup")
 def on_startup():
     _warn_if_insecure_defaults()
@@ -348,6 +422,7 @@ def on_startup():
     Base.metadata.create_all(bind=engine)
     _auto_migrate_missing_columns()
     _backfill_hierarchy_node_access(_admin_node_access_is_new)
+    _backfill_roles_and_paths()
 
     db = SessionLocal()
     try:

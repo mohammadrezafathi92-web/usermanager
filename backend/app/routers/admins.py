@@ -335,6 +335,19 @@ def reparent_admin(
         )
 
     admin.parent_admin_id = new_parent_id
+    # Re-derived on purpose while phase 1 is in flight: today, moving an
+    # account under a parent IS what demotes it, and phase 1 must not
+    # change a single outcome. The moment role becomes an independent
+    # field on this endpoint, this line goes away and moving an account
+    # will change only where it sits, never what it may do.
+    admin.role = hierarchy.derive_role(admin)
+    hierarchy.rebuild_path(db, admin)
+    # The children promoted to roots above were bulk-updated, so their
+    # paths are stale until rebuilt from their new (absent) parent.
+    for child in db.query(models.AdminUser).filter(models.AdminUser.parent_admin_id.is_(None)).all():
+        if not child.is_superadmin and (child.tree_path or "").count(hierarchy.PATH_SEP) > 2:
+            child.role = hierarchy.derive_role(child)
+            hierarchy.rebuild_path(db, child)
     db.commit()
     db.refresh(admin)
     return _out(db, admin)
@@ -414,6 +427,14 @@ def create_admin(
     )
     db.add(admin)
     db.flush()  # assigns admin.id, needed for the balance/volume log FKs below
+    # Stored role and tree path. derive_role() reproduces exactly what the
+    # old position-based rule would have concluded, so creating an account
+    # behaves identically to before - phase 1 is a data-shape change, not a
+    # policy change. Once resource delegation lands, the role becomes a
+    # deliberate choice on the create form instead of a consequence of
+    # which parent was picked.
+    admin.role = hierarchy.derive_role(admin)
+    hierarchy.rebuild_path(db, admin, cascade=False)
 
     if payload.initial_balance:
         _apply_balance_change(db, admin, payload.initial_balance, "اعتبار پایه اولیه", actor_id=current.id)
@@ -618,9 +639,23 @@ def delete_admin(
     # superadmin can review/reassign them by hand afterward. Same
     # "unassign, don't destroy" philosophy as the users.owner_admin_id
     # handling below.
+    orphaned_children = (
+        db.query(models.AdminUser).filter(models.AdminUser.parent_admin_id == admin.id).all()
+    )
     db.query(models.AdminUser).filter(models.AdminUser.parent_admin_id == admin.id).update(
         {"parent_admin_id": None}, synchronize_session=False
     )
+    # Their stored role must follow, or they would keep role="seller" while
+    # sitting at the root - and role() would then report something the old
+    # derivation never would have. Phase 1 preserves today's outcome
+    # exactly, promotion included. Phase 6 replaces this whole approach:
+    # children and customers will be re-parented to the DELETED account's
+    # parent instead of being cut loose, which is what a tree with no holes
+    # actually requires.
+    for child in orphaned_children:
+        child.parent_admin_id = None
+        child.role = hierarchy.derive_role(child)
+        hierarchy.rebuild_path(db, child)
     # Users this admin owned aren't deleted - just unassigned (visible to
     # superadmins only, like any never-assigned user) so nobody's VPN
     # service is silently destroyed just because the admin managing them

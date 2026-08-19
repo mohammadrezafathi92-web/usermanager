@@ -18,14 +18,99 @@ ROLE_ADMIN = "admin"
 ROLE_SELLER = "seller"
 
 
-def role(admin: models.AdminUser) -> str:
+VALID_ROLES = (ROLE_SUPERADMIN, ROLE_ADMIN, ROLE_SELLER)
+
+# The tree path is built from ids, so "/" is a safe separator: an id can
+# never contain one. Wrapping both ends means a prefix match ("/1/5/%")
+# cannot accidentally match "/1/50/" - the trailing slash is what makes
+# the boundary unambiguous, and getting this wrong would silently widen
+# one account's visibility into a sibling's subtree.
+PATH_SEP = "/"
+
+
+def derive_role(admin: models.AdminUser) -> str:
+    """The OLD rule: role inferred purely from position in the tree.
+
+    Kept as a named function rather than deleted, for two jobs: seeding
+    AdminUser.role for rows that predate that column, and letting role()
+    below stay correct on an install whose backfill has not run yet.
+    Nothing new should call it - a derived role is exactly the design
+    mistake the explicit column exists to end.
+    """
     if admin.is_superadmin:
         return ROLE_SUPERADMIN
     if admin.parent_admin_id is None:
-        # A non-superadmin with no parent is a level-2 Admin, created
-        # directly by a superadmin.
         return ROLE_ADMIN
     return ROLE_SELLER
+
+
+def role(admin: models.AdminUser) -> str:
+    """The account's role. Stored value wins; derivation is the fallback.
+
+    is_superadmin still overrides everything: it is checked directly in
+    dozens of places (deps.require_superadmin among them), so a stored
+    role that disagreed with it would create two different answers to the
+    same question. The column is authoritative for the Admin/Seller
+    distinction only.
+    """
+    if admin.is_superadmin:
+        return ROLE_SUPERADMIN
+    stored = (getattr(admin, "role", None) or "").strip()
+    if stored in (ROLE_ADMIN, ROLE_SELLER):
+        return stored
+    return derive_role(admin)
+
+
+def build_path(parent_path: str | None, own_id: int) -> str:
+    """Child path from the parent's path. A root gets "/<id>/"."""
+    base = (parent_path or PATH_SEP).rstrip(PATH_SEP)
+    return f"{base}{PATH_SEP}{own_id}{PATH_SEP}"
+
+
+def path_depth(path: str | None) -> int:
+    """0 for a root account, 1 for its children, and so on."""
+    if not path:
+        return 0
+    return max(0, len([p for p in path.split(PATH_SEP) if p]) - 1)
+
+
+def rebuild_path(db: Session, admin: models.AdminUser, *, cascade: bool = True) -> None:
+    """Recomputes this account's path/depth from its parent, then its whole
+    subtree if asked.
+
+    Cascading matters on a MOVE: every descendant's path embeds the
+    ancestors' ids, so re-parenting an account without rewriting the
+    subtree leaves descendants pointing at a branch they no longer belong
+    to - and since visibility is a prefix match on that path, they would
+    keep being visible to the old ancestor. Depth is stored alongside so
+    a maximum-depth rule can be checked without parsing.
+
+    A cycle (A's parent is its own descendant) would recurse forever, so
+    the walk carries the ids it has already visited and stops rather than
+    blowing the stack on corrupt data.
+    """
+    parent = db.get(models.AdminUser, admin.parent_admin_id) if admin.parent_admin_id else None
+    admin.tree_path = build_path(parent.tree_path if parent else None, admin.id)
+    admin.depth = path_depth(admin.tree_path)
+    if not cascade:
+        return
+
+    seen = {admin.id}
+    frontier = [admin]
+    while frontier:
+        current = frontier.pop()
+        children = (
+            db.query(models.AdminUser)
+            .filter(models.AdminUser.parent_admin_id == current.id)
+            .all()
+        )
+        for child in children:
+            if child.id in seen:
+                continue
+            seen.add(child.id)
+            child.tree_path = build_path(current.tree_path, child.id)
+            child.depth = path_depth(child.tree_path)
+            frontier.append(child)
 
 
 def is_seller(admin: models.AdminUser) -> bool:

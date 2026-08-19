@@ -82,6 +82,34 @@ def _user_response(user: models.User) -> schemas.BotUserResponse:
     )
 
 
+def _scope_ids(db: Session, owner_admin_id: Optional[int]) -> Optional[set[int]]:
+    """Which owner_admin_id values a bot request may touch.
+
+    The parameter every endpoint below calls `owner_admin_id` is NOT a
+    filter value - it is the panel account the bot is acting for. Treating
+    it as a filter (`User.owner_admin_id == owner_admin_id`) is what made
+    an Admin's own Sellers' customers invisible in the bot while being
+    perfectly visible in the panel: two answers to the same question,
+    depending on which door you came through.
+
+    Resolved here, once, through services/hierarchy so the bot and the
+    panel can never drift apart again. None still means the shared/global
+    bot with no account behind it - unchanged for now, and dealt with in
+    the visibility phase.
+
+    An id that matches no account returns an impossible set rather than
+    None: an unknown caller must see nothing, never everything. Failing
+    open here would hand a stale or mistyped id the full customer list.
+    """
+    if owner_admin_id is None:
+        return None
+    admin = db.get(models.AdminUser, owner_admin_id)
+    if admin is None:
+        return set()
+    return hierarchy.owned_admin_ids(db, admin)
+
+
+
 def _get_user_or_404(db: Session, username: str, owner_admin_id: Optional[int] = None) -> models.User:
     """owner_admin_id, when given, scopes this lookup to one admin's group -
     used by the built-in bot when a linked group-admin (see
@@ -90,7 +118,8 @@ def _get_user_or_404(db: Session, username: str, owner_admin_id: Optional[int] =
     username. A full/config bot admin never passes this (sees everyone,
     same as before this scoping existed)."""
     user = db.query(models.User).filter(models.User.username == username).first()
-    if not user or (owner_admin_id is not None and user.owner_admin_id != owner_admin_id):
+    scope = _scope_ids(db, owner_admin_id)
+    if not user or (scope is not None and user.owner_admin_id not in scope):
         raise HTTPException(404, "کاربر پیدا نشد")
     return user
 
@@ -310,8 +339,9 @@ def get_sales_stats(owner_admin_id: Optional[int] = None, db: Session = Depends(
         out[key] = {"total": sum(r.amount or 0 for r in rows), "count": len(rows)}
 
     user_q = db.query(models.User)
-    if owner_admin_id is not None:
-        user_q = user_q.filter(models.User.owner_admin_id == owner_admin_id)
+    scope = _scope_ids(db, owner_admin_id)
+    if scope is not None:
+        user_q = user_q.filter(models.User.owner_admin_id.in_(scope))
     out["users_total"] = user_q.count()
     out["users_active"] = user_q.filter(models.User.status == models.UserStatus.active).count()
     return out
@@ -585,8 +615,9 @@ def list_users(
     page = max(page, 1)
     page_size = min(max(page_size, 1), 100)
     query = db.query(models.User)
-    if owner_admin_id is not None:
-        query = query.filter(models.User.owner_admin_id == owner_admin_id)
+    scope = _scope_ids(db, owner_admin_id)
+    if scope is not None:
+        query = query.filter(models.User.owner_admin_id.in_(scope))
     if search:
         like = f"%{search}%"
         query = query.filter(or_(models.User.username.ilike(like), models.User.full_name.ilike(like)))
@@ -615,8 +646,9 @@ def get_user_by_telegram(telegram_id: int, db: Session = Depends(get_db), owner_
     bot should never surface here, same isolation as the rest of the
     3-tier hierarchy."""
     query = db.query(models.User).filter(models.User.telegram_id == telegram_id)
-    if owner_admin_id is not None:
-        query = query.filter(models.User.owner_admin_id == owner_admin_id)
+    scope = _scope_ids(db, owner_admin_id)
+    if scope is not None:
+        query = query.filter(models.User.owner_admin_id.in_(scope))
     user = query.order_by(models.User.id.desc()).first()
     if not user:
         raise HTTPException(404, "کاربری با این حساب تلگرام پیدا نشد")
@@ -634,8 +666,9 @@ def list_users_by_telegram(telegram_id: int, db: Session = Depends(get_db), owne
     get_user_by_telegram above - a per-admin bot's account-picker should
     never surface someone else's customer accounts from another Admin."""
     query = db.query(models.User).filter(models.User.telegram_id == telegram_id)
-    if owner_admin_id is not None:
-        query = query.filter(models.User.owner_admin_id == owner_admin_id)
+    scope = _scope_ids(db, owner_admin_id)
+    if scope is not None:
+        query = query.filter(models.User.owner_admin_id.in_(scope))
     users = query.order_by(models.User.id.desc()).all()
     return [_user_response(u) for u in users]
 

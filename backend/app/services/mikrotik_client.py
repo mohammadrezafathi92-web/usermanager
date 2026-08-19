@@ -27,6 +27,7 @@ logger = logging.getLogger("mikrotik_client")
 # stranger's firewall rule would be a far worse failure than leaving a
 # stale one behind.
 _SOCKS_TAG = "usermanager-tgproxy"
+_MASQ_TAG = "netcip-telegram-tunnel"
 
 
 class MikrotikError(Exception):
@@ -515,6 +516,42 @@ class MikrotikClient:
             raise MikrotikError(f"تنظیم IKEv2 روی میکروتیک ناموفق بود: {exc}") from exc
 
     # -------------------------------------------------------- import (read-only)
+    def ensure_masquerade(self, subnet: str) -> bool:
+        """Makes the router NAT traffic coming out of `subnet`.
+
+        Without this a tunnel looks perfect from both ends and still carries
+        nothing: the peer handshakes, the router's rx counter climbs, and
+        every packet then leaves with a private source address that no reply
+        can ever come back to. Diagnosed on a live install after several
+        hours - the router had received half a megabyte from the panel and
+        sent back 24KB, all of it keepalives.
+
+        Idempotent by comment, and inserted at the TOP of srcnat: a
+        masquerade rule appended after an existing `accept` or a more
+        specific srcnat for another subnet would never be reached.
+
+        Returns whether a rule was created (False = one was already there).
+        """
+        path = self._api.path("ip", "firewall", "nat")
+        rows = list(path)
+        if any((r.get("comment") or "") == _MASQ_TAG for r in rows):
+            return False
+
+        props = {
+            "chain": "srcnat",
+            "src-address": subnet,
+            "action": "masquerade",
+            "comment": _MASQ_TAG,
+        }
+        first_srcnat = next((r[".id"] for r in rows if r.get("chain") == "srcnat"), None)
+        if first_srcnat:
+            props["place-before"] = first_srcnat
+        try:
+            path.add(**props)
+        except Exception as exc:
+            raise MikrotikError(f"افزودن قانون NAT برای {subnet} ناموفق بود: {exc}")
+        return True
+
     # ------------------------------------------------------- SOCKS proxy
     def check_reaches(self, url: str, timeout_s: int = 10) -> tuple[bool, str]:
         """Can this router itself open `url`?

@@ -178,6 +178,16 @@ def setup(payload: SetupIn, db: Session = Depends(get_db)):
                 comment=_PEER_COMMENT,
             )
             log.append(f"پیر روی نود «{node.name}» ثبت شد (اینترفیس {iface})")
+
+            # Without NAT the tunnel handshakes, the router receives every
+            # packet, and nothing ever comes back - because the packets
+            # leave with a private source address. It is invisible from
+            # both ends and cost hours to find once; the panel adds the
+            # rule itself now rather than leaving it as a step to remember.
+            if client.ensure_masquerade(DEFAULT_SUBNET):
+                log.append(f"قانون NAT برای {DEFAULT_SUBNET} روی نود اضافه شد")
+            else:
+                log.append("قانون NAT از قبل روی نود بود")
     except HTTPException:
         raise
     except MikrotikError as exc:

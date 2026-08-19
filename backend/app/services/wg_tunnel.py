@@ -41,9 +41,21 @@ logger = logging.getLogger("wg_tunnel")
 # stops working for no visible reason months after anyone touched it.
 TELEGRAM_CIDR_URL = "https://core.telegram.org/resources/cidr.txt"
 
-# Used when the list has never been fetched - the two ranges Telegram's own
-# bot documentation names, so a fresh install works offline.
-DEFAULT_CIDRS = ("149.154.160.0/20", "91.108.4.0/22")
+# The full IPv4 list as published at TELEGRAM_CIDR_URL, embedded here so a
+# tunnel can be built without ever reaching Telegram first.
+#
+# That "first" is the whole point: fetching the list requires reaching
+# core.telegram.org, which is behind exactly the block this tunnel exists to
+# get around. Shipping only the two ranges the bot documentation names -
+# which is what this was originally - left the other seven unrouted, so the
+# tunnel would carry some Telegram endpoints and silently miss others.
+# Refreshing from the live URL still works, but only AFTER the tunnel is up,
+# and is a correction rather than a prerequisite.
+DEFAULT_CIDRS = (
+    "91.108.4.0/22", "91.108.8.0/22", "91.108.12.0/22", "91.108.16.0/22",
+    "91.108.20.0/22", "91.108.56.0/22", "149.154.160.0/20",
+    "91.105.192.0/23", "185.76.151.0/24",
+)
 
 PROBE_URL = "https://api.telegram.org/"
 

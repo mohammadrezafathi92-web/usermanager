@@ -268,7 +268,18 @@ def refresh_cidrs(db: Session = Depends(get_db)):
     try:
         cidrs = wg_tunnel.fetch_telegram_cidrs()
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(400, f"دریافت فهرست رنج‌ها از تلگرام ناموفق بود: {exc}")
+        # The list lives on core.telegram.org, which is behind the same block
+        # the tunnel exists to bypass - so this button only works once the
+        # tunnel is already carrying traffic. Said plainly, because the raw
+        # connection error reads like the feature is broken when it is not.
+        raise HTTPException(
+            400,
+            "فهرست رنج‌ها روی core.telegram.org است که خودش پشت همین فیلترینگ قرار دارد، "
+            "پس این دکمه فقط وقتی کار می‌کند که تونل از قبل بالا و سالم باشد.\n\n"
+            "تونل بدون این دکمه هم کامل کار می‌کند: فهرست رسمی رنج‌ها از قبل داخل پنل هست. "
+            "این دکمه فقط برای وقتی است که تلگرام رنج‌هایش را عوض کند.\n\n"
+            f"خطای اصلی: {exc}",
+        )
 
     row.allowed_ips = ",".join(cidrs)
     row.cidrs_updated_at = dt.datetime.utcnow()

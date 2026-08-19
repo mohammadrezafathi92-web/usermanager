@@ -51,8 +51,17 @@ export default function TelegramTunnelCard() {
     setMsg(null);
     try {
       const res = await fn();
-      const log = res?.data?.log;
-      setMsg({ type: "ok", text: Array.isArray(log) ? log.join("\n") : (okText || "انجام شد") });
+      const d = res?.data || {};
+      // `ok: false` is a 200 response - the test endpoint reports a failed
+      // probe as data, not as an HTTP error. Reading only the status code
+      // painted every test green, including the ones that failed, which is
+      // worse than having no test button at all.
+      const failed = d.ok === false;
+      const log = d.log;
+      setMsg({
+        type: failed ? "err" : "ok",
+        text: Array.isArray(log) ? log.join("\n") : (d.detail || okText || "انجام شد"),
+      });
       await load();
     } catch (err) {
       setMsg({ type: "err", text: errorText(err, "عملیات ناموفق بود") });

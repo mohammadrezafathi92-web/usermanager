@@ -255,7 +255,7 @@ def test(db: Session = Depends(get_db)):
     return {"ok": ok, "detail": detail}
 
 
-@router.post("/refresh-cidrs", response_model=TunnelOut)
+@router.post("/refresh-cidrs")
 def refresh_cidrs(db: Session = Depends(get_db)):
     """Re-reads Telegram's published ranges and re-applies the routes.
 
@@ -265,21 +265,21 @@ def refresh_cidrs(db: Session = Depends(get_db)):
     to its cause.
     """
     row = _row(db)
+    note = ""
     try:
         cidrs = wg_tunnel.fetch_telegram_cidrs()
+        note = f"{len(cidrs)} رنج از منبع رسمی تلگرام گرفته و اعمال شد"
     except Exception as exc:  # noqa: BLE001
-        # The list lives on core.telegram.org, which is behind the same block
-        # the tunnel exists to bypass - so this button only works once the
-        # tunnel is already carrying traffic. Said plainly, because the raw
-        # connection error reads like the feature is broken when it is not.
-        raise HTTPException(
-            400,
-            "فهرست رنج‌ها روی core.telegram.org است که خودش پشت همین فیلترینگ قرار دارد، "
-            "پس این دکمه فقط وقتی کار می‌کند که تونل از قبل بالا و سالم باشد.\n\n"
-            "تونل بدون این دکمه هم کامل کار می‌کند: فهرست رسمی رنج‌ها از قبل داخل پنل هست. "
-            "این دکمه فقط برای وقتی است که تلگرام رنج‌هایش را عوض کند.\n\n"
-            f"خطای اصلی: {exc}",
-        )
+        # Falls back to the embedded list instead of failing. The live list
+        # lives on core.telegram.org, which sits behind the very block this
+        # tunnel exists to cross - so before the tunnel carries traffic this
+        # fetch cannot succeed, and refusing to do anything would leave a
+        # tunnel routing an incomplete set of ranges with no way to fix it
+        # from the panel. The embedded list is the same published one.
+        logger.info("دریافت زنده‌ی رنج‌ها ناموفق بود، فهرست داخلی اعمال شد: %s", exc)
+        cidrs = list(wg_tunnel.DEFAULT_CIDRS)
+        note = (f"دسترسی به core.telegram.org برقرار نشد، پس فهرست رسمی داخل پنل "
+                f"({len(cidrs)} رنج) اعمال شد. این فهرست کامل است و تونل با آن درست کار می‌کند.")
 
     row.allowed_ips = ",".join(cidrs)
     row.cidrs_updated_at = dt.datetime.utcnow()
@@ -293,4 +293,7 @@ def refresh_cidrs(db: Session = Depends(get_db)):
             db.commit()
             raise HTTPException(400, f"رنج‌ها ذخیره شد ولی اعمالشان ناموفق بود:\n{exc.message}")
     db.refresh(row)
-    return _out(db, row)
+    # `log` rather than a bare model: the card renders a log array, and this
+    # is the one endpoint whose interesting output is WHICH list got applied
+    # and why - information the model has no field for.
+    return {**_out(db, row).model_dump(), "log": [note]}

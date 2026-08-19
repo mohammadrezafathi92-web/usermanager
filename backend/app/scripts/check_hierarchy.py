@@ -36,6 +36,46 @@ def _name(admin: models.AdminUser | None) -> str:
     return f"{admin.username}#{admin.id}" if admin else "?"
 
 
+def print_tree(db: Session, ctx: dict) -> None:
+    """The structure itself, before any rule is applied.
+
+    Added because the first real run produced eight identical "این فروشنده
+    دسترسی نود دارد ولی بی‌اثر است" lines, which says a rule is being
+    broken but not WHY. The why is almost always the shape of the tree:
+    role() is derived purely from parent_admin_id, so an account created
+    with a parent - even the superadmin's own row - is a level-3 Seller no
+    matter what the person creating it meant.
+    """
+    by_id = ctx["by_id"]
+    counts = {}
+    for row in db.query(models.User.owner_admin_id).all():
+        counts[row.owner_admin_id] = counts.get(row.owner_admin_id, 0) + 1
+
+    grants = {}
+    for row in db.query(models.AdminNodeAccess.admin_id).all():
+        grants[row.admin_id] = grants.get(row.admin_id, 0) + 1
+
+    from ..permissions import effective_permissions
+
+    label = {
+        hierarchy.ROLE_SUPERADMIN: "سوپرادمین",
+        hierarchy.ROLE_ADMIN: "ادمین لول ۲",
+        hierarchy.ROLE_SELLER: "فروشنده",
+    }
+    print("ساختار فعلی:")
+    print(f"  {'حساب':<22}{'نقش':<14}{'والد':<14}{'مشتری':>7}{'نود':>6}{'مجوز':>6}{'موجودی':>14}")
+    for a in sorted(by_id.values(), key=lambda x: x.id):
+        parent = by_id.get(a.parent_admin_id) if a.parent_admin_id else None
+        print(f"  {a.username + '#' + str(a.id):<22}"
+              f"{label[hierarchy.role(a)]:<14}"
+              f"{(parent.username if parent else '-'):<14}"
+              f"{counts.get(a.id, 0):>7}"
+              f"{grants.get(a.id, 0):>6}"
+              f"{len(effective_permissions(a)):>6}"
+              f"{(a.balance or 0):>14,}")
+    print()
+
+
 def check_roles(db: Session) -> dict:
     admins = db.query(models.AdminUser).all()
     by_id = {a.id: a for a in admins}
@@ -106,9 +146,13 @@ def check_ownership_rules(db: Session, ctx: dict) -> None:
     for n in db.query(models.Node).filter(models.Node.owner_admin_id.isnot(None)).all():
         if n.owner_admin_id in sellers:
             bad(f"نود «{n.name}»: مالکش فروشنده است - فروشنده اصلا نباید نود داشته باشد")
+    granted_to_sellers: dict[int, int] = {}
     for g in db.query(models.AdminNodeAccess).all():
         if g.admin_id in sellers:
-            bad(f"دسترسی نود به فروشنده {_name(by_id.get(g.admin_id))} داده شده - بی‌اثر است و گمراه‌کننده")
+            granted_to_sellers[g.admin_id] = granted_to_sellers.get(g.admin_id, 0) + 1
+    for admin_id, n in granted_to_sellers.items():
+        bad(f"به فروشنده {_name(by_id.get(admin_id))} دسترسی {n} نود داده شده ولی کد برای فروشنده "
+            "دسترسی نود را صفر می‌کند - یا نقش این حساب اشتباه است یا این دسترسی‌ها زائدند")
 
     # Rule: a seller price belongs to a seller, for a package inside their
     # parent's scope (routers/packages.py set_seller_price).
@@ -165,6 +209,7 @@ def main() -> int:
     try:
         print("=" * 60)
         ctx = check_roles(db)
+        print_tree(db, ctx)
         check_customers(db, ctx)
         check_ownership_rules(db, ctx)
         check_bots(db, ctx)

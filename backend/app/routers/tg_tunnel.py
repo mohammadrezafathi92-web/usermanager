@@ -36,10 +36,17 @@ logger = logging.getLogger("tg_tunnel")
 router = APIRouter(prefix="/api/telegram-tunnel", tags=["telegram-tunnel"],
                    dependencies=[Depends(require_superadmin)])
 
-# The panel's address inside the tunnel. A /30 with the node on .1 and the
-# panel on .2 mirrors how the node's own point-to-point links are already
-# numbered, so an operator reading the router's config sees a familiar shape.
-DEFAULT_SUBNET = "10.77.0.0/30"
+# Only used when the node has no client subnet configured at all.
+#
+# The tunnel normally takes an address out of the node's OWN customer subnet
+# (Node.mt_client_subnet) instead. That choice is the difference between a
+# tunnel that works and one that does not: a router serving customers has
+# already been given NAT rules, routing marks and firewall policy for that
+# subnet, all of them proven by the customers using them right now. Inventing
+# a fresh subnet means every one of those has to be recreated by hand, and
+# each one that is missed fails silently - which is exactly how this feature
+# spent a day not working.
+FALLBACK_SUBNET = "10.77.0.0/30"
 
 
 class SetupIn(BaseModel):
@@ -70,6 +77,42 @@ class TunnelOut(BaseModel):
     handshake_age_s: Optional[int]
     rx_bytes: int
     tx_bytes: int
+
+
+def _pick_tunnel_address(client, node) -> tuple[str, str, bool]:
+    """(address_with_prefix, subnet, borrowed_from_clients).
+
+    Takes the highest free address in the node's customer subnet, counting
+    down from the top - customers are handed addresses from the bottom, so
+    starting at the other end keeps the two from meeting for a very long
+    time. Addresses already present on any peer are skipped.
+    """
+    import ipaddress
+
+    raw = (getattr(node, "mt_client_subnet", None) or "").strip()
+    try:
+        net = ipaddress.ip_network(raw, strict=False)
+        borrowed = True
+    except ValueError:
+        net = ipaddress.ip_network(FALLBACK_SUBNET)
+        borrowed = False
+
+    taken: set[str] = set()
+    try:
+        for peer in client.list_peers():
+            for part in (peer.get("allowed-address") or "").split(","):
+                part = part.strip().split("/")[0]
+                if part:
+                    taken.add(part)
+    except Exception:  # noqa: BLE001 - an unreadable peer list is not fatal
+        logger.warning("فهرست پیرهای نود خوانده نشد - انتخاب آدرس بدون بررسی تکراری انجام می‌شود")
+
+    for candidate in reversed(list(net.hosts())):
+        if str(candidate) not in taken:
+            return f"{candidate}/{net.prefixlen}", str(net), borrowed
+
+    raise HTTPException(400, f"هیچ آدرس آزادی در ساب‌نت «{net}» باقی نمانده است")
+
 
 
 def _row(db: Session) -> models.TelegramTunnel:
@@ -145,12 +188,6 @@ def setup(payload: SetupIn, db: Session = Depends(get_db)):
     row = _row(db)
     iface = (payload.wg_interface or node.mt_wireguard_interface or "wireguard1").strip()
 
-    import ipaddress
-    net = ipaddress.ip_network(DEFAULT_SUBNET)
-    hosts = list(net.hosts())
-    peer_addr = payload.peer_address or f"{hosts[0]}/{net.prefixlen}"
-    own_addr = payload.address or f"{hosts[1]}/{net.prefixlen}"
-
     # A fresh keypair on every setup. Reusing the old one would silently
     # keep working against a peer entry that was meant to be replaced, and
     # the cost of rotating is nil.
@@ -166,6 +203,10 @@ def setup(payload: SetupIn, db: Session = Depends(get_db)):
                     400,
                     f"اینترفیس «{iface}» روی نود کلید عمومی ندارد. یک‌بار در خود روتر بسازیدش و دوباره امتحان کنید.",
                 )
+            own_addr, subnet, borrowed = (
+                (payload.address, payload.address.split("/")[0] + "/32", False)
+                if payload.address else _pick_tunnel_address(client, node)
+            )
             listen_port = payload.endpoint_port or node.mt_endpoint_port or 13231
 
             existing = [p for p in client.list_peers(iface) if (p.get("comment") or "") == _PEER_COMMENT]
@@ -179,13 +220,16 @@ def setup(payload: SetupIn, db: Session = Depends(get_db)):
             )
             log.append(f"پیر روی نود «{node.name}» ثبت شد (اینترفیس {iface})")
 
-            # Without NAT the tunnel handshakes, the router receives every
-            # packet, and nothing ever comes back - because the packets
-            # leave with a private source address. It is invisible from
-            # both ends and cost hours to find once; the panel adds the
-            # rule itself now rather than leaving it as a step to remember.
-            if client.ensure_masquerade(DEFAULT_SUBNET):
-                log.append(f"قانون NAT برای {DEFAULT_SUBNET} روی نود اضافه شد")
+            if borrowed:
+                # Nothing to add. The node already NATs, marks and routes this
+                # subnet for its own customers, and those rules are proven
+                # working by every customer currently online. Adding our own
+                # would at best duplicate them and at worst take precedence
+                # over a more specific rule that exists for a reason.
+                log.append(f"آدرس از ساب‌نت مشتریان نود گرفته شد ({subnet}) - "
+                           "قوانین NAT و مسیریابی موجود همین حالا شامل آن می‌شوند")
+            elif client.ensure_masquerade(subnet):
+                log.append(f"قانون NAT برای {subnet} روی نود اضافه شد")
             else:
                 log.append("قانون NAT از قبل روی نود بود")
     except HTTPException:

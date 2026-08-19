@@ -73,6 +73,14 @@ TUNNEL_DNS = ("1.1.1.1", "8.8.8.8")
 
 PROBE_URL = "https://api.telegram.org/"
 
+# The names that must resolve truthfully for the bot to work, pinned into
+# /etc/hosts from an answer fetched through the tunnel. See sync_hosts.
+TUNNEL_HOSTS = ("api.telegram.org", "core.telegram.org")
+
+HOSTS_PATH = "/etc/hosts"
+HOSTS_BEGIN = "# >>> netcip telegram tunnel >>>"
+HOSTS_END = "# <<< netcip telegram tunnel <<<"
+
 
 class TunnelError(Exception):
     """Carries a message already written for the admin, plus the raw output
@@ -160,6 +168,167 @@ def parse_cidrs(raw: str | None) -> list[str]:
         if net.version == 4:
             valid.append(str(net))
     return valid or list(DEFAULT_CIDRS)
+
+
+# ------------------------------------------------------------------- DNS
+#
+# The panel asks a public resolver itself, through the tunnel, and pins the
+# answer into /etc/hosts.
+#
+# Why not simply point the container at 1.1.1.1 with `dns:` in
+# docker-compose - which is one line instead of all of this? Because that was
+# tried on this very install and took the whole panel down: with the tunnel
+# down, 1.1.1.1 is unreachable, so NOTHING resolves - not the nodes, not the
+# payment gateway, not the update check. It made the panel's entire DNS
+# depend on the one link most likely to break, to fix two names.
+#
+# Pinning into /etc/hosts inverts that. The system resolver stays exactly as
+# it is and keeps serving everything else; only these two names bypass it,
+# and if the lookup fails the previous pinned answer simply stays in place.
+# The failure mode is "the pin goes stale", not "the panel goes blind".
+#
+# It also has to be done at all: routing 1.1.1.1 into the tunnel achieved
+# nothing, because the container resolves through Docker's embedded resolver
+# at 127.0.0.11, which forwards to the host - so the query never went near
+# the routed address. The local ISP answered api.telegram.org with
+# 10.10.34.36, a filtering sinkhole, and the request then never reached the
+# routed ranges at all. The tunnel was fine; the name was poisoned first.
+
+
+def _dns_query(name: str, server: str, timeout: int = 5) -> list[str]:
+    """A-records for `name` from `server`, over UDP.
+
+    Hand-built rather than pulling in a DNS library: this is one query type
+    with no recursion, no caching and no zone handling, and adding a
+    dependency to a live panel costs more than forty lines that can be read
+    in full.
+    """
+    import os
+    import socket
+
+    tid = os.urandom(2)
+    # Standard query, recursion desired, one question.
+    packet = tid + b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+    for label in name.split("."):
+        packet += bytes([len(label)]) + label.encode()
+    packet += b"\x00\x00\x01\x00\x01"          # QTYPE=A, QCLASS=IN
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    try:
+        sock.sendto(packet, (server, 53))
+        data, _ = sock.recvfrom(2048)
+    finally:
+        sock.close()
+
+    if data[:2] != tid:
+        raise TunnelError("پاسخ DNS با درخواست هم‌خوان نبود")
+
+    def skip_name(buf: bytes, i: int) -> int:
+        while True:
+            length = buf[i]
+            if length == 0:
+                return i + 1
+            if length & 0xC0 == 0xC0:          # compression pointer, 2 bytes
+                return i + 2
+            i += 1 + length
+
+    answers = int.from_bytes(data[6:8], "big")
+    i = skip_name(data, 12) + 4                # past the echoed question
+    found: list[str] = []
+    for _ in range(answers):
+        i = skip_name(data, i)
+        rtype = int.from_bytes(data[i:i + 2], "big")
+        rdlen = int.from_bytes(data[i + 8:i + 10], "big")
+        rdata = data[i + 10:i + 10 + rdlen]
+        if rtype == 1 and rdlen == 4:          # A record
+            found.append(".".join(str(b) for b in rdata))
+        i += 10 + rdlen
+    return found
+
+
+def _is_sinkhole(addr: str) -> bool:
+    """Filtering answers point at private space - 10.10.34.36 here.
+
+    Checked because a poisoned answer is not an error: the query succeeds and
+    returns an address, and everything downstream behaves as if the name
+    resolved. Pinning it would make things worse than not pinning at all.
+    """
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return True
+    return ip.is_private or ip.is_loopback or ip.is_unspecified
+
+
+def resolve_via_tunnel(name: str) -> str:
+    errors: list[str] = []
+    for server in TUNNEL_DNS:
+        try:
+            for addr in _dns_query(name, server):
+                if not _is_sinkhole(addr):
+                    return addr
+            errors.append(f"{server}: فقط آدرس جعلی برگرداند")
+        except Exception as exc:  # noqa: BLE001 - try the next resolver
+            errors.append(f"{server}: {exc}")
+    raise TunnelError(f"ترجمه‌ی «{name}» از داخل تونل ناموفق بود", " | ".join(errors))
+
+
+def sync_hosts() -> list[str]:
+    """Refreshes the pinned block in /etc/hosts. Never raises.
+
+    A name that cannot be resolved keeps whatever was pinned for it before -
+    a stale address still works far more often than no address, and Telegram's
+    do not move often.
+    """
+    resolved: dict[str, str] = {}
+    log: list[str] = []
+    for name in TUNNEL_HOSTS:
+        try:
+            resolved[name] = resolve_via_tunnel(name)
+        except TunnelError as exc:
+            logger.warning("ترجمه‌ی %s ناموفق بود: %s", name, exc.detail)
+
+    if not resolved:
+        return ["هیچ نامی از داخل تونل ترجمه نشد - مقدار قبلی /etc/hosts دست‌نخورده ماند"]
+
+    try:
+        with open(HOSTS_PATH, "r", encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError as exc:
+        return [f"خواندن {HOSTS_PATH} ناموفق بود: {exc}"]
+
+    kept: list[str] = []
+    inside = False
+    previous: dict[str, str] = {}
+    for line in lines:
+        if line.strip() == HOSTS_BEGIN:
+            inside = True
+            continue
+        if line.strip() == HOSTS_END:
+            inside = False
+            continue
+        if inside:
+            parts = line.split()
+            if len(parts) >= 2:
+                previous[parts[1]] = parts[0]
+            continue
+        kept.append(line)
+
+    # Anything that failed this round keeps its previous pin.
+    for name, addr in previous.items():
+        resolved.setdefault(name, addr)
+
+    block = [HOSTS_BEGIN] + [f"{addr}\t{name}" for name, addr in sorted(resolved.items())] + [HOSTS_END]
+    try:
+        with open(HOSTS_PATH, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(kept + block) + "\n")
+    except OSError as exc:
+        return [f"نوشتن {HOSTS_PATH} ناموفق بود: {exc}"]
+
+    log.append("نام‌های تلگرام از داخل تونل ترجمه و ثابت شدند: "
+               + "، ".join(f"{n} → {a}" for n, a in sorted(resolved.items())))
+    return log
 
 
 # ------------------------------------------------------------- interface
@@ -258,6 +427,10 @@ def up(tunnel) -> list[str]:
             # here would leave the interface up with no routes at all.
             logger.warning("مسیر %s روی %s اضافه نشد", cidr, name)
     log.append(f"{routed} رنج تلگرام از این تونل مسیریابی می‌شود (مسیر پیش‌فرض سرور دست‌نخورده)")
+
+    # Only meaningful once the routes exist - the resolvers are reached
+    # through the tunnel, so this has to be the last step, not the first.
+    log += sync_hosts()
     return log
 
 
@@ -357,11 +530,20 @@ def diagnose(tunnel) -> tuple[bool, list[str]]:
             "تونل بالاست ولی داده رد نمی‌شود - روی نود بررسی کنید که این آدرس NAT می‌شود."
         ]
 
+    # Re-pinned on every run rather than trusted: the pin is the one piece of
+    # state that can silently go stale, and refreshing it costs one UDP query.
+    log += sync_hosts()
+
     try:
         resolved = socket.gethostbyname("api.telegram.org")
-        log.append(f"api.telegram.org به {resolved} ترجمه شد")
     except Exception as exc:  # noqa: BLE001
-        return False, log + [f"ترجمه‌ی نام api.telegram.org ناموفق بود ({exc}) - مشکل از DNS است، نه از تونل"]
+        return False, log + [f"ترجمه‌ی نام api.telegram.org ناموفق بود ({exc})"]
+    if _is_sinkhole(resolved):
+        return False, log + [
+            f"api.telegram.org به {resolved} ترجمه شد - این آدرس چاهک فیلترینگ است، نه تلگرام. "
+            "یعنی نام قبل از مسیریابی مسموم می‌شود و ثابت‌کردن آن در /etc/hosts انجام نشده."
+        ]
+    log.append(f"api.telegram.org به {resolved} ترجمه شد")
 
     ok, detail = test_telegram()
     log.append(("درخواست واقعی به تلگرام موفق بود: " if ok else "درخواست واقعی به تلگرام ناموفق بود: ") + detail)
@@ -376,6 +558,9 @@ def ensure_up(tunnel) -> None:
         return
     name = tunnel.interface_name or "wg-tg"
     if interface_exists(name):
+        # Docker rewrites /etc/hosts on every container start, so the pinned
+        # names are gone even when the interface somehow survived.
+        sync_hosts()
         return
     try:
         up(tunnel)

@@ -19,7 +19,7 @@ from .services.ads import run_due_campaigns
 from .services.radius_server import start_radius_server_in_background, cleanup_stale_radius_sessions, cleanup_old_radius_limit_logs
 from .services.notify import run_daily_notify_job
 from .services.backup import run_scheduled_backup, ha_healthcheck, ha_pull_and_apply, notify_admins_text
-from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, tutorials, backup, remote_bot, admins, radius_logs, discount_codes, subscription, accounting as accounting_router, ads as ads_router
+from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, telegram_proxy, tutorials, backup, remote_bot, admins, radius_logs, discount_codes, subscription, accounting as accounting_router, ads as ads_router
 from .services import accounting as accounting_service
 from .services import purchase_migration
 from .telegram_bot import runner as telegram_bot_runner
@@ -111,6 +111,7 @@ app.include_router(bot.router)
 app.include_router(packages.router)
 app.include_router(panel_settings.router)
 app.include_router(telegram_bot_settings.router)
+app.include_router(telegram_proxy.router)
 app.include_router(tutorials.router)
 app.include_router(backup.router)
 app.include_router(backup.my_router)

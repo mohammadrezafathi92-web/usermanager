@@ -21,6 +21,13 @@ from librouteros.query import Key
 
 logger = logging.getLogger("mikrotik_client")
 
+# Every rule this panel writes on a router carries this prefix in its
+# comment. It is how setup/teardown find their OWN rules again without
+# touching anything the router's owner added by hand - deleting a
+# stranger's firewall rule would be a far worse failure than leaving a
+# stale one behind.
+_SOCKS_TAG = "usermanager-tgproxy"
+
 
 class MikrotikError(Exception):
     pass
@@ -508,6 +515,105 @@ class MikrotikClient:
             raise MikrotikError(f"تنظیم IKEv2 روی میکروتیک ناموفق بود: {exc}") from exc
 
     # -------------------------------------------------------- import (read-only)
+    # ------------------------------------------------------- SOCKS proxy
+    def check_reaches(self, url: str, timeout_s: int = 10) -> tuple[bool, str]:
+        """Can this router itself open `url`?
+
+        Asked before configuring anything, because a SOCKS proxy on a router
+        that cannot reach Telegram is worse than no proxy: it turns a
+        connection error into a silent timeout, and the panel would look
+        broken for a reason nobody would think to check. /tool/fetch is the
+        only outbound test RouterOS offers.
+        """
+        try:
+            list(self._api("/tool/fetch", **{
+                "url": url, "mode": "https", "keep-result": "no",
+                "http-method": "head", "duration": f"00:00:{timeout_s:02d}",
+            }))
+            return True, "در دسترس است"
+        except Exception as exc:
+            return False, str(exc)
+
+    def setup_socks_proxy(self, allowed_ip: str, port: int = 1080,
+                          idle_timeout: str = "10m", max_connections: int = 200) -> list[str]:
+        """Enables the SOCKS server and locks it to a single client IP.
+
+        Returns the log of what it did, so the panel can show the admin the
+        actual steps rather than a bare "done".
+
+        Two things here are not obvious and both were learned the hard way:
+
+        1. idle_timeout defaults to 2m on RouterOS. A Telegram long-poll
+           holds a connection open with NO data flowing until an update
+           arrives, which the router reads as idle and closes - producing
+           exactly the ServerDisconnectedError storm this feature exists to
+           end. Anything below a few minutes silently recreates the problem.
+
+        2. The access list and the firewall rule are BOTH applied. The
+           access list alone still lets anyone open a TCP session to the
+           port; the firewall rule alone leaves the proxy usable by any
+           source the firewall happens to permit later. An open SOCKS proxy
+           on a public address is found and abused within hours, so it is
+           closed at both layers or not opened at all.
+
+        Every step is idempotent - re-running after a partial failure, or
+        after the admin changed the panel's IP, converges instead of
+        stacking duplicate rules.
+        """
+        log: list[str] = []
+        try:
+            list(self._api("/ip/socks/set", **{
+                "enabled": "yes",
+                "port": str(port),
+                "connection-idle-timeout": idle_timeout,
+                "max-connections": str(max_connections),
+            }))
+            log.append(f"سرویس SOCKS روی پورت {port} فعال شد (مهلت بیکاری {idle_timeout})")
+
+            access = self._api.path("ip", "socks", "access")
+            for row in list(access):
+                if (row.get("comment") or "").startswith(_SOCKS_TAG):
+                    access.remove(row[".id"])
+            log.append("قوانین قبلی این پنل پاک شد تا تکراری نشوند")
+
+            access.add(**{"src-address": allowed_ip, "action": "allow",
+                          "comment": f"{_SOCKS_TAG} allow panel"})
+            access.add(**{"action": "deny", "comment": f"{_SOCKS_TAG} deny rest"})
+            log.append(f"فقط {allowed_ip} اجازه‌ی استفاده دارد، بقیه رد می‌شوند")
+
+            fw = self._api.path("ip", "firewall", "filter")
+            for row in list(fw):
+                if (row.get("comment") or "").startswith(_SOCKS_TAG):
+                    fw.remove(row[".id"])
+            fw.add(**{"chain": "input", "protocol": "tcp", "dst-port": str(port),
+                      "src-address": allowed_ip, "action": "accept",
+                      "comment": f"{_SOCKS_TAG} accept panel"})
+            fw.add(**{"chain": "input", "protocol": "tcp", "dst-port": str(port),
+                      "action": "drop", "comment": f"{_SOCKS_TAG} drop rest"})
+            log.append(f"فایروال هم پورت {port} را جز برای {allowed_ip} می‌بندد")
+            return log
+        except Exception as exc:
+            raise MikrotikError(f"راه‌اندازی SOCKS روی میکروتیک ناموفق بود: {exc}\n" + "\n".join(log))
+
+    def disable_socks_proxy(self) -> list[str]:
+        """Turns it off and removes only the rules this panel created."""
+        log: list[str] = []
+        try:
+            list(self._api("/ip/socks/set", **{"enabled": "no"}))
+            log.append("سرویس SOCKS خاموش شد")
+            for menu in (("ip", "socks", "access"), ("ip", "firewall", "filter")):
+                path = self._api.path(*menu)
+                removed = 0
+                for row in list(path):
+                    if (row.get("comment") or "").startswith(_SOCKS_TAG):
+                        path.remove(row[".id"])
+                        removed += 1
+                if removed:
+                    log.append(f"{removed} قانون از /{'/'.join(menu)} حذف شد")
+            return log
+        except Exception as exc:
+            raise MikrotikError(f"خاموش کردن SOCKS ناموفق بود: {exc}")
+
     def read_ppp_secrets(self) -> list[dict]:
         """Read-only listing of /ppp/secret entries already configured
         directly on the router (by the admin, outside the panel). Used only

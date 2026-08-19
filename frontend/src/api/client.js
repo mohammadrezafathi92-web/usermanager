@@ -280,6 +280,12 @@ export const activateMyPaymentCard = (id) => client.post(`/settings/my-payment/c
 
 export const fetchTelegramBotSettings = () => client.get("/telegram-bot");
 export const updateTelegramBotSettings = (data) => client.put("/telegram-bot", data);
+
+// راه‌اندازی خودکار پروکسی تلگرام روی یک نود میکروتیک
+export const listTelegramProxyNodes = () => client.get("/telegram-proxy/nodes");
+export const checkTelegramProxyNode = (nodeId) => client.post(`/telegram-proxy/check/${nodeId}`);
+export const setupTelegramProxy = (data) => client.post("/telegram-proxy/setup", data);
+export const disableTelegramProxy = (nodeId) => client.post(`/telegram-proxy/disable/${nodeId}`);
 export const restartTelegramBot = () => client.post("/telegram-bot/restart");
 
 // Level-2 Admin's OWN dedicated bot (3-tier hierarchy - separate from the

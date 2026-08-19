@@ -210,12 +210,32 @@ def up(tunnel) -> list[str]:
 
     # The private key is handed over on stdin, not as an argument: `wg set
     # ... private-key /proc/self/fd/0` keeps it out of the process table.
+    # AllowedIPs is 0.0.0.0/0 - deliberately NOT the Telegram list.
+    #
+    # This one line cost a full day. AllowedIPs does two different jobs at
+    # once: it decides what goes INTO the tunnel, and it is also the inbound
+    # filter - WireGuard drops any packet from the peer whose SOURCE address
+    # is outside it. Listing only Telegram's ranges therefore also meant
+    # "accept replies only from Telegram's ranges", and the router does not
+    # return traffic that way: replies come back from addresses outside that
+    # list, so the kernel discarded every one of them. The symptom was a
+    # tunnel with a perfect fresh handshake carrying a few hundred bytes and
+    # nothing else - which looks like a routing problem and is not one.
+    #
+    # A real customer's config has 0.0.0.0/0 here, which is why customers on
+    # the very same interface always worked.
+    #
+    # Restricting what the panel sends is still done - but by the ROUTING
+    # TABLE below, which is the thing that actually decides destinations.
+    # The panel's default route stays untouched; only the ranges in `cidrs`
+    # are pointed at this interface. Filter and routing are separate
+    # concerns and mixing them is what broke this.
     proc = subprocess.run(
         ["wg", "set", name, "private-key", "/dev/stdin",
          "peer", tunnel.peer_public_key,
          "endpoint", tunnel.peer_endpoint,
          "persistent-keepalive", str(tunnel.persistent_keepalive or 25),
-         "allowed-ips", ",".join(cidrs)],
+         "allowed-ips", "0.0.0.0/0"],
         input=tunnel.private_key + "\n", capture_output=True, text=True, timeout=15,
     )
     if proc.returncode != 0:
@@ -284,6 +304,68 @@ def test_telegram(timeout: int = 12) -> tuple[bool, str]:
         return True, f"پاسخ گرفت (کد {resp.status_code})"
     except Exception as exc:  # noqa: BLE001 - any failure is the same answer
         return False, f"دسترسی برقرار نشد: {exc}"
+
+
+def diagnose(tunnel) -> tuple[bool, list[str]]:
+    """Every check that matters, in one pass, in the order that isolates the
+    fault.
+
+    Written after diagnosing this tunnel by hand one command at a time. Each
+    command answered a fraction of the question, and the answers only meant
+    something together - so the whole sequence belongs behind one button
+    rather than in a person's terminal history.
+
+    The order is the point: each step only runs if the one before it passed,
+    so the FIRST failing line is the fault. Later lines would fail too and
+    say nothing extra.
+    """
+    import socket
+
+    name = tunnel.interface_name if tunnel else "wg-tg"
+    name = name or "wg-tg"
+    log: list[str] = []
+
+    st = status(name)
+    if not st["exists"]:
+        return False, ["اینترفیس تونل بالا نیست. دکمه‌ی «روشن کردن» را بزنید."]
+    log.append(f"اینترفیس {name} بالاست")
+
+    if st["handshake_age_s"] is None:
+        return False, log + [
+            "هیچ دست‌دادنی با نود انجام نشده - یعنی بسته‌های ما اصلا به نود نمی‌رسند. "
+            "آدرس و پورت نود یا باز بودن پورت UDP را بررسی کنید."
+        ]
+    if st["handshake_age_s"] > 180:
+        log.append(f"هشدار: آخرین دست‌دادن {st['handshake_age_s']} ثانیه پیش بوده (کهنه)")
+    else:
+        log.append(f"دست‌دادن سالم ({st['handshake_age_s']} ثانیه پیش)")
+
+    # A tunnel that handshakes and moves nothing is the exact failure this
+    # module spent a day on. Named explicitly so nobody has to rediscover it.
+    if st["rx"] < 4096:
+        log.append(f"هشدار: فقط {st['rx']} بایت دریافت شده - تقریبا هیچ داده‌ای برنگشته")
+
+    # Raw TCP to a Telegram address, before DNS enters the picture. Separating
+    # the two matters: a poisoned DNS answer and a dead tunnel produce the
+    # same error message from a normal HTTPS request.
+    try:
+        socket.create_connection(("149.154.167.220", 443), timeout=8).close()
+        log.append("اتصال مستقیم TCP به آی‌پی تلگرام برقرار شد - تونل داده جابه‌جا می‌کند")
+    except Exception as exc:  # noqa: BLE001
+        return False, log + [
+            f"اتصال TCP به 149.154.167.220:443 برقرار نشد ({exc}). "
+            "تونل بالاست ولی داده رد نمی‌شود - روی نود بررسی کنید که این آدرس NAT می‌شود."
+        ]
+
+    try:
+        resolved = socket.gethostbyname("api.telegram.org")
+        log.append(f"api.telegram.org به {resolved} ترجمه شد")
+    except Exception as exc:  # noqa: BLE001
+        return False, log + [f"ترجمه‌ی نام api.telegram.org ناموفق بود ({exc}) - مشکل از DNS است، نه از تونل"]
+
+    ok, detail = test_telegram()
+    log.append(("درخواست واقعی به تلگرام موفق بود: " if ok else "درخواست واقعی به تلگرام ناموفق بود: ") + detail)
+    return ok, log
 
 
 def ensure_up(tunnel) -> None:

@@ -311,8 +311,15 @@ def bring_down(db: Session = Depends(get_db)):
 
 @router.post("/test")
 def test(db: Session = Depends(get_db)):
-    ok, detail = wg_tunnel.test_telegram()
-    return {"ok": ok, "detail": detail}
+    """Full diagnosis, not a single probe.
+
+    A bare pass/fail on one HTTPS request tells the admin the bot is broken
+    and nothing about where. wg_tunnel.diagnose walks interface -> handshake
+    -> raw TCP -> DNS -> HTTPS and stops at the first failure, so the last
+    line of the log IS the fault.
+    """
+    ok, log = wg_tunnel.diagnose(_row(db))
+    return {"ok": ok, "log": log, "detail": log[-1] if log else ""}
 
 
 @router.post("/refresh-cidrs")

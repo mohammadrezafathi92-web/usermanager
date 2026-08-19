@@ -513,10 +513,10 @@ def diagnose(tunnel) -> tuple[bool, list[str]]:
     else:
         log.append(f"دست‌دادن سالم ({st['handshake_age_s']} ثانیه پیش)")
 
-    # A tunnel that handshakes and moves nothing is the exact failure this
-    # module spent a day on. Named explicitly so nobody has to rediscover it.
-    if st["rx"] < 4096:
-        log.append(f"هشدار: فقط {st['rx']} بایت دریافت شده - تقریبا هیچ داده‌ای برنگشته")
+    # The byte counters are deliberately NOT judged here. They are cumulative
+    # since the interface came up, so a tunnel rebuilt seconds ago always
+    # looks idle - and the raw TCP test below answers the same question
+    # ("does data actually cross?") without a false alarm attached.
 
     # Raw TCP to a Telegram address, before DNS enters the picture. Separating
     # the two matters: a poisoned DNS answer and a dead tunnel produce the

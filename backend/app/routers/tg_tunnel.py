@@ -319,6 +319,26 @@ def test(db: Session = Depends(get_db)):
     line of the log IS the fault.
     """
     ok, log = wg_tunnel.diagnose(_row(db))
+
+    # A leftover proxy silently beats the tunnel.
+    #
+    # Worth reporting here even though it belongs to the bot, not the tunnel:
+    # every one of these fields makes the bot connect some OTHER way, so a
+    # stale value from an earlier attempt turns a healthy tunnel into a bot
+    # that still does not work - and the tunnel test would keep saying green.
+    bot = db.get(models.BotSettings, 1)
+    if bot:
+        for field, label in (
+            ("telegram_proxy_url", "پروکسی SOCKS/HTTP"),
+            ("telegram_api_proxy_url", "آدرس جایگزین API تلگرام"),
+        ):
+            value = (getattr(bot, field, None) or "").strip()
+            if value:
+                log.append(
+                    f"هشدار: در تنظیمات ربات هنوز «{label}» روی «{value}» تنظیم است. "
+                    "ربات از آن مسیر می‌رود، نه از این تونل. اگر از تلاش‌های قبلی مانده، خالی‌اش کنید."
+                )
+
     return {"ok": ok, "log": log, "detail": log[-1] if log else ""}
 
 

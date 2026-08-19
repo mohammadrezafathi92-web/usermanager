@@ -1446,6 +1446,12 @@ class AdminCreate(BaseModel):
     # "level-2 Admin", same as every account created before this field
     # existed.
     parent_admin_id: Optional[int] = None
+    # Superadmin-only and optional: says what the new account IS, separately
+    # from where it sits. Omitted keeps the old position-based guess, so
+    # existing callers are unaffected. A non-superadmin creator's value is
+    # ignored entirely - they can only ever create their own Sellers (see
+    # routers/admins.py's create_admin).
+    role: Optional[str] = None
 
 
 class AdminReparentRequest(BaseModel):
@@ -1458,6 +1464,13 @@ class AdminReparentRequest(BaseModel):
     afterward - see hierarchy.py's docstrings for the fixed-3-levels rule
     this endpoint still has to respect."""
     parent_admin_id: Optional[int] = None
+    # The account's role, now INDEPENDENT of where it sits (phase 3, see
+    # hierarchy.validate_placement). Omitted means "leave the role alone" -
+    # so a caller that only wants to move an account does not silently
+    # change what it may do, which is precisely what the old derive-from-
+    # parent behaviour did and how eight of this panel's resellers ended up
+    # classified as Sellers.
+    role: Optional[str] = None
 
 
 class AdminUpdate(BaseModel):

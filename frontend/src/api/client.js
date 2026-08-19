@@ -355,10 +355,12 @@ export const fetchAdminLoginLogs = (params) => client.get("/admins/login-logs", 
 export const fetchAvailableNodesForGrant = () => client.get("/admins/available-nodes");
 export const setAdminNodes = (id, nodeIds) => client.put(`/admins/${id}/nodes`, { node_ids: nodeIds });
 
-// Superadmin-only: reclassify an EXISTING admin between tiers - null =
-// level-2 Admin, or another admin's id = make it a Seller under them.
-export const reparentAdmin = (id, parentAdminId) =>
-  client.put(`/admins/${id}/reparent`, { parent_admin_id: parentAdminId });
+// Superadmin-only: set an admin's ROLE and its PARENT independently.
+// Passing role = undefined leaves the role untouched and moves the account
+// only - the backend treats an absent role that way on purpose, so a move
+// can never silently change what an account is allowed to do.
+export const reparentAdmin = (id, parentAdminId, role) =>
+  client.put(`/admins/${id}/reparent`, { parent_admin_id: parentAdminId, role });
 
 // RADIUS concurrent-session-limit reject/ban history - either the whole
 // panel-wide page (no user_id) or scoped to one user (UserDetail.jsx).

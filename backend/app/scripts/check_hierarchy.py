@@ -151,8 +151,13 @@ def check_ownership_rules(db: Session, ctx: dict) -> None:
         if g.admin_id in sellers:
             granted_to_sellers[g.admin_id] = granted_to_sellers.get(g.admin_id, 0) + 1
     for admin_id, n in granted_to_sellers.items():
-        bad(f"به فروشنده {_name(by_id.get(admin_id))} دسترسی {n} نود داده شده ولی کد برای فروشنده "
-            "دسترسی نود را صفر می‌کند - یا نقش این حساب اشتباه است یا این دسترسی‌ها زائدند")
+        # Since phase 3 the role is an editable field, so this is no longer
+        # a dead end: the message names the exact fix instead of describing
+        # the contradiction and leaving the reader to work it out.
+        bad(f"به {_name(by_id.get(admin_id))} دسترسی {n} نود داده شده ولی نقشش «فروشنده» است و "
+            "دسترسی نود برای فروشنده صفر حساب می‌شود. اگر این حساب واقعا نماینده‌ی اصلی است، "
+            "در «مدیریت ادمین‌ها» نقشش را روی «ادمین (سطح ۲)» بگذارید - جایگاهش در درخت "
+            "لازم نیست عوض شود. اگر واقعا فروشنده است، این دسترسی‌ها زائدند و باید پاک شوند.")
 
     # Rule: a seller price belongs to a seller, for a package inside their
     # parent's scope (routers/packages.py set_seller_price).

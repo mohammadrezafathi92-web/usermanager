@@ -272,25 +272,29 @@ def reparent_admin(
     db: Session = Depends(get_db),
     _s: models.AdminUser = Depends(require_superadmin),
 ):
-    """Superadmin-only: reclassifies an EXISTING account between tiers -
-    set parent_admin_id=None to make/keep it a level-2 Admin, or to an
-    existing level-2 Admin's id to make/move it into that Admin's level-3
-    Seller. This is exactly the "این ادمین‌های قبلی که ساختم در واقع باید
-    فروشنده بشن" gap: before this endpoint, every non-superadmin account
-    was permanently stuck as whatever tier auto-migration/creation gave
-    it, with no way to reclassify it afterward.
+    """Superadmin-only: sets WHERE an account sits and WHAT it is, as two
+    separate things.
 
-    Fixed-3-levels rule (see services/hierarchy.py) still applies: the
-    target itself must not be a superadmin, and the new parent (if any)
-    must be an existing level-2 Admin - never a Seller (would create a
-    4th level) and never itself.
+    They used to be one thing. Role was derived from parent_admin_id, so
+    "give this account a parent" and "demote this account" were the same
+    operation and could not be told apart. On this panel's live data that
+    produced eight accounts that are main resellers in practice, created
+    under the superadmin's own row, and therefore permanently classified as
+    level-3 Sellers - holding node grants that accessible_node_ids throws
+    away, because a Seller's node set is empty by definition. Nothing was
+    misconfigured. The model had no way to say what they were.
 
-    Demoting a level-2 Admin who already has their OWN Sellers into
-    someone else's Seller would leave those Sellers pointing at a
-    "grandparent" that no longer makes sense - so exactly like
-    delete_admin's existing "unassign, don't destroy" handling, their
-    Sellers are first promoted to level-2 Admins in their own right
-    (parent_admin_id=None) before the demotion itself is applied."""
+    So `role` is now its own field. Omitting it means the role stays
+    exactly as it is, and only the position changes. hierarchy.
+    validate_placement holds the one rule that still couples them - the
+    three-level limit on how far resources can nest.
+
+    Demoting an Admin who has their own Sellers still promotes those
+    Sellers first, the same "unassign, don't destroy" handling delete_admin
+    uses, so nobody is left pointing at a parent that just became a Seller.
+    That cascade now keys off the new ROLE rather than off gaining a
+    parent - otherwise making an account an Admin under the superadmin
+    would scatter its own Sellers for no reason."""
     admin = db.get(models.AdminUser, admin_id)
     if not admin:
         raise HTTPException(404, "ادمین پیدا نشد")
@@ -298,20 +302,33 @@ def reparent_admin(
         raise HTTPException(400, "نقش ادمین اصلی قابل تغییر نیست")
 
     new_parent_id = payload.parent_admin_id
+    parent = None
     if new_parent_id is not None:
         if new_parent_id == admin.id:
             raise HTTPException(400, "یک ادمین نمی‌تواند والد خودش باشد")
         parent = db.get(models.AdminUser, new_parent_id)
-        # Same "superadmin or a valid level-2 Admin" rule as create_admin
-        # above - never another Seller (4th level).
-        valid_parent = parent and (parent.is_superadmin or hierarchy.role(parent) == hierarchy.ROLE_ADMIN)
-        if not valid_parent:
-            raise HTTPException(400, "ادمین والد باید ادمین اصلی یا یک ادمین سطح ۲ معتبر باشد")
+        if parent is None:
+            raise HTTPException(400, "ادمین والد پیدا نشد")
+        if parent.id in hierarchy.subtree_ids(db, admin):
+            # Moving an account under its own descendant would make a cycle,
+            # which rebuild_path survives but every prefix query would then
+            # give nonsense answers about who can see whom.
+            raise HTTPException(400, "این حساب را نمی‌شود زیر زیرمجموعه‌ی خودش برد")
 
-    # This account currently has its own Sellers (i.e. it's a level-2
-    # Admin being demoted) - promote them first so nobody ends up 4 levels
-    # deep or pointing at a parent that just became a Seller itself.
-    if new_parent_id is not None:
+    # Role is now taken from the request, not deduced from the parent.
+    # Omitted means keep whatever it is: moving an account should change
+    # where it sits, never what it may do. That coupling is what forced
+    # eight of this panel's resellers into the Seller role.
+    new_role = (payload.role or "").strip() or hierarchy.role(admin)
+    problem = hierarchy.validate_placement(new_role, parent)
+    if problem:
+        raise HTTPException(400, problem)
+
+    # Becoming a Seller is what forces the cascade, not merely gaining a
+    # parent - an Admin sitting under the superadmin keeps its own Sellers
+    # and its own packages, which is the whole point of this phase.
+    demoting_to_seller = new_role == hierarchy.ROLE_SELLER
+    if demoting_to_seller:
         db.query(models.AdminUser).filter(models.AdminUser.parent_admin_id == admin.id).update(
             {"parent_admin_id": None}, synchronize_session=False
         )
@@ -327,26 +344,34 @@ def reparent_admin(
         # usable by exactly the people who should now have them: this
         # demoted Seller (via their parent's scope) and their new parent
         # Admin's whole tree.
+        #
+        # A superadmin parent is the exception: every package the superadmin
+        # owns is stored with owner_admin_id NULL, never their real id (see
+        # create_package and accessible_package_owner_ids). Handing these
+        # rows the superadmin's numeric id instead would put them in a scope
+        # nobody resolves to, and they would vanish from every list.
+        inherit_owner_id = None if (parent is not None and parent.is_superadmin) else new_parent_id
         db.query(models.Package).filter(models.Package.owner_admin_id == admin.id).update(
-            {"owner_admin_id": new_parent_id}, synchronize_session=False
+            {"owner_admin_id": inherit_owner_id}, synchronize_session=False
         )
         db.query(models.Tutorial).filter(models.Tutorial.owner_admin_id == admin.id).update(
-            {"owner_admin_id": new_parent_id}, synchronize_session=False
+            {"owner_admin_id": inherit_owner_id}, synchronize_session=False
         )
 
     admin.parent_admin_id = new_parent_id
-    # Re-derived on purpose while phase 1 is in flight: today, moving an
-    # account under a parent IS what demotes it, and phase 1 must not
-    # change a single outcome. The moment role becomes an independent
-    # field on this endpoint, this line goes away and moving an account
-    # will change only where it sits, never what it may do.
-    admin.role = hierarchy.derive_role(admin)
+    admin.role = new_role
     hierarchy.rebuild_path(db, admin)
-    # The children promoted to roots above were bulk-updated, so their
-    # paths are stale until rebuilt from their new (absent) parent.
-    for child in db.query(models.AdminUser).filter(models.AdminUser.parent_admin_id.is_(None)).all():
-        if not child.is_superadmin and (child.tree_path or "").count(hierarchy.PATH_SEP) > 2:
-            child.role = hierarchy.derive_role(child)
+
+    # Sellers promoted to roots above were bulk-updated, so their stored
+    # role and path are both stale. They become Admins because that is the
+    # only legal role for a parentless account (validate_placement), and
+    # their paths must be rebuilt from their new absent parent.
+    if demoting_to_seller:
+        for child in db.query(models.AdminUser).filter(models.AdminUser.parent_admin_id.is_(None)).all():
+            if child.is_superadmin:
+                continue
+            if hierarchy.role(child) == hierarchy.ROLE_SELLER:
+                child.role = hierarchy.ROLE_ADMIN
             hierarchy.rebuild_path(db, child)
     db.commit()
     db.refresh(admin)
@@ -427,13 +452,30 @@ def create_admin(
     )
     db.add(admin)
     db.flush()  # assigns admin.id, needed for the balance/volume log FKs below
-    # Stored role and tree path. derive_role() reproduces exactly what the
-    # old position-based rule would have concluded, so creating an account
-    # behaves identically to before - phase 1 is a data-shape change, not a
-    # policy change. Once resource delegation lands, the role becomes a
-    # deliberate choice on the create form instead of a consequence of
-    # which parent was picked.
-    admin.role = hierarchy.derive_role(admin)
+    # The role is whatever the caller asked for, and only falls back to the
+    # old position-based guess when they did not say.
+    #
+    # That fallback is why this endpoint needs the same treatment as
+    # reparent: without it, "create an Admin directly under the superadmin"
+    # is unexpressible at creation time too, and every such account would
+    # have to be created wrong and then promoted - which is exactly the
+    # history behind the eight accounts this phase is fixing.
+    #
+    # A non-superadmin caller can only ever create their own Sellers
+    # (parent_admin_id was forced to current.id above), so the role is
+    # forced too rather than trusted - a level-2 Admin must not be able to
+    # mint a peer.
+    requested = (getattr(payload, "role", None) or "").strip()
+    if not current.is_superadmin:
+        admin.role = hierarchy.ROLE_SELLER
+    else:
+        admin.role = requested or hierarchy.derive_role(admin)
+        problem = hierarchy.validate_placement(
+            admin.role,
+            db.get(models.AdminUser, parent_admin_id) if parent_admin_id else None,
+        )
+        if problem:
+            raise HTTPException(400, problem)
     hierarchy.rebuild_path(db, admin, cascade=False)
 
     if payload.initial_balance:

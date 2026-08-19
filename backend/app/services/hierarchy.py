@@ -113,6 +113,52 @@ def rebuild_path(db: Session, admin: models.AdminUser, *, cascade: bool = True) 
             frontier.append(child)
 
 
+def validate_placement(new_role: str, parent: models.AdminUser | None) -> str | None:
+    """Is (role, parent) a legal combination? Returns the reason it is not,
+    or None if it is.
+
+    This function is the point of phase 3. Until now the two questions
+    "where does this account sit" and "what may it do" had a single answer:
+    role was DERIVED from parent_admin_id, so an account created under the
+    superadmin's own row was forced to be a Seller no matter what the person
+    creating it meant. Eight of this panel's main resellers are in exactly
+    that state - they hold node grants that do nothing, because
+    accessible_node_ids returns an empty set for a Seller. Nothing was
+    misconfigured; the model simply could not express what they are.
+
+    Separating the two makes "an Admin whose parent is the superadmin" a
+    representable, ordinary thing. What is still enforced is the rule that
+    actually matters - resources never nest more than three deep:
+
+      admin  -> parent must be nothing or the superadmin. An Admin under
+                another Admin would make that Admin's packages and nodes
+                delegable one level further down than the resource model
+                (accessible_package_owner_ids, AdminNodeAccess) can follow.
+      seller -> must have a parent, and that parent must be a superadmin or
+                an Admin. A parentless Seller has no scope to inherit and
+                would see nothing at all; a Seller under a Seller is the
+                fourth level.
+
+    Note what is deliberately NOT checked: depth in the tree. Depth is now
+    a fact about position, not about authority.
+    """
+    if new_role not in (ROLE_ADMIN, ROLE_SELLER):
+        return f"نقش «{new_role}» معتبر نیست"
+
+    if parent is not None and role(parent) == ROLE_SELLER:
+        return "والد نمی‌تواند فروشنده باشد - این سطح چهارم می‌شود"
+
+    if new_role == ROLE_ADMIN:
+        if parent is not None and not parent.is_superadmin:
+            return ("ادمین سطح ۲ فقط می‌تواند مستقل باشد یا مستقیم زیر ادمین اصلی - "
+                    "ادمین زیر ادمینِ دیگر یعنی سطح چهارم منابع")
+        return None
+
+    if parent is None:
+        return "فروشنده باید والد داشته باشد - فروشنده‌ی بی‌والد هیچ بسته و نودی برای کار کردن ندارد"
+    return None
+
+
 def is_seller(admin: models.AdminUser) -> bool:
     return role(admin) == ROLE_SELLER
 

@@ -67,10 +67,11 @@ const emptyForm = {
   billing_mode: "flat",
   volume_balance_gb: 0,
   initial_volume_gb: "",
-  // Superadmin-only, only used at CREATE time - "" = level-2 Admin, or an
-  // existing level-2 Admin's id = create straight as their Seller (see
-  // schemas.AdminCreate.parent_admin_id). Existing-account role changes go
-  // through the separate reparent control instead (see roleParentId state).
+  // Superadmin-only, CREATE time only. Two independent fields, matching the
+  // backend: `role` says what the account is, `parent_admin_id` says whose
+  // subtree it sits in. Existing-account changes go through the separate
+  // reparent control instead (see roleValue/roleParentId state).
+  role: "admin",
   parent_admin_id: "",
 };
 const emptyGroupForm = { name: "", permissions: [] };
@@ -97,8 +98,12 @@ export default function Admins() {
   const [nodesSaved, setNodesSaved] = useState(false);
 
   // ---------- Role reassignment: Admin <-> Seller (superadmin only) ----------
-  // "" = level-2 Admin, or an existing Admin's id = Seller under them.
-  const [roleParentId, setRoleParentId] = useState("");
+  // Two independent controls, deliberately. They used to be one dropdown
+  // whose value was the parent, with the role inferred from it - which made
+  // "an Admin who sits under the superadmin" unexpressible, and that is
+  // exactly what this panel's main resellers are.
+  const [roleValue, setRoleValue] = useState("admin");   // "admin" | "seller"
+  const [roleParentId, setRoleParentId] = useState("");  // "" = بدون والد
   const [roleSaving, setRoleSaving] = useState(false);
   const [roleError, setRoleError] = useState("");
   const [roleSaved, setRoleSaved] = useState(false);
@@ -183,9 +188,13 @@ export default function Admins() {
   // Admins only and would just be a misleading no-op if shown/toggleable
   // for a Seller. Editing an existing account: read straight off
   // editingRole. Creating: a level-2 Admin's new account is always their
-  // own Seller; a superadmin's new account is a Seller only if they picked
-  // a parent (form.parent_admin_id).
-  const isTargetSeller = editingId ? editingRole === "seller" : !isSuperadmin || !!form.parent_admin_id;
+  // own Seller; a superadmin's new account is whatever role they picked.
+  //
+  // Read off form.role, NOT off whether a parent was chosen - an Admin can
+  // now legitimately have one (the superadmin), and inferring the role from
+  // the parent here would hide the nodes group from exactly the accounts
+  // this phase exists to give node access back to.
+  const isTargetSeller = editingId ? editingRole === "seller" : !isSuperadmin || form.role === "seller";
   const visiblePermGroups = Object.entries(permGroups).filter(([groupKey]) => !(isTargetSeller && groupKey === "nodes"));
 
   const resetTopupState = () => {
@@ -251,6 +260,7 @@ export default function Admins() {
     // superadmin) - starts at this account's CURRENT parent, so "save" is
     // a no-op unless something's actually changed.
     setRoleParentId(admin.parent_admin_id || "");
+    setRoleValue(admin.is_superadmin ? "superadmin" : admin.role || "seller");
     setRoleError("");
     setRoleSaved(false);
     setOpen(true);
@@ -279,7 +289,7 @@ export default function Admins() {
     setRoleError("");
     setRoleSaved(false);
     try {
-      await reparentAdmin(editingId, roleParentId ? Number(roleParentId) : null);
+      await reparentAdmin(editingId, roleParentId ? Number(roleParentId) : null, roleValue);
       setRoleSaved(true);
       load();
     } catch (err) {
@@ -387,6 +397,10 @@ export default function Admins() {
           billing_mode: form.billing_mode,
           initial_volume_gb: form.initial_volume_gb === "" ? null : Number(form.initial_volume_gb),
           parent_admin_id: isSuperadmin && form.parent_admin_id ? Number(form.parent_admin_id) : null,
+          // Ignored by the backend for a non-superadmin creator, who can
+          // only ever make their own Sellers - sent unconditionally so the
+          // two sides never disagree about who decides.
+          role: isSuperadmin ? form.role : null,
         });
       }
       setOpen(false);
@@ -744,17 +758,43 @@ export default function Admins() {
           {!editingId && isSuperadmin && (
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("admins.fieldRole")}</label>
-              <select className="input" value={form.parent_admin_id} onChange={(e) => set("parent_admin_id", e.target.value)}>
-                <option value="">{t("admins.roleAdmin")}</option>
-                {adminId && <option value={adminId}>{t("admins.roleSellerUnderSuperadmin")}</option>}
-                {items
-                  .filter((a) => a.role === "admin")
-                  .map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {t("admins.roleSellerUnder", { name: a.username })}
-                    </option>
-                  ))}
-              </select>
+              {/* Same two-control split as the edit form below. Creating an
+                  Admin directly under the superadmin has to be possible
+                  here too, or every such account would have to be created
+                  wrong and promoted afterwards - which is the history
+                  behind the accounts this fixed. */}
+              <div className="flex flex-col sm:flex-row gap-2">
+                <select
+                  className="input flex-1"
+                  value={form.role}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    set("role", next);
+                    if (next === "admin" && form.parent_admin_id && Number(form.parent_admin_id) !== adminId) {
+                      set("parent_admin_id", "");
+                    }
+                  }}
+                >
+                  <option value="admin">{t("admins.roleAdmin")}</option>
+                  <option value="seller">{t("admins.roleSellerPlain")}</option>
+                </select>
+                <select
+                  className="input flex-1"
+                  value={form.parent_admin_id}
+                  onChange={(e) => set("parent_admin_id", e.target.value)}
+                >
+                  {form.role === "admin" && <option value="">{t("admins.parentNone")}</option>}
+                  {adminId && <option value={adminId}>{t("admins.parentSuperadmin")}</option>}
+                  {form.role === "seller" &&
+                    items
+                      .filter((a) => a.role === "admin")
+                      .map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {t("admins.parentAdmin", { name: a.username })}
+                        </option>
+                      ))}
+                </select>
+              </div>
               <div className="text-xs text-gray-400 mt-1">{t("admins.fieldRoleHint")}</div>
             </div>
           )}
@@ -762,17 +802,42 @@ export default function Admins() {
           {editingId && isSuperadmin && editingRole !== "superadmin" && (
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("admins.changeRoleLabel")}</label>
-              <div className="flex gap-2">
-                <select className="input flex-1" value={roleParentId} onChange={(e) => setRoleParentId(e.target.value)}>
-                  <option value="">{t("admins.roleAdmin")}</option>
-                  {adminId && <option value={adminId}>{t("admins.roleSellerUnderSuperadmin")}</option>}
-                  {items
-                    .filter((a) => a.role === "admin" && a.id !== editingId)
-                    .map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {t("admins.roleSellerUnder", { name: a.username })}
-                      </option>
-                    ))}
+              <div className="flex flex-col sm:flex-row gap-2">
+                <select
+                  className="input flex-1"
+                  value={roleValue}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setRoleValue(next);
+                    // An Admin may only sit at the top or directly under the
+                    // superadmin, so a parent that was another Admin is no
+                    // longer legal - cleared here rather than left to fail on
+                    // save with an error the user cannot act on.
+                    if (next === "admin" && roleParentId && Number(roleParentId) !== adminId) {
+                      setRoleParentId("");
+                    }
+                  }}
+                >
+                  <option value="admin">{t("admins.roleAdmin")}</option>
+                  <option value="seller">{t("admins.roleSellerPlain")}</option>
+                </select>
+                <select
+                  className="input flex-1"
+                  value={roleParentId}
+                  onChange={(e) => setRoleParentId(e.target.value)}
+                >
+                  {/* A Seller with no parent has no packages or nodes to work
+                      from, so that pair is simply not offered. */}
+                  {roleValue === "admin" && <option value="">{t("admins.parentNone")}</option>}
+                  {adminId && <option value={adminId}>{t("admins.parentSuperadmin")}</option>}
+                  {roleValue === "seller" &&
+                    items
+                      .filter((a) => a.role === "admin" && a.id !== editingId)
+                      .map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {t("admins.parentAdmin", { name: a.username })}
+                        </option>
+                      ))}
                 </select>
                 <button type="button" className="btn-secondary shrink-0" disabled={roleSaving} onClick={saveRole}>
                   {roleSaving ? t("common.saving") : t("admins.saveRole")}

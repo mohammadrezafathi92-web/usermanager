@@ -29,6 +29,22 @@ services:
       - NET_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
+    # Resolve through the tunnel, not through the local network's DNS. On a
+    # filtered network the local resolver answers api.telegram.org with a
+    # forged address, so the name is broken before routing ever applies -
+    # services/wg_tunnel.py routes these two addresses into the tunnel for
+    # exactly this reason.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    # IPv6 off inside this container. The forged answer observed in practice
+    # was an AAAA record, and a host with no working IPv6 route then fails
+    # with "Network is unreachable" instead of falling back to IPv4. With v6
+    # disabled, glibc stops offering AAAA results at all and the working IPv4
+    # path is used.
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.default.disable_ipv6=1
     volumes:
       - ./backend/data:/app/data
       # Let the backend change the panel's own web port with no SSH/password

@@ -57,6 +57,20 @@ DEFAULT_CIDRS = (
     "91.105.192.0/23", "185.76.151.0/24",
 )
 
+# Public resolvers, routed through the tunnel as /32s alongside Telegram's
+# own ranges.
+#
+# Discovered the hard way on a live install: the tunnel was up, the route to
+# 149.154.167.220 was correct, and the bot still could not connect - because
+# the ISP's DNS answered api.telegram.org with a forged IPv6 address in an
+# Iranian prefix. Traffic never reached the routed ranges at all; the name
+# was poisoned before routing could matter.
+#
+# Routing the resolvers themselves through the tunnel means the lookup is
+# answered by a server the local network cannot tamper with, so the address
+# that comes back is genuine and then falls inside the ranges below.
+TUNNEL_DNS = ("1.1.1.1", "8.8.8.8")
+
 PROBE_URL = "https://api.telegram.org/"
 
 
@@ -183,6 +197,11 @@ def up(tunnel) -> list[str]:
             raise TunnelError(f"تونل ناقص است: {label} تنظیم نشده")
 
     cidrs = parse_cidrs(tunnel.allowed_ips)
+    # The resolvers go through the tunnel too - see TUNNEL_DNS. Added here
+    # rather than stored in allowed_ips so they cannot be edited away by
+    # accident: without them the tunnel routes perfectly and still resolves
+    # to a forged address, which looks exactly like a broken tunnel.
+    cidrs = cidrs + [f"{ip}/32" for ip in TUNNEL_DNS if f"{ip}/32" not in cidrs]
     log: list[str] = []
     down(name)
 

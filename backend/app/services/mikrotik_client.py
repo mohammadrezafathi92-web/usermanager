@@ -576,21 +576,38 @@ class MikrotikClient:
                     access.remove(row[".id"])
             log.append("قوانین قبلی این پنل پاک شد تا تکراری نشوند")
 
+            # Same ordering trap as the firewall below: the SOCKS access list
+            # is evaluated top-down too, so a pre-existing deny would shadow
+            # an appended allow.
+            first_access = next((r[".id"] for r in list(access)), None)
+            access_place = {"place-before": first_access} if first_access else {}
             access.add(**{"src-address": allowed_ip, "action": "allow",
-                          "comment": f"{_SOCKS_TAG} allow panel"})
-            access.add(**{"action": "deny", "comment": f"{_SOCKS_TAG} deny rest"})
+                          "comment": f"{_SOCKS_TAG} allow panel"}, **access_place)
+            access.add(**{"action": "deny", "comment": f"{_SOCKS_TAG} deny rest"}, **access_place)
             log.append(f"فقط {allowed_ip} اجازه‌ی استفاده دارد، بقیه رد می‌شوند")
 
             fw = self._api.path("ip", "firewall", "filter")
+            remaining = [r for r in list(fw) if not (r.get("comment") or "").startswith(_SOCKS_TAG)]
             for row in list(fw):
                 if (row.get("comment") or "").startswith(_SOCKS_TAG):
                     fw.remove(row[".id"])
+
+            # place-before, not a plain add. RouterOS evaluates the filter
+            # chain IN ORDER and stops at the first match, so a rule appended
+            # to the end sits behind whatever drop rule the router already
+            # has - and almost every configured router ends its input chain
+            # with one. The accept would then never be reached and the port
+            # would stay closed, which looks exactly like "the proxy was set
+            # up but nothing can connect".
+            first_input = next((r[".id"] for r in remaining if r.get("chain") == "input"), None)
+            placement = {"place-before": first_input} if first_input else {}
             fw.add(**{"chain": "input", "protocol": "tcp", "dst-port": str(port),
                       "src-address": allowed_ip, "action": "accept",
-                      "comment": f"{_SOCKS_TAG} accept panel"})
+                      "comment": f"{_SOCKS_TAG} accept panel"}, **placement)
             fw.add(**{"chain": "input", "protocol": "tcp", "dst-port": str(port),
-                      "action": "drop", "comment": f"{_SOCKS_TAG} drop rest"})
-            log.append(f"فایروال هم پورت {port} را جز برای {allowed_ip} می‌بندد")
+                      "action": "drop", "comment": f"{_SOCKS_TAG} drop rest"}, **placement)
+            where = "ابتدای زنجیره" if first_input else "زنجیره‌ی خالی"
+            log.append(f"فایروال هم پورت {port} را جز برای {allowed_ip} می‌بندد ({where})")
             return log
         except Exception as exc:
             raise MikrotikError(f"راه‌اندازی SOCKS روی میکروتیک ناموفق بود: {exc}\n" + "\n".join(log))

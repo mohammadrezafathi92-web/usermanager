@@ -29,14 +29,14 @@ services:
       - NET_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
-    # Resolve through the tunnel, not through the local network's DNS. On a
-    # filtered network the local resolver answers api.telegram.org with a
-    # forged address, so the name is broken before routing ever applies -
-    # services/wg_tunnel.py routes these two addresses into the tunnel for
-    # exactly this reason.
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
+    # NOTE: overriding `dns:` here was tried and reverted. Pointing the
+    # container at 1.1.1.1/8.8.8.8 only works while the tunnel carries
+    # traffic to them; the moment it does not, NOTHING in the panel
+    # resolves - including the nodes' own hostnames. That turns a bot
+    # outage into a panel-wide one, which is the opposite of the rule this
+    # tunnel was built under: a broken tunnel must cost the bot and nothing
+    # else. If the tunnel is ever proven stable on a node, add it back
+    # deliberately rather than as part of setup.
     # IPv6 off inside this container. The forged answer observed in practice
     # was an AAAA record, and a host with no working IPv6 route then fails
     # with "Network is unreachable" instead of falling back to IPv4. With v6

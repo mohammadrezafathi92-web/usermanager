@@ -156,11 +156,47 @@ def owned_admin_ids(db: Session, admin: models.AdminUser) -> set[int] | None:
     r = role(admin)
     if r == ROLE_SUPERADMIN or r == ROLE_SELLER:
         return {admin.id}
-    seller_ids = [
-        row.id
-        for row in db.query(models.AdminUser.id).filter(models.AdminUser.parent_admin_id == admin.id).all()
-    ]
-    return {admin.id, *seller_ids}
+    return subtree_ids(db, admin)
+
+
+def subtree_ids(db: Session, admin: models.AdminUser) -> set[int]:
+    """Every account at or below this one, to any depth.
+
+    One indexed prefix match on tree_path instead of a query per level -
+    which is the whole reason tree_path exists. The previous code looked
+    only one level down (`parent_admin_id == admin.id`), so it was correct
+    only as long as the tree was exactly two deep; a grandchild was
+    invisible to its grandparent even though every docstring in this module
+    promised "roll-up oversight of their own tree".
+
+    Falls back to a breadth-first walk when tree_path is missing, so an
+    install whose backfill has not run yet - or a row written by an older
+    build - still gets a right answer rather than an empty one. A wrong
+    answer here silently changes who can see whose customers, so the
+    fallback is not optional.
+    """
+    path = (admin.tree_path or "").strip()
+    if path:
+        rows = (
+            db.query(models.AdminUser.id)
+            .filter(models.AdminUser.tree_path.like(f"{path}%"))
+            .all()
+        )
+        # The LIKE cannot match the row itself if its own path is somehow
+        # unset, so the id is added explicitly rather than assumed.
+        return {admin.id, *(r.id for r in rows)}
+
+    found = {admin.id}
+    frontier = [admin.id]
+    while frontier:
+        rows = (
+            db.query(models.AdminUser.id)
+            .filter(models.AdminUser.parent_admin_id.in_(frontier))
+            .all()
+        )
+        frontier = [r.id for r in rows if r.id not in found]
+        found.update(frontier)
+    return found
 
 
 def user_visibility_clause(db: Session, admin: models.AdminUser):

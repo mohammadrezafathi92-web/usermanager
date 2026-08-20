@@ -136,6 +136,7 @@ def _response(row: models.BotSettings, db: Session | None = None) -> schemas.Bot
         telegram_api_proxy_url=row.telegram_api_proxy_url or "",
         telegram_proxy_url=row.telegram_proxy_url or "",
         auto_approve_enabled=bool(row.auto_approve_enabled),
+        auto_approve_ignore_hours=bool(row.auto_approve_ignore_hours),
         auto_approve_from_hour=row.auto_approve_from_hour if row.auto_approve_from_hour is not None else 9,
         auto_approve_to_hour=row.auto_approve_to_hour if row.auto_approve_to_hour is not None else 23,
         auto_approve_max_amount=row.auto_approve_max_amount or 0,

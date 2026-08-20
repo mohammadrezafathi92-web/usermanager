@@ -1208,8 +1208,23 @@ export default function Settings() {
             </label>
             <div className="text-xs text-gray-500 mt-1">{t("settings.autoApproveHint")}</div>
 
+            <div className={`mt-4 ${botForm.auto_approve_enabled ? "" : "opacity-50 pointer-events-none"}`}>
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={!!botForm.auto_approve_ignore_hours}
+                  onChange={(e) => setBotForm((f) => ({ ...f, auto_approve_ignore_hours: e.target.checked }))}
+                />
+                {t("settings.autoApproveIgnoreHours")}
+              </label>
+            </div>
+
             <div className={`grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4 ${botForm.auto_approve_enabled ? "" : "opacity-50 pointer-events-none"}`}>
-              <div>
+              {/* The hours stay on screen but go inert when the limit is
+                  off, rather than disappearing - so the window the owner
+                  chose is still visible, and turning the limit back on
+                  restores it instead of starting from a default. */}
+              <div className={botForm.auto_approve_ignore_hours ? "opacity-40 pointer-events-none" : ""}>
                 <label className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveFromHour")}</label>
                 <select
                   className="input input-sm"
@@ -1219,7 +1234,7 @@ export default function Settings() {
                   {HOURS.map((h) => <option key={h} value={h}>{String(h).padStart(2, "0")}:00</option>)}
                 </select>
               </div>
-              <div>
+              <div className={botForm.auto_approve_ignore_hours ? "opacity-40 pointer-events-none" : ""}>
                 <label className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveToHour")}</label>
                 <select
                   className="input input-sm"

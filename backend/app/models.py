@@ -1672,6 +1672,15 @@ class BotSettings(Base):
     # goes back to manual, which is the point of having a window: unattended
     # hours are exactly when nobody would notice a bad approval.
     auto_approve_enabled = Column(Boolean, default=False)
+    # True = approve around the clock, ignoring the two hour fields below.
+    #
+    # A separate flag rather than reusing "from == to", which the decision
+    # code already treats as "any time": that trick is invisible in the UI,
+    # so an owner wanting 24-hour approval had no way to ask for it except
+    # by discovering the coincidence. Keeping the hours stored while they
+    # are ignored also means turning the limit back on restores the window
+    # the owner last chose.
+    auto_approve_ignore_hours = Column(Boolean, default=False)
     auto_approve_from_hour = Column(Integer, default=9)
     auto_approve_to_hour = Column(Integer, default=23)
     auto_approve_max_amount = Column(Integer, default=0)

@@ -1052,6 +1052,7 @@ class BotSettingsOut(BaseModel):
     telegram_proxy_url: Optional[str] = None
     # تایید خودکار رسید - see models.BotSettings for why the two limits exist
     auto_approve_enabled: Optional[bool] = False
+    auto_approve_ignore_hours: Optional[bool] = False
     auto_approve_from_hour: Optional[int] = 9
     auto_approve_to_hour: Optional[int] = 23
     auto_approve_max_amount: Optional[int] = 0
@@ -1071,6 +1072,7 @@ class BotSettingsUpdate(BaseModel):
     telegram_proxy_url: Optional[str] = None
     # تایید خودکار رسید - see models.BotSettings for why the two limits exist
     auto_approve_enabled: Optional[bool] = False
+    auto_approve_ignore_hours: Optional[bool] = False
     auto_approve_from_hour: Optional[int] = 9
     auto_approve_to_hour: Optional[int] = 23
     auto_approve_max_amount: Optional[int] = 0

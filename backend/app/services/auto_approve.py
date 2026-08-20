@@ -33,6 +33,8 @@ def _in_window(settings: models.BotSettings, now: dt.datetime) -> bool:
     """Local hours, not UTC - an admin setting "9 to 23" means their own
     clock. Same convention and wrap-past-midnight handling as the ads
     scheduler (services/ads.py)."""
+    if getattr(settings, "auto_approve_ignore_hours", False):
+        return True
     start = settings.auto_approve_from_hour if settings.auto_approve_from_hour is not None else 0
     end = settings.auto_approve_to_hour if settings.auto_approve_to_hour is not None else 0
     if start == end:
@@ -114,35 +116,39 @@ def decide(pending: dict) -> tuple[bool, str]:
         db.close()
 
 
-async def try_auto_approve(pending: dict, bot) -> bool:
-    """Approves the request if it qualifies. Returns whether it did.
+async def try_auto_approve(pending: dict, bot) -> tuple[bool, str]:
+    """(approved, reason). Claims the request the same way the Approve
+    button does, so an admin tapping Approve at the same moment cannot
+    double-provision: whichever gets the claim first wins and the other
+    sees "already handled".
 
-    Claims the request the same way the Approve button does, so an admin
-    tapping Approve at the same moment cannot double-provision: whichever
-    gets the claim first wins and the other sees "already handled".
+    The reason is RETURNED, not just logged. It used to be logged only,
+    which is why this feature could be "not working" with no way to tell
+    which condition was refusing - the answer existed, inside a container,
+    where nobody was going to look for it.
     """
     allowed, reason = decide(pending)
     if not allowed:
         logger.info("درخواست %s تایید خودکار نشد: %s", pending.get("id"), reason)
-        return False
+        return False, reason
 
     from ..telegram_bot import storage as bot_storage
     from ..telegram_bot.handlers.admin_pending import perform_approval
 
     if not bot_storage.claim_pending(pending["id"]):
         logger.info("درخواست %s همین الان توسط ادمین رسیدگی شد", pending.get("id"))
-        return False
+        return False, "همین الان توسط ادمین رسیدگی شد"
 
     ok, result = await perform_approval(pending, bot)
     if not ok:
         # perform_approval already released the claim on failure, so the
         # request is back in the admins' queue rather than lost.
         logger.warning("تایید خودکار درخواست %s ناموفق بود: %s", pending.get("id"), result)
-        return False
+        return False, f"تایید خودکار شروع شد ولی ناموفق بود: {result}"
 
     logger.info("درخواست %s به‌صورت خودکار تایید شد (%s)", pending.get("id"), reason)
     await _notify_admins(pending, bot, reason)
-    return True
+    return True, reason
 
 
 async def _notify_admins(pending: dict, bot, reason: str) -> None:

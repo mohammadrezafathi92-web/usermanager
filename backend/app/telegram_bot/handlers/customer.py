@@ -1177,13 +1177,23 @@ async def receive_receipt(message: Message, state: FSMContext, bot: Bot) -> None
     # notification below.
     from ...services import auto_approve
 
+    auto_note = ""
     try:
-        if await auto_approve.try_auto_approve(pending_row, bot):
+        approved, reason = await auto_approve.try_auto_approve(pending_row, bot)
+        if approved:
             return
+        auto_note = reason
     except Exception:
         logger.exception("auto-approve raised - falling back to manual approval")
+        auto_note = "بررسی تایید خودکار با خطا مواجه شد"
 
     caption = "🧾 رسید پرداخت جدید\n\n" + _pending_summary(pending_row)
+    # Says WHY this one still needs a human. Without it, an owner who has
+    # switched auto-approval on sees an ordinary approval prompt and can
+    # only conclude the feature is broken - the reason was written to a log
+    # inside a container, which in practice means written nowhere.
+    if auto_note:
+        caption += f"\n\n🤖 تایید خودکار انجام نشد: {auto_note}"
     for admin_id in config.approval_targets():
         try:
             await bot.send_photo(admin_id, message.photo[-1].file_id, caption=caption, reply_markup=approval_kb(request_id))

@@ -380,6 +380,9 @@ export const fetchDiscountCodeRedemptions = (id) => client.get(`/discount-codes/
 // ---------- Accounting (حساب‌داری) ----------
 export const fetchAccountingSummary = (params = {}) => client.get("/accounting/summary", { params });
 export const fetchAccountingSeries = (params = {}) => client.get("/accounting/series", { params });
+// One row per direct sub-account: customers, sales, credit, debt. The
+// aggregate counterpart to the per-record customer list.
+export const fetchAccountingSubtree = (params = {}) => client.get("/accounting/subtree", { params });
 export const fetchAccountingTransactions = (params = {}) => client.get("/accounting/transactions", { params });
 export const createAccountingExpense = (data) => client.post("/accounting/expenses", data);
 export const deleteAccountingExpense = (id) => client.delete(`/accounting/expenses/${id}`);

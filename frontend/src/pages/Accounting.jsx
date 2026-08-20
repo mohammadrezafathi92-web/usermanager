@@ -9,6 +9,7 @@ import StatCard from "../components/StatCard.jsx";
 import {
   fetchAccountingSummary,
   fetchAccountingSeries,
+  fetchAccountingSubtree,
   fetchAccountingTransactions,
   createAccountingExpense,
   deleteAccountingExpense,
@@ -162,6 +163,19 @@ export default function Accounting() {
     }
   };
 
+  // ---------------- subtree rollup ----------------
+  // The aggregate half of "record vs aggregate visibility". Record access
+  // was deliberately NOT taken away (an Admin funds their Sellers from
+  // their own balance and is answerable for those sales); this is the view
+  // that was missing - Sellers as accounts rather than as a merged customer
+  // list.
+  const [subtree, setSubtree] = useState(null);
+  const loadSubtree = useCallback(() => {
+    fetchAccountingSubtree({ date_from: dateFrom || undefined, date_to: dateTo || undefined })
+      .then((res) => setSubtree(res.data || []))
+      .catch(() => setSubtree([]));
+  }, [dateFrom, dateTo]);
+
   // ---------------- reports ----------------
   const [granularity, setGranularity] = useState("day");
   const [series, setSeries] = useState([]);
@@ -190,14 +204,16 @@ export default function Accounting() {
     else if (tab === "transactions") loadTx();
     else if (tab === "expenses") loadExpenses();
     else if (tab === "credit") loadAdmins();
+    else if (tab === "subtree") loadSubtree();
     else if (tab === "reports") loadSeries();
-  }, [tab, loadSummary, loadTx, loadExpenses, loadAdmins, loadSeries]);
+  }, [tab, loadSummary, loadTx, loadExpenses, loadAdmins, loadSubtree, loadSeries]);
 
   const tabs = [
     { id: "dashboard", label: t("accounting.tabDashboard") },
     { id: "transactions", label: t("accounting.tabTransactions") },
     ...(isSuperadmin ? [{ id: "expenses", label: t("accounting.tabExpenses") }] : []),
     ...(isAdminOrAbove ? [{ id: "credit", label: t("accounting.tabCredit") }] : []),
+    ...(isAdminOrAbove ? [{ id: "subtree", label: t("accounting.tabSubtree") }] : []),
     { id: "reports", label: t("accounting.tabReports") },
   ];
 
@@ -446,6 +462,94 @@ export default function Accounting() {
                 </tbody>
               </table>
             </div>
+          )}
+        </>
+      )}
+
+      {/* ================= subtree rollup (superadmin + level-2) ================= */}
+      {tab === "subtree" && isAdminOrAbove && (
+        <>
+          <DateFilters
+            dateFrom={dateFrom} dateTo={dateTo}
+            setDateFrom={setDateFrom} setDateTo={setDateTo}
+            t={t} lang={language}
+          />
+          <div className="text-xs text-gray-400 mb-3">{t("accounting.subtreeHint")}</div>
+          {!subtree ? (
+            <div className="text-gray-400">{t("common.loading")}</div>
+          ) : subtree.length === 0 ? (
+            <div className="card text-gray-400">{t("accounting.subtreeEmpty")}</div>
+          ) : (
+            <>
+              {/* Totals first: the reason to open this tab is usually "how
+                  is the whole group doing", and making that the first thing
+                  read saves adding a column up by eye. */}
+              <div className="stat-grid mb-4">
+                <StatCard
+                  icon={<TrendingUp size={18} />}
+                  label={t("accounting.subtreeTotalSales")}
+                  value={fmt(subtree.reduce((a, r) => a + (r.sales_total || 0), 0))}
+                />
+                <StatCard
+                  icon={<Wallet size={18} />}
+                  label={t("accounting.subtreeTotalCustomers")}
+                  value={fmt(subtree.reduce((a, r) => a + (r.customers || 0), 0))}
+                />
+                <StatCard
+                  icon={<Coins size={18} />}
+                  label={t("accounting.subtreeTotalCredit")}
+                  value={fmt(subtree.reduce((a, r) => a + (r.balance || 0), 0))}
+                />
+                <StatCard
+                  icon={<TrendingDown size={18} />}
+                  label={t("accounting.subtreeInDebt")}
+                  value={fmt(subtree.filter((r) => r.in_debt).length)}
+                />
+              </div>
+
+              <div className="card overflow-x-auto p-0">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs text-gray-400 border-b border-gray-50">
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.colAdmin")}</th>
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.subtreeCustomers")}</th>
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.subtreeSales")}</th>
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.creditBalance")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {subtree.map((r) => (
+                      <tr key={r.id} className="border-b border-gray-50 last:border-0">
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-gray-700">{r.username}</div>
+                          <div className="text-xs text-gray-400">
+                            {r.role === "admin" ? t("admins.roleAdmin") : t("admins.roleSellerPlain")}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 tabular-nums" dir="ltr">
+                          {fmt(r.customers)}
+                          {/* Active is the number that says whether those
+                              customers are still worth anything. */}
+                          <span className="text-xs text-gray-400"> ({fmt(r.active_customers)})</span>
+                        </td>
+                        <td className="px-4 py-3 tabular-nums" dir="ltr">
+                          {fmt(r.sales_total)}
+                          <span className="text-xs text-gray-400"> ({fmt(r.sales_count)})</span>
+                        </td>
+                        <td className="px-4 py-3 tabular-nums" dir="ltr">
+                          <span className={r.in_debt ? "text-red-500 font-medium" : "text-gray-700"}>
+                            {fmt(r.balance)}
+                          </span>
+                          {r.credit_limit > 0 && (
+                            <span className="text-xs text-gray-400"> / -{fmt(r.credit_limit)}</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </>
       )}

@@ -49,6 +49,26 @@ def get_summary(
     return out
 
 
+@router.get("/subtree")
+def get_subtree_rollup(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current: models.AdminUser = Depends(get_current_admin),
+):
+    """One row per direct sub-account - see accounting.subtree_rollup.
+
+    Returns an empty list rather than 403 for a Seller, who simply has no
+    sub-accounts. A 403 would say "you are not allowed", which is not true
+    and would make the frontend show an error where there is only nothing
+    to show.
+    """
+    return accounting.subtree_rollup(
+        db, current,
+        date_from=_parse_date(date_from), date_to=_parse_date(date_to, end=True),
+    )
+
+
 @router.get("/series")
 def get_series(
     granularity: str = "day",

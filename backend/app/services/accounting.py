@@ -275,6 +275,99 @@ def series(db: Session, admin: models.AdminUser, granularity: str = "day", date_
     return [buckets[k] for k in sorted(buckets)]
 
 
+def subtree_rollup(db: Session, admin: models.AdminUser, date_from=None, date_to=None) -> list[dict]:
+    """One row per direct sub-account: what they sold, what they hold, how
+    many customers they carry.
+
+    The aggregate half of "record vs aggregate visibility". Record access is
+    deliberately NOT removed - a level-2 Admin funds their Sellers out of
+    their own balance and is therefore answerable for those sales, and an
+    Admin who cannot see a vanished Seller's customers cannot serve them.
+    What was missing is the other view: managing Sellers as accounts rather
+    than by scrolling a merged customer list.
+
+    Computed with grouped queries rather than a loop per child. The loop
+    version is the obvious one and costs four round trips per Seller, which
+    on this panel's tree is most of the page's latency for numbers that
+    could all be fetched at once.
+
+    Root accounts are included for a superadmin even though their
+    parent_admin_id is NULL: this panel's real tree has four roots, and a
+    report that silently omitted them would be worse than no report.
+    """
+    if hierarchy.is_seller(admin):
+        return []
+
+    children = db.query(models.AdminUser).filter(
+        models.AdminUser.parent_admin_id == admin.id,
+        models.AdminUser.is_superadmin.is_(False),
+    ).all()
+    if admin.is_superadmin:
+        seen = {c.id for c in children}
+        children += [
+            row for row in db.query(models.AdminUser).filter(
+                models.AdminUser.parent_admin_id.is_(None),
+                models.AdminUser.is_superadmin.is_(False),
+            ).all()
+            if row.id not in seen
+        ]
+    if not children:
+        return []
+
+    ids = [c.id for c in children]
+
+    customers: dict[int, int] = {}
+    active: dict[int, int] = {}
+    for owner_id, status, count in (
+        db.query(models.User.owner_admin_id, models.User.status, func.count(models.User.id))
+        .filter(models.User.owner_admin_id.in_(ids))
+        .group_by(models.User.owner_admin_id, models.User.status)
+        .all()
+    ):
+        customers[owner_id] = customers.get(owner_id, 0) + int(count or 0)
+        if status == models.UserStatus.active:
+            active[owner_id] = active.get(owner_id, 0) + int(count or 0)
+
+    sales_q = apply_filters(
+        db.query(models.LedgerEntry).filter(
+            models.LedgerEntry.admin_id.in_(ids),
+            models.LedgerEntry.kind.in_(SALE_KINDS),
+        ),
+        date_from=date_from, date_to=date_to,
+    )
+    sales: dict[int, tuple[int, int]] = {
+        admin_id: (int(total or 0), int(count or 0))
+        for admin_id, total, count in sales_q.with_entities(
+            models.LedgerEntry.admin_id,
+            func.sum(models.LedgerEntry.amount),
+            func.count(models.LedgerEntry.id),
+        ).group_by(models.LedgerEntry.admin_id).all()
+    }
+
+    out = []
+    for child in sorted(children, key=lambda c: c.username.lower()):
+        total, count = sales.get(child.id, (0, 0))
+        balance = child.balance or 0
+        out.append({
+            "id": child.id,
+            "username": child.username,
+            "role": hierarchy.role(child),
+            "customers": customers.get(child.id, 0),
+            "active_customers": active.get(child.id, 0),
+            "sales_total": total,
+            "sales_count": count,
+            "balance": balance,
+            "credit_limit": child.credit_limit or 0,
+            # Surfaced separately rather than left for the reader to notice
+            # from a minus sign - being in debt is the one thing on this row
+            # that needs acting on.
+            "in_debt": balance < 0,
+            "volume_balance_gb": child.volume_balance_gb or 0,
+            "billing_mode": child.billing_mode or "flat",
+        })
+    return out
+
+
 # --------------------------------------------------------------- backfill
 
 def backfill_if_needed(db: Session) -> int:

@@ -15,6 +15,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 logger = logging.getLogger("telegram_bot")
 
 from ..panel_bridge import api, ApiError
+from ..admin_scope import resolve_admin_scope
 from ..callbacks import MenuCB
 from ..config import config
 from ..keyboards import cancel_kb, home_kb
@@ -27,8 +28,13 @@ async def _is_admin_filter(event) -> bool:
     thread, and config.RuntimeConfig is a threading.local, so a sync lambda
     referencing config.is_admin() silently always returns False there.
     Matches admin_users.py's _admin_scope_filter, which already had to be
-    async for the same reason."""
-    return config.is_admin(event.from_user.id)
+    async for the same reason.
+
+    Resolved through admin_scope, not config.is_admin: broadcasting is now
+    available to level-2 Admins too, scoped to their own tree by the
+    recipient query rather than by who can reach this router."""
+    scope = await resolve_admin_scope(event.from_user.id)
+    return bool(scope and scope["is_full_admin"])
 router.message.filter(_is_admin_filter)
 router.callback_query.filter(_is_admin_filter)
 
@@ -87,7 +93,10 @@ async def cb_broadcast_send(call: CallbackQuery, state: FSMContext, bot: Bot) ->
         return
 
     try:
-        telegram_ids = await api.list_telegram_user_ids()
+        scope = await resolve_admin_scope(call.from_user.id)
+        telegram_ids = await api.list_telegram_user_ids(
+            owner_admin_id=(scope or {}).get("owner_admin_id")
+        )
     except ApiError as exc:
         await call.answer(f"خطا: {exc}", show_alert=True)
         return

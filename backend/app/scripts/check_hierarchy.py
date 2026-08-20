@@ -198,6 +198,25 @@ def check_bots(db: Session, ctx: dict) -> None:
         if (a.own_bot_token or "").strip() and a.telegram_id is None:
             warn(f"{_name(a)}: ربات اختصاصی دارد ولی آیدی تلگرامش وصل نشده - منوی مدیریت را نمی‌بیند")
 
+    # Rule: every admin in the bot must be a real panel account
+    # (telegram_bot/admin_scope.py). A number in BotSettings.admin_ids with
+    # no account behind it has no role, no scope and no owner, so it sees
+    # EVERY admin's customers - and keeps working after the person it stood
+    # for is gone, because nothing links the two.
+    linked = {
+        row.telegram_id
+        for row in db.query(models.AdminUser.telegram_id)
+        .filter(models.AdminUser.telegram_id.isnot(None)).all()
+    }
+    if shared:
+        from ..telegram_bot.config import parse_id_set
+
+        for tg_id in sorted(parse_id_set(shared.admin_ids or "")):
+            if tg_id not in linked:
+                bad(f"تلگرام‌آیدی {tg_id} در فهرست ادمین‌های ربات هست ولی به هیچ حساب پنلی وصل نیست - "
+                    "این دسترسی به هیچ مجموعه‌ای محدود نمی‌شود و مشتریان همه‌ی ادمین‌ها را می‌بیند. "
+                    "همین آیدی را در «مدیریت ادمین‌ها» به حساب صاحبش وصل کنید و از این فهرست بردارید.")
+
 
 def check_money(db: Session, ctx: dict) -> None:
     for a in ctx["by_id"].values():

@@ -154,8 +154,11 @@ class RemoteBridge:
         return {"content": content}
 
     # ---------------------------------------------------------- broadcast
-    async def list_telegram_user_ids(self) -> list[int]:
-        return await self._call("GET", "/telegram-user-ids")
+    async def list_telegram_user_ids(self, owner_admin_id: Optional[int] = None) -> list[int]:
+        # Same signature as panel_bridge's - a remotely deployed bot must
+        # scope its broadcast exactly like an in-process one, or the
+        # hierarchy would hold only on whichever server happened to run it.
+        return await self._call("GET", "/telegram-user-ids", params={"owner_admin_id": owner_admin_id})
 
     # ---------------------------------------------------------------- users
     async def create_user(

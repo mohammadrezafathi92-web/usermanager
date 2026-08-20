@@ -5,6 +5,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
 from ..panel_bridge import api, ApiError
+from ..admin_scope import resolve_admin_scope
 from ..callbacks import MenuCB, ApprovalCB
 from ..config import config
 from ..keyboards import approval_kb, home_kb
@@ -27,8 +28,29 @@ async def _is_admin_filter(event) -> bool:
     thread, and config.RuntimeConfig is a threading.local, so a sync lambda
     referencing config.is_admin() silently always returns False there.
     Matches admin_users.py's _admin_scope_filter, which already had to be
-    async for the same reason."""
-    return config.is_admin(event.from_user.id)
+    async for the same reason.
+
+    Resolves through admin_scope rather than config.is_admin: the raw
+    admin_ids list is only one of the ways to be an admin, and gating this
+    router on it meant a level-2 Admin never reached ANY of these handlers -
+    which is why they had a three-button menu. Their own customers' receipts
+    were visible only to whoever happened to be in a text field in the
+    settings page."""
+    scope = await resolve_admin_scope(event.from_user.id)
+    return bool(scope and scope["is_full_admin"])
+
+
+async def _scope_of(event) -> dict | None:
+    return await resolve_admin_scope(event.from_user.id)
+
+
+def _filters(scope: dict | None) -> tuple:
+    """(owner_ids, include_unowned) for the storage-level queries."""
+    if not scope:
+        return set(), False
+    return scope.get("owner_ids"), bool(scope.get("include_unowned"))
+
+
 router.message.filter(_is_admin_filter)
 router.callback_query.filter(_is_admin_filter)
 
@@ -65,7 +87,8 @@ def _pending_summary(p: dict) -> str:
 
 @router.callback_query(MenuCB.filter(F.action == "admin_pending"), _is_admin_filter)
 async def cb_admin_pending(call: CallbackQuery) -> None:
-    items = storage.list_pending()
+    owner_ids, include_unowned = _filters(await _scope_of(call))
+    items = storage.list_pending(owner_ids, include_unowned)
     if not items:
         await call.message.edit_text("درخواست در انتظاری وجود ندارد.", reply_markup=home_kb())
         await call.answer()
@@ -79,9 +102,8 @@ async def cb_admin_pending(call: CallbackQuery) -> None:
 @router.message(Command("pending"))
 async def cmd_admin_pending(message: Message) -> None:
     """Slash-command shortcut for "📥 درخواست‌های در انتظار"."""
-    if not config.is_admin(message.from_user.id):
-        return
-    items = storage.list_pending()
+    owner_ids, include_unowned = _filters(await _scope_of(message))
+    items = storage.list_pending(owner_ids, include_unowned)
     if not items:
         await message.answer("درخواست در انتظاری وجود ندارد.", reply_markup=home_kb())
         return
@@ -329,13 +351,23 @@ async def perform_approval(pending: dict, bot: Bot) -> tuple[bool, str]:
 
 @router.callback_query(ApprovalCB.filter())
 async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) -> None:
-    if not config.is_admin(call.from_user.id):
+    scope = await _scope_of(call)
+    if not scope or not scope["is_full_admin"]:
         await call.answer("دسترسی ندارید", show_alert=True)
         return
 
     pending = storage.get_pending(callback_data.request_id)
     if not pending or pending["status"] != "pending":
         await call.answer("این درخواست قبلا رسیدگی شده است", show_alert=True)
+        return
+
+    # Re-checked here and not only when the list was drawn: this arrives as
+    # a callback carrying a request id, and an id is guessable. Without it
+    # any admin could approve a sale belonging to another admin's customer
+    # by pressing a button meant for someone else.
+    owner_ids, include_unowned = _filters(scope)
+    if not storage.may_handle(pending, owner_ids, include_unowned):
+        await call.answer("این درخواست مربوط به مجموعه‌ی شما نیست", show_alert=True)
         return
 
     # Atomically claim this request before doing anything else - if two
@@ -381,7 +413,8 @@ async def cb_admin_history(call: CallbackQuery) -> None:
     """«🗂 تاریخچه درخواست‌ها» - what was approved/rejected recently. The
     pending list only ever shows what's still waiting, so without this an
     admin had no way to check back on a decision they already made."""
-    items = storage.list_recent()
+    owner_ids, include_unowned = _filters(await _scope_of(call))
+    items = storage.list_recent(owner_ids=owner_ids, include_unowned=include_unowned)
     if not items:
         await call.message.edit_text("هنوز درخواست رسیدگی‌شده‌ای ثبت نشده.", reply_markup=home_kb())
         await call.answer()

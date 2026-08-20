@@ -65,6 +65,17 @@ _NEW_COLUMNS = {
     # bot's «یک نام برای این سرویس» step) - applied to the created
     # models.Purchase on approval. See models.Purchase.comment.
     "comment": "TEXT",
+    # WHICH panel account this request belongs to - the reseller whose bot
+    # the customer was talking to (config.bot_owner_admin_id), or the
+    # existing customer's owner for a renewal.
+    #
+    # Without it every admin's «درخواست‌های در انتظار» screen showed every
+    # other admin's receipts, and any of them could approve a sale that
+    # belonged to someone else's customer - the last place where the bot
+    # still had no idea the hierarchy existed. NULL means the shared bot
+    # with no reseller behind it, which only a superadmin sees, matching
+    # how an ownerless customer is treated everywhere else.
+    "owner_admin_id": "INTEGER",
 }
 
 
@@ -107,15 +118,21 @@ def create_pending(
     payment_card_id: Optional[int] = None,
     renew_purchase_id: Optional[int] = None,
     comment: Optional[str] = None,
+    owner_admin_id: Optional[int] = None,
 ) -> int:
+    # Defaults to the bot's own owner. Callers may pass an explicit value
+    # (a renewal belongs to the customer's existing owner, which is not
+    # necessarily the bot they happened to message from).
+    if owner_admin_id is None:
+        owner_admin_id = config.bot_owner_admin_id
     with _conn() as conn:
         cur = conn.execute(
             """INSERT INTO pending_purchases
                (telegram_id, telegram_username, telegram_name, kind, package_id, package_name,
                 quota_gb, duration_days, price, node_id, node_name, protocol, target_username,
                 receipt_file_id, created_at, referral_code, discount_code, discount_amount, final_price,
-                payment_card_id, renew_purchase_id, comment)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                payment_card_id, renew_purchase_id, comment, owner_admin_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 telegram_id,
                 telegram_username,
@@ -139,6 +156,7 @@ def create_pending(
                 payment_card_id,
                 renew_purchase_id,
                 comment,
+                owner_admin_id,
             ),
         )
         return cur.lastrowid
@@ -185,23 +203,76 @@ def release_pending(request_id: int):
         )
 
 
-def list_recent(limit: int = 15) -> list[dict]:
+def _owner_clause(owner_ids: Optional[set[int]], include_unowned: bool) -> tuple[str, list]:
+    """SQL fragment restricting rows to one admin's own requests.
+
+    `owner_ids=None` means no restriction at all (the unscoped config-only
+    admin - see admin_scope.ROLE_CONFIG_ONLY).
+
+    `include_unowned` exists because NULL never matches an IN list in SQL,
+    exactly as in routers/bot.py's _visibility_filter. Rows written before
+    this column existed, and everything taken by the shared bot, have NULL
+    here - a superadmin must still see those or their own pending screen
+    would empty out on upgrade.
+    """
+    if owner_ids is None:
+        return "", []
+    parts: list[str] = []
+    params: list = []
+    if owner_ids:
+        parts.append(f"owner_admin_id IN ({','.join('?' * len(owner_ids))})")
+        params.extend(sorted(owner_ids))
+    if include_unowned:
+        parts.append("owner_admin_id IS NULL")
+    if not parts:
+        return " AND 1 = 0", []
+    return " AND (" + " OR ".join(parts) + ")", params
+
+
+def list_recent(
+    limit: int = 15,
+    owner_ids: Optional[set[int]] = None,
+    include_unowned: bool = False,
+) -> list[dict]:
     """The most recently HANDLED requests (approved/rejected) - the bot's
     admin «🗂 تاریخچه درخواست‌ها» screen. list_pending() below only ever
     shows what's still waiting, so once an admin acted there was no way to
     look back at what was decided."""
+    where, params = _owner_clause(owner_ids, include_unowned)
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM pending_purchases WHERE status IN ('approved','rejected') "
-            "ORDER BY id DESC LIMIT ?",
-            (limit,),
+            "SELECT * FROM pending_purchases WHERE status IN ('approved','rejected')"
+            + where + " ORDER BY id DESC LIMIT ?",
+            (*params, limit),
         ).fetchall()
         return [dict(r) for r in rows]
 
 
-def list_pending() -> list[dict]:
+def list_pending(
+    owner_ids: Optional[set[int]] = None,
+    include_unowned: bool = False,
+) -> list[dict]:
+    where, params = _owner_clause(owner_ids, include_unowned)
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM pending_purchases WHERE status = 'pending' ORDER BY id DESC"
+            "SELECT * FROM pending_purchases WHERE status = 'pending'"
+            + where + " ORDER BY id DESC",
+            tuple(params),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def may_handle(request: dict, owner_ids: Optional[set[int]], include_unowned: bool) -> bool:
+    """Single-request twin of the list filters above.
+
+    Needed separately because approve/reject arrive as a callback carrying
+    only a request id - the id is guessable and the button is reachable by
+    anyone the bot considers an admin, so the check has to happen again at
+    the moment of acting, not only when the list was drawn.
+    """
+    if owner_ids is None:
+        return True
+    owner = request.get("owner_admin_id")
+    if owner is None:
+        return include_unowned
+    return owner in owner_ids

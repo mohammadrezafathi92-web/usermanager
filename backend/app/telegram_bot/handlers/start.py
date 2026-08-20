@@ -31,7 +31,15 @@ def _display_name(tg_user: User, account: dict | None) -> str:
 async def _welcome_text(tg_user: User, scope: dict | None = None) -> str:
     if scope:
         if scope["is_full_admin"]:
-            return "🤖 <b>پنل مدیریت ربات</b>\n\nاز منوی زیر یکی از گزینه‌ها را انتخاب کنید:"
+            who = f" ({scope['username']})" if scope.get("username") else ""
+            # An Admin's full menu is scoped to their own tree, so saying so
+            # matters: the buttons look identical to a superadmin's and the
+            # lists behind them are not.
+            note = (
+                "" if scope.get("is_unscoped")
+                else "\nهر چه اینجا می‌بینید محدود به مجموعه‌ی خودتان است."
+            )
+            return f"🤖 <b>پنل مدیریت ربات</b>{who}\n{note}\n\nاز منوی زیر یکی از گزینه‌ها را انتخاب کنید:"
         who = f" ({scope['username']})" if scope.get("username") else ""
         return (
             f"🤖 <b>پنل مدیریت گروه شما</b>{who}\n\n"

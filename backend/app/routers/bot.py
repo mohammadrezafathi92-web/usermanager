@@ -82,31 +82,39 @@ def _user_response(user: models.User) -> schemas.BotUserResponse:
     )
 
 
-def _scope_ids(db: Session, owner_admin_id: Optional[int]) -> Optional[set[int]]:
-    """Which owner_admin_id values a bot request may touch.
+def _visibility_filter(db: Session, owner_admin_id: Optional[int]):
+    """The clause to add to a models.User query, or None for "no filter".
 
     The parameter every endpoint below calls `owner_admin_id` is NOT a
     filter value - it is the panel account the bot is acting for. Treating
-    it as a filter (`User.owner_admin_id == owner_admin_id`) is what made
-    an Admin's own Sellers' customers invisible in the bot while being
+    it as one (`User.owner_admin_id == owner_admin_id`) is what made an
+    Admin's own Sellers' customers invisible in the bot while being
     perfectly visible in the panel: two answers to the same question,
     depending on which door you came through.
 
-    Resolved here, once, through services/hierarchy so the bot and the
-    panel can never drift apart again. None still means the shared/global
-    bot with no account behind it - unchanged for now, and dealt with in
-    the visibility phase.
+    Nor is it an `IN` list, which was the first fix and was still wrong: a
+    customer with no owner at all (owner_admin_id IS NULL - 577 of them on
+    this install, left behind by delete_admin's "unassign, don't destroy")
+    can never match one, because ANSI SQL's `IN (1, 2)` is not TRUE for
+    NULL. Those customers are visible to a superadmin and to nobody else.
 
-    An id that matches no account returns an impossible set rather than
-    None: an unknown caller must see nothing, never everything. Failing
-    open here would hand a stale or mistyped id the full customer list.
+    So the rule is not restated here at all - hierarchy.user_visibility_
+    clause already encodes it for the panel, and this calls that. A second
+    copy of a rule this important is a second thing to keep in sync
+    forever, and the two copies had already drifted once.
+
+    None (the shared, unowned bot) still means unfiltered: customer-facing
+    flows on the shared bot legitimately serve every Admin's customers.
     """
     if owner_admin_id is None:
         return None
     admin = db.get(models.AdminUser, owner_admin_id)
     if admin is None:
-        return set()
-    return hierarchy.owned_admin_ids(db, admin)
+        # An unknown caller sees nothing. Failing open here would hand a
+        # stale or mistyped id the entire customer list.
+        from sqlalchemy import false
+        return false()
+    return hierarchy.user_visibility_clause(db, admin)
 
 
 
@@ -118,9 +126,17 @@ def _get_user_or_404(db: Session, username: str, owner_admin_id: Optional[int] =
     username. A full/config bot admin never passes this (sees everyone,
     same as before this scoping existed)."""
     user = db.query(models.User).filter(models.User.username == username).first()
-    scope = _scope_ids(db, owner_admin_id)
-    if not user or (scope is not None and user.owner_admin_id not in scope):
+    if user is None:
         raise HTTPException(404, "کاربر پیدا نشد")
+    if owner_admin_id is not None:
+        admin = db.get(models.AdminUser, owner_admin_id)
+        # hierarchy.can_see_user is the single-object twin of the clause
+        # _visibility_filter builds for queries - same rule, including the
+        # ownerless customers only a superadmin may reach.
+        if admin is None or not hierarchy.can_see_user(
+            admin, hierarchy.owned_admin_ids(db, admin), user.owner_admin_id
+        ):
+            raise HTTPException(404, "کاربر پیدا نشد")
     return user
 
 
@@ -339,9 +355,9 @@ def get_sales_stats(owner_admin_id: Optional[int] = None, db: Session = Depends(
         out[key] = {"total": sum(r.amount or 0 for r in rows), "count": len(rows)}
 
     user_q = db.query(models.User)
-    scope = _scope_ids(db, owner_admin_id)
-    if scope is not None:
-        user_q = user_q.filter(models.User.owner_admin_id.in_(scope))
+    clause = _visibility_filter(db, owner_admin_id)
+    if clause is not None:
+        user_q = user_q.filter(clause)
     out["users_total"] = user_q.count()
     out["users_active"] = user_q.filter(models.User.status == models.UserStatus.active).count()
     return out
@@ -455,11 +471,21 @@ def get_admin_by_telegram(tg_id: int, db: Session = Depends(get_db)):
     admin = db.query(models.AdminUser).filter(models.AdminUser.telegram_id == tg_id).first()
     if not admin:
         raise HTTPException(404, "ادمین پیدا نشد")
-    return admin
+    return schemas.BotAdminInfo(
+        id=admin.id,
+        username=admin.username,
+        is_superadmin=bool(admin.is_superadmin),
+        role=hierarchy.role(admin),
+        owner_ids=sorted(hierarchy.owned_admin_ids(db, admin)),
+        # Same rule as hierarchy.user_visibility_clause: ownerless rows
+        # belong to the superadmin, who is the only account that can
+        # reassign them.
+        include_unowned=bool(admin.is_superadmin),
+    )
 
 
 @router.get("/telegram-user-ids", response_model=list[int])
-def telegram_user_ids(db: Session = Depends(get_db)):
+def telegram_user_ids(db: Session = Depends(get_db), owner_admin_id: Optional[int] = None):
     """Every DISTINCT telegram id currently linked to a panel account - used
     by the admin bot's "📢 پیام همگانی" broadcast, which sends one generic
     message per chat id (as opposed to the daily quota/expiry reminder job,
@@ -467,14 +493,19 @@ def telegram_user_ids(db: Session = Depends(get_db)):
     once - see services/notify.py). .distinct() matters now that a single
     telegram id can be linked to more than one User (see User.telegram_id in
     models.py) - without it, a customer with 2 linked accounts would get the
-    same broadcast message twice."""
-    rows = (
-        db.query(models.User.telegram_id)
-        .filter(models.User.telegram_id.isnot(None))
-        .distinct()
-        .all()
-    )
-    return [r[0] for r in rows]
+    same broadcast message twice.
+
+    owner_admin_id scopes the recipient list to that account's own tree.
+    This became load-bearing the moment level-2 Admins were given the full
+    bot menu: an unscoped broadcast from one reseller would have messaged
+    every OTHER reseller's customers, which is worse than the missing menu
+    ever was.
+    """
+    query = db.query(models.User.telegram_id).filter(models.User.telegram_id.isnot(None))
+    clause = _visibility_filter(db, owner_admin_id)
+    if clause is not None:
+        query = query.filter(clause)
+    return [r[0] for r in query.distinct().all()]
 
 
 @router.post("/users", response_model=schemas.BotUserResponse)
@@ -615,9 +646,9 @@ def list_users(
     page = max(page, 1)
     page_size = min(max(page_size, 1), 100)
     query = db.query(models.User)
-    scope = _scope_ids(db, owner_admin_id)
-    if scope is not None:
-        query = query.filter(models.User.owner_admin_id.in_(scope))
+    clause = _visibility_filter(db, owner_admin_id)
+    if clause is not None:
+        query = query.filter(clause)
     if search:
         like = f"%{search}%"
         query = query.filter(or_(models.User.username.ilike(like), models.User.full_name.ilike(like)))
@@ -646,9 +677,9 @@ def get_user_by_telegram(telegram_id: int, db: Session = Depends(get_db), owner_
     bot should never surface here, same isolation as the rest of the
     3-tier hierarchy."""
     query = db.query(models.User).filter(models.User.telegram_id == telegram_id)
-    scope = _scope_ids(db, owner_admin_id)
-    if scope is not None:
-        query = query.filter(models.User.owner_admin_id.in_(scope))
+    clause = _visibility_filter(db, owner_admin_id)
+    if clause is not None:
+        query = query.filter(clause)
     user = query.order_by(models.User.id.desc()).first()
     if not user:
         raise HTTPException(404, "کاربری با این حساب تلگرام پیدا نشد")
@@ -666,9 +697,9 @@ def list_users_by_telegram(telegram_id: int, db: Session = Depends(get_db), owne
     get_user_by_telegram above - a per-admin bot's account-picker should
     never surface someone else's customer accounts from another Admin."""
     query = db.query(models.User).filter(models.User.telegram_id == telegram_id)
-    scope = _scope_ids(db, owner_admin_id)
-    if scope is not None:
-        query = query.filter(models.User.owner_admin_id.in_(scope))
+    clause = _visibility_filter(db, owner_admin_id)
+    if clause is not None:
+        query = query.filter(clause)
     users = query.order_by(models.User.id.desc()).all()
     return [_user_response(u) for u in users]
 

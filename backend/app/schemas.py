@@ -1349,6 +1349,22 @@ class BotAdminInfo(BaseModel):
     id: int
     username: str
     is_superadmin: bool
+    # Resolved through hierarchy.role() rather than read off the column, so
+    # a row whose stored role is still NULL (predating the explicit-role
+    # change) gets the derived answer instead of an empty string. The bot
+    # picks its menu from this - see telegram_bot/admin_scope.py.
+    role: str = "seller"
+    # The account ids whose customers/requests this admin may act on, and
+    # whether ownerless rows count too - i.e. hierarchy.owned_admin_ids and
+    # the IS NULL branch of hierarchy.user_visibility_clause, resolved here
+    # rather than by the bot.
+    #
+    # Returned on this existing call instead of behind a new endpoint: the
+    # bot asks "who is this person" on every admin message, and answering
+    # "and what may they see" in the same breath is what stops the two from
+    # ever being resolved by different rules again.
+    owner_ids: List[int] = []
+    include_unowned: bool = False
 
 
 # ---------- Tutorials (bot "آموزش" section) ----------

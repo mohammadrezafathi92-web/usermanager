@@ -55,10 +55,20 @@ CUSTOMER_MENU_ITEMS = [
 async def main_menu_kb(scope: dict | None) -> InlineKeyboardMarkup:
     """`scope` is the dict returned by telegram_bot/admin_scope.py's
     resolve_admin_scope() - None for a regular customer, otherwise a dict
-    with an `is_full_admin` flag that picks between the full admin menu
-    (pending approvals + broadcast included) and the scoped-down menu a
-    linked group-admin gets (their own users only, no pending/broadcast -
-    those stay exclusive to the bot's global admin list)."""
+    whose `is_full_admin` flag picks between the full admin menu and the
+    reduced one.
+
+    That flag now follows the panel ROLE: a superadmin and a level-2 Admin
+    both get the full menu, a Seller gets the reduced one. It used to mean
+    "is in the bot's global admin_ids list", which had nothing to do with
+    the hierarchy - so a level-2 Admin with a real panel account, their own
+    customers and their own receipts saw three buttons, while a bare number
+    typed into a settings field saw everything.
+
+    The buttons are the same for both Admin tiers; what differs is the data
+    behind them, scoped per account by the API (routers/bot.py's
+    _visibility_filter). Menu and scope are deliberately NOT two separate
+    decisions - that is how they drifted apart in the first place."""
     kb = InlineKeyboardBuilder()
     if scope and scope.get("is_full_admin"):
         kb.button(text="➕ ساخت کاربر", callback_data=MenuCB(action="admin_create"))

@@ -222,24 +222,17 @@ class PanelBridge:
         return await asyncio.to_thread(_run)
 
     # ---------------------------------------------------------- broadcast
-    async def list_telegram_user_ids(self) -> list[int]:
-        """Every telegram id currently linked to a panel account - used by
-        the admin bot's "📢 پیام همگانی" broadcast and the daily
-        quota/expiry reminder job."""
+    async def list_telegram_user_ids(self, owner_admin_id: Optional[int] = None) -> list[int]:
+        """Every telegram id this admin may broadcast to.
 
-        def _run():
-            db = SessionLocal()
-            try:
-                rows = (
-                    db.query(models.User.telegram_id)
-                    .filter(models.User.telegram_id.isnot(None))
-                    .all()
-                )
-                return [r[0] for r in rows]
-            finally:
-                db.close()
-
-        return await asyncio.to_thread(_run)
+        Goes through the router endpoint like every other method here,
+        rather than running its own query. It used to do the latter, which
+        meant the recipient list ignored the hierarchy entirely - invisible
+        while only the superadmin could broadcast, and a way for one
+        reseller to message every other reseller's customers the moment
+        level-2 Admins got the broadcast button.
+        """
+        return await _call(bot_router.telegram_user_ids, owner_admin_id=_scope(owner_admin_id))
 
     # ---------------------------------------------------------------- users
     async def create_user(

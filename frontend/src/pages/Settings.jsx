@@ -578,9 +578,16 @@ export default function Settings() {
     setSavingBot(true);
     setBotMsg(null);
     try {
-      const res = await updateTelegramBotSettings(botForm);
+      // unlinked_admin_ids is the server's own read-only verdict on the
+      // saved value; sending it back would be asking the server to tell
+      // itself something it computes.
+      const { unlinked_admin_ids, ...payload } = botForm;
+      const res = await updateTelegramBotSettings(payload);
       const { running, last_error, bot_username } = res.data;
       setBotStatus({ running, last_error, bot_username });
+      // Re-read so the warning reflects what was just saved rather than
+      // what was on screen before the save.
+      loadBotSettings();
       setBotMsg({ type: "ok", text: t("settings.msgBotSaved") });
     } catch (err) {
       setBotMsg({ type: "err", text: errorText(err, t("settings.msgSaveError")) });
@@ -1118,6 +1125,19 @@ export default function Settings() {
               value={botForm.admin_ids || ""}
               onChange={(e) => setBotForm((f) => ({ ...f, admin_ids: e.target.value }))}
             />
+            {/* Read from the server's own view of the SAVED value, not from
+                what is currently typed - an id becomes "unlinked" only once
+                it has been saved and checked against the accounts table,
+                and warning about half-typed numbers would be noise. */}
+            {(botForm.unlinked_admin_ids || []).length > 0 && (
+              <div className="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2 mt-2">
+                <span dir="ltr" className="font-medium">
+                  {(botForm.unlinked_admin_ids || []).join("، ")}
+                </span>
+                {" — "}
+                {t("settings.adminIdsUnlinked")}
+              </div>
+            )}
           </div>
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("settings.approvalChatIds")}</label>

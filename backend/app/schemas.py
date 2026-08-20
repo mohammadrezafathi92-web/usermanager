@@ -1021,6 +1021,14 @@ class BotSettingsOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     bot_token: Optional[str] = ""
     admin_ids: Optional[str] = ""
+    # Which ids in `admin_ids` are not linked to any panel account.
+    #
+    # Computed rather than stored, and returned with the field it describes
+    # so the warning appears next to the box being edited. Each of these is
+    # an admin with no role and no scope - it sees every admin's customers,
+    # and it keeps working after the account it stood for is deleted,
+    # because nothing connects the two. See telegram_bot/admin_scope.py.
+    unlinked_admin_ids: List[int] = []
     approval_chat_ids: Optional[str] = ""
     enabled: bool = False
     last_error: Optional[str] = None

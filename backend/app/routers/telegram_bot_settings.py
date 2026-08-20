@@ -93,11 +93,33 @@ def _validate_proxy_url(url: str) -> str:
     return url
 
 
-def _response(row: models.BotSettings) -> schemas.BotSettingsOut:
+def _unlinked_admin_ids(db: Session, raw: str | None) -> list[int]:
+    """Ids in the bot's admin list with no AdminUser behind them.
+
+    Surfaced in the settings response so the panel can warn where the field
+    is edited. This used to be visible only by running a script over SSH,
+    which means in practice it was visible to nobody.
+    """
+    from ..telegram_bot.config import parse_id_set
+
+    ids = parse_id_set(raw or "")
+    if not ids:
+        return []
+    linked = {
+        row.telegram_id
+        for row in db.query(models.AdminUser.telegram_id)
+        .filter(models.AdminUser.telegram_id.in_(ids))
+        .all()
+    }
+    return sorted(ids - linked)
+
+
+def _response(row: models.BotSettings, db: Session | None = None) -> schemas.BotSettingsOut:
     status = runner.get_status()
     return schemas.BotSettingsOut(
         bot_token=row.bot_token or "",
         admin_ids=row.admin_ids or "",
+        unlinked_admin_ids=_unlinked_admin_ids(db, row.admin_ids) if db is not None else [],
         approval_chat_ids=row.approval_chat_ids or "",
         enabled=bool(row.enabled),
         last_error=status.get("last_error") or row.last_error,
@@ -123,7 +145,7 @@ def _response(row: models.BotSettings) -> schemas.BotSettingsOut:
 
 @router.get("", response_model=schemas.BotSettingsOut)
 def get_settings(db: Session = Depends(get_db), _s=_superadmin):
-    return _response(_get_or_create(db))
+    return _response(_get_or_create(db), db)
 
 
 @router.put("", response_model=schemas.BotSettingsOut)
@@ -160,7 +182,7 @@ def update_settings(payload: schemas.BotSettingsUpdate, db: Session = Depends(ge
             bool(row.enabled),
             customer_bot_enabled=row.customer_bot_enabled if row.customer_bot_enabled is not None else True,
         )
-    return _response(row)
+    return _response(row, db)
 
 
 @router.post("/restart", response_model=schemas.BotSettingsOut)
@@ -176,7 +198,7 @@ def restart(db: Session = Depends(get_db), _s=_superadmin):
             bool(row.enabled),
             customer_bot_enabled=row.customer_bot_enabled if row.customer_bot_enabled is not None else True,
         )
-    return _response(row)
+    return _response(row, db)
 
 
 # ------------------------------------------------------- per-admin own bot

@@ -9,6 +9,7 @@ import {
   createAdmin,
   updateAdmin,
   deleteAdmin,
+  getAdminDeleteImpact,
   fetchAdminGroups,
   createAdminGroup,
   updateAdminGroup,
@@ -425,7 +426,45 @@ export default function Admins() {
   };
 
   const onDelete = async (admin) => {
-    if (!confirm(t("admins.deleteConfirm", { name: admin.username }))) return;
+    // Ask the server what this delete would actually move, and say so
+    // before asking for confirmation. The counts ARE the decision, and
+    // until now they were invisible: the dialog named the account and
+    // nothing else, while behind it hundreds of customers could change
+    // hands or be cut loose.
+    let detail = "";
+    try {
+      const { data } = await getAdminDeleteImpact(admin.id);
+      const lines = [];
+      if (data.customers) {
+        lines.push(
+          data.heir_username
+            ? t("admins.deleteMovesCustomers", { count: data.customers, heir: data.heir_username })
+            : t("admins.deleteOrphansCustomers", { count: data.customers })
+        );
+      }
+      if (data.packages) {
+        lines.push(t("admins.deleteMovesPackages", { count: data.packages }));
+      }
+      if (data.children?.length) {
+        const promoted = data.children.filter((c) => c.promoted).map((c) => c.username);
+        lines.push(
+          promoted.length
+            ? t("admins.deletePromotesSellers", { names: promoted.join("، ") })
+            : t("admins.deleteMovesSellers", {
+                names: data.children.map((c) => c.username).join("، "),
+                heir: data.heir_username,
+              })
+        );
+      }
+      if (data.balance) {
+        lines.push(t("admins.deleteLosesBalance", { amount: data.balance.toLocaleString("fa-IR") }));
+      }
+      if (lines.length) detail = "\n\n" + lines.join("\n");
+    } catch {
+      // A failed preview must not block the delete - it is an explanation,
+      // not a permission check.
+    }
+    if (!confirm(t("admins.deleteConfirm", { name: admin.username }) + detail)) return;
     await deleteAdmin(admin.id);
     load();
   };

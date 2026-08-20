@@ -672,38 +672,41 @@ def delete_admin(
         raise HTTPException(400, "ادمین اصلی قابل حذف نیست")
     _scope_or_403(current, admin)
 
-    # If this is a level-2 Admin (superadmin deleting one), their own
-    # Sellers aren't deleted either - clearing parent_admin_id promotes
-    # them to level-2 Admins in their own right (see services/hierarchy.py's
-    # role()) rather than leaving them orphaned with no scope at all. Not
-    # ideal (they gain full access they didn't have before), but keeps
-    # their accounts/users working instead of being silently cut off; a
-    # superadmin can review/reassign them by hand afterward. Same
-    # "unassign, don't destroy" philosophy as the users.owner_admin_id
-    # handling below.
-    orphaned_children = (
+    # Everything this account held is INHERITED BY ITS PARENT rather than
+    # cut loose.
+    #
+    # It used to be cut loose: children had parent_admin_id set to NULL and
+    # customers had owner_admin_id set to NULL. For a Seller that was
+    # plainly wrong - their parent Admin was right there, still running,
+    # and still the person responsible for those customers - and it is the
+    # most likely source of the 577 ownerless customers on this install.
+    # An ownerless customer is visible to the superadmin alone, so from the
+    # reseller's side their customers simply vanished.
+    #
+    # Deleting a ROOT account is the one case with genuinely nowhere to put
+    # things; NULL there keeps its old meaning of "the superadmin's pool".
+    heir_id = admin.parent_admin_id
+    heir = db.get(models.AdminUser, heir_id) if heir_id else None
+    # A superadmin parent owns packages/tutorials as NULL, never by id (see
+    # create_package) - the same translation reparent_admin needs.
+    resource_heir_id = None if (heir is not None and heir.is_superadmin) else heir_id
+
+    children = (
         db.query(models.AdminUser).filter(models.AdminUser.parent_admin_id == admin.id).all()
     )
-    db.query(models.AdminUser).filter(models.AdminUser.parent_admin_id == admin.id).update(
-        {"parent_admin_id": None}, synchronize_session=False
-    )
-    # Their stored role must follow, or they would keep role="seller" while
-    # sitting at the root - and role() would then report something the old
-    # derivation never would have. Phase 1 preserves today's outcome
-    # exactly, promotion included. Phase 6 replaces this whole approach:
-    # children and customers will be re-parented to the DELETED account's
-    # parent instead of being cut loose, which is what a tree with no holes
-    # actually requires.
-    for child in orphaned_children:
-        child.parent_admin_id = None
-        child.role = hierarchy.derive_role(child)
+    for child in children:
+        child.parent_admin_id = heir_id
+        # A parentless account cannot legally be a Seller - it would have
+        # no scope to inherit and would see nothing at all (see
+        # hierarchy.validate_placement). Only then is it promoted.
+        if heir_id is None and hierarchy.role(child) == hierarchy.ROLE_SELLER:
+            child.role = hierarchy.ROLE_ADMIN
         hierarchy.rebuild_path(db, child)
-    # Users this admin owned aren't deleted - just unassigned (visible to
-    # superadmins only, like any never-assigned user) so nobody's VPN
-    # service is silently destroyed just because the admin managing them
-    # was removed. A superadmin can reassign them via the user edit form.
+
+    # Customers are never deleted, only handed over - nobody's VPN service
+    # should stop working because the person who sold it was removed.
     db.query(models.User).filter(models.User.owner_admin_id == admin.id).update(
-        {"owner_admin_id": None}, synchronize_session=False
+        {"owner_admin_id": heir_id}, synchronize_session=False
     )
     # Packages/Tutorials this admin owned need the SAME "don't destroy"
     # treatment as Users above - without this, they silently become
@@ -721,11 +724,50 @@ def delete_admin(
     # can keep or reassign them by hand, same as they can for orphaned
     # Users.
     db.query(models.Package).filter(models.Package.owner_admin_id == admin.id).update(
-        {"owner_admin_id": None}, synchronize_session=False
+        {"owner_admin_id": resource_heir_id}, synchronize_session=False
     )
     db.query(models.Tutorial).filter(models.Tutorial.owner_admin_id == admin.id).update(
-        {"owner_admin_id": None}, synchronize_session=False
+        {"owner_admin_id": resource_heir_id}, synchronize_session=False
     )
     db.delete(admin)
     db.commit()
     return {"ok": True}
+
+
+@router.get("/{admin_id}/delete-impact")
+def delete_impact(
+    admin_id: int,
+    db: Session = Depends(get_db),
+    current: models.AdminUser = Depends(require_admin_or_above),
+):
+    """What deleting this account would move, and to whom.
+
+    Exists because the counts are the whole decision and they were
+    invisible: the confirm dialog asked for a password without ever saying
+    that 240 customers were about to change hands, or that three Sellers
+    were about to be promoted. Read-only, and it runs the same inheritance
+    rule delete_admin does rather than describing it in words that could
+    drift from the code.
+    """
+    admin = db.get(models.AdminUser, admin_id)
+    if not admin:
+        raise HTTPException(404, "ادمین پیدا نشد")
+    _scope_or_403(current, admin)
+
+    heir = db.get(models.AdminUser, admin.parent_admin_id) if admin.parent_admin_id else None
+    children = db.query(models.AdminUser).filter(models.AdminUser.parent_admin_id == admin.id).all()
+    return {
+        "username": admin.username,
+        "role": hierarchy.role(admin),
+        "heir_id": heir.id if heir else None,
+        "heir_username": heir.username if heir else None,
+        "customers": db.query(models.User).filter(models.User.owner_admin_id == admin.id).count(),
+        "packages": db.query(models.Package).filter(models.Package.owner_admin_id == admin.id).count(),
+        "children": [
+            {"id": c.id, "username": c.username,
+             # A child only changes role when there is no heir to inherit it.
+             "promoted": heir is None and hierarchy.role(c) == hierarchy.ROLE_SELLER}
+            for c in children
+        ],
+        "balance": admin.balance or 0,
+    }

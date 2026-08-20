@@ -336,6 +336,10 @@ export const createAdmin = (data) => client.post("/admins", data);
 export const updateAdmin = (id, data) => client.put(`/admins/${id}`, data);
 export const deleteAdmin = (id) => client.delete(`/admins/${id}`);
 
+// What deleting this admin would move, and to whom - read-only, shown in
+// the confirm dialog. See routers/admins.py's delete_impact.
+export const getAdminDeleteImpact = (id) => client.get(`/admins/${id}/delete-impact`);
+
 export const fetchAdminGroups = () => client.get("/admins/groups");
 export const createAdminGroup = (data) => client.post("/admins/groups", data);
 export const updateAdminGroup = (id, data) => client.put(`/admins/groups/${id}`, data);

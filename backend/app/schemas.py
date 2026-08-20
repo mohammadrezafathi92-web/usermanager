@@ -1506,6 +1506,9 @@ class AdminUpdate(BaseModel):
     # Set (absolute value, not a delta) by a superadmin to top up this
     # admin's wholesale credit balance from the "مدیریت ادمین‌ها" page.
     balance: Optional[int] = None
+    # How far below zero this account may go, in tomans, always positive.
+    # Superadmin-only, and 0 means the old hard floor at zero.
+    credit_limit: Optional[int] = None
     # Numeric Telegram id letting this admin manage their own group's users
     # directly from the bot - see telegram_bot/admin_scope.py.
     telegram_id: Optional[int] = None
@@ -1527,6 +1530,7 @@ class AdminOut(BaseModel):
     permissions: List[str] = []
     login_slug: Optional[str] = None
     balance: int = 0
+    credit_limit: int = 0
     telegram_id: Optional[int] = None
     created_at: dt.datetime
     users_count: int = 0

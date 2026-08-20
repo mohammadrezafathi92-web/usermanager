@@ -3,6 +3,7 @@ import { Plus, Pencil, Trash2, ShieldCheck, Users as UsersIcon, Link2, Wallet, S
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
+import MoneyInput from "../components/MoneyInput.jsx";
 import {
   fetchAdmins,
   fetchPermissionChoices,
@@ -67,6 +68,7 @@ const emptyForm = {
   initial_balance: "",
   billing_mode: "flat",
   volume_balance_gb: 0,
+  credit_limit: 0,
   initial_volume_gb: "",
   // Superadmin-only, CREATE time only. Two independent fields, matching the
   // backend: `role` says what the account is, `parent_admin_id` says whose
@@ -237,6 +239,7 @@ export default function Admins() {
       permissions: admin.permissions || [],
       login_slug: admin.login_slug || "",
       balance: admin.balance || 0,
+      credit_limit: admin.credit_limit || 0,
       telegram_id: admin.telegram_id || "",
       group_id: admin.group_id || "",
       initial_balance: "",
@@ -396,6 +399,10 @@ export default function Admins() {
           group_id: form.group_id === "" ? 0 : Number(form.group_id),
           billing_mode: form.billing_mode,
         };
+        // Only a superadmin may set an overdraft, and the backend refuses
+        // it from anyone else - so it is not even sent, rather than sent
+        // and rejected with a 403 that would abort the whole save.
+        if (isSuperadmin) payload.credit_limit = Number(form.credit_limit) || 0;
         if (form.password) payload.password = form.password;
         await updateAdmin(editingId, payload);
       } else {
@@ -1030,6 +1037,28 @@ export default function Admins() {
                   "اعتبار ادمین‌ها" tab (per the panel owner, 2026-08-08) -
                   the read-only balance + history stay here for context. */}
               <div className="text-xs text-gray-400 mt-2">{t("admins.topupMovedHint")}</div>
+
+              {/* Sits directly under the balance because it only means
+                  anything in relation to it: this is how far past that
+                  number the account may go. Superadmin-only, matching the
+                  backend - an overdraft is trust being extended, so the
+                  person receiving it cannot grant it to themselves. */}
+              {isSuperadmin && (
+                <div className="mt-3">
+                  <label className="block text-sm text-gray-600 mb-1">{t("admins.creditLimit")}</label>
+                  <MoneyInput
+                    value={form.credit_limit ?? 0}
+                    onChange={(v) => set("credit_limit", v === "" ? 0 : Number(v))}
+                  />
+                  <div className="text-xs text-gray-400 mt-1">
+                    {Number(form.credit_limit) > 0
+                      ? t("admins.creditLimitActive", {
+                          available: formatToman((Number(form.balance) || 0) + Number(form.credit_limit)),
+                        })
+                      : t("admins.creditLimitHint")}
+                  </div>
+                </div>
+              )}
 
               {showLogs && (
                 <div className="mt-2 border border-gray-100 rounded-xl overflow-hidden">

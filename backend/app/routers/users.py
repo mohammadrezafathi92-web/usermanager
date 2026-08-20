@@ -59,14 +59,25 @@ def _charge_admin_for_package(db: Session, admin: models.AdminUser, package: mod
     cost = unit_price * units
     if cost <= 0:
         return
+    # The floor is -credit_limit, not zero (see AdminUser.credit_limit).
+    # Still evaluated inside the UPDATE's WHERE rather than in Python, so
+    # two concurrent sales from the same account cannot both pass a check
+    # that only one of them could really afford.
+    limit = int(getattr(admin, "credit_limit", 0) or 0)
     result = db.execute(
         models.AdminUser.__table__.update()
-        .where(models.AdminUser.id == admin.id, models.AdminUser.balance >= cost)
+        .where(models.AdminUser.id == admin.id, models.AdminUser.balance - cost >= -limit)
         .values(balance=models.AdminUser.balance - cost)
     )
     if result.rowcount == 0:
         db.commit()
-        raise HTTPException(400, f"اعتبار شما کافی نیست - این پکیج {cost:,} تومان از اعتبار شما کم می‌کند")
+        available = (admin.balance or 0) + limit
+        msg = f"اعتبار شما کافی نیست - این پکیج {cost:,} تومان از اعتبار شما کم می‌کند"
+        if limit:
+            # Naming the overdraft matters: without it the message claims a
+            # hard limit that is not the one actually being applied.
+            msg += f" و با احتساب سقف بدهی {limit:,} تومان، فقط {available:,} تومان در دسترس دارید"
+        raise HTTPException(400, msg)
     # Accounting: the reseller's cost of goods (see services/accounting.py) -
     # committed together with the deduction itself.
     accounting.record(

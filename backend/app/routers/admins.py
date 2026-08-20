@@ -55,6 +55,7 @@ def _out(db: Session, admin: models.AdminUser) -> schemas.AdminOut:
         permissions=sorted(effective_permissions(admin)),
         login_slug=admin.login_slug,
         balance=admin.balance or 0,
+        credit_limit=admin.credit_limit or 0,
         telegram_id=admin.telegram_id,
         created_at=admin.created_at,
         users_count=users_count,
@@ -537,6 +538,17 @@ def update_admin(
         delta = payload.balance - (admin.balance or 0)
         if delta:
             _apply_balance_change(db, admin, delta, "ویرایش مستقیم موجودی", actor_id=current.id)
+    if payload.credit_limit is not None:
+        # Superadmin-only: an overdraft is the superadmin extending trust,
+        # so a level-2 Admin editing their own Seller must not be able to
+        # raise it - and certainly not their own.
+        if not current.is_superadmin:
+            raise HTTPException(403, "تعیین سقف بدهی فقط از دست ادمین اصلی برمی‌آید")
+        # Clamped rather than rejected: a negative value here would flip the
+        # comparison in _charge_admin_for_package and demand a POSITIVE
+        # balance before every sale, which is the opposite of what the field
+        # is for and would be very confusing to diagnose.
+        admin.credit_limit = max(0, int(payload.credit_limit))
     if payload.group_id is not None:
         group_id = payload.group_id or None
         if group_id and not db.get(models.AdminPermissionGroup, group_id):

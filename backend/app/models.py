@@ -122,6 +122,21 @@ class AdminUser(Base):
     # superadmins (they're never charged).
     balance = Column(BigInteger, default=0, nullable=False)
 
+    # How far below zero this account's balance may go - an overdraft, in
+    # tomans, always stored POSITIVE. 0 (the default) is the old behaviour
+    # exactly: a hard floor at zero.
+    #
+    # Exists because the floor was absolute, and a reseller who sells all
+    # day and settles up weekly hit it mid-sale: the customer had already
+    # paid, and provisioning failed on the panel's side. The trust already
+    # existed in real life; the model had no way to express it.
+    #
+    # Set per account by a superadmin, never by the holder - see
+    # routers/users.py's _charge_admin_for_package for the one place it is
+    # enforced, and note it is enforced in the SQL predicate rather than in
+    # Python, so two concurrent sales cannot both pass the check.
+    credit_limit = Column(BigInteger, default=0, nullable=False)
+
     # Lets this admin manage their OWN group's users directly from the
     # Telegram bot (see telegram_bot/admin_scope.py) - independent of the
     # bot's global BotSettings.admin_ids list, and scoped so they only ever

@@ -18,6 +18,11 @@ export function AuthProvider({ children }) {
   // What is actually deployed - see backend services/version.py. Held
   // here rather than fetched separately because /me already carries it.
   const [build, setBuild] = useState({ version: null, commit: null });
+  // This account's own wholesale credit. Needed by the Accounting page,
+  // because giving credit to a Seller now deducts it from the giver - a
+  // page offering that has to show what is left rather than let the first
+  // sign of the limit be a refusal.
+  const [wallet, setWallet] = useState({ balance: 0, credit_limit: 0, volume_balance_gb: 0 });
   const [loading, setLoading] = useState(true);
 
   const applyMe = (data) => {
@@ -32,6 +37,11 @@ export function AuthProvider({ children }) {
     setRole(data.role || (data.is_superadmin ? "superadmin" : "seller"));
     setPermissions(data.permissions || []);
     setBuild({ version: data.app_version || null, commit: data.app_commit || null });
+    setWallet({
+      balance: data.balance || 0,
+      credit_limit: data.credit_limit || 0,
+      volume_balance_gb: data.volume_balance_gb || 0,
+    });
   };
 
   useEffect(() => {
@@ -85,7 +95,7 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider
-      value={{ build, token, adminId, username, isSuperadmin, role, isAdminOrAbove, permissions, can, canAny, loading, login, logout }}
+      value={{ build, wallet, token, adminId, username, isSuperadmin, role, isAdminOrAbove, permissions, can, canAny, loading, login, logout }}
     >
       {children}
     </AuthContext.Provider>

@@ -104,6 +104,14 @@ def me(admin: models.AdminUser = Depends(get_current_admin)):
         "is_superadmin": admin.is_superadmin,
         "role": hierarchy.role(admin),
         "permissions": sorted(effective_permissions(admin)),
+        # This account's own wholesale credit, and how far below zero it may
+        # go. Delivered here because giving credit to a Seller now DEDUCTS
+        # it from the giver (see routers/admins.py's _transfer_balance), so
+        # the page offering that has to be able to show what is left -
+        # otherwise the first sign of the limit is a refusal.
+        "balance": admin.balance or 0,
+        "credit_limit": admin.credit_limit or 0,
+        "volume_balance_gb": admin.volume_balance_gb or 0,
         # Rendering offset for every date in the UI (see services/jalali.py
         # and frontend utils.js's setDisplayOffset). Delivered here rather
         # than from /api/settings because that router is admin-tier-only,

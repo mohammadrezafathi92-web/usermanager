@@ -535,6 +535,19 @@ def update_admin(
         # below) - kept working for API compatibility, but still recorded
         # as a balance-log entry (delta = new - old) so no balance change
         # can happen silently/unlogged regardless of which endpoint made it.
+        #
+        # Superadmin-only now. This was the second door into the same hole
+        # the topup endpoint had: setting an absolute balance creates the
+        # difference out of nothing, so a level-2 Admin could give their
+        # Seller any number they liked without spending a toman. Credit
+        # still moves down the tree - through /topup, which deducts it from
+        # the giver.
+        if not current.is_superadmin:
+            raise HTTPException(
+                403,
+                "برای دادن اعتبار به فروشنده از دکمه‌ی «انتقال اعتبار» استفاده کنید - "
+                "اعتبار منتقل می‌شود و از موجودی خودتان کم می‌گردد",
+            )
         delta = payload.balance - (admin.balance or 0)
         if delta:
             _apply_balance_change(db, admin, delta, "ویرایش مستقیم موجودی", actor_id=current.id)
@@ -578,10 +591,66 @@ def topup_admin_balance(admin_id: int, payload: schemas.AdminTopupRequest, db: S
     _scope_or_403(current, admin)
     if not payload.amount:
         raise HTTPException(400, "مبلغ نمی‌تواند صفر باشد")
-    _apply_balance_change(db, admin, payload.amount, (payload.note or "").strip() or None, actor_id=current.id)
+    note = (payload.note or "").strip() or None
+
+    if current.is_superadmin:
+        # The superadmin is the source of credit in this panel - money
+        # enters the tree here and nowhere else.
+        _apply_balance_change(db, admin, payload.amount, note, actor_id=current.id)
+    else:
+        # Anyone else is MOVING credit, not creating it.
+        #
+        # This endpoint used to apply the same one-sided change for every
+        # caller, so a level-2 Admin could top their own Seller up out of
+        # nothing: the Seller's balance rose, the Admin's did not fall, and
+        # the panel had simply invented the money. Delegating credit is the
+        # whole point of a reseller tree, but it has to come out of the
+        # delegator's own balance - you cannot give away what you were never
+        # given.
+        _transfer_balance(db, giver=current, receiver=admin, amount=payload.amount, note=note)
+
     db.commit()
     db.refresh(admin)
     return _out(db, admin)
+
+
+def _transfer_balance(
+    db: Session, *, giver: models.AdminUser, receiver: models.AdminUser,
+    amount: int, note: str | None,
+) -> None:
+    """Moves `amount` from giver to receiver. Negative = taking it back.
+
+    Bounded by what the giver actually holds - NOT by their balance plus
+    their overdraft. An overdraft is permission to keep SELLING past zero,
+    granted to a specific account by the superadmin; treating it as
+    spendable here would let it be handed down the tree and multiplied,
+    which is not what it was extended for.
+
+    Taking credit back is deliberately allowed to push the receiver
+    negative: they may have already spent it, and the alternative is a
+    parent unable to reclaim credit from a Seller who has stopped working.
+    """
+    if amount > 0 and (giver.balance or 0) < amount:
+        raise HTTPException(
+            400,
+            f"اعتبار شما کافی نیست - برای دادن {amount:,} تومان باید همین مقدار اعتبار داشته باشید "
+            f"(موجودی فعلی شما: {(giver.balance or 0):,} تومان)",
+        )
+    if amount < 0 and (receiver.balance or 0) + amount < -(receiver.credit_limit or 0):
+        # Symmetrical with the sales check: a takeback cannot push someone
+        # past the debt ceiling the superadmin set for them.
+        raise HTTPException(
+            400,
+            f"با پس‌گرفتن {abs(amount):,} تومان، بدهی «{receiver.username}» از سقف مجازش بیشتر می‌شود",
+        )
+
+    who = receiver.username if amount > 0 else giver.username
+    direction = "به" if amount > 0 else "از"
+    label = note or f"انتقال اعتبار {direction} {who}"
+    # Two logged halves in ONE transaction, so a transfer can never be
+    # half-recorded - the giver's and receiver's histories always agree.
+    _apply_balance_change(db, receiver, amount, label, actor_id=giver.id)
+    _apply_balance_change(db, giver, -amount, label, actor_id=giver.id)
 
 
 @router.get("/{admin_id}/balance-logs", response_model=list[schemas.AdminBalanceLogOut])
@@ -613,7 +682,31 @@ def topup_admin_volume(admin_id: int, payload: schemas.AdminVolumeTopupRequest, 
     _scope_or_403(current, admin)
     if not payload.amount_gb:
         raise HTTPException(400, "مقدار حجم نمی‌تواند صفر باشد")
-    _apply_volume_change(db, admin, payload.amount_gb, (payload.note or "").strip() or None, actor_id=current.id)
+    note = (payload.note or "").strip() or None
+    amount = payload.amount_gb
+
+    if current.is_superadmin:
+        _apply_volume_change(db, admin, amount, note, actor_id=current.id)
+    else:
+        # The third door into the same hole. Volume is credit measured in
+        # gigabytes rather than tomans, so it is delegated under exactly the
+        # same rule: a giver can only pass on what they hold.
+        if amount > 0 and (current.volume_balance_gb or 0) < amount:
+            raise HTTPException(
+                400,
+                f"حجم شما کافی نیست - برای دادن {amount:g} گیگابایت باید همین مقدار داشته باشید "
+                f"(حجم فعلی شما: {(current.volume_balance_gb or 0):g} گیگابایت)",
+            )
+        if amount < 0 and (admin.volume_balance_gb or 0) + amount < 0:
+            raise HTTPException(
+                400,
+                f"«{admin.username}» این مقدار حجم ندارد که پس گرفته شود "
+                f"(حجم فعلی او: {(admin.volume_balance_gb or 0):g} گیگابایت)",
+            )
+        label = note or f"انتقال حجم {'به' if amount > 0 else 'از'} {admin.username if amount > 0 else current.username}"
+        _apply_volume_change(db, admin, amount, label, actor_id=current.id)
+        _apply_volume_change(db, current, -amount, label, actor_id=current.id)
+
     db.commit()
     db.refresh(admin)
     return _out(db, admin)

@@ -62,7 +62,7 @@ function DateFilters({ dateFrom, dateTo, setDateFrom, setDateTo, t, lang, childr
 
 export default function Accounting() {
   const { t, language } = useLanguage();
-  const { isSuperadmin, isAdminOrAbove } = useAuth();
+  const { isSuperadmin, isAdminOrAbove, wallet } = useAuth();
   const [tab, setTab] = useState("dashboard");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -453,6 +453,18 @@ export default function Accounting() {
       {/* ================= admin credit (superadmin + level-2) ================= */}
       {tab === "credit" && isAdminOrAbove && (
         <>
+          {/* A superadmin CREATES credit here; anyone else MOVES their own.
+              Saying which, with the number, before they type an amount -
+              otherwise the first sign of the limit is a refusal after the
+              fact. */}
+          {!isSuperadmin && (
+            <div className="card mb-3 flex items-center justify-between gap-3 flex-wrap">
+              <span className="text-sm text-gray-600">{t("accounting.creditTransferNote")}</span>
+              <span className="font-bold text-gray-800 tabular-nums" dir="ltr">
+                {fmt(wallet?.balance || 0)}
+              </span>
+            </div>
+          )}
           {creditError && <div className="text-sm text-red-500 mb-3">{creditError}</div>}
           {!admins ? (
             <div className="text-gray-400">{t("common.loading")}</div>

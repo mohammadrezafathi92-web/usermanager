@@ -291,6 +291,18 @@ export default function Admins() {
     try {
       await reparentAdmin(editingId, roleParentId ? Number(roleParentId) : null, roleValue);
       setRoleSaved(true);
+      // The rest of this modal keys off editingRole - the role as it was
+      // when the modal opened. Without this line, promoting a Seller to an
+      // Admin leaves the node-assignment section and the node permission
+      // group hidden until the modal is closed and reopened, which reads
+      // as "the promotion did not work".
+      setEditingRole(roleValue);
+      // The node list is only fetched when a modal OPENS on an Admin, so
+      // an account promoted in place would reveal the section and then sit
+      // on its loading state forever.
+      if (isSuperadmin && roleValue === "admin" && availableNodes === null) {
+        fetchAvailableNodesForGrant().then((res) => setAvailableNodes(res.data));
+      }
       load();
     } catch (err) {
       setRoleError(err?.response?.data?.detail || t("admins.roleChangeError"));

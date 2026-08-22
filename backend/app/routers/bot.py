@@ -531,6 +531,25 @@ def create_user(payload: schemas.BotCreateUserRequest, db: Session = Depends(get
             db, user, node, spec.protocol, spec.flow or "",
             purchase_batch=batch, package_name=payload.package_name,
         )
+
+    # Turn what was just provisioned into a real, independently-enforced
+    # service instead of leaving it on the customer's shared pool.
+    #
+    # Without this, a customer's FIRST purchase was always a legacy shared
+    # service and only their second onwards was a proper one: purchase_
+    # package (the existing-customer path) creates a Purchase, and this
+    # brand-new-customer path never did. The panel then showed "سرویس
+    # اشتراکی (قدیمی)" with a "convert" button on an account bought
+    # minutes earlier, which is exactly how it was reported.
+    #
+    # absorb_legacy_pool_into_purchase is the same function the startup
+    # migration uses, and it carries the user-level quota/usage/expiry onto
+    # the Purchase 1:1 - so nothing is double-counted: once any Purchase
+    # exists, User.effective_quota_bytes stops reading the user-level
+    # number at all.
+    if payload.connections:
+        user_ops.absorb_legacy_pool_into_purchase(db, user)
+
     package = db.get(models.Package, payload.package_id) if payload.package_id else None
     _record_bot_sale(db, "sale_new", payload, user, package)
     db.commit()

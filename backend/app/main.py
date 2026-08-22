@@ -92,7 +92,25 @@ def _init_sentry() -> None:
 
 _init_sentry()
 
-app = FastAPI(title=settings.app_name)
+# Interactive API docs are OFF unless asked for.
+#
+# They are a development convenience that shipped to production by default:
+# /docs and /openapi.json describe every endpoint, every field name and the
+# bot API's X-API-Key header, to anyone who can reach the port. The
+# endpoints themselves are authenticated, so this is disclosure rather than
+# direct access - but it is a free map of the attack surface, handed out
+# with no login.
+#
+# Kept behind a switch rather than deleted so debugging a live install is
+# still one env var away.
+_docs_enabled = os.environ.get("ENABLE_API_DOCS", "").strip().lower() in ("1", "true", "yes")
+
+app = FastAPI(
+    title=settings.app_name,
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
+)
 
 app.add_middleware(
     CORSMiddleware,

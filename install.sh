@@ -477,7 +477,10 @@ echo -e "${green}============================================================${p
 echo -e "${green} User Manager is up.${plain}"
 echo -e "${green}============================================================${plain}"
 echo -e " Panel:        http://${PUBLIC_IP_DISPLAY}:${CURRENT_PORT}"
-echo -e " API/Swagger:  http://${PUBLIC_IP_DISPLAY}:8000/docs"
+# The Swagger URL used to be printed here as if it were a feature. The API
+# port is now bound to localhost and the docs are off by default - see
+# docker-compose.yml's PANEL_API_BIND and main.py's ENABLE_API_DOCS - so
+# advertising a public /docs address would be both wrong and an invitation.
 if [[ "$FIRST_INSTALL" == "1" ]]; then
 echo -e " Admin user:   ${ADMIN_USERNAME}"
 echo -e " Admin pass:   ${ADMIN_PASSWORD}"

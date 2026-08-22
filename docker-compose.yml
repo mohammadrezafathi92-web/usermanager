@@ -72,7 +72,24 @@ services:
       # says, no matter what the admin picked at install time.
       - HOST_PROJECT_DIR=${HOST_PROJECT_DIR:-/root/usermanager}
     ports:
-      - "8000:8000"
+      # The API binds to LOCALHOST by default, not to every interface.
+      #
+      # Nothing in a normal install needs it from outside: the frontend's
+      # nginx reaches it as `backend:8000` over the docker network, and the
+      # Telegram bot runs inside this same process. Publishing it on
+      # 0.0.0.0 put the entire API - including FastAPI's /docs and
+      # /openapi.json, which describe every endpoint and the bot's
+      # X-API-Key header - on the public internet for no benefit.
+      #
+      # Two optional features DO need it reachable from another machine:
+      # deploying the bot to a second server (routers/remote_bot.py builds
+      # http://<host>:8000) and the HA peer (PanelSettings.ha_peer_url).
+      # Turning either on means setting PANEL_API_BIND=0.0.0.0 in the .env
+      # next to this file - a deliberate act, with a firewall rule to match,
+      # rather than the default everyone inherits without knowing.
+      - "${PANEL_API_BIND:-127.0.0.1}:8000:8000"
+      # RADIUS genuinely must be public: the MikroTik nodes authenticate
+      # their PPP users against it from wherever they are.
       - "1812:1812/udp"
       - "1813:1813/udp"
 

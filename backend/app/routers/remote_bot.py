@@ -6,6 +6,7 @@ wires it to the BotSettings row and the local in-process poller.
 The SSH password only ever lives in the request body for the duration of
 one call (deploy or stop) - it is never written to the database."""
 import datetime as dt
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -19,6 +20,8 @@ from ..services.keys import generate_api_key
 from ..telegram_bot import runner as telegram_bot_runner
 from ..telegram_bot.config import parse_id_set
 from .telegram_bot_settings import _get_or_create as _get_or_create_bot_settings, _response as _bot_settings_response
+
+logger = logging.getLogger("remote_bot")
 
 # Deploying an interactive bot onto a SECOND server over SSH (with a
 # password typed into the request body) is exactly the kind of
@@ -52,6 +55,16 @@ def deploy(payload: schemas.RemoteBotDeployRequest, db: Session = Depends(get_db
                 "آدرسی از این پنل که از سرور دوم قابل دسترسی باشد وارد کنید (مثلا http://IP-همین-سرور:8000)",
             )
         panel_api_url = f"http://{host}:8000"
+    # Port 8000 is bound to localhost by default now (see docker-compose.yml's
+    # PANEL_API_BIND), so this feature - the one legitimate reason to expose
+    # it - would otherwise fail with a bare connection timeout on the second
+    # server, hours after the fact. Said here, at the moment the admin asks
+    # for it, rather than left to be discovered.
+    if ":8000" in panel_api_url:
+        logger.info(
+            "نصب ربات روی سرور دوم: مطمئن شوید PANEL_API_BIND=0.0.0.0 در فایل .env کنار docker-compose.yml "
+            "تنظیم شده و پورت ۸۰۰۰ در فایروال باز است، وگرنه سرور دوم به این پنل نمی‌رسد"
+        )
     # remote_bridge.py's RemoteBridge appends bare paths like "/nodes",
     # "/users" etc. straight onto this base URL with no prefix of its own -
     # it expects PANEL_API_URL to already point AT routers/bot.py's mount

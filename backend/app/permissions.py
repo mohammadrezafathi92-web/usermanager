@@ -50,17 +50,69 @@ that granularity was ever actually reachable:
   require_superadmin instead, also regardless of any checkbox. Removed
   for the same "does nothing for anyone" reason as api_keys before it.
 
-What's left is the ONE thing that's both real AND safely Seller-scopable
-today: viewing tutorials (read-only, harmless either way). PERMISSION_GROUPS
-below is the grouped-by-page shape the frontend renders as sectioned
-checkboxes; PERMISSION_CHOICES is the flat key->label view used for
-validation/storage, derived from it.
+That pruning left exactly ONE grantable permission, which made the whole
+"گروه دسترسی" feature a shell around a single checkbox - reported by the
+panel owner as "خیلی ناقص", correctly.
+
+The pruning's reasoning was half right. It was true that the REMOVED
+checkboxes controlled nothing: a Seller has no node access and cannot edit
+packages no matter what any box says. What it missed is that a Seller's
+customer operations were never gated by anything at all - reading users.py
+today, a Seller can delete customers, run bulk operations, export the whole
+customer list and spend their credit on renewals, with no permission
+involved anywhere. The answer to "these boxes do nothing" was to define
+boxes that do something, not to leave the capabilities ungated.
+
+So the list below is now the set that is BOTH real and enforceable, agreed
+with the panel owner. Every entry corresponds to a specific server-side
+gate, not a menu item:
+
+  delete_users      irreversible, and takes the service off the node too
+  bulk_actions      the most destructive tool in the panel
+  export_users      the customer list walking out the door with a Seller
+  spend_credit      renewals/upgrades draw on the Seller's own balance
+  view_accounting   their own sales figures and transactions
+  manage_discount_codes  issuing a discount is deciding about money
+  own_bot           running their own sales bot on their own token
+  view_tutorials    read-only, harmless either way (the survivor)
+
+IMPORTANT - every one of these was UNRESTRICTED before this change, so
+adding them naively would have quietly stripped abilities every existing
+Seller had yesterday. main.py's startup grants them all to every account
+and group that predates the change; the superadmin then unchecks what they
+want to withhold. Same rule the hierarchy phases were built under: the
+change is a new capability, not a new restriction applied retroactively.
+
+PERMISSION_GROUPS is the grouped-by-page shape the frontend renders as
+sectioned checkboxes; PERMISSION_CHOICES is the flat key->label view used
+for validation/storage, derived from it.
 """
 
 PERMISSION_GROUPS: dict[str, dict] = {
-    "tutorials": {
-        "label": "آموزش",
+    "customers": {
+        "label": "مدیریت مشتریان",
         "perms": {
+            # Deliberately NOT here: creating and editing customers. That is
+            # a Seller's entire job, and an account that cannot do it has no
+            # reason to exist - a checkbox nobody could ever sensibly untick
+            # is the kind that made this list useless the first time.
+            "delete_users": "حذف مشتری",
+            "bulk_actions": "عملیات گروهی (ساخت/تغییر/حذف دسته‌جمعی و پیام انبوه)",
+            "export_users": "خروجی گرفتن از لیست مشتریان",
+            "spend_credit": "تمدید و اعمال بسته (خرج کردن اعتبار)",
+        },
+    },
+    "money": {
+        "label": "مالی",
+        "perms": {
+            "view_accounting": "حساب‌داری و گزارش‌ها",
+            "manage_discount_codes": "کدهای تخفیف",
+        },
+    },
+    "tools": {
+        "label": "ابزارها",
+        "perms": {
+            "own_bot": "ربات تلگرام اختصاصی",
             "view_tutorials": "مشاهده آموزش‌ها",
         },
     },

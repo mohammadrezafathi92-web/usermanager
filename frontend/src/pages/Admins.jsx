@@ -956,11 +956,19 @@ export default function Admins() {
             </div>
           )}
 
+          {/* A level-2 Admin bypasses every permission check server-side
+              (deps.require_permission short-circuits for them), so ticking
+              these on one does nothing at all. Saying so beats rendering a
+              form whose every control is inert - which is a large part of
+              why this section read as broken. */}
+          {!isTargetSeller ? (
+            <div className="rounded-xl bg-gray-50 px-3 py-2.5 text-xs text-gray-500">
+              {t("admins.permissionsAdminNote")}
+            </div>
+          ) : (
           <div className={form.group_id ? "opacity-40 pointer-events-none" : ""}>
             <label className="block text-sm text-gray-600 mb-2">{t("admins.permissionsLabel")}</label>
-            {isTargetSeller && (
-              <div className="text-xs text-gray-400 mb-2">{t("admins.sellerNoNodesHint")}</div>
-            )}
+            <div className="text-xs text-gray-400 mb-2">{t("admins.permissionsSellerHint")}</div>
             <div className="space-y-3">
               {visiblePermGroups.map(([groupKey, group]) => (
                 <div key={groupKey}>
@@ -977,6 +985,7 @@ export default function Admins() {
               ))}
             </div>
           </div>
+          )}
 
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("admins.billingModeLabel")}</label>

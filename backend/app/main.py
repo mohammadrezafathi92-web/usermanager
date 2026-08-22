@@ -417,6 +417,70 @@ def _backfill_roles_and_paths() -> None:
 
 
 
+def _grandfather_permissions() -> None:
+    """Grants every newly-introduced permission to accounts that predate it.
+
+    The capabilities these permissions gate - deleting customers, bulk
+    operations, export, spending credit, accounting, discount codes, own bot
+    - were all completely ungated before. Shipping the gates without this
+    would take working features away from every existing Seller on the next
+    deploy, and it would look to them like a settings change nobody made.
+
+    So the deploy adds a capability (the ability to WITHHOLD these) rather
+    than applying a restriction retroactively. The superadmin then unticks
+    what they actually want to withhold.
+
+    Runs once, guarded by PanelSettings.permissions_grandfathered. Only
+    grants; never removes anything already stored.
+    """
+    from .permissions import PERMISSION_CHOICES, format_permissions, parse_permissions
+
+    db = SessionLocal()
+    try:
+        # id=1 singleton, same convention as routers/panel_settings.py's
+        # _get_or_create - .first() would happily create a second row on a
+        # database that somehow had none at id 1.
+        settings_row = db.get(models.PanelSettings, 1)
+        if settings_row is None:
+            settings_row = models.PanelSettings(id=1)
+            db.add(settings_row)
+            db.flush()
+        if settings_row.permissions_grandfathered:
+            return
+
+        everything = set(PERMISSION_CHOICES)
+        touched = 0
+
+        # Groups first: an account IN a group reads its permissions from the
+        # group (see permissions.effective_permissions), so granting only on
+        # the account would leave grouped Sellers restricted anyway.
+        for group in db.query(models.AdminPermissionGroup).all():
+            merged = parse_permissions(group.permissions) | everything
+            group.permissions = format_permissions(merged)
+            touched += 1
+
+        for admin in db.query(models.AdminUser).filter(models.AdminUser.is_superadmin.is_(False)).all():
+            merged = parse_permissions(admin.permissions) | everything
+            admin.permissions = format_permissions(merged)
+            touched += 1
+
+        settings_row.permissions_grandfathered = True
+        db.commit()
+        logging.info(
+            "permissions: %d حساب/گروه موجود همه‌ی مجوزهای جدید را گرفتند تا رفتارشان عوض نشود", touched
+        )
+    except Exception:
+        db.rollback()
+        # Deliberately NOT fatal, but this one is worth shouting about: if
+        # it fails, existing Sellers really will have lost abilities, and
+        # the superadmin needs to know to re-tick them by hand.
+        logging.exception(
+            "permissions grandfathering ناموفق بود - ممکن است فروشنده‌های فعلی بعضی دسترسی‌ها را از دست بدهند"
+        )
+    finally:
+        db.close()
+
+
 @app.on_event("startup")
 def on_startup():
     _warn_if_insecure_defaults()
@@ -425,6 +489,9 @@ def on_startup():
     _auto_migrate_missing_columns()
     _backfill_hierarchy_node_access(_admin_node_access_is_new)
     _backfill_roles_and_paths()
+    # Must run BEFORE the first request is served: the moment the app is up,
+    # a Seller hitting a newly-gated endpoint would get a 403 they never had.
+    _grandfather_permissions()
 
     # The container is recreated on every deploy and takes the WireGuard
     # interface with it, so the tunnel is rebuilt from the database here.

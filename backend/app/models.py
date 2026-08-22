@@ -1397,6 +1397,17 @@ class PanelSettings(Base):
     display_utc_offset_minutes = Column(Integer, default=210)
 
     accounting_backfilled = Column(Boolean, nullable=False, default=False)
+
+    # Marks that the one-time grandfathering of the new granular Seller
+    # permissions has run - see main.py's _grandfather_permissions.
+    #
+    # Every capability those permissions gate (deleting customers, bulk
+    # operations, export, spending credit, accounting, discount codes, own
+    # bot) was completely UNGATED before they existed. Introducing them
+    # without this flag would have silently stripped abilities every Seller
+    # had the day before, which is not an upgrade - it is a regression that
+    # looks like one of their own settings.
+    permissions_grandfathered = Column(Boolean, nullable=False, default=False)
     # One-shot guard for services/purchase_migration.py - flipped to True
     # after legacy shared-pool connection groups have been converted into
     # independent Purchases once (see that module's docstring).

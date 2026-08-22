@@ -18,13 +18,19 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import get_current_admin, require_confirm_password
+from ..deps import get_current_admin, require_confirm_password, require_permission
 from ..services import hierarchy
 
 router = APIRouter(
     prefix="/api/discount-codes",
     tags=["discount-codes"],
-    dependencies=[Depends(get_current_admin)],
+    # Issuing a discount is deciding about money, so it is one of the
+    # capabilities a level-2 Admin can withhold from a Seller. Applied at
+    # the router rather than per-endpoint because there is no read-only
+    # half worth separating here - a Seller who may not issue codes has no
+    # use for the list either. Superadmins and level-2 Admins pass
+    # automatically (see deps.require_permission).
+    dependencies=[Depends(get_current_admin), Depends(require_permission("manage_discount_codes"))],
 )
 
 

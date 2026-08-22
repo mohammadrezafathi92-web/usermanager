@@ -16,10 +16,17 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..services.jalali import fmt_jalali
-from ..deps import get_current_admin, require_superadmin, require_confirm_password
+from ..deps import get_current_admin, require_superadmin, require_confirm_password, require_permission
 from ..services import accounting, hierarchy
 
-router = APIRouter(prefix="/api/accounting", tags=["accounting"])
+# Every endpoint here is already scoped by role (a Seller only ever sees
+# their own rows). The permission decides whether they see the section at
+# all - a level-2 Admin may not want a sub-seller studying figures. Passes
+# automatically for superadmins and level-2 Admins.
+router = APIRouter(
+    prefix="/api/accounting", tags=["accounting"],
+    dependencies=[Depends(require_permission("view_accounting"))],
+)
 
 
 def _parse_date(value: Optional[str], end: bool = False) -> Optional[dt.datetime]:

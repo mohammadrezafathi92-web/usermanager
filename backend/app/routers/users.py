@@ -11,10 +11,23 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from .. import models, schemas
 from ..database import get_db
 from ..services.jalali import fmt_jalali
-from ..deps import get_current_admin, require_confirm_password
+from ..deps import get_current_admin, require_confirm_password, require_permission
 from ..services import user_ops, hierarchy, accounting
 
 router = APIRouter(prefix="/api/users", tags=["users"], dependencies=[Depends(get_current_admin)])
+
+# Granular gates for the destructive/costly parts of this router. Declared
+# once here rather than inline so the set is visible in one place; every one
+# of them passes automatically for a superadmin and a level-2 Admin (see
+# deps.require_permission), so these only ever restrict a level-3 Seller.
+#
+# Creating and editing a customer are deliberately NOT gated - that is the
+# whole job of the account, and see permissions.py for why a checkbox nobody
+# could sensibly untick is worse than none.
+_may_delete_users = Depends(require_permission("delete_users"))
+_may_bulk = Depends(require_permission("bulk_actions"))
+_may_export = Depends(require_permission("export_users"))
+_may_spend = Depends(require_permission("spend_credit"))
 
 # Same Persian labels as the panel's own frontend/src/utils.js STATUS_LABELS -
 # kept in sync manually since the export below is generated server-side.
@@ -322,6 +335,7 @@ def bulk_create_users(
     payload: schemas.BulkCreateUsersRequest,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
+    _perm=_may_bulk,
 ):
     # Validated here, BEFORE any wallet charge below - user_ops.bulk_create_users
     # re-checks this too, but doing it only there meant an invalid count
@@ -376,6 +390,7 @@ def bulk_update_users(
     payload: schemas.BulkUpdateUsersRequest,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
+    _perm=_may_bulk,
 ):
     package = None
     if payload.package_id:
@@ -398,7 +413,10 @@ def bulk_update_users(
 def bulk_delete_users(
     payload: schemas.BulkDeleteUsersRequest,
     db: Session = Depends(get_db),
-    admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password)):
+    admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password),
+    _perm=_may_bulk, _perm2=_may_delete_users):
+    # Both gates, not either: this is a bulk operation AND a deletion, and
+    # withholding one of the two should be enough to stop it.
     return user_ops.bulk_delete_users(db, user_ids=payload.user_ids, admin=admin)
 
 
@@ -407,6 +425,7 @@ def bulk_notify_users(
     payload: schemas.BulkNotifyUsersRequest,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
+    _perm=_may_bulk,
 ):
     """"ارسال پیام تلگرام" bulk action on Users.jsx - meant to be used
     together with the page's own status filter + "انتخاب همه با این
@@ -505,6 +524,7 @@ def export_users(
     online_only: bool = False,
     owner_admin_id: Optional[int] = None,
     package_id: Optional[int] = None,
+    _perm=_may_export,
 ):
     """Exports the same set of users list_users would show for these exact
     filters (search/status/online/group/package) as a formatted .xlsx file -
@@ -695,7 +715,7 @@ def reset_usage(user_id: int, db: Session = Depends(get_db), admin: models.Admin
 
 
 @router.delete("/{user_id}")
-def delete_user(user_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password)):
+def delete_user(user_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password), _perm=_may_delete_users):
     user = _get_owned_user(db, admin, user_id)
     user_ops.delete_user_cascade(db, user)
     return {"ok": True}
@@ -793,6 +813,7 @@ def apply_package(
     payload: schemas.ApplyPackageRequest,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
+    _perm=_may_spend,
 ):
     """Gives an EXISTING user a package's bundled services - "افزودن پکیج"
     next to "افزودن اتصال" on UserDetail.jsx. Works whether the user
@@ -864,6 +885,7 @@ def renew_purchase_endpoint(
     payload: schemas.PurchaseRenewRequest,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
+    _perm=_may_spend,
 ):
     """Renews/extends ONE independent purchase - the per-purchase
     counterpart to the user-level renew action, without touching anything
@@ -888,6 +910,7 @@ def delete_purchase(
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
     _confirm=Depends(require_confirm_password),
+    _perm=_may_delete_users,
 ):
     """Deletes ONE of a customer's services: its connections are removed
     from the real nodes first (user_ops.delete_connection deprovisions each

@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_admin, require_superadmin
+from ..permissions import effective_permissions
 from ..services import hierarchy
 from ..telegram_bot import runner
 from ..telegram_bot.config import parse_id_set
@@ -34,9 +35,18 @@ def _require_admin_tier(admin: models.AdminUser) -> None:
     Seller can have their own dedicated bot (a Seller's customers connect
     to THEIR bot and see THEIR own resale prices - see
     models.PackageSellerPrice/routers/bot.py's list_packages); a superadmin
-    already has the shared/global bot above, so only they're excluded."""
+    already has the shared/global bot above, so only they're excluded.
+
+    A Seller additionally needs the own_bot permission. Running a sales bot
+    on your own token is a real, separable capability - it is how a Seller
+    reaches customers directly - so a level-2 Admin can decide whether a
+    given sub-seller gets one. A level-2 Admin always may (see
+    permissions.py's note on require_permission short-circuiting for them).
+    """
     if hierarchy.role(admin) == hierarchy.ROLE_SUPERADMIN:
         raise HTTPException(403, "این بخش برای ادمین اصلی در دسترس نیست - از تنظیمات ربات مشترک استفاده کنید")
+    if hierarchy.is_seller(admin) and "own_bot" not in effective_permissions(admin):
+        raise HTTPException(403, "شما به این بخش دسترسی ندارید")
 
 
 def _get_or_create(db: Session) -> models.BotSettings:

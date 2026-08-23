@@ -396,11 +396,16 @@ export default function Admins() {
         const payload = {
           permissions: form.permissions,
           login_slug: form.login_slug || null,
-          balance: form.balance === "" ? null : Number(form.balance),
           telegram_id: form.telegram_id === "" ? null : Number(form.telegram_id),
           group_id: form.group_id === "" ? 0 : Number(form.group_id),
           billing_mode: form.billing_mode,
         };
+        // The balance is READ-ONLY in this form for everyone - it is moved
+        // by the topup/transfer endpoints, which log it and deduct it from
+        // the giver. Sending it back untouched achieved nothing and got a
+        // level-2 Admin a 403 about credit transfer on every save, blocking
+        // edits that had nothing to do with money.
+        if (isSuperadmin) payload.balance = form.balance === "" ? null : Number(form.balance);
         // Only a superadmin may set an overdraft, and the backend refuses
         // it from anyone else - so it is not even sent, rather than sent
         // and rejected with a 403 that would abort the whole save.

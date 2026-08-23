@@ -543,13 +543,19 @@ def update_admin(
         # Seller any number they liked without spending a toman. Credit
         # still moves down the tree - through /topup, which deducts it from
         # the giver.
-        if not current.is_superadmin:
+        # Judged on the CHANGE, not on the field being present. The edit
+        # form shows the balance read-only and posts it back untouched with
+        # every save, so refusing merely because it was sent meant a level-2
+        # Admin could not save ANY edit to their own Seller - not a
+        # permission tick, not a Telegram id, nothing. The 403 named credit
+        # transfer, which had nothing to do with what they were doing.
+        delta = payload.balance - (admin.balance or 0)
+        if delta and not current.is_superadmin:
             raise HTTPException(
                 403,
                 "برای دادن اعتبار به فروشنده از دکمه‌ی «انتقال اعتبار» استفاده کنید - "
                 "اعتبار منتقل می‌شود و از موجودی خودتان کم می‌گردد",
             )
-        delta = payload.balance - (admin.balance or 0)
         if delta:
             _apply_balance_change(db, admin, delta, "ویرایش مستقیم موجودی", actor_id=current.id)
     if payload.credit_limit is not None:

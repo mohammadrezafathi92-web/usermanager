@@ -1509,6 +1509,10 @@ class AdminUpdate(BaseModel):
     # How far below zero this account may go, in tomans, always positive.
     # Superadmin-only, and 0 means the old hard floor at zero.
     credit_limit: Optional[int] = None
+    # Tomans per gigabyte this account is charged when it provisions a
+    # package. Superadmin-only; 0 means "not set", and the package's own
+    # cooperation_price applies as before.
+    wholesale_price_per_gb: Optional[int] = None
     # Numeric Telegram id letting this admin manage their own group's users
     # directly from the bot - see telegram_bot/admin_scope.py.
     telegram_id: Optional[int] = None
@@ -1531,6 +1535,7 @@ class AdminOut(BaseModel):
     login_slug: Optional[str] = None
     balance: int = 0
     credit_limit: int = 0
+    wholesale_price_per_gb: int = 0
     telegram_id: Optional[int] = None
     created_at: dt.datetime
     users_count: int = 0

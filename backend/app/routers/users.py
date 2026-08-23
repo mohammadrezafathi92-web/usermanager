@@ -50,6 +50,41 @@ _SORT_COLUMNS = {
 }
 
 
+def _unit_price(admin: models.AdminUser, package: models.Package) -> int:
+    """What ONE unit of this package costs THIS admin.
+
+    Shared by the charge and the refund below. They used to compute it
+    separately with the same expression, which is a drift waiting to happen
+    - and the half that drifts is the refund, so an admin would be charged
+    one number and given back another.
+
+    A per-GB rate on the account (AdminUser.wholesale_price_per_gb) wins
+    when it is set. That is the point of the rate: the Admin builds and
+    prices their own packages, so Package.cooperation_price is a number
+    they choose for themselves, and using it to decide what they owe the
+    superadmin meant the credit system metered nothing. quota_gb x rate is
+    set by the superadmin and cannot be edited from the Admin's side.
+
+    An UNLIMITED package (quota_gb = 0) has no per-GB answer. It is refused
+    rather than silently charged nothing - a rate-based admin who could
+    make everything unlimited would be back to paying zero, which is the
+    hole this closes. The superadmin can still allow it deliberately by
+    clearing that admin's rate.
+    """
+    rate = int(getattr(admin, "wholesale_price_per_gb", 0) or 0)
+    if rate <= 0:
+        return package.cooperation_price if package.cooperation_price is not None else (package.price or 0)
+
+    quota_gb = float(package.quota_gb or 0)
+    if quota_gb <= 0:
+        raise HTTPException(
+            400,
+            f"برای «{admin.username}» نرخ گیگی ({rate:,} تومان) تعیین شده و بسته‌ی نامحدود "
+            f"«{package.name}» با آن قابل محاسبه نیست - یا حجم بسته را مشخص کنید یا نرخ گیگی این ادمین را بردارید",
+        )
+    return round(quota_gb * rate)
+
+
 def _charge_admin_for_package(db: Session, admin: models.AdminUser, package: models.Package, units: int = 1) -> None:
     """Atomically deducts `units` times the package's wholesale price (its
     cooperation_price, or the regular customer price if no cooperation
@@ -68,7 +103,7 @@ def _charge_admin_for_package(db: Session, admin: models.AdminUser, package: mod
         # (volume_balance_gb) و لحظه‌ای در quota_manager.py's _apply_delta
         # کسر می‌شود، نه یکجا در لحظه ساخت کاربر.
         return
-    unit_price = package.cooperation_price if package.cooperation_price is not None else (package.price or 0)
+    unit_price = _unit_price(admin, package)
     cost = unit_price * units
     if cost <= 0:
         return
@@ -111,7 +146,7 @@ def _refund_admin_for_package(db: Session, admin: models.AdminUser, package: mod
         return
     if admin.billing_mode == "usage":
         return
-    unit_price = package.cooperation_price if package.cooperation_price is not None else (package.price or 0)
+    unit_price = _unit_price(admin, package)
     amount = unit_price * units
     if amount <= 0:
         return

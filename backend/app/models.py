@@ -137,6 +137,22 @@ class AdminUser(Base):
     # Python, so two concurrent sales cannot both pass the check.
     credit_limit = Column(BigInteger, default=0, nullable=False)
 
+    # What ONE gigabyte costs this account, in tomans - the wholesale rate
+    # the superadmin sets for them. 0 (the default) means "not set", and the
+    # old behaviour applies unchanged.
+    #
+    # Exists because the old behaviour has a hole: a level-2 Admin builds
+    # their own packages, and Package.cooperation_price - the number that
+    # decides what they owe the superadmin - is a field on that package,
+    # typed by the same Admin. They could set it to zero. The credit system
+    # was therefore honour-based for exactly the accounts it was meant to
+    # meter.
+    #
+    # With a rate set, what an Admin pays is quota_gb x this, and what they
+    # charge their own customers is entirely their business - which is the
+    # actual shape of the relationship. See routers/users.py's _unit_price.
+    wholesale_price_per_gb = Column(BigInteger, default=0, nullable=False)
+
     # Lets this admin manage their OWN group's users directly from the
     # Telegram bot (see telegram_bot/admin_scope.py) - independent of the
     # bot's global BotSettings.admin_ids list, and scoped so they only ever

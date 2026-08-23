@@ -69,6 +69,7 @@ const emptyForm = {
   billing_mode: "flat",
   volume_balance_gb: 0,
   credit_limit: 0,
+  wholesale_price_per_gb: 0,
   initial_volume_gb: "",
   // Superadmin-only, CREATE time only. Two independent fields, matching the
   // backend: `role` says what the account is, `parent_admin_id` says whose
@@ -240,6 +241,7 @@ export default function Admins() {
       login_slug: admin.login_slug || "",
       balance: admin.balance || 0,
       credit_limit: admin.credit_limit || 0,
+      wholesale_price_per_gb: admin.wholesale_price_per_gb || 0,
       telegram_id: admin.telegram_id || "",
       group_id: admin.group_id || "",
       initial_balance: "",
@@ -403,6 +405,7 @@ export default function Admins() {
         // it from anyone else - so it is not even sent, rather than sent
         // and rejected with a 403 that would abort the whole save.
         if (isSuperadmin) payload.credit_limit = Number(form.credit_limit) || 0;
+        if (isSuperadmin) payload.wholesale_price_per_gb = Number(form.wholesale_price_per_gb) || 0;
         if (form.password) payload.password = form.password;
         await updateAdmin(editingId, payload);
       } else {
@@ -1065,6 +1068,25 @@ export default function Admins() {
                           available: formatToman((Number(form.balance) || 0) + Number(form.credit_limit)),
                         })
                       : t("admins.creditLimitHint")}
+                  </div>
+
+                  {/* The rate that decides what this account owes upward.
+                      Sits with the balance because it is what consumes it.
+                      Superadmin-only, matching the backend - an account that
+                      could set its own buy price is the hole this closes. */}
+                  <div className="mt-3">
+                    <label className="block text-sm text-gray-600 mb-1">{t("admins.wholesalePerGb")}</label>
+                    <MoneyInput
+                      value={form.wholesale_price_per_gb ?? 0}
+                      onChange={(v) => set("wholesale_price_per_gb", v === "" ? 0 : Number(v))}
+                    />
+                    <div className="text-xs text-gray-400 mt-1">
+                      {Number(form.wholesale_price_per_gb) > 0
+                        ? t("admins.wholesalePerGbActive", {
+                            example: formatToman(Number(form.wholesale_price_per_gb) * 50),
+                          })
+                        : t("admins.wholesalePerGbHint")}
+                    </div>
                   </div>
                 </div>
               )}

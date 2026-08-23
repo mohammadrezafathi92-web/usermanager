@@ -56,6 +56,7 @@ def _out(db: Session, admin: models.AdminUser) -> schemas.AdminOut:
         login_slug=admin.login_slug,
         balance=admin.balance or 0,
         credit_limit=admin.credit_limit or 0,
+        wholesale_price_per_gb=admin.wholesale_price_per_gb or 0,
         telegram_id=admin.telegram_id,
         created_at=admin.created_at,
         users_count=users_count,
@@ -562,6 +563,14 @@ def update_admin(
         # balance before every sale, which is the opposite of what the field
         # is for and would be very confusing to diagnose.
         admin.credit_limit = max(0, int(payload.credit_limit))
+    if payload.wholesale_price_per_gb is not None:
+        # Superadmin-only for the same reason as the overdraft: this is the
+        # number that decides what the account owes upward, so the account
+        # must not be able to set it. Letting an Admin edit it would put us
+        # straight back in the hole it was built to close.
+        if not current.is_superadmin:
+            raise HTTPException(403, "تعیین نرخ گیگی فقط از دست ادمین اصلی برمی‌آید")
+        admin.wholesale_price_per_gb = max(0, int(payload.wholesale_price_per_gb))
     if payload.group_id is not None:
         group_id = payload.group_id or None
         if group_id and not db.get(models.AdminPermissionGroup, group_id):

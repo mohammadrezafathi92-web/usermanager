@@ -617,6 +617,21 @@ def update_user(
     # across all of their connections - see models.py) so it just flows
     # through the generic setattr loop below like everything else.
     status_changed = "status" in data and data["status"] != user.status
+
+    # "قفل خرید" - stamp the date when it goes on, clear both the date and
+    # the reason when it comes off, so a stale reason can never be shown to
+    # a customer who is no longer locked. Popped out of `data` because the
+    # timestamp is derived, not something the caller gets to set.
+    if "purchases_blocked" in data:
+        now_blocked = bool(data.pop("purchases_blocked"))
+        if now_blocked and not user.purchases_blocked:
+            user.purchases_blocked_at = dt.datetime.utcnow()
+        elif not now_blocked:
+            user.purchases_blocked_at = None
+            user.purchases_blocked_reason = None
+            data.pop("purchases_blocked_reason", None)
+        user.purchases_blocked = now_blocked
+
     for k, v in data.items():
         setattr(user, k, v)
 

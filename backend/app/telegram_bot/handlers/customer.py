@@ -92,6 +92,51 @@ async def _reply_menu_item_disabled(target) -> None:
         await target.answer(text, reply_markup=home_kb())
 
 
+DEFAULT_PURCHASE_BLOCK_TEXT = (
+    "امکان خرید و تمدید برای این حساب فعلا غیرفعال است.\n"
+    "سرویس فعلی شما تا پایان اعتبارش کار می‌کند.\n"
+    "برای اطلاعات بیشتر با پشتیبانی تماس بگیرید."
+)
+
+
+async def _purchase_block_reason(tg_id: int) -> str | None:
+    """The admin's own words for why this customer may no longer buy, or
+    None if they may ("قفل خرید" - models.User.purchases_blocked).
+
+    Checked against EVERY account on this Telegram id, not just the active
+    one: the lock is on the person, so switching accounts in the picker
+    must not switch it off. The backend enforces the same rule (see
+    routers/bot.py's _ensure_can_buy/_ensure_telegram_can_buy) - this only
+    gets the customer a real explanation instead of a button that fails.
+
+    Fails OPEN on an ApiError, exactly like _menu_item_enabled: a panel
+    hiccup should not lock out customers who are not actually locked. The
+    backend still refuses if they really are.
+    """
+    try:
+        accounts = await api.list_users_by_telegram(tg_id)
+    except ApiError:
+        return None
+    for account in accounts or []:
+        if account.get("purchases_blocked"):
+            return (account.get("purchases_blocked_reason") or "").strip() or DEFAULT_PURCHASE_BLOCK_TEXT
+    return None
+
+
+async def _blocked_from_buying(target, tg_id: int) -> bool:
+    """True (and the customer has been told why) if the till is closed."""
+    reason = await _purchase_block_reason(tg_id)
+    if reason is None:
+        return False
+    if isinstance(target, CallbackQuery):
+        # show_alert pops it up rather than flashing it away - this is not
+        # a "try again" error, it needs reading.
+        await target.answer(reason, show_alert=True)
+    else:
+        await target.answer(reason, reply_markup=home_kb())
+    return True
+
+
 def _account_text(user: dict) -> str:
     # Lead with the actual name when the admin set one (e.g. "علی رضایی")
     # instead of the panel's internal username (which can be a cryptic
@@ -107,6 +152,11 @@ def _account_text(user: dict) -> str:
         f"انقضا: {fmt_date_jalali(user.get('expire_at'))}",
         f"موجودی اعتبار: {user.get('balance', 0):,} تومان",
     ]
+    if user.get("purchases_blocked"):
+        # Said here as well as at the buttons, so the customer finds out by
+        # looking at their account rather than only by being refused.
+        reason = (user.get("purchases_blocked_reason") or "").strip() or DEFAULT_PURCHASE_BLOCK_TEXT
+        lines.append(f"🔒 {reason}")
     if user.get("referral_code"):
         lines.append(f"🎁 کد دعوت شما: <code>{user['referral_code']}</code>")
     reserved_gb = user.get("reserved_quota_gb")
@@ -320,6 +370,8 @@ async def cmd_buy(message: Message, state: FSMContext) -> None:
     if not await _menu_item_enabled("cust_buy"):
         await _reply_menu_item_disabled(message)
         return
+    if await _blocked_from_buying(message, message.from_user.id):
+        return
     await state.clear()
     try:
         packages = await api.list_packages()
@@ -344,6 +396,8 @@ async def cmd_topup(message: Message, state: FSMContext) -> None:
     """Slash-command shortcut for "💰 افزایش اعتبار"."""
     if not await _menu_item_enabled("cust_topup"):
         await _reply_menu_item_disabled(message)
+        return
+    if await _blocked_from_buying(message, message.from_user.id):
         return
     await _clear_state_keep_account(state)
     account = await _resolve_account(message, state, message.from_user.id, "cust_topup")
@@ -687,6 +741,8 @@ async def cb_buy(call: CallbackQuery, state: FSMContext) -> None:
     if not await _menu_item_enabled("cust_buy"):
         await _reply_menu_item_disabled(call)
         return
+    if await _blocked_from_buying(call, call.from_user.id):
+        return
     await _clear_state_keep_account(state)
     await _start_package_picker(call, state, "new")
 
@@ -696,6 +752,8 @@ async def cb_renew(call: CallbackQuery, state: FSMContext) -> None:
     # Same stale-state gap as cb_buy above, same fix.
     if not await _menu_item_enabled("cust_renew"):
         await _reply_menu_item_disabled(call)
+        return
+    if await _blocked_from_buying(call, call.from_user.id):
         return
     await _clear_state_keep_account(state)
     account = await _resolve_account(call, state, call.from_user.id, "cust_renew")

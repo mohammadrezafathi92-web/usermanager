@@ -243,6 +243,8 @@ export default function UserDetail() {
     balance: "",
     telegram_id: "",
     owner_admin_id: "",
+    purchases_blocked: false,
+    purchases_blocked_reason: "",
   });
   const [connNodeId, setConnNodeId] = useState("");
   const [connFlow, setConnFlow] = useState("");
@@ -276,6 +278,8 @@ export default function UserDetail() {
       balance: res.data.balance ?? 0,
       telegram_id: res.data.telegram_id ?? "",
       owner_admin_id: res.data.owner_admin_id ?? "",
+      purchases_blocked: !!res.data.purchases_blocked,
+      purchases_blocked_reason: res.data.purchases_blocked_reason || "",
     });
   });
 
@@ -342,6 +346,12 @@ export default function UserDetail() {
         payload.balance = Number(editForm.balance);
       }
       payload.telegram_id = editForm.telegram_id !== "" ? Number(editForm.telegram_id) : null;
+      // قفل خرید - the reason is only meaningful while the lock is on, and
+      // the backend clears it on unlock anyway.
+      payload.purchases_blocked = !!editForm.purchases_blocked;
+      if (editForm.purchases_blocked) {
+        payload.purchases_blocked_reason = editForm.purchases_blocked_reason.trim() || null;
+      }
       if (isSuperadmin) {
         payload.owner_admin_id = editForm.owner_admin_id === "" ? null : Number(editForm.owner_admin_id);
       }
@@ -689,8 +699,32 @@ export default function UserDetail() {
         <div className="card lg:col-span-2">
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-bold text-gray-700">{t("userDetail.overviewHeading")}</h3>
-            <span className={`badge ${STATUS_STYLES[user.status]}`}>{statusLabel(user.status, language)}</span>
+            <div className="flex items-center gap-2">
+              {/* Deliberately next to, not instead of, the status badge -
+                  a locked customer is still active, and conflating the two
+                  is what the whole feature exists to avoid. */}
+              {user.purchases_blocked && (
+                <span
+                  className="badge bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400 flex items-center gap-1"
+                  title={user.purchases_blocked_reason || ""}
+                >
+                  <Lock size={12} /> {t("userDetail.purchasesLockedBadge")}
+                </span>
+              )}
+              <span className={`badge ${STATUS_STYLES[user.status]}`}>{statusLabel(user.status, language)}</span>
+            </div>
           </div>
+          {user.purchases_blocked && (
+            <div className="mb-3 text-xs rounded-lg bg-amber-50 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300 px-3 py-2">
+              {user.purchases_blocked_reason || t("userDetail.purchasesLockedDefault")}
+              {user.purchases_blocked_at && (
+                <span className="text-amber-600/70 dark:text-amber-400/70">
+                  {" "}
+                  — {t("userDetail.lockedSince", { date: formatDateTime(user.purchases_blocked_at) })}
+                </span>
+              )}
+            </div>
+          )}
           {/* No aggregate quota bar on purpose - each service below has its
               own independent bar (see the redesign note above `return`). */}
           <div className="flex flex-wrap gap-2">
@@ -1298,6 +1332,38 @@ export default function UserDetail() {
             <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldNotes")}</label>
             <textarea className="input" rows={2} value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} />
           </div>
+
+          {/* قفل خرید - closes the till without touching the service. */}
+          <div className="rounded-xl border border-gray-200 dark:border-slate-700 p-3">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={editForm.purchases_blocked}
+                onChange={(e) => setEditForm({ ...editForm, purchases_blocked: e.target.checked })}
+              />
+              <span>
+                <span className="text-sm font-medium flex items-center gap-1.5">
+                  <Lock size={14} className="text-amber-500" /> {t("userDetail.blockPurchases")}
+                </span>
+                <span className="block text-xs text-gray-400 mt-0.5">{t("userDetail.blockPurchasesHint")}</span>
+              </span>
+            </label>
+            {editForm.purchases_blocked && (
+              <div className="mt-3">
+                <label className="block text-xs text-gray-500 mb-1">{t("userDetail.blockReason")}</label>
+                <textarea
+                  className="input"
+                  rows={2}
+                  placeholder={t("userDetail.blockReasonPlaceholder")}
+                  value={editForm.purchases_blocked_reason}
+                  onChange={(e) => setEditForm({ ...editForm, purchases_blocked_reason: e.target.value })}
+                />
+                <div className="text-xs text-gray-400 mt-1">{t("userDetail.blockReasonHint")}</div>
+              </div>
+            )}
+          </div>
+
           {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setEditOpen(false)}>

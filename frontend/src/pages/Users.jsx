@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Plus, Search, Trash2, RotateCcw, Network, Layers, PencilLine, ChevronRight, ChevronLeft, X, ArrowUpDown, FileDown, Wand2, CheckSquare, Send } from "lucide-react";
+import { Plus, Search, Trash2, RotateCcw, Network, Layers, PencilLine, ChevronRight, ChevronLeft, X, ArrowUpDown, FileDown, Wand2, CheckSquare, Send, Lock } from "lucide-react";
 
 // یوزرنیم رندوم برای دکمه "تولید خودکار" کاربر - فقط حروف/عدد لاتین (مشابه
 // همون تابع تو Admins.jsx، اینجا مستقل تعریف شده چون دو صفحه جدان).
@@ -703,7 +703,16 @@ export default function Users() {
                   </td>
                 )}
                 <td className="px-4 py-3">
-                  <span className={`badge ${STATUS_STYLES[u.status]}`}>{statusLabel(u.status, language)}</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className={`badge ${STATUS_STYLES[u.status]}`}>{statusLabel(u.status, language)}</span>
+                    {/* A locked customer is still active - the lock rides
+                        ALONGSIDE the status rather than replacing it. */}
+                    {u.purchases_blocked && (
+                      <span title={t("userDetail.purchasesLockedDefault")} className="text-amber-500">
+                        <Lock size={13} />
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td className="px-4 py-3">
                   <QuotaBar used={u.used_bytes} total={u.total_quota_bytes} />

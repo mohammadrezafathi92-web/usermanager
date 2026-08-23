@@ -79,6 +79,8 @@ def _user_response(user: models.User) -> schemas.BotUserResponse:
         loyalty_reward_gb=loyalty[1] if loyalty else None,
         reserved_quota_gb=(user.reserved_quota_bytes / (1024 ** 3)) if user.reserved_quota_bytes else None,
         reserved_duration_days=user.reserved_duration_days,
+        purchases_blocked=bool(user.purchases_blocked),
+        purchases_blocked_reason=user.purchases_blocked_reason or None,
     )
 
 
@@ -148,6 +150,50 @@ def _visibility_filter(db: Session, owner_admin_id: Optional[int]):
         return false()
     return hierarchy.user_visibility_clause(db, admin)
 
+
+
+DEFAULT_PURCHASE_BLOCK_MESSAGE = (
+    "امکان خرید و تمدید برای این حساب فعلا غیرفعال است. "
+    "سرویس فعلی شما تا پایان اعتبارش کار می‌کند. برای اطلاعات بیشتر با پشتیبانی تماس بگیرید."
+)
+
+
+def _ensure_can_buy(user: models.User) -> None:
+    """The till is closed for this customer ("قفل خرید" - see
+    models.User.purchases_blocked).
+
+    Called at the four places money or service can newly enter the account
+    through the bot: a new service, a renewal, a wallet top-up, and signing
+    up a second account on the same Telegram id. Everything the customer
+    already has is untouched on purpose - this must never be able to cut
+    off a service that is already paid for, so it is not called from any
+    read, config-fetch, or auth path.
+
+    Raises 403 carrying the admin's own words, so the customer is told why
+    instead of meeting a button that silently fails.
+    """
+    if not getattr(user, "purchases_blocked", False):
+        return
+    raise HTTPException(403, (user.purchases_blocked_reason or "").strip() or DEFAULT_PURCHASE_BLOCK_MESSAGE)
+
+
+def _ensure_telegram_can_buy(db: Session, telegram_id: Optional[int]) -> None:
+    """Same lock, applied to a Telegram account rather than one User row.
+
+    A customer whose account is locked could otherwise just sign up again
+    from the same Telegram account and carry on buying - the lock would
+    look enforced while doing nothing. One User row locked locks that
+    person's ability to open new ones.
+    """
+    if not telegram_id:
+        return
+    blocked = (
+        db.query(models.User)
+        .filter(models.User.telegram_id == telegram_id, models.User.purchases_blocked.is_(True))
+        .first()
+    )
+    if blocked is not None:
+        _ensure_can_buy(blocked)
 
 
 def _get_user_or_404(db: Session, username: str, owner_admin_id: Optional[int] = None) -> models.User:
@@ -542,6 +588,10 @@ def telegram_user_ids(db: Session = Depends(get_db), owner_admin_id: Optional[in
 
 @router.post("/users", response_model=schemas.BotUserResponse)
 def create_user(payload: schemas.BotCreateUserRequest, db: Session = Depends(get_db)):
+    # A locked customer must not be able to start a fresh account from the
+    # same Telegram id and keep buying - that would leave the lock looking
+    # enforced while doing nothing at all.
+    _ensure_telegram_can_buy(db, payload.telegram_id)
     user = user_ops.create_user_record(
         db, payload.username, payload.full_name, payload.quota_gb, payload.expire_days,
         telegram_id=payload.telegram_id, owner_admin_id=payload.owner_admin_id,
@@ -617,6 +667,7 @@ def purchase_package(
     picked exactly one node/protocol by hand in the bot's purchase flow
     (see telegram_bot/handlers/customer.py's pick_node/pick_protocol)."""
     user = _get_user_or_404(db, username, owner_admin_id)
+    _ensure_can_buy(user)
     package = db.get(models.Package, payload.package_id)
     if not package:
         raise HTTPException(404, "پکیج پیدا نشد")
@@ -825,6 +876,7 @@ def renew_service(
     creates anything new - renewal means CONTINUING the same service, per
     the panel owner's definition (2026-08-09)."""
     user = _get_user_or_404(db, username, owner_admin_id)
+    _ensure_can_buy(user)
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
@@ -853,6 +905,7 @@ def renew(
     owner_admin_id: Optional[int] = None,
 ):
     user = _get_user_or_404(db, username, owner_admin_id)
+    _ensure_can_buy(user)
     # Post-migration (services/purchase_migration.py) the user-level pool
     # governs nothing for a fully-converted customer - a renewal landing
     # here (old bot build, or a flow that didn't pick a service) would
@@ -911,6 +964,12 @@ def add_balance(username: str, payload: schemas.BotAddBalanceRequest, db: Sessio
     one gets a clean "insufficient balance" error instead of silently
     overdrawing the wallet."""
     user = _get_user_or_404(db, username)
+    # Only a TOP-UP is blocked. A negative amount is the wallet being spent
+    # on a purchase, and that purchase is already refused upstream - but if
+    # one ever reaches here, refusing the debit too would be the wrong way
+    # round: it would take the money and give nothing.
+    if payload.amount > 0:
+        _ensure_can_buy(user)
     if payload.amount < 0:
         result = db.execute(
             models.User.__table__.update()

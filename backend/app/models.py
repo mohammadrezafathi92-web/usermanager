@@ -591,6 +591,28 @@ class User(Base):
     expire_at = Column(DateTime, nullable=True)  # null == never expires
     status = Column(Enum(UserStatus), default=UserStatus.active)
 
+    # "قفل خرید" - the customer may no longer BUY anything through the bot,
+    # while everything they already have keeps working exactly as before.
+    #
+    # Deliberately NOT the same thing as status/disabled. Disabling cuts the
+    # connection off; this leaves the service running to the end of what the
+    # customer already paid for and only closes the till: no new service, no
+    # renewal, no wallet top-up, and no starting a second account on the
+    # same Telegram id to get around it. Nothing in the RADIUS/Xray auth
+    # path reads these columns, which is what makes "current service keeps
+    # working" true rather than merely intended.
+    #
+    # Enforced on the bot API (routers/bot.py) - the panel is deliberately
+    # unaffected, so an admin can still fix things up for a locked customer.
+    purchases_blocked = Column(Boolean, default=False, nullable=False)
+    # Shown to the customer verbatim when they hit the lock, so they are
+    # told why rather than seeing a dead button. Null = fall back to a
+    # generic sentence.
+    purchases_blocked_reason = Column(String(500), nullable=True)
+    # When it was locked - "از آن روز" in the original request. Purely for
+    # the panel/audit; nothing decides anything from it.
+    purchases_blocked_at = Column(DateTime, nullable=True)
+
     # If set, expire_at is left null until the user's very first successful
     # RADIUS login (openvpn/l2tp), at which point the RADIUS auth handler
     # computes expire_at = first_login_time + this many days and clears this

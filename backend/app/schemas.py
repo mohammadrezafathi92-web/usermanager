@@ -425,6 +425,11 @@ class UserUpdate(BaseModel):
     # request is allowed to change this (enforced in routers/users.py, not
     # here); silently ignored from a non-superadmin's update request.
     owner_admin_id: Optional[int] = None
+    # "قفل خرید" - see models.User.purchases_blocked. Setting it to True
+    # stamps purchases_blocked_at in the router; setting it False clears
+    # both that and the reason.
+    purchases_blocked: Optional[bool] = None
+    purchases_blocked_reason: Optional[str] = None
 
 
 class UserOut(UserBase):
@@ -459,6 +464,10 @@ class UserOut(UserBase):
     # Independently-tracked package purchases added via "افزودن پکیج" - see
     # models.Purchase. Empty for users who have never used that feature.
     purchases: List[PurchaseOut] = []
+    # "قفل خرید" - see models.User.purchases_blocked.
+    purchases_blocked: bool = False
+    purchases_blocked_reason: Optional[str] = None
+    purchases_blocked_at: Optional[dt.datetime] = None
 
 
 class UserListItem(BaseModel):
@@ -492,6 +501,9 @@ class UserListItem(BaseModel):
     owner_admin_id: Optional[int] = None
     owner_admin_username: Optional[str] = None
     package_id: Optional[int] = None
+    # "قفل خرید" - see models.User.purchases_blocked. In the list so an
+    # admin can see at a glance who is locked, without opening each row.
+    purchases_blocked: bool = False
 
 
 class UserListPage(BaseModel):
@@ -1292,6 +1304,11 @@ class BotUserResponse(BaseModel):
     # "اکانت من" so it isn't mistaken for the renewal having failed/vanished.
     reserved_quota_gb: Optional[float] = None
     reserved_duration_days: Optional[int] = None
+    # "قفل خرید" - see models.User.purchases_blocked. The bot uses these to
+    # hide/disable the buy, renew and top-up buttons and to explain why,
+    # rather than letting the customer press a button that will fail.
+    purchases_blocked: bool = False
+    purchases_blocked_reason: Optional[str] = None
 
 
 class BotPurchasePackageRequest(BaseModel):

@@ -64,15 +64,6 @@ export default function Packages() {
   const { t } = useLanguage();
   const { role, wallet } = useAuth();
   const isSeller = role === "seller";
-  // What this package costs the person filling in this form. The backend
-  // refuses a cooperation price below it (routers/packages.py's
-  // _check_cooperation_floor); showing it here means they see the number
-  // rather than discovering it by being rejected.
-  const perGbRate = Number(wallet?.wholesale_price_per_gb || 0);
-  const costFloor =
-    perGbRate > 0 && Number(form.quota_gb) > 0 ? Math.round(Number(form.quota_gb) * perGbRate) : null;
-  const belowFloor =
-    costFloor !== null && form.cooperation_price !== "" && Number(form.cooperation_price) < costFloor;
   const [items, setItems] = useState([]);
   const [nodes, setNodes] = useState([]);
   const [open, setOpen] = useState(false);
@@ -98,6 +89,21 @@ export default function Packages() {
   }, []);
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  // What this package costs the person filling in the form. The backend
+  // refuses a cooperation price below it (routers/packages.py's
+  // _check_cooperation_floor); showing it here means they see the number
+  // rather than discovering it by being rejected.
+  //
+  // Declared AFTER `form`, which is the whole point: reading a `const`
+  // declared further down throws on every render, and a page that throws
+  // during render shows nothing at all - which is exactly how this page
+  // stopped opening.
+  const perGbRate = Number(wallet?.wholesale_price_per_gb || 0);
+  const costFloor =
+    perGbRate > 0 && Number(form.quota_gb) > 0 ? Math.round(Number(form.quota_gb) * perGbRate) : null;
+  const belowFloor =
+    costFloor !== null && form.cooperation_price !== "" && Number(form.cooperation_price) < costFloor;
 
   const nodeName = (id) => nodes.find((n) => n.id === Number(id))?.name || `#${id}`;
 

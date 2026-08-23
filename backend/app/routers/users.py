@@ -103,8 +103,26 @@ def _charge_admin_for_package(db: Session, admin: models.AdminUser, package: mod
         # (volume_balance_gb) و لحظه‌ای در quota_manager.py's _apply_delta
         # کسر می‌شود، نه یکجا در لحظه ساخت کاربر.
         return
-    unit_price = _unit_price(admin, package)
-    cost = unit_price * units
+    cost = _unit_price(admin, package) * units
+    _debit_admin(
+        db, admin, cost, package=package,
+        note=f"{units} × {package.name}" if units > 1 else None,
+    )
+
+
+def _debit_admin(
+    db: Session, admin: models.AdminUser, cost: int, *,
+    package: Optional[models.Package] = None, note: Optional[str] = None,
+    what: str = "این پکیج",
+) -> None:
+    """Takes `cost` from the admin's credit, or refuses and takes nothing.
+
+    Extracted so buying and renewing debit through the same code. They were
+    about to be two copies of the overdraft comparison, the atomic UPDATE
+    and the ledger write - and the copy that drifts is the one nobody is
+    watching, which for money means an admin charged by one rule and
+    refunded by another.
+    """
     if cost <= 0:
         return
     # The floor is -credit_limit, not zero (see AdminUser.credit_limit).
@@ -120,7 +138,7 @@ def _charge_admin_for_package(db: Session, admin: models.AdminUser, package: mod
     if result.rowcount == 0:
         db.commit()
         available = (admin.balance or 0) + limit
-        msg = f"اعتبار شما کافی نیست - این پکیج {cost:,} تومان از اعتبار شما کم می‌کند"
+        msg = f"اعتبار شما کافی نیست - {what} {cost:,} تومان از اعتبار شما کم می‌کند"
         if limit:
             # Naming the overdraft matters: without it the message claims a
             # hard limit that is not the one actually being applied.
@@ -131,10 +149,44 @@ def _charge_admin_for_package(db: Session, admin: models.AdminUser, package: mod
     accounting.record(
         db, "admin_credit_spend", cost,
         admin_id=admin.id, actor_admin_id=admin.id, package=package,
-        payment_method="admin_credit",
-        note=f"{units} × {package.name}" if units > 1 else None,
+        payment_method="admin_credit", note=note,
     )
     db.commit()
+
+
+def _charge_admin_for_renewal(
+    db: Session, admin: models.AdminUser, package: Optional[models.Package], add_gb: float,
+) -> None:
+    """A renewal costs the admin too. It never used to.
+
+    Renewals were completely free from the credit system's point of view -
+    only creating a customer and adding a package were charged. On a panel
+    whose customers mostly renew, that is most of the revenue passing
+    through unmetered.
+
+    Two shapes, because a renewal has two:
+      - with a package, it is that package being sold again, so it costs
+        exactly what selling it costs;
+      - with raw gigabytes, it costs add_gb x the account's per-GB rate.
+
+    Raw gigabytes with NO rate set are still free, and deliberately so:
+    there is no package to take a price from and inventing one would be
+    guessing at the operator's own pricing. Set a per-GB rate on the
+    account (AdminUser.wholesale_price_per_gb) and it is metered.
+    """
+    if admin.is_superadmin or admin.billing_mode == "usage":
+        return
+    if package is not None:
+        _charge_admin_for_package(db, admin, package, units=1)
+        return
+
+    rate = int(getattr(admin, "wholesale_price_per_gb", 0) or 0)
+    if rate <= 0 or add_gb <= 0:
+        return
+    _debit_admin(
+        db, admin, round(add_gb * rate),
+        note=f"تمدید {add_gb:g} گیگابایت", what="این تمدید",
+    )
 
 
 def _refund_admin_for_package(db: Session, admin: models.AdminUser, package: models.Package, units: int) -> None:
@@ -430,6 +482,26 @@ def bulk_update_users(
     package = None
     if payload.package_id:
         package = _get_scoped_package(db, admin, payload.package_id)
+
+    # A bulk renewal is still a renewal, once per user. This was the largest
+    # unmetered path in the panel: applying a package to two hundred
+    # customers in one click cost the admin nothing at all.
+    #
+    # Charged as one debit for the whole batch rather than per user, so it
+    # cannot half-succeed - the admin either affords the operation or it
+    # does not happen.
+    units = len(payload.user_ids or [])
+    if units and not admin.is_superadmin and admin.billing_mode != "usage":
+        if package is not None:
+            _charge_admin_for_package(db, admin, package, units=units)
+        else:
+            rate = int(getattr(admin, "wholesale_price_per_gb", 0) or 0)
+            if rate > 0 and (payload.add_gb or 0) > 0:
+                _debit_admin(
+                    db, admin, round(payload.add_gb * rate) * units,
+                    note=f"تمدید گروهی {units} کاربر × {payload.add_gb:g} گیگابایت",
+                    what="این تمدید گروهی",
+                )
 
     return user_ops.bulk_update_users(
         db,
@@ -929,8 +1001,10 @@ def renew_purchase_endpoint(
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "خرید پیدا نشد")
-    if payload.package_id:
-        _get_scoped_package(db, admin, payload.package_id)  # scope check only
+    package = _get_scoped_package(db, admin, payload.package_id) if payload.package_id else None
+    # Charged BEFORE the renewal is applied, so an admin who cannot afford
+    # it gets a refusal instead of a renewed service and a debt.
+    _charge_admin_for_renewal(db, admin, package, payload.add_gb)
     return user_ops.renew_purchase(
         db, purchase,
         add_gb=payload.add_gb, add_days=payload.add_days,

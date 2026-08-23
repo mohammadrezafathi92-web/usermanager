@@ -12,7 +12,28 @@ const EVENT_FILTER_OPTIONS = [
   { value: "ban", labelKey: "radiusLogs.eventBan" },
   { value: "unban", labelKey: "radiusLogs.eventUnban" },
   { value: "reject", labelKey: "radiusLogs.eventReject" },
+  { value: "auth_fail", labelKey: "radiusLogs.eventAuthFail" },
+  { value: "quota_exceeded", labelKey: "radiusLogs.eventQuotaExceeded" },
+  { value: "expired", labelKey: "radiusLogs.eventExpired" },
+  { value: "disabled", labelKey: "radiusLogs.eventDisabled" },
+  { value: "unknown_user", labelKey: "radiusLogs.eventUnknownUser" },
 ];
+
+// One place per event type instead of a chain of ifs in two functions -
+// adding a type is one row, and a type can no longer end up with a label
+// but no colour (or the reverse).
+const EVENT_STYLES = {
+  ban: { tone: "bg-red-50 text-red-600", labelKey: "radiusLogs.eventBan" },
+  unban: { tone: "bg-emerald-50 text-emerald-600", labelKey: "radiusLogs.eventUnban" },
+  reject: { tone: "bg-amber-50 text-amber-600", labelKey: "radiusLogs.eventReject" },
+  // A wrong password is the one an admin most often needs to tell apart
+  // from "the account is finished" - different colour, not just wording.
+  auth_fail: { tone: "bg-rose-50 text-rose-600", labelKey: "radiusLogs.eventAuthFail" },
+  quota_exceeded: { tone: "bg-orange-50 text-orange-600", labelKey: "radiusLogs.eventQuotaExceeded" },
+  expired: { tone: "bg-slate-100 text-slate-600", labelKey: "radiusLogs.eventExpired" },
+  disabled: { tone: "bg-gray-100 text-gray-500", labelKey: "radiusLogs.eventDisabled" },
+  unknown_user: { tone: "bg-purple-50 text-purple-600", labelKey: "radiusLogs.eventUnknownUser" },
+};
 
 // How many of the most-recent (already newest-first from the API) log rows
 // to show - a plain number rather than real pagination, since this page is
@@ -21,15 +42,11 @@ const EVENT_FILTER_OPTIONS = [
 const LIMIT_OPTIONS = [10, 20, 50, 100, 300];
 
 function eventBadgeClass(eventType) {
-  if (eventType === "ban") return "bg-red-50 text-red-600";
-  if (eventType === "unban") return "bg-emerald-50 text-emerald-600";
-  return "bg-amber-50 text-amber-600";
+  return EVENT_STYLES[eventType]?.tone || "bg-amber-50 text-amber-600";
 }
 
 function eventLabelKey(eventType) {
-  if (eventType === "ban") return "radiusLogs.eventBan";
-  if (eventType === "unban") return "radiusLogs.eventUnban";
-  return "radiusLogs.eventReject";
+  return EVENT_STYLES[eventType]?.labelKey || "radiusLogs.eventReject";
 }
 
 export default function RadiusLogs() {

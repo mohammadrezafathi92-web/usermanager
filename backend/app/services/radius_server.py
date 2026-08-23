@@ -58,6 +58,14 @@ MIKROTIK_RATE_LIMIT_ATTR = 8
 # entirely, as a basic anti-abuse measure against a shared/leaked account.
 OVERLIMIT_ATTEMPTS_THRESHOLD = 5
 OVERLIMIT_WINDOW_SECONDS = 60
+
+# How long to wait before logging the SAME rejection reason for the same
+# client again. A device with a saved wrong password retries indefinitely;
+# without this the log becomes thousands of identical rows and the database
+# grows without bound. Ten minutes keeps "this is still happening" visible
+# while collapsing a retry storm into one line.
+REJECTION_LOG_WINDOW_SECONDS = 600
+
 BAN_DURATION_MINUTES = 3
 
 # A session with no Interim-Update/Stop for this long is assumed dead (a
@@ -144,6 +152,9 @@ class UserManagerRadiusServer(Server):
         )
         self.hosts = {}
         self._overlimit_attempts: dict[int, list] = {}
+        # (reason, username, client ip) -> when it was last written. See
+        # _should_log_rejection.
+        self._rejection_log_times: dict[str, float] = {}
         self.refresh_hosts()
 
     # -------------------------------------------------------------- setup
@@ -187,6 +198,30 @@ class UserManagerRadiusServer(Server):
             logger.exception("RADIUS server crashed")
 
     # ----------------------------------------------------- concurrent limit
+    def _should_log_rejection(self, key: str) -> bool:
+        """Rate-limits the rejection log to one row per reason per client per
+        window.
+
+        A phone with a saved wrong password retries every few seconds,
+        forever. Writing a row each time would turn a useful history into
+        thousands of identical lines and grow the database without bound -
+        which this panel has already been through once (see
+        quota_manager's USAGE_LOG_KEEP_DAYS, added after the disk filled).
+
+        In-memory and unlocked, like _overlimit_attempts above: the RADIUS
+        loop is single-threaded. Losing the window on restart just means one
+        extra row per reason, which is the harmless direction.
+        """
+        now_ts = time.time()
+        last = self._rejection_log_times.get(key)
+        if last is not None and now_ts - last < REJECTION_LOG_WINDOW_SECONDS:
+            return False
+        # Bounded, so a flood of unknown usernames cannot grow this forever.
+        if len(self._rejection_log_times) > 5000:
+            self._rejection_log_times.clear()
+        self._rejection_log_times[key] = now_ts
+        return True
+
     def _record_overlimit_attempt(self, connection: models.Connection) -> bool:
         """Tracks over-the-limit connection attempts per connection in a
         small in-memory sliding window (the RADIUS server loop is
@@ -299,12 +334,22 @@ class UserManagerRadiusServer(Server):
             )
             ok = False
             reason = "ok"
+            # A STABLE key for the panel's event log, set wherever `reason`
+            # is. Deliberately not derived from `reason`: that string is
+            # prose meant for a human reading container logs, and matching
+            # on it would mean rewording a message silently stops the
+            # logging. None = do not log (either it succeeded, or the
+            # branch writes its own richer row).
+            reject_kind = None
             if not conn:
                 reason = "no such connection/username in DB"
+                reject_kind = "unknown_user"
             elif conn.banned_until and conn.banned_until > dt.datetime.utcnow():
                 reason = f"banned until {conn.banned_until.isoformat()} (too many over-limit attempts)"
+                # Already recorded when the ban was applied - not logged again.
             elif not conn.enabled:
                 reason = "connection disabled"
+                reject_kind = "disabled"
             else:
                 user = conn.user
                 # A connection created via "افزودن پکیج" carries its own
@@ -348,16 +393,26 @@ class UserManagerRadiusServer(Server):
                 if not status_ok:
                     effective_status = purchase.status if reason_prefix == "purchase" else user.status
                     reason = f"{reason_prefix} status={effective_status}"
+                    # The status already says WHY it is not active, so the
+                    # log says the same thing rather than a vague "status".
+                    reject_kind = {
+                        models.UserStatus.quota_exceeded: "quota_exceeded",
+                        models.UserStatus.expired: "expired",
+                        models.UserStatus.disabled: "disabled",
+                    }.get(effective_status, "not_active")
                 elif not quota_ok:
                     reason = "quota exceeded"
+                    reject_kind = "quota_exceeded"
                 elif not expiry_ok:
                     reason = "expired"
+                    reject_kind = "expired"
                 else:
                     ok = self._check_password(pkt, conn.ppp_password)
                     if not ok:
                         ok = self._check_mschapv2(pkt, reply, username, conn.ppp_password)
                     if not ok:
                         reason = "wrong password"
+                        reject_kind = "auth_fail"
                     else:
                         if user.max_concurrent_sessions:
                             # User-level cap: counts currently-active
@@ -462,6 +517,35 @@ class UserManagerRadiusServer(Server):
                     "Vendor-Specific",
                     mschapv2.build_vsa(MIKROTIK_RATE_LIMIT_ATTR, rate.encode("ascii"), vendor_id=MIKROTIK_VENDOR_ID),
                 )
+            # Why this login failed, recorded where the admin can see it.
+            #
+            # Every reason below was already computed - it just went to the
+            # container's stdout, which means an admin answering "why can't
+            # my customer connect?" had to SSH in and grep. The
+            # concurrent-limit branch above has been persisting its own
+            # events for a while; these are the rest of them.
+            #
+            # The over-limit branch writes its own richer row (with counts
+            # and the ban), so it is skipped here rather than logged twice.
+            if not ok:
+                kind = reject_kind
+                if kind and self._should_log_rejection(f"{kind}:{username}:{client_ip}"):
+                    owner_id = None
+                    if conn is not None and conn.user is not None:
+                        owner_id = conn.user.owner_admin_id
+                    db.add(models.RadiusLimitEventLog(
+                        connection_id=conn.id if conn is not None else None,
+                        user_id=conn.user_id if conn is not None else None,
+                        owner_admin_id=owner_id,
+                        username=username,
+                        connection_type=(
+                            (conn.type.value if hasattr(conn.type, "value") else str(conn.type))
+                            if conn is not None else None
+                        ),
+                        event_type=kind,
+                        client_ip=client_ip,
+                    ))
+
             db.commit()  # persists banned_until / first-use expiry activation if set above
             reply.code = packet.AccessAccept if ok else packet.AccessReject
             logger.info(

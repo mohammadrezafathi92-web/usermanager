@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { KeyRound, Info, Plus, Trash2, Copy, Power, CreditCard, Bot, RefreshCw, DatabaseBackup, Download, Server, Eye, EyeOff, Upload, Repeat, ChevronDown, Clock } from "lucide-react";
+import { KeyRound, Info, Plus, Trash2, Copy, Power, CreditCard, Bot, RefreshCw, DatabaseBackup, Download, Server, Eye, EyeOff, Upload, Repeat, ChevronDown, Clock, Wallet } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
 import TelegramTunnelCard from "../components/TelegramTunnelCard.jsx";
@@ -208,6 +208,62 @@ function TimezoneCard({ t }) {
         </button>
         {saved && <span className="text-xs text-emerald-600">{t("settings.timezoneSaved")}</span>}
       </div>
+    </div>
+  );
+}
+
+/** Whether a sale made through the bot charges the reseller's credit.
+ *
+ * Its own card, with the consequence stated before the switch rather than
+ * after: turning it on means a reseller with no credit stops being able to
+ * sell, and their customers wait at the payment step. That is an
+ * operational decision, and it should not read like a preference.
+ */
+function BotSaleChargeCard() {
+  const { t } = useLanguage();
+  const [enabled, setEnabled] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    fetchPanelSettings()
+      .then((res) => setEnabled(!!res.data?.charge_admins_for_bot_sales))
+      .catch(() => setEnabled(false));
+  }, []);
+
+  const toggle = async (next) => {
+    if (next && !window.confirm(t("settings.botChargeConfirm"))) return;
+    setSaving(true);
+    setError("");
+    try {
+      await updatePanelSettings({ charge_admins_for_bot_sales: next });
+      setEnabled(next);
+    } catch (err) {
+      setError(errorText(err, t("settings.msgSaveError")));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (enabled === null) return null;
+
+  return (
+    <div className="card mb-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Wallet size={18} className="text-brand-600" />
+        <h3 className="font-bold text-gray-700">{t("settings.botChargeTitle")}</h3>
+      </div>
+      <p className="text-xs text-gray-500 mb-3 leading-6">{t("settings.botChargeHint")}</p>
+      <label className="flex items-center gap-2 text-sm text-gray-700">
+        <input type="checkbox" checked={enabled} disabled={saving} onChange={(e) => toggle(e.target.checked)} />
+        {t("settings.botChargeLabel")}
+      </label>
+      {!enabled && (
+        <div className="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2 mt-3">
+          {t("settings.botChargeOffNote")}
+        </div>
+      )}
+      {error && <div className="text-xs text-red-600 mt-2">{error}</div>}
     </div>
   );
 }
@@ -825,6 +881,7 @@ export default function Settings() {
           touches their own AdminUser.own_payment_* fields. */}
       {isSuperadmin && <UpdateCard t={t} />}
       {isSuperadmin && <TimezoneCard t={t} />}
+      {isSuperadmin && <BotSaleChargeCard />}
 
       {isSuperadmin && (
       <div className="card mb-4">

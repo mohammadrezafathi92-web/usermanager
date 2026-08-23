@@ -19,7 +19,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app import models
-from app.routers import users as users_router
+from app.services import admin_billing
 
 failures: list[str] = []
 
@@ -51,7 +51,7 @@ def setup(**kw):
 
 def renew(db, a, package, add_gb):
     try:
-        users_router._charge_admin_for_renewal(db, a, package, add_gb)
+        admin_billing.charge_for_renewal(db, a, package, add_gb)
         ok = True
     except HTTPException:
         db.rollback()
@@ -105,13 +105,13 @@ check("a refused renewal changes no balance", (ok, after), (False, before))
 
 print("\n--- bulk: one debit for the whole batch ---")
 db, a, p = setup(balance=1_000_000)
-users_router._charge_admin_for_package(db, a, p, units=5)
+admin_billing.charge_for_package(db, a, p, units=5)
 db.refresh(a)
 check("5 users x 40,000", a.balance, 1_000_000 - 200_000)
 
 db, a, p = setup(balance=100_000)
 try:
-    users_router._charge_admin_for_package(db, a, p, units=5)  # 200,000 needed
+    admin_billing.charge_for_package(db, a, p, units=5)  # 200,000 needed
     ok = True
 except HTTPException:
     db.rollback()

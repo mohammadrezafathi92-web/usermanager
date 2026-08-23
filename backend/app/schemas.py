@@ -924,6 +924,9 @@ class PaymentCardUpdate(BaseModel):
 class PanelSettingsOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     display_utc_offset_minutes: Optional[int] = 210
+    # Whether a bot sale charges the reseller's credit - see
+    # models.PanelSettings.charge_admins_for_bot_sales. Superadmin-only.
+    charge_admins_for_bot_sales: bool = False
     payment_card_number: Optional[str] = None
     payment_card_holder: Optional[str] = None
     payment_instructions: Optional[str] = None
@@ -974,6 +977,7 @@ class PanelSettingsOut(BaseModel):
 
 class PanelSettingsUpdate(BaseModel):
     display_utc_offset_minutes: Optional[int] = None
+    charge_admins_for_bot_sales: Optional[bool] = None
     payment_card_number: Optional[str] = None
     payment_card_holder: Optional[str] = None
     payment_instructions: Optional[str] = None

@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session, joinedload
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_bot_api_key
-from ..services import user_ops, hierarchy, payment_cards, accounting
+from ..services import user_ops, hierarchy, payment_cards, accounting, admin_billing
 from ..services.quota_manager import _set_connection_enabled
 from .panel_settings import _get_or_create as _get_or_create_settings
 
@@ -80,6 +80,38 @@ def _user_response(user: models.User) -> schemas.BotUserResponse:
         reserved_quota_gb=(user.reserved_quota_bytes / (1024 ** 3)) if user.reserved_quota_bytes else None,
         reserved_duration_days=user.reserved_duration_days,
     )
+
+
+def _charge_seller(
+    db: Session, user: models.User, package: Optional[models.Package], add_gb: float = 0,
+) -> None:
+    """Charges the reseller who owns this customer, if the panel is set to.
+
+    Every sale below used to be free: this router never touched
+    services/admin_billing, so a purchase or renewal through a reseller's
+    own Telegram bot - the way most selling actually happens - cost them
+    nothing, while the identical action from the panel was charged. The
+    credit system therefore metered the quiet path and ignored the busy one.
+
+    Guarded by PanelSettings.charge_admins_for_bot_sales, default off. See
+    that column: turning it on is an operational decision, not a bug fix,
+    because from that moment a reseller with no credit cannot complete a
+    sale and their customer waits at the payment step.
+
+    A customer with no owner (the shared bot's own signups) belongs to the
+    superadmin, who is never charged - so there is nothing to do.
+    """
+    settings_row = db.get(models.PanelSettings, 1)
+    if settings_row is None or not settings_row.charge_admins_for_bot_sales:
+        return
+    if user.owner_admin_id is None:
+        return
+    admin = db.get(models.AdminUser, user.owner_admin_id)
+    if admin is None:
+        return
+    # charge_for_renewal covers both shapes and already exempts superadmins
+    # and volume-billed accounts.
+    admin_billing.charge_for_renewal(db, admin, package, add_gb)
 
 
 def _visibility_filter(db: Session, owner_admin_id: Optional[int]):
@@ -551,6 +583,12 @@ def create_user(payload: schemas.BotCreateUserRequest, db: Session = Depends(get
         user_ops.absorb_legacy_pool_into_purchase(db, user)
 
     package = db.get(models.Package, payload.package_id) if payload.package_id else None
+    # Charged AFTER provisioning here, unlike everywhere else: this endpoint
+    # is called from the receipt-approval handler, so the customer has
+    # already paid. Refusing at this point would take their money and give
+    # them nothing. The reseller goes into debt instead - which their
+    # overdraft is for, and which the superadmin can see.
+    _charge_seller(db, user, package)
     _record_bot_sale(db, "sale_new", payload, user, package)
     db.commit()
     db.refresh(user)
@@ -589,6 +627,7 @@ def purchase_package(
     purchase = user_ops.apply_package_as_purchase(
         db, user, package, connections_override=override, comment=payload.comment,
     )
+    _charge_seller(db, user, package)
     _record_bot_sale(db, "sale_new", payload, user, package, purchase_id=purchase.id)
     db.commit()
     db.refresh(user)
@@ -790,9 +829,10 @@ def renew_service(
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
     user_ops.renew_purchase(db, purchase, payload.add_gb, payload.add_days, payload.reset_usage, package_id=payload.package_id)
+    renew_package = db.get(models.Package, payload.package_id) if payload.package_id else None
+    _charge_seller(db, user, renew_package, payload.add_gb or 0)
     if payload.package_id or payload.paid_amount is not None:
-        package = db.get(models.Package, payload.package_id) if payload.package_id else None
-        _record_bot_sale(db, "sale_renew", payload, user, package, purchase_id=purchase.id)
+        _record_bot_sale(db, "sale_renew", payload, user, renew_package, purchase_id=purchase.id)
         db.commit()
     db.refresh(user)
     db.refresh(purchase)
@@ -827,9 +867,10 @@ def renew(
     # Accounting: only a package-based renewal (or one where the bot sent
     # the exact paid amount) is a paid event - a bare reset_usage or manual
     # add_gb/add_days admin favor isn't a sale.
+    renew_package = db.get(models.Package, payload.package_id) if payload.package_id else None
+    _charge_seller(db, user, renew_package, payload.add_gb or 0)
     if payload.package_id or payload.paid_amount is not None:
-        package = db.get(models.Package, payload.package_id) if payload.package_id else None
-        _record_bot_sale(db, "sale_renew", payload, user, package)
+        _record_bot_sale(db, "sale_renew", payload, user, renew_package)
         db.commit()
     return _user_response(user)
 

@@ -19,7 +19,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app import models
-from app.routers import users as users_router
+from app.services import admin_billing
 
 failures: list[str] = []
 
@@ -55,7 +55,7 @@ def setup(balance, limit, cost, *, billing="flat"):
 def charge(db, admin, pkg, units=1):
     """(ok, resulting balance)."""
     try:
-        users_router._charge_admin_for_package(db, admin, pkg, units=units)
+        admin_billing.charge_for_package(db, admin, pkg, units=units)
         ok = True
     except HTTPException:
         ok = False
@@ -90,7 +90,7 @@ check("at the limit exactly, one more toman is refused", charge(db, a, p), (Fals
 print("\n--- the refusal message tells the truth ---")
 db, a, p = setup(balance=5_000, limit=20_000, cost=100_000)
 try:
-    users_router._charge_admin_for_package(db, a, p)
+    admin_billing.charge_for_package(db, a, p)
     detail = ""
 except HTTPException as exc:
     detail = str(exc.detail)
@@ -99,7 +99,7 @@ check("it names what is actually available", "25,000" in detail, True)
 
 db, a, p = setup(balance=5_000, limit=0, cost=100_000)
 try:
-    users_router._charge_admin_for_package(db, a, p)
+    admin_billing.charge_for_package(db, a, p)
     detail = ""
 except HTTPException as exc:
     detail = str(exc.detail)
@@ -138,7 +138,7 @@ class NoColumn:
 try:
     # Not via charge(): db.refresh() only works on mapped instances, and
     # the point here is precisely that this object is not one.
-    users_router._charge_admin_for_package(db, NoColumn(), p)
+    admin_billing.charge_for_package(db, NoColumn(), p)
     outcome = True
 except HTTPException:
     outcome = False

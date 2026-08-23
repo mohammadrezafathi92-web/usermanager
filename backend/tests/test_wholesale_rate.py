@@ -21,7 +21,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app import models
-from app.routers import users as users_router
+from app.services import admin_billing
 
 failures: list[str] = []
 
@@ -54,7 +54,7 @@ def pkg(quota_gb, *, coop=None, price=0, name="p"):
 
 def price(a, p):
     try:
-        return users_router._unit_price(a, p)
+        return admin_billing.unit_price(a, p)
     except HTTPException as exc:
         return f"REFUSED: {exc.detail}"
 
@@ -74,7 +74,7 @@ check("...and when they set it very high", price(a, pkg(50, coop=9_999_999)), 50
 check("10GB", price(a, pkg(10, coop=0)), 10_000)
 check("fractional quota rounds", price(a, pkg(1.5, coop=0)), 1_500)
 check("a half-toman result rounds rather than truncating",
-      users_router._unit_price(admin(rate=3), pkg(0.5)), 2)
+      admin_billing.unit_price(admin(rate=3), pkg(0.5)), 2)
 
 print("\n--- an unlimited package has no per-GB answer ---")
 out = price(admin(rate=1_000, username="reza"), pkg(0, coop=0, name="نامحدود"))
@@ -92,11 +92,11 @@ db.commit()
 db.refresh(a)
 db.refresh(p)
 
-users_router._charge_admin_for_package(db, a, p, units=3)
+admin_billing.charge_for_package(db, a, p, units=3)
 db.refresh(a)
 check("3 units charged at the rate", a.balance, 500_000 - 150_000)
 
-users_router._refund_admin_for_package(db, a, p, units=3)
+admin_billing.refund_for_package(db, a, p, units=3)
 db.refresh(a)
 check("refunding the same 3 restores exactly", a.balance, 500_000)
 
@@ -109,7 +109,7 @@ db.commit()
 db.refresh(a)
 db.refresh(p)
 try:
-    users_router._charge_admin_for_package(db, a, p)
+    admin_billing.charge_for_package(db, a, p)
     refused = False
 except HTTPException:
     refused = True
@@ -119,7 +119,7 @@ check("nothing was deducted", a.balance, 10_000)
 
 a.credit_limit = 100_000
 db.commit()
-users_router._charge_admin_for_package(db, a, p)
+admin_billing.charge_for_package(db, a, p)
 db.refresh(a)
 check("the overdraft still applies", a.balance, -40_000)
 
@@ -130,7 +130,7 @@ db.add_all([a, p])
 db.commit()
 db.refresh(a)
 db.refresh(p)
-users_router._charge_admin_for_package(db, a, p)
+admin_billing.charge_for_package(db, a, p)
 db.refresh(a)
 check("a volume-billed admin is still not charged per package", a.balance, 0)
 
@@ -141,7 +141,7 @@ db.add_all([su, p])
 db.commit()
 db.refresh(su)
 db.refresh(p)
-users_router._charge_admin_for_package(db, su, p)
+admin_billing.charge_for_package(db, su, p)
 db.refresh(su)
 check("a superadmin is never charged", su.balance, 0)
 
@@ -153,7 +153,7 @@ class Old:
 
 
 check("falls back to the package price",
-      users_router._unit_price(Old(), pkg(50, coop=7_000)), 7_000)
+      admin_billing.unit_price(Old(), pkg(50, coop=7_000)), 7_000)
 
 print("\n" + "=" * 60)
 if failures:

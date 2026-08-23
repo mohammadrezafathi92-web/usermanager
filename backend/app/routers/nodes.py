@@ -144,7 +144,19 @@ def get_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUse
 @router.put("/{node_id}", response_model=schemas.NodeOut)
 def update_node(node_id: int, payload: schemas.NodeUpdate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     node = _get_owned_node(db, node_id, admin)
-    for k, v in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+
+    # Taking a server in or out of service is the superadmin's call alone.
+    #
+    # Even on a node the Admin owns: `enabled` is what decides whether the
+    # server is in rotation at all, and a disabled node stops carrying the
+    # customers already provisioned on it. Rejected rather than quietly
+    # dropped from the payload - silently ignoring the field would leave the
+    # UI showing a state the database never took.
+    if "enabled" in changes and not admin.is_superadmin:
+        raise HTTPException(403, "روشن و خاموش کردن سرور فقط از دست ادمین اصلی برمی‌آید")
+
+    for k, v in changes.items():
         setattr(node, k, v)
     db.commit()
     db.refresh(node)

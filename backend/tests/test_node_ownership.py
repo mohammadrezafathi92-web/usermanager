@@ -133,6 +133,31 @@ for label, fn in (
     ok, status = call(fn, shared, a1)
     check(f"{label} on a granted node is refused", (ok, status), (False, 403))
 
+print("\n--- taking a server out of rotation is the superadmin's alone ---")
+check("an Admin cannot disable even their OWN node",
+      call(nodes_router.update_node, own, a1, payload=schemas.NodeUpdate(enabled=False)),
+      (False, 403))
+db.rollback()
+check("the node is still enabled", db.get(models.Node, own.id).enabled, True)
+
+check("nor a granted one",
+      call(nodes_router.update_node, shared, a1, payload=schemas.NodeUpdate(enabled=False)),
+      (False, 403))
+db.rollback()
+
+# The refusal must be about the switch, not about everything else - an
+# Admin renaming their own server has to keep working.
+check("an unrelated change to their own node still works",
+      call(nodes_router.update_node, own, a1, payload=schemas.NodeUpdate(name="renamed-again")),
+      (True, None))
+check("...and applied", db.get(models.Node, own.id).name, "renamed-again")
+
+check("the superadmin may disable",
+      call(nodes_router.update_node, own, su, payload=schemas.NodeUpdate(enabled=False)),
+      (True, None))
+check("...and it really is disabled", db.get(models.Node, own.id).enabled, False)
+call(nodes_router.update_node, own, su, payload=schemas.NodeUpdate(enabled=True))
+
 print("\n--- a Seller reaches none of it ---")
 s1 = models.AdminUser(username="s1", hashed_password="x", parent_admin_id=a1.id,
                       role=hierarchy.ROLE_SELLER)

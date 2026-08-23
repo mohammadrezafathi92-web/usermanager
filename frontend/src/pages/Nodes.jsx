@@ -355,6 +355,12 @@ export default function Nodes() {
     setSaving(true);
     setError("");
     const payload = { ...form, mt_client_dns: dnsToPayload() };
+    // `enabled` rides along because openEdit spreads the whole node into the
+    // form, but only a superadmin may change it (routers/nodes.py's
+    // update_node rejects the field outright rather than dropping it). Left
+    // in, an Admin renaming their own server would get a 403 about a switch
+    // they never touched.
+    if (!isSuperadmin) delete payload.enabled;
     try {
       if (editingId) {
         await updateNode(editingId, payload);
@@ -446,17 +452,25 @@ export default function Nodes() {
                   <div className="text-xs text-gray-400">{n.type === "mikrotik" ? t("nodes.mikrotikType") : t("nodes.xrayType")}</div>
                 </div>
               </div>
-              <button
-                type="button"
-                title={n.enabled ? t("nodes.disableServer") : t("nodes.enableServer")}
-                disabled={togglingId === n.id}
-                onClick={() => onToggleEnabled(n)}
-                className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors disabled:opacity-50 ${
-                  n.enabled ? "bg-emerald-50 text-emerald-600 hover:bg-emerald-100" : "bg-gray-100 text-gray-400 hover:bg-gray-200"
-                }`}
-              >
-                <Power size={16} />
-              </button>
+              {/* Superadmin only, matching the backend (routers/nodes.py's
+                  update_node). Taking a server out of rotation stops it
+                  carrying the customers already provisioned on it - across
+                  every admin using it - so it is not an Admin's call even
+                  on a node they own. The status badge above still shows
+                  everyone whether the node is live. */}
+              {isSuperadmin && (
+                <button
+                  type="button"
+                  title={n.enabled ? t("nodes.disableServer") : t("nodes.enableServer")}
+                  disabled={togglingId === n.id}
+                  onClick={() => onToggleEnabled(n)}
+                  className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors disabled:opacity-50 ${
+                    n.enabled ? "bg-emerald-50 text-emerald-600 hover:bg-emerald-100" : "bg-gray-100 text-gray-400 hover:bg-gray-200"
+                  }`}
+                >
+                  <Power size={16} />
+                </button>
+              )}
             </div>
 
             <div className="text-xs text-gray-500 space-y-1 mb-3">

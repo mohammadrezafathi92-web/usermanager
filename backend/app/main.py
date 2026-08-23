@@ -154,7 +154,8 @@ HA_FAILOVER_THRESHOLD = 5  # ~5 failures at the 20s tick interval below -> ~100s
 
 
 _DEFAULT_SECRET_KEY = "change-this-secret-in-production"
-_DEFAULT_ADMIN_PASSWORD = "admin123"
+# Imported rather than redefined - see config._DEFAULT_ADMIN_PASSWORD.
+from .config import _DEFAULT_ADMIN_PASSWORD  # noqa: E402
 
 
 def _warn_if_insecure_defaults() -> None:

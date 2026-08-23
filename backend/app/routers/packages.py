@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import get_current_admin, require_permission, require_confirm_password
+from ..deps import get_current_admin, require_confirm_password
 from ..services import hierarchy
 
 # Router-level dependency is just "logged in" - listing packages is
@@ -18,15 +18,19 @@ from ..services import hierarchy
 # hierarchy.accessible_package_owner_ids's docstring: everyone, INCLUDING
 # a superadmin now, only ever sees their own scope - NULL/global packages
 # for a superadmin, their own tree for an Admin/Seller, never each other's).
-# Mutating endpoints split into "edit_packages" (create/update/files) and
-# "delete_packages" (package delete only) - see permissions.py - AND
-# restricted to superadmin or level-2 Admin only: level-3 Sellers can see/
-# use packages to provision users but never create/edit/delete them
-# themselves (they only have whatever their parent Admin built and shared).
+# Mutating endpoints are restricted to a superadmin or a level-2 Admin:
+# level-3 Sellers can see and use packages to provision users, but never
+# create, edit or delete them (they only ever have what their parent Admin
+# built and shared). That is _require_package_manager below.
+#
+# They used to ALSO carry require_permission("edit_packages"/"delete_
+# packages"). Those keys were pruned from PERMISSION_CHOICES, which left
+# gates that could never match anything - and require_permission
+# short-circuits for a level-2 Admin regardless, so they never constrained
+# the one role they might have. Removed rather than left to imply a
+# protection that was not there; see routers/nodes.py, where the identical
+# pair was hiding a real hole.
 router = APIRouter(prefix="/api/packages", tags=["packages"], dependencies=[Depends(get_current_admin)])
-_edit = Depends(require_permission("edit_packages"))
-_delete = Depends(require_permission("delete_packages"))
-_manage = _edit  # legacy alias
 
 
 def _require_package_manager(admin: models.AdminUser) -> None:
@@ -161,7 +165,7 @@ def list_packages(db: Session = Depends(get_db), admin: models.AdminUser = Depen
 
 
 @router.post("", response_model=schemas.PackageOut)
-def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     _require_package_manager(admin)
     data = payload.model_dump(exclude={"connections", "ovpn_templates"})
     # owner_admin_id is always derived from who's creating it, never taken
@@ -181,7 +185,7 @@ def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db)
 
 
 @router.put("/{package_id}", response_model=schemas.PackageOut)
-def update_package(package_id: int, payload: schemas.PackageUpdate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+def update_package(package_id: int, payload: schemas.PackageUpdate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     _require_package_manager(admin)
     pkg = _get_scoped_package(db, package_id, admin)
     data = payload.model_dump(exclude_unset=True, exclude={"connections", "ovpn_templates"})
@@ -198,7 +202,7 @@ def update_package(package_id: int, payload: schemas.PackageUpdate, db: Session 
 
 
 @router.delete("/{package_id}")
-def delete_package(package_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_delete, _confirm=Depends(require_confirm_password)):
+def delete_package(package_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password)):
     _require_package_manager(admin)
     pkg = _get_scoped_package(db, package_id, admin)
     for f in pkg.files:
@@ -259,7 +263,7 @@ def _unlink_quiet(path: str) -> None:
 
 
 @router.post("/{package_id}/files", response_model=schemas.PackageFileOut)
-def upload_package_file(package_id: int, file: UploadFile = File(...), db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+def upload_package_file(package_id: int, file: UploadFile = File(...), db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     """Attaches a file (VPN config, setup guide, installer, ...) to a
     package - the built-in sales bot sends every attached file to the
     customer automatically right after they buy/renew this package (see
@@ -304,7 +308,7 @@ def upload_package_file(package_id: int, file: UploadFile = File(...), db: Sessi
 
 
 @router.delete("/{package_id}/files/{file_id}")
-def delete_package_file(package_id: int, file_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit, _confirm=Depends(require_confirm_password)):
+def delete_package_file(package_id: int, file_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password)):
     _require_package_manager(admin)
     _get_scoped_package(db, package_id, admin)  # scope check, 404s if out of reach
     pf = db.get(models.PackageFile, file_id)

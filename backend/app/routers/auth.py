@@ -89,6 +89,38 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db
     return schemas.Token(access_token=token)
 
 
+# Whether an account is still on the published default password.
+#
+# Answered here rather than only in a startup log line, because a log line
+# inside a container is not somewhere anyone looks - the warning has existed
+# for a while and cannot have been read, or the password would be changed.
+# The panel now says it on every page instead.
+#
+# Cached because verify_password is bcrypt, which is deliberately slow, and
+# /me is called on every page load. The key includes the hash, so changing
+# the password invalidates the entry by itself - no cache to remember to
+# clear.
+_DEFAULT_PASSWORD_CACHE: dict[tuple[int, str], bool] = {}
+
+
+def _uses_default_password(admin: models.AdminUser) -> bool:
+    from ..config import _DEFAULT_ADMIN_PASSWORD
+    from ..security import verify_password
+
+    key = (admin.id, admin.hashed_password or "")
+    if key not in _DEFAULT_PASSWORD_CACHE:
+        # Bounded so a panel with many admins cannot grow this without end.
+        if len(_DEFAULT_PASSWORD_CACHE) > 500:
+            _DEFAULT_PASSWORD_CACHE.clear()
+        try:
+            _DEFAULT_PASSWORD_CACHE[key] = verify_password(
+                _DEFAULT_ADMIN_PASSWORD, admin.hashed_password
+            )
+        except Exception:  # noqa: BLE001 - a malformed hash is not "default"
+            _DEFAULT_PASSWORD_CACHE[key] = False
+    return _DEFAULT_PASSWORD_CACHE[key]
+
+
 @router.get("/me")
 def me(admin: models.AdminUser = Depends(get_current_admin)):
     build = version_info.get_build_info()
@@ -112,6 +144,10 @@ def me(admin: models.AdminUser = Depends(get_current_admin)):
         "balance": admin.balance or 0,
         "credit_limit": admin.credit_limit or 0,
         "volume_balance_gb": admin.volume_balance_gb or 0,
+        # True = this account can still be logged into with the password
+        # published in the repository. The panel shows an unmissable banner
+        # rather than trusting a startup log line nobody reads.
+        "password_is_default": _uses_default_password(admin),
         # Rendering offset for every date in the UI (see services/jalali.py
         # and frontend utils.js's setDisplayOffset). Delivered here rather
         # than from /api/settings because that router is admin-tier-only,

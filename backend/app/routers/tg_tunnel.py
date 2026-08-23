@@ -36,18 +36,6 @@ logger = logging.getLogger("tg_tunnel")
 router = APIRouter(prefix="/api/telegram-tunnel", tags=["telegram-tunnel"],
                    dependencies=[Depends(require_superadmin)])
 
-# Only used when the node has no client subnet configured at all.
-#
-# The tunnel normally takes an address out of the node's OWN customer subnet
-# (Node.mt_client_subnet) instead. That choice is the difference between a
-# tunnel that works and one that does not: a router serving customers has
-# already been given NAT rules, routing marks and firewall policy for that
-# subnet, all of them proven by the customers using them right now. Inventing
-# a fresh subnet means every one of those has to be recreated by hand, and
-# each one that is missed fails silently - which is exactly how this feature
-# spent a day not working.
-FALLBACK_SUBNET = "10.77.0.0/30"
-
 # The panel provisions itself as an ordinary customer under this username.
 #
 # Not a hand-rolled peer: services/user_ops.provision_wireguard is the exact
@@ -87,42 +75,6 @@ class TunnelOut(BaseModel):
     handshake_age_s: Optional[int]
     rx_bytes: int
     tx_bytes: int
-
-
-def _pick_tunnel_address(client, node) -> tuple[str, str, bool]:
-    """(address_with_prefix, subnet, borrowed_from_clients).
-
-    Takes the highest free address in the node's customer subnet, counting
-    down from the top - customers are handed addresses from the bottom, so
-    starting at the other end keeps the two from meeting for a very long
-    time. Addresses already present on any peer are skipped.
-    """
-    import ipaddress
-
-    raw = (getattr(node, "mt_client_subnet", None) or "").strip()
-    try:
-        net = ipaddress.ip_network(raw, strict=False)
-        borrowed = True
-    except ValueError:
-        net = ipaddress.ip_network(FALLBACK_SUBNET)
-        borrowed = False
-
-    taken: set[str] = set()
-    try:
-        for peer in client.list_peers():
-            for part in (peer.get("allowed-address") or "").split(","):
-                part = part.strip().split("/")[0]
-                if part:
-                    taken.add(part)
-    except Exception:  # noqa: BLE001 - an unreadable peer list is not fatal
-        logger.warning("فهرست پیرهای نود خوانده نشد - انتخاب آدرس بدون بررسی تکراری انجام می‌شود")
-
-    for candidate in reversed(list(net.hosts())):
-        if str(candidate) not in taken:
-            return f"{candidate}/{net.prefixlen}", str(net), borrowed
-
-    raise HTTPException(400, f"هیچ آدرس آزادی در ساب‌نت «{net}» باقی نمانده است")
-
 
 
 def _row(db: Session) -> models.TelegramTunnel:

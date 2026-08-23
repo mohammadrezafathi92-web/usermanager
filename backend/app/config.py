@@ -6,6 +6,12 @@ from pydantic_settings import BaseSettings
 
 
 _DEFAULT_SECRET_KEY = "change-this-secret-in-production"
+# The first-run admin password shipped in this repository. Public by
+# definition, so it is only ever a placeholder: on_startup generates a
+# random one instead, and routers/auth.py compares against this to tell an
+# older install that its superadmin can still be logged into by anyone who
+# has read the source.
+_DEFAULT_ADMIN_PASSWORD = "admin123"
 # Lives on the data volume (docker-compose mounts ./backend/data:/app/data),
 # so it survives container rebuilds - a key regenerated on every boot would
 # log every admin out on every deploy.

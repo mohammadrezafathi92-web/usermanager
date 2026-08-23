@@ -23,6 +23,8 @@ export function AuthProvider({ children }) {
   // page offering that has to show what is left rather than let the first
   // sign of the limit be a refusal.
   const [wallet, setWallet] = useState({ balance: 0, credit_limit: 0, volume_balance_gb: 0 });
+  // True = this account still uses the password published in the repo.
+  const [passwordIsDefault, setPasswordIsDefault] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const applyMe = (data) => {
@@ -37,6 +39,7 @@ export function AuthProvider({ children }) {
     setRole(data.role || (data.is_superadmin ? "superadmin" : "seller"));
     setPermissions(data.permissions || []);
     setBuild({ version: data.app_version || null, commit: data.app_commit || null });
+    setPasswordIsDefault(!!data.password_is_default);
     setWallet({
       balance: data.balance || 0,
       credit_limit: data.credit_limit || 0,
@@ -95,7 +98,7 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider
-      value={{ build, wallet, token, adminId, username, isSuperadmin, role, isAdminOrAbove, permissions, can, canAny, loading, login, logout }}
+      value={{ build, wallet, passwordIsDefault, token, adminId, username, isSuperadmin, role, isAdminOrAbove, permissions, can, canAny, loading, login, logout }}
     >
       {children}
     </AuthContext.Provider>

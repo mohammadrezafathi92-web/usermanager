@@ -56,6 +56,40 @@ def unit_price(admin: models.AdminUser, package: models.Package) -> int:
     return round(quota_gb * rate)
 
 
+def minimum_cooperation_price(admin: models.AdminUser, quota_gb: float) -> Optional[int]:
+    """The lowest cooperation price this admin may put on a package of this
+    size, or None when there is no floor.
+
+    Package.cooperation_price is what this Admin's own SELLERS pay when they
+    provision with it (see unit_price: a Seller has no rate of their own, so
+    it falls through to this field). The Admin sets it themselves - and
+    nothing stopped them setting it below what the SAME package costs THEM,
+    which means losing money on every seller sale, quietly, on every single
+    one.
+
+    So the floor is exactly the Admin's own cost: quota x their per-GB rate.
+    Selling on at cost is allowed; selling at a loss is not, because it is
+    almost always a typo or a misunderstanding of which of the two prices
+    the field is.
+
+    None when the superadmin has set no rate for this admin (there is no
+    cost to compare against and inventing one would be guessing), and for a
+    superadmin, who is the source of the prices rather than subject to them.
+    """
+    if admin is None or admin.is_superadmin:
+        return None
+    rate = int(getattr(admin, "wholesale_price_per_gb", 0) or 0)
+    if rate <= 0:
+        return None
+    gb = float(quota_gb or 0)
+    if gb <= 0:
+        # No per-GB answer for an unlimited package. unit_price already
+        # refuses to SELL one for a rate-based admin, which is the same
+        # judgement made at the other end.
+        return None
+    return round(gb * rate)
+
+
 def charge_for_package(db: Session, admin: models.AdminUser, package: models.Package, units: int = 1) -> None:
     """Atomically deducts `units` times the package's wholesale price (its
     cooperation_price, or the regular customer price if no cooperation

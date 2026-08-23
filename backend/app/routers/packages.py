@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_admin, require_confirm_password
-from ..services import hierarchy
+from ..services import hierarchy, admin_billing
 
 # Router-level dependency is just "logged in" - listing packages is
 # available to every admin (needed to pick a package while creating a
@@ -36,6 +36,32 @@ router = APIRouter(prefix="/api/packages", tags=["packages"], dependencies=[Depe
 def _require_package_manager(admin: models.AdminUser) -> None:
     if hierarchy.is_seller(admin):
         raise HTTPException(403, "فروشنده‌ها اجازه ساخت یا ویرایش پکیج را ندارند")
+
+
+def _check_cooperation_floor(admin: models.AdminUser, quota_gb, cooperation_price) -> None:
+    """A package may not be sold on for less than it costs its owner.
+
+    cooperation_price is what THIS admin's Sellers pay for the package, and
+    the admin sets it themselves - so without this they could put it below
+    their own per-GB cost and lose money on every seller sale, silently, on
+    every one. See services/admin_billing.minimum_cooperation_price.
+
+    Checked when the package is SAVED rather than when it is sold: at sale
+    time the loss has already been agreed with a customer, and the person
+    who would see the error is the Seller, who did not set the number.
+    """
+    if cooperation_price is None:
+        return
+    floor = admin_billing.minimum_cooperation_price(admin, quota_gb)
+    if floor is None or int(cooperation_price) >= floor:
+        return
+    rate = int(getattr(admin, "wholesale_price_per_gb", 0) or 0)
+    raise HTTPException(
+        400,
+        f"قیمت همکاری نمی‌تواند کمتر از {floor:,} تومان باشد - این بسته با نرخ "
+        f"{rate:,} تومان به ازای هر گیگابایت، برای خودتان {floor:,} تومان تمام می‌شود "
+        f"و فروش زیر این عدد یعنی روی هر فروشِ فروشنده‌هایتان ضرر می‌کنید",
+    )
 
 
 def _out(pkg: models.Package, my_price: int | None = None) -> models.Package:
@@ -167,6 +193,7 @@ def list_packages(db: Session = Depends(get_db), admin: models.AdminUser = Depen
 @router.post("", response_model=schemas.PackageOut)
 def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     _require_package_manager(admin)
+    _check_cooperation_floor(admin, payload.quota_gb, payload.cooperation_price)
     data = payload.model_dump(exclude={"connections", "ovpn_templates"})
     # owner_admin_id is always derived from who's creating it, never taken
     # from the payload - a superadmin's packages stay global (NULL), a
@@ -189,6 +216,14 @@ def update_package(package_id: int, payload: schemas.PackageUpdate, db: Session 
     _require_package_manager(admin)
     pkg = _get_scoped_package(db, package_id, admin)
     data = payload.model_dump(exclude_unset=True, exclude={"connections", "ovpn_templates"})
+    # Judged on the values the package will HAVE, not only the ones being
+    # sent: changing quota alone can put an untouched cooperation price
+    # under the floor just as surely as changing the price itself.
+    _check_cooperation_floor(
+        admin,
+        data.get("quota_gb", pkg.quota_gb),
+        data.get("cooperation_price", pkg.cooperation_price),
+    )
     data.pop("owner_admin_id", None)  # ownership never changes via this endpoint
     for k, v in data.items():
         setattr(pkg, k, v)

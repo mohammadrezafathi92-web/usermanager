@@ -144,6 +144,7 @@ def me(admin: models.AdminUser = Depends(get_current_admin)):
         "balance": admin.balance or 0,
         "credit_limit": admin.credit_limit or 0,
         "volume_balance_gb": admin.volume_balance_gb or 0,
+        "wholesale_price_per_gb": admin.wholesale_price_per_gb or 0,
         # True = this account can still be logged into with the password
         # published in the repository. The panel shows an unmissable banner
         # rather than trusting a startup log line nobody reads.

@@ -44,6 +44,7 @@ export function AuthProvider({ children }) {
       balance: data.balance || 0,
       credit_limit: data.credit_limit || 0,
       volume_balance_gb: data.volume_balance_gb || 0,
+      wholesale_price_per_gb: data.wholesale_price_per_gb || 0,
     });
   };
 

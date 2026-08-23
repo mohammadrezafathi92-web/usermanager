@@ -62,8 +62,17 @@ function formatToman(n) {
 
 export default function Packages() {
   const { t } = useLanguage();
-  const { role } = useAuth();
+  const { role, wallet } = useAuth();
   const isSeller = role === "seller";
+  // What this package costs the person filling in this form. The backend
+  // refuses a cooperation price below it (routers/packages.py's
+  // _check_cooperation_floor); showing it here means they see the number
+  // rather than discovering it by being rejected.
+  const perGbRate = Number(wallet?.wholesale_price_per_gb || 0);
+  const costFloor =
+    perGbRate > 0 && Number(form.quota_gb) > 0 ? Math.round(Number(form.quota_gb) * perGbRate) : null;
+  const belowFloor =
+    costFloor !== null && form.cooperation_price !== "" && Number(form.cooperation_price) < costFloor;
   const [items, setItems] = useState([]);
   const [nodes, setNodes] = useState([]);
   const [open, setOpen] = useState(false);
@@ -394,6 +403,13 @@ export default function Packages() {
             <div className="text-xs text-gray-400 mt-1">
               {t("packages.cooperationHint")}
             </div>
+            {costFloor !== null && (
+              <div className={`text-xs mt-1 ${belowFloor ? "text-red-600 font-medium" : "text-gray-400"}`}>
+                {belowFloor
+                  ? t("packages.cooperationBelowCost", { floor: formatToman(costFloor) })
+                  : t("packages.cooperationYourCost", { cost: formatToman(costFloor) })}
+              </div>
+            )}
           </div>
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldDescription")}</label>

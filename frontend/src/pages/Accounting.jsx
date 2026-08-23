@@ -19,7 +19,7 @@ import {
 } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
-import { formatDateTime, isoToJalali } from "../utils.js";
+import { formatDateTime, isoToJalali, errorText } from "../utils.js";
 
 // The «حساب‌داری» section - see backend routers/accounting.py +
 // services/accounting.py. The backend already scopes everything by role
@@ -42,6 +42,16 @@ function KindBadge({ kind, t }) {
     <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${tones[kind] || "bg-gray-100 text-gray-500"}`}>
       {t(`accounting.kind.${kind}`)}
     </span>
+  );
+}
+
+function LoadFailed({ message, onRetry, t }) {
+  return (
+    <div className="card border border-red-200 bg-red-50">
+      <div className="text-sm text-red-700 font-medium mb-1">{t("accounting.loadFailed")}</div>
+      <div className="text-xs text-red-600 whitespace-pre-line mb-3">{message}</div>
+      <button type="button" className="btn-secondary" onClick={onRetry}>{t("common.retry")}</button>
+    </div>
   );
 }
 
@@ -68,12 +78,23 @@ export default function Accounting() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
+  // Why a section failed to load, per section.
+  //
+  // Every loader here used to swallow its error into `set...(null)`, and
+  // every section renders "loading" while its data is null - so ANY
+  // failure (a 403, a timeout, a 500) left the page spinning forever with
+  // nothing on screen and nothing in reach. Reported as "the accounting
+  // section hangs", which was exactly true and told nobody anything.
+  const [errors, setErrors] = useState({});
+  const fail = (key) => (err) => setErrors((e) => ({ ...e, [key]: errorText(err, "خطا در بارگذاری") }));
+  const clearError = (key) => setErrors((e) => ({ ...e, [key]: null }));
+
   // ---------------- dashboard ----------------
   const [summary, setSummary] = useState(null);
   const loadSummary = useCallback(() => {
     fetchAccountingSummary({ date_from: dateFrom || undefined, date_to: dateTo || undefined })
-      .then((res) => setSummary(res.data))
-      .catch(() => setSummary(null));
+      .then((res) => { setSummary(res.data); clearError("dashboard"); })
+      .catch((err) => { setSummary(null); fail("dashboard")(err); });
   }, [dateFrom, dateTo]);
 
   // ---------------- transactions ----------------
@@ -88,8 +109,8 @@ export default function Accounting() {
       date_to: dateTo || undefined,
       kind: txKind || undefined,
     })
-      .then((res) => setTx(res.data))
-      .catch(() => setTx(null));
+      .then((res) => { setTx(res.data); clearError("transactions"); })
+      .catch((err) => { setTx(null); fail("transactions")(err); });
   }, [txPage, txKind, dateFrom, dateTo]);
 
   // ---------------- expenses (superadmin) ----------------
@@ -98,8 +119,8 @@ export default function Accounting() {
   const [expSaving, setExpSaving] = useState(false);
   const loadExpenses = useCallback(() => {
     fetchAccountingTransactions({ page: 1, page_size: 100, kind: "expense" })
-      .then((res) => setExpenses(res.data))
-      .catch(() => setExpenses(null));
+      .then((res) => { setExpenses(res.data); clearError("expenses"); })
+      .catch((err) => { setExpenses(null); fail("expenses")(err); });
   }, []);
 
   const submitExpense = async (e) => {
@@ -142,8 +163,8 @@ export default function Accounting() {
   const [creditError, setCreditError] = useState("");
   const loadAdmins = useCallback(() => {
     fetchAdmins()
-      .then((res) => setAdmins((res.data || []).filter((a) => !a.is_superadmin)))
-      .catch(() => setAdmins([]));
+      .then((res) => { setAdmins((res.data || []).filter((a) => !a.is_superadmin)); clearError("credit"); })
+      .catch((err) => { setAdmins([]); fail("credit")(err); });
   }, []);
 
   const submitCredit = async (adminId) => {
@@ -172,8 +193,8 @@ export default function Accounting() {
   const [subtree, setSubtree] = useState(null);
   const loadSubtree = useCallback(() => {
     fetchAccountingSubtree({ date_from: dateFrom || undefined, date_to: dateTo || undefined })
-      .then((res) => setSubtree(res.data || []))
-      .catch(() => setSubtree([]));
+      .then((res) => { setSubtree(res.data || []); clearError("subtree"); })
+      .catch((err) => { setSubtree([]); fail("subtree")(err); });
   }, [dateFrom, dateTo]);
 
   // ---------------- reports ----------------
@@ -181,8 +202,8 @@ export default function Accounting() {
   const [series, setSeries] = useState([]);
   const loadSeries = useCallback(() => {
     fetchAccountingSeries({ granularity, date_from: dateFrom || undefined, date_to: dateTo || undefined })
-      .then((res) => setSeries(res.data || []))
-      .catch(() => setSeries([]));
+      .then((res) => { setSeries(res.data || []); clearError("reports"); })
+      .catch((err) => { setSeries([]); fail("reports")(err); });
   }, [granularity, dateFrom, dateTo]);
 
   const doExport = async () => {
@@ -248,7 +269,7 @@ export default function Accounting() {
           </DateFilters>
 
           {!summary ? (
-            <div className="text-gray-400">{t("common.loading")}</div>
+            errors.dashboard ? <LoadFailed message={errors.dashboard} onRetry={loadSummary} t={t} /> : <div className="text-gray-400">{t("common.loading")}</div>
           ) : (
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -356,7 +377,7 @@ export default function Accounting() {
           </DateFilters>
 
           {!tx ? (
-            <div className="text-gray-400">{t("common.loading")}</div>
+            errors.transactions ? <LoadFailed message={errors.transactions} onRetry={loadTx} t={t} /> : <div className="text-gray-400">{t("common.loading")}</div>
           ) : tx.items.length === 0 ? (
             <div className="card text-gray-400">{t("accounting.noData")}</div>
           ) : (
@@ -430,7 +451,7 @@ export default function Accounting() {
           </form>
 
           {!expenses ? (
-            <div className="text-gray-400">{t("common.loading")}</div>
+            errors.expenses ? <LoadFailed message={errors.expenses} onRetry={loadExpenses} t={t} /> : <div className="text-gray-400">{t("common.loading")}</div>
           ) : expenses.items.length === 0 ? (
             <div className="card text-gray-400">{t("accounting.noData")}</div>
           ) : (
@@ -476,7 +497,7 @@ export default function Accounting() {
           />
           <div className="text-xs text-gray-400 mb-3">{t("accounting.subtreeHint")}</div>
           {!subtree ? (
-            <div className="text-gray-400">{t("common.loading")}</div>
+            errors.credit ? <LoadFailed message={errors.credit} onRetry={loadAdmins} t={t} /> : <div className="text-gray-400">{t("common.loading")}</div>
           ) : subtree.length === 0 ? (
             <div className="card text-gray-400">{t("accounting.subtreeEmpty")}</div>
           ) : (
@@ -571,7 +592,7 @@ export default function Accounting() {
           )}
           {creditError && <div className="text-sm text-red-500 mb-3">{creditError}</div>}
           {!admins ? (
-            <div className="text-gray-400">{t("common.loading")}</div>
+            errors.reports ? <LoadFailed message={errors.reports} onRetry={loadSeries} t={t} /> : <div className="text-gray-400">{t("common.loading")}</div>
           ) : admins.length === 0 ? (
             <div className="card text-gray-400">{t("accounting.noAdmins")}</div>
           ) : (

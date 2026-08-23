@@ -30,11 +30,20 @@ const allLinks = [
   { to: "/packages", labelKey: "nav.packages", icon: Package, perm: null },
   { to: "/tutorials", labelKey: "nav.tutorials", icon: GraduationCap, perm: "view_tutorials" },
   { to: "/radius-logs", labelKey: "nav.radiusLogs", icon: ShieldAlert, perm: null },
-  { to: "/discount-codes", labelKey: "nav.discountCodes", icon: Ticket, perm: null },
-  // All three tiers see this - the backend scopes what each role's numbers
-  // cover (superadmin: whole panel; level-2 Admin: own tree; Seller: self) -
-  // see routers/accounting.py.
-  { to: "/accounting", labelKey: "nav.accounting", icon: Calculator, perm: null },
+  // Gated on the SAME permission its router requires (routers/
+  // discount_codes.py gates the whole prefix on manage_discount_codes).
+  { to: "/discount-codes", labelKey: "nav.discountCodes", icon: Ticket, perm: "manage_discount_codes" },
+  // The backend scopes what each role's numbers cover (superadmin: whole
+  // panel; level-2 Admin: own tree; Seller: self) - but a Seller only gets
+  // in at all with view_accounting, which routers/accounting.py requires on
+  // the whole prefix.
+  //
+  // This used to be `perm: null`. The menu offered the section to every
+  // Seller while every one of its endpoints answered 403, so the page
+  // opened onto nothing - reported as "the accounting section hangs".
+  // canAny() waves superadmins and level-2 Admins through exactly as
+  // deps.require_permission does, so they are unaffected.
+  { to: "/accounting", labelKey: "nav.accounting", icon: Calculator, perm: "view_accounting" },
   // One channel per admin - a level-3 Seller has neither a channel nor a
   // bot of their own, so this is Admin-tier-only like Nodes.
   { to: "/ads", labelKey: "nav.ads", icon: Megaphone, perm: "__admin_or_above__" },

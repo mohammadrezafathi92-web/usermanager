@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-08-19T17:10:05.653Z",
+  "projectRoot": "/Users/mac/Claude/Claude/Projects/user maneger/usermanager",
+  "structure": {
+    "hasPackageJson": false,
+    "hasTsConfig": false,
+    "hasClaudeConfig": true,
+    "hasClaudeFlow": true
+  },
+  "scannedAt": 1787159405653
+}

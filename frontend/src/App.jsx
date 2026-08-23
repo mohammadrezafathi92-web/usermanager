@@ -140,19 +140,23 @@ export default function App() {
       <Route
         path="/discount-codes"
         element={
-          <Protected>
+          <PermRoute perm="manage_discount_codes">
             <DiscountCodes />
-          </Protected>
+          </PermRoute>
         }
       />
-      {/* حساب‌داری - visible to every tier; the backend scopes each role's
-          numbers (see routers/accounting.py + services/accounting.py). */}
+      {/* حساب‌داری - the backend scopes each role's numbers (superadmin:
+          whole panel, level-2 Admin: own tree, Seller: self), but a Seller
+          needs view_accounting to get in at all: routers/accounting.py
+          requires it on the whole prefix. Guarding the route as well as the
+          menu entry, so reaching the URL directly bounces to the dashboard
+          instead of opening a page whose every request answers 403. */}
       <Route
         path="/accounting"
         element={
-          <Protected>
+          <PermRoute perm="view_accounting">
             <Accounting />
-          </Protected>
+          </PermRoute>
         }
       />
       {/* تبلیغات - admin tier and above: the feature is one channel per

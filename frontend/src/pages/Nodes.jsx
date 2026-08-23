@@ -489,13 +489,23 @@ export default function Nodes() {
               <button className="btn-secondary flex-1" onClick={() => onTest(n.id)}>
                 <PlugZap size={14} /> {t("nodes.testConnection")}
               </button>
-              <button className="btn-secondary" onClick={() => openEdit(n)}>
-                <Pencil size={14} />
-              </button>
-              {(isSuperadmin || n.owner_admin_id === adminId) && (
-                <button className="btn-danger" onClick={() => onDelete(n.id)}>
-                  <Trash2 size={14} />
-                </button>
+              {/* Edit follows the same rule Delete already did: a granted
+                  node is someone else's server, shared for use. The edit
+                  dialog is also where the RADIUS/protocol pushes and the
+                  user imports live, and those change the live router - so
+                  offering the button on a node the backend will refuse
+                  would just be a 403 with extra steps. */}
+              {(isSuperadmin || n.owner_admin_id === adminId) ? (
+                <>
+                  <button className="btn-secondary" onClick={() => openEdit(n)}>
+                    <Pencil size={14} />
+                  </button>
+                  <button className="btn-danger" onClick={() => onDelete(n.id)}>
+                    <Trash2 size={14} />
+                  </button>
+                </>
+              ) : (
+                <span className="text-[11px] text-gray-400 px-2">{t("nodes.grantedReadOnly")}</span>
               )}
             </div>
             {testResult[n.id] && testResult[n.id] !== "loading" && (

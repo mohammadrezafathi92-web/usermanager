@@ -40,11 +40,13 @@ def _resolve_panel_host(payload_host: Optional[str]) -> str:
 # available to every admin regardless of permissions (a restricted admin
 # still needs to see which servers exist to provision a connection for
 # their own users - see routers/users.py's connection endpoints), further
-# narrowed to their own hierarchy.accessible_node_ids scope below. The
-# mutating endpoints are split into "edit_nodes" (update/test/import/
-# RADIUS+protocol pushes on a node already in scope) and "delete_nodes" -
-# see permissions.py's docstring on why this used to be one broad
-# "manage_nodes" and was split into granular per-action permissions.
+# narrowed to their own hierarchy.accessible_node_ids scope below.
+#
+# The mutating endpoints are gated on OWNERSHIP, not on a permission - see
+# _get_owned_node. They used to carry require_permission("edit_nodes"),
+# which stopped meaning anything once that key was pruned from
+# PERMISSION_CHOICES, and never applied to a level-2 Admin in the first
+# place because require_permission short-circuits for them.
 #
 # create_node: a superadmin can always create a node (owner_admin_id=NULL,
 # infrastructure they then optionally GRANT to specific level-2 Admins via
@@ -60,9 +62,37 @@ def _resolve_panel_host(payload_host: Optional[str]) -> str:
 # under other Admins/customers using it isn't something an Admin should be
 # able to do unilaterally (see delete_node below).
 router = APIRouter(prefix="/api/nodes", tags=["nodes"], dependencies=[Depends(get_current_admin)])
-_edit = Depends(require_permission("edit_nodes"))
-_delete = Depends(require_permission("delete_nodes"))
-_manage = _edit  # legacy alias, in case any other module still imports it
+
+
+def _get_owned_node(db: Session, node_id: int, admin: models.AdminUser) -> models.Node:
+    """A node this admin may CHANGE - not merely one they may use.
+
+    Being granted a node (AdminNodeAccess) means "you may provision your
+    customers on this server". It has never meant "you may reconfigure it".
+    Until now it did: these endpoints were gated on
+    require_permission("edit_nodes"), a key that no longer exists in
+    PERMISSION_CHOICES at all - and require_permission short-circuits for a
+    level-2 Admin regardless. So the gate did nothing for exactly the role
+    it was supposed to constrain.
+
+    What that allowed on a superadmin's shared node: changing its host or
+    credentials, pushing RADIUS/SSTP/L2TP/IKEv2 config to the live router,
+    rebuilding every client on it, and - worst - importing its existing PPP
+    or 3x-ui users, which would pull OTHER admins' customers into the
+    importer's own account. All of it affecting every admin and customer on
+    that server.
+
+    Same rule delete_node already had, applied to the rest: your own
+    servers are yours; a granted one is read-and-use.
+    """
+    node = _get_scoped_node(db, node_id, admin)
+    if not admin.is_superadmin and node.owner_admin_id != admin.id:
+        raise HTTPException(
+            403,
+            "این سرور در اختیار شما قرار داده شده ولی مال شما نیست - "
+            "تغییر تنظیمات آن فقط از دست سازنده‌اش یا ادمین اصلی برمی‌آید",
+        )
+    return node
 
 
 @router.get("", response_model=list[schemas.NodeOut])
@@ -112,8 +142,8 @@ def get_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUse
 
 
 @router.put("/{node_id}", response_model=schemas.NodeOut)
-def update_node(node_id: int, payload: schemas.NodeUpdate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
-    node = _get_scoped_node(db, node_id, admin)
+def update_node(node_id: int, payload: schemas.NodeUpdate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    node = _get_owned_node(db, node_id, admin)
     for k, v in payload.model_dump(exclude_unset=True).items():
         setattr(node, k, v)
     db.commit()
@@ -140,7 +170,7 @@ def delete_node(node_id: int, db: Session = Depends(get_db), admin: models.Admin
 
 
 @router.post("/{node_id}/test")
-def test_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+def test_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     node = _get_scoped_node(db, node_id, admin)
     try:
         if node.type == models.NodeType.mikrotik:
@@ -172,14 +202,14 @@ def test_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUs
 
 
 @router.post("/{node_id}/push-radius-config", response_model=schemas.RadiusPushResult)
-def push_radius_config(node_id: int, payload: schemas.RadiusPushRequest, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+def push_radius_config(node_id: int, payload: schemas.RadiusPushRequest, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     """One-click alternative to typing the RouterOS commands by hand: uses
     the panel's existing RouterOS API connection to this node to register
     the panel as a /radius client (service=ppp) and switch `ppp aaa` to use
     it. Does NOT touch anything else (IP pool, OpenVPN/L2TP server,
     certificates, IPsec) - those remain fully manual, as with everything
     else in the OpenVPN/L2TP flow."""
-    node = _get_scoped_node(db, node_id, admin)
+    node = _get_owned_node(db, node_id, admin)
     if node.type != models.NodeType.mikrotik:
         raise HTTPException(400, "این عملیات فقط برای نود میکروتیک است")
     if not node.mt_radius_secret:
@@ -208,13 +238,13 @@ def push_radius_config(node_id: int, payload: schemas.RadiusPushRequest, db: Ses
 
 
 @router.post("/{node_id}/push-sstp-config", response_model=schemas.ProtocolPushResult)
-def push_sstp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+def push_sstp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     """One-click SSTP setup: registers the panel as a /radius client
     (service=ppp, same as push-radius-config) if not already done, creates+
     self-signs a server certificate if none exists yet, and enables the
     SSTP server with authentication=mschap2. Does NOT touch IP pools or PPP
     profiles - same minimal-touch scope as push-radius-config."""
-    node = _get_scoped_node(db, node_id, admin)
+    node = _get_owned_node(db, node_id, admin)
     if node.type != models.NodeType.mikrotik:
         raise HTTPException(400, "این عملیات فقط برای نود میکروتیک است")
     if not node.mt_radius_secret:
@@ -242,13 +272,13 @@ def push_sstp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Ses
 
 
 @router.post("/{node_id}/push-l2tp-config", response_model=schemas.ProtocolPushResult)
-def push_l2tp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+def push_l2tp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     """One-click L2TP/IPsec setup: registers the panel as a /radius client
     (service=ppp) and enables the L2TP server with use-ipsec + a shared
     pre-shared key. Generates and saves a random IPsec secret onto this
     node if one isn't already set (mt_l2tp_ipsec_secret), so repeat pushes
     are idempotent and the same key can be shown to clients afterwards."""
-    node = _get_scoped_node(db, node_id, admin)
+    node = _get_owned_node(db, node_id, admin)
     if node.type != models.NodeType.mikrotik:
         raise HTTPException(400, "این عملیات فقط برای نود میکروتیک است")
     if not node.mt_radius_secret:
@@ -276,7 +306,7 @@ def push_l2tp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Ses
 
 
 @router.post("/{node_id}/push-ikev2-config", response_model=schemas.ProtocolPushResult)
-def push_ikev2_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+def push_ikev2_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     """One-click IKEv2 setup: registers the panel as a /radius client for
     BOTH service=ppp (per-user login) and service=ipsec (IKEv2's own
     RADIUS/EAP relay), then sets up an /ip/ipsec peer+identity pinned to
@@ -287,7 +317,7 @@ def push_ikev2_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Se
     ipsec-secret shortcut) - pushing both on the same router may conflict;
     pick one PSK-based protocol per router unless you know what you're
     combining."""
-    node = _get_scoped_node(db, node_id, admin)
+    node = _get_owned_node(db, node_id, admin)
     if node.type != models.NodeType.mikrotik:
         raise HTTPException(400, "این عملیات فقط برای نود میکروتیک است")
     if not node.mt_radius_secret:
@@ -322,27 +352,27 @@ def push_ikev2_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Se
 
 
 @router.post("/{node_id}/import-ppp-users", response_model=schemas.PppImportResult)
-def import_ppp_users(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+def import_ppp_users(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     """Reads /ppp/secret directly from the router (read-only) and imports
     any OpenVPN/L2TP account not already known to the panel as a new
     User+Connection, copying the same username/password so RADIUS auth
     keeps working for them without touching anything on the router."""
-    node = _get_scoped_node(db, node_id, admin)
+    node = _get_owned_node(db, node_id, admin)
     return user_ops.import_ppp_secrets(db, node)
 
 
 @router.post("/{node_id}/import-usermanager-users", response_model=schemas.PppImportResult)
-def import_usermanager_users(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+def import_usermanager_users(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     """Reads accounts from MikroTik's own built-in User Manager
     (/user-manager/...) - a separate, protocol-agnostic RADIUS user database
     with its own quotas/expiry - and imports any not already known to the
     panel. Read-only on the router side."""
-    node = _get_scoped_node(db, node_id, admin)
+    node = _get_owned_node(db, node_id, admin)
     return user_ops.import_usermanager_accounts(db, node, admin)
 
 
 @router.post("/{node_id}/rebuild-clients", response_model=schemas.PppImportResult)
-def rebuild_node_clients(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+def rebuild_node_clients(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     """Re-pushes every Xray connection this panel has stored for the node
     back ONTO the node - the recovery path after the node's panel was
     wiped/reinstalled (e.g. clearing a 3X-UI whose logs filled the router's
@@ -356,7 +386,7 @@ def rebuild_node_clients(node_id: int, db: Session = Depends(get_db), admin: mod
     Clients already present on the node are left alone, so this is safe to
     run repeatedly (and safe to run on a node that was only partially
     wiped)."""
-    node = _get_scoped_node(db, node_id, admin)
+    node = _get_owned_node(db, node_id, admin)
     if node.type != models.NodeType.xray:
         raise HTTPException(400, "این عملیات فقط برای نودهای Xray/V2Ray است")
 
@@ -400,10 +430,10 @@ def rebuild_node_clients(node_id: int, db: Session = Depends(get_db), admin: mod
 
 
 @router.post("/{node_id}/import-3xui-clients", response_model=schemas.PppImportResult)
-def import_3xui_clients(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
+def import_3xui_clients(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     """Reads clients that already exist on the 3X-UI panel's configured
     inbound (created there before this node was connected) and imports any
     not already known to the panel as a new User+Connection, preserving
     their uuid/email/flow. Read-only on the 3X-UI panel side."""
-    node = _get_scoped_node(db, node_id, admin)
+    node = _get_owned_node(db, node_id, admin)
     return user_ops.import_threexui_clients(db, node)

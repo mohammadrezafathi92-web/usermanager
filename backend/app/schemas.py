@@ -606,6 +606,10 @@ class BulkNotifyUsersResult(BaseModel):
     skipped_no_telegram_count: int
     failed_count: int
     total_count: int
+    # Why the first failure failed, in Telegram's own words. Without it the
+    # panel could only guess, and its guess ("blocked the bot") is exactly
+    # the explanation that cannot hold when every send fails.
+    error: Optional[str] = None
 
 
 # ---------- Dashboard ----------

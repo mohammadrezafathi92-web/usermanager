@@ -557,6 +557,7 @@ def bulk_notify_users(db: Session, user_ids: list[int], message: str, admin: Opt
     skipped_no_telegram = 0
     failed = 0
     total = 0
+    first_error: Optional[str] = None
     for uid in user_ids:
         user = db.get(models.User, uid)
         if not user:
@@ -572,15 +573,26 @@ def bulk_notify_users(db: Session, user_ids: list[int], message: str, admin: Opt
         # send_message_sync's docstring for why HTML here would silently
         # fail for every recipient the moment the admin's message contains
         # a stray "<" or "&".
-        if telegram_bot_runner.send_message_sync(user.telegram_id, message, parse_mode=None):
+        ok, error = telegram_bot_runner.send_message_sync_detailed(
+            user.telegram_id, message, parse_mode=None,
+        )
+        if ok:
             sent += 1
         else:
             failed += 1
+            # The FIRST failure's reason is kept and handed back. One line
+            # is enough: when a send fails for everyone it fails for the
+            # same reason, and the panel used to answer "probably blocked
+            # the bot" - the one explanation that cannot be true when every
+            # single send fails.
+            if first_error is None:
+                first_error = error
     return {
         "sent_count": sent,
         "skipped_no_telegram_count": skipped_no_telegram,
         "failed_count": failed,
         "total_count": total,
+        "error": first_error,
     }
 
 

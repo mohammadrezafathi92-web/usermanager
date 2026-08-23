@@ -363,6 +363,46 @@ def send_message_sync(
         return False
 
 
+def send_message_sync_detailed(
+    chat_id: int, text: str, timeout: float = 10.0, token: str | None = None,
+    parse_mode: str | object = _UNSET,
+) -> tuple[bool, str | None]:
+    """Same send, but returns WHY it failed instead of only that it did.
+
+    send_message_sync collapses every failure into False, and its callers
+    then have to guess a reason for the operator. The panel guessed
+    "probably blocked the bot" - which is the common case and therefore a
+    convincing lie when the truth is an expired token, a stale SOCKS proxy
+    left in the settings, or no route to Telegram at all. An operator
+    seeing that on every single send has been told the one thing that
+    cannot explain it.
+
+    The failure text is Telegram's own, or the exception type - short
+    enough to put in front of an admin, specific enough to act on.
+    """
+    token = token or _lookup_bot_token()
+    if not token:
+        return False, "توکن ربات تنظیم نشده است"
+
+    async def _send():
+        bot = _make_bot(token)
+        try:
+            kwargs = {} if parse_mode is _UNSET else {"parse_mode": parse_mode}
+            await asyncio.wait_for(bot.send_message(chat_id, text, **kwargs), timeout=timeout)
+        finally:
+            await bot.session.close()
+
+    try:
+        asyncio.run(_send())
+        return True, None
+    except asyncio.TimeoutError:
+        return False, f"تلگرام در {timeout:.0f} ثانیه جواب نداد - دسترسی سرور به تلگرام را بررسی کنید"
+    except Exception as exc:  # noqa: BLE001 - the message is the point
+        detail = str(exc).strip() or type(exc).__name__
+        logger.warning("send_message_sync to %s failed: %s: %s", chat_id, type(exc).__name__, exc)
+        return False, detail
+
+
 def send_post_sync(
     chat_id: str | int,
     text: str,

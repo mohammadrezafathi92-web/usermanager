@@ -172,8 +172,19 @@ export default function UserDetail() {
     setMsgResult(null);
     try {
       const res = await bulkNotifyUsers([user.id], msgText.trim());
-      setMsgResult(res.data);
-      if (res.data?.sent) {
+      // The API returns COUNTS (sent_count / failed_count /
+      // skipped_no_telegram_count), never a boolean `sent`. Reading a field
+      // that does not exist meant every send - including the successful
+      // ones - reported failure, and the failure text then guessed
+      // "probably blocked the bot". Two wrong answers stacked on one
+      // missing key.
+      const d = res.data || {};
+      setMsgResult({
+        ...d,
+        sent: (d.sent_count || 0) > 0,
+        noTelegram: (d.sent_count || 0) === 0 && (d.skipped_no_telegram_count || 0) > 0,
+      });
+      if ((d.sent_count || 0) > 0) {
         setMsgText("");
       }
     } catch (err) {
@@ -1054,7 +1065,17 @@ export default function UserDetail() {
           />
           {msgResult && (
             <div className={`text-xs ${msgResult.sent ? "text-emerald-600" : "text-red-500"}`}>
-              {msgResult.sent ? t("userDetail.messageSent") : t("userDetail.messageFailed")}
+              {/* The real reason when the backend has one. It used to always
+                  say "probably blocked the bot" - which is the common case
+                  and therefore a convincing lie when the truth is an expired
+                  token or no route to Telegram at all. */}
+              {msgResult.sent
+                ? t("userDetail.messageSent")
+                : msgResult.noTelegram
+                  ? t("userDetail.messageNoTelegram")
+                  : msgResult.error
+                    ? t("userDetail.messageFailedReason", { reason: msgResult.error })
+                    : t("userDetail.messageFailed")}
             </div>
           )}
           <button className="btn-primary w-full" disabled={msgSending || !msgText.trim()} onClick={sendMessage}>

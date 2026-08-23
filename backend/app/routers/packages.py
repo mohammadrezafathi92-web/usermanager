@@ -78,10 +78,36 @@ PACKAGE_FILES_DIR = os.environ.get("PACKAGE_FILES_DIR", "/app/data/package_files
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 
+# A server only carries the protocols its own software speaks. Same split
+# the bot applies when a customer picks (telegram_bot/keyboards.py's
+# protocols_kb) and the panel's package form now offers.
+MIKROTIK_PROTOCOLS = {"wireguard", "openvpn", "l2tp", "ikev2", "sstp"}
+XRAY_PROTOCOLS = {"xray"}
+
+
 def _sync_connections(db: Session, pkg: models.Package, specs: list[schemas.PackageConnectionSpec]) -> None:
     """Replaces the package's whole set of bundled server/service rows with
     the ones just submitted from the web UI (simplest correct semantics for
-    an editable list - no per-row diffing needed)."""
+    an editable list - no per-row diffing needed).
+
+    Rejects a protocol the chosen server cannot speak. Nothing checked this
+    before: an Xray node paired with L2TP saved without a word and failed
+    only when a customer bought the package and provisioning ran - by which
+    point they had already paid, and the error surfaced far from the form
+    that caused it.
+    """
+    for spec in specs:
+        node = db.get(models.Node, spec.node_id)
+        if node is None:
+            raise HTTPException(400, f"سرور انتخاب‌شده (id={spec.node_id}) پیدا نشد")
+        allowed = XRAY_PROTOCOLS if node.type == models.NodeType.xray else MIKROTIK_PROTOCOLS
+        if spec.protocol not in allowed:
+            kind = "Xray" if node.type == models.NodeType.xray else "میکروتیک"
+            raise HTTPException(
+                400,
+                f"سرور «{node.name}» از نوع {kind} است و پروتکل «{spec.protocol}» را پشتیبانی نمی‌کند",
+            )
+
     db.query(models.PackageConnection).filter(models.PackageConnection.package_id == pkg.id).delete()
     for spec in specs:
         db.add(models.PackageConnection(

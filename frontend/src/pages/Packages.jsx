@@ -41,9 +41,20 @@ function formatFileSize(bytes) {
   return `${(kb / 1024).toFixed(1)} MB`;
 }
 
-const emptyConn = { node_id: "", protocol: "xray", flow: "" };
+// No protocol until a server is chosen - there is no correct default when
+// the answer depends entirely on which server it is.
+const emptyConn = { node_id: "", protocol: "", flow: "" };
 
 const PROTOCOL_LABELS = { wireguard: "WireGuard", openvpn: "OpenVPN", l2tp: "L2TP", ikev2: "IKEv2", sstp: "SSTP", xray: "V2Ray/Xray" };
+
+// Which protocols a server can actually carry. Same split the bot already
+// applies (telegram_bot/keyboards.py's protocols_kb) - a MikroTik cannot
+// serve Xray and an Xray node serves nothing else, so offering the full
+// list here only ever produced a package whose service fails at
+// provisioning time, long after anyone would connect the two.
+const MIKROTIK_PROTOCOLS = ["wireguard", "openvpn", "l2tp", "ikev2", "sstp"];
+const XRAY_PROTOCOLS = ["xray"];
+const protocolsForType = (type) => (type === "xray" ? XRAY_PROTOCOLS : MIKROTIK_PROTOCOLS);
 
 function formatToman(n) {
   return new Intl.NumberFormat("fa-IR").format(n || 0);
@@ -84,7 +95,22 @@ export default function Packages() {
   const addConn = () => setForm((f) => ({ ...f, connections: [...f.connections, { ...emptyConn }] }));
   const removeConn = (idx) => setForm((f) => ({ ...f, connections: f.connections.filter((_, i) => i !== idx) }));
   const updateConn = (idx, k, v) =>
-    setForm((f) => ({ ...f, connections: f.connections.map((c, i) => (i === idx ? { ...c, [k]: v } : c)) }));
+    setForm((f) => ({
+      ...f,
+      connections: f.connections.map((c, i) => {
+        if (i !== idx) return c;
+        const next = { ...c, [k]: v };
+        if (k === "node_id") {
+          // Changing the server can invalidate the protocol beside it -
+          // picking an Xray node while "L2TP" is selected would otherwise
+          // leave a pair that cannot exist, saved without complaint.
+          const allowed = protocolsForType(nodes.find((n) => String(n.id) === String(v))?.type);
+          if (!allowed.includes(next.protocol)) next.protocol = allowed[0];
+          if (next.protocol !== "xray") next.flow = "";
+        }
+        return next;
+      }),
+    }));
 
   const openCreate = () => {
     setEditingId(null);
@@ -440,12 +466,25 @@ export default function Packages() {
                     </option>
                   ))}
                 </select>
-                <select className="input" value={c.protocol} onChange={(e) => updateConn(idx, "protocol", e.target.value)}>
-                  {Object.entries(PROTOCOL_LABELS).map(([v, l]) => (
-                    <option key={v} value={v}>
-                      {l}
-                    </option>
-                  ))}
+                {/* Only what the chosen server can actually carry. Until a
+                    server is chosen there is no answer, so the field says
+                    so instead of offering six protocols and letting five of
+                    them be wrong. */}
+                <select
+                  className="input"
+                  value={c.protocol}
+                  disabled={!c.node_id}
+                  onChange={(e) => updateConn(idx, "protocol", e.target.value)}
+                >
+                  {!c.node_id ? (
+                    <option value="">{t("packages.selectServerFirst")}</option>
+                  ) : (
+                    protocolsForType(nodes.find((n) => String(n.id) === String(c.node_id))?.type).map((v) => (
+                      <option key={v} value={v}>
+                        {PROTOCOL_LABELS[v]}
+                      </option>
+                    ))
+                  )}
                 </select>
                 <div className="flex items-center gap-1">
                   {c.protocol === "xray" ? (

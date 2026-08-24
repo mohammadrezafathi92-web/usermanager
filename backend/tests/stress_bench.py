@@ -68,14 +68,35 @@ def bench(label, fn, runs=5, budget_ms=None):
 
 db = Session()
 su = db.query(models.AdminUser).filter_by(is_superadmin=True).first()
-lvl2 = db.query(models.AdminUser).filter_by(role="admin").first()
 seller = db.query(models.AdminUser).filter_by(role="seller").first()
+
+# IMPORTANT: hierarchy.owned_admin_ids scopes a SUPERADMIN to only the
+# customers they personally created - each Admin's roster is walled off by
+# design. So benchmarking the superadmin's user list measures an almost
+# empty table and tells us nothing. The realistic worst case is the level-2
+# Admin whose own subtree holds the most customers; that is who is picked
+# here, and how many they hold is printed so the figure can be read
+# honestly.
+from app.services import hierarchy as _h
+_biggest, _n = None, -1
+for _a in db.query(models.AdminUser).filter(models.AdminUser.role == "admin").all():
+    _c = db.query(models.User).filter(
+        models.User.owner_admin_id.in_(_h.owned_admin_ids(db, _a))).count()
+    if _c > _n:
+        _biggest, _n = _a, _c
+lvl2 = _biggest
+_seller_n = db.query(models.User).filter(
+    models.User.owner_admin_id.in_(_h.owned_admin_ids(db, seller))).count()
+_su_n = db.query(models.User).filter(
+    models.User.owner_admin_id.in_(_h.owned_admin_ids(db, su))).count()
 
 n_users = db.query(models.User).count()
 n_conns = db.query(models.Connection).count()
 n_sess = db.query(models.RadiusActiveSession).count()
 print(f"database: {n_users:,} customers, {n_conns:,} connections, {n_sess:,} live PPP sessions")
-print(f"file size: {os.path.getsize(DB) / 1024 / 1024:.0f} MB\n")
+print(f"file size: {os.path.getsize(DB) / 1024 / 1024:.0f} MB")
+print(f"visible rosters: superadmin {_su_n:,} | biggest level-2 admin {_n:,} | seller {_seller_n:,}")
+print("  (each admin's customer roster is private by design - see hierarchy.owned_admin_ids)\n")
 
 print("=" * 96)
 print("PANEL PAGES - what an admin waits for")
@@ -83,18 +104,18 @@ print("=" * 96)
 
 bench("users list, page 1 (superadmin)",
       lambda: users_router.list_users(page=1, page_size=50, db=db, admin=su), budget_ms=300)
-bench("users list, page 200 (deep paging)",
-      lambda: users_router.list_users(page=200, page_size=50, db=db, admin=su), budget_ms=300)
-bench("users list, page 1 (level-2 admin, scoped)",
+bench("users list, page 200 (deep paging, level-2)",
+      lambda: users_router.list_users(page=200, page_size=50, db=db, admin=lvl2), budget_ms=300)
+bench(f"users list, page 1 (level-2 admin, {_n:,} customers)",
       lambda: users_router.list_users(page=1, page_size=50, db=db, admin=lvl2), budget_ms=300)
 bench("users list, page 1 (seller, scoped)",
       lambda: users_router.list_users(page=1, page_size=50, db=db, admin=seller), budget_ms=300)
-bench("users list, search 'user12'",
-      lambda: users_router.list_users(page=1, page_size=50, search="user12", db=db, admin=su), budget_ms=400)
-bench("users list, ONLINE ONLY filter",
-      lambda: users_router.list_users(page=1, page_size=50, online_only=True, db=db, admin=su), budget_ms=400)
-bench("users list, page_size=200",
-      lambda: users_router.list_users(page=1, page_size=200, db=db, admin=su), budget_ms=600)
+bench("users list, search 'user12' (level-2)",
+      lambda: users_router.list_users(page=1, page_size=50, search="user12", db=db, admin=lvl2), budget_ms=400)
+bench("users list, ONLINE ONLY filter (level-2)",
+      lambda: users_router.list_users(page=1, page_size=50, online_only=True, db=db, admin=lvl2), budget_ms=400)
+bench("users list, page_size=200 (level-2)",
+      lambda: users_router.list_users(page=1, page_size=200, db=db, admin=lvl2), budget_ms=600)
 
 print()
 bench("dashboard stats (superadmin)",
@@ -125,18 +146,18 @@ print()
 print("=" * 96)
 print("BULK / EXPORT - the things that hold a worker busy")
 print("=" * 96)
-bench("user ids for 'select all matching filter'",
-      lambda: users_router.list_user_ids(db=db, admin=su), runs=3, budget_ms=1000)
+bench("user ids for 'select all matching filter' (level-2)",
+      lambda: users_router.list_user_ids(db=db, admin=lvl2), runs=3, budget_ms=1000)
 
 print()
 print("=" * 96)
 print("MEMORY - one request's worth")
 print("=" * 96)
 for label, fn in [
-    ("users list page (50 rows)", lambda: users_router.list_users(page=1, page_size=50, db=db, admin=su)),
-    ("users list page (200 rows)", lambda: users_router.list_users(page=1, page_size=200, db=db, admin=su)),
+    ("users list page (50 rows)", lambda: users_router.list_users(page=1, page_size=50, db=db, admin=lvl2)),
+    ("users list page (200 rows)", lambda: users_router.list_users(page=1, page_size=200, db=db, admin=lvl2)),
     ("accounting summary", lambda: accounting.summary(db, su)),
-    ("select-all id list", lambda: users_router.list_user_ids(db=db, admin=su)),
+    ("select-all id list", lambda: users_router.list_user_ids(db=db, admin=lvl2)),
 ]:
     db.expunge_all()
     tracemalloc.start()

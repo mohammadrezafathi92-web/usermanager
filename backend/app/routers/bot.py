@@ -9,6 +9,7 @@ chooses to run the interactive Telegram bot on a second server instead of
 in-process here - same endpoints, same X-API-Key auth, just reached over
 the network instead of in-process."""
 import datetime as dt
+import logging
 import os
 import uuid
 from typing import Optional
@@ -25,11 +26,31 @@ from ..services import user_ops, hierarchy, payment_cards, accounting, admin_bil
 from ..services.quota_manager import _set_connection_enabled
 from .panel_settings import _get_or_create as _get_or_create_settings
 
+logger = logging.getLogger("bot_api")
+
 router = APIRouter(prefix="/api/bot", tags=["bot"], dependencies=[Depends(get_bot_api_key)])
 
 
 def _connection_info(conn: models.Connection) -> schemas.BotConnectionInfo:
-    share = user_ops.get_connection_share(conn)
+    # get_connection_share reaches out to the NODE for a WireGuard
+    # connection (it needs the interface's public key), and raised a 400
+    # when it could not. That 400 came out of _user_response, which nearly
+    # every bot endpoint returns - so one unreachable MikroTik meant a
+    # customer could not even open «اکانت من» or press /start. Their other
+    # services, on perfectly healthy nodes, became unreachable too.
+    #
+    # A node being down must degrade to "this one connection has no config
+    # right now", not to "you have no account". The customer still sees the
+    # connection, its name, its status and its usage; only the config text
+    # is missing, and it comes back on its own when the node does.
+    try:
+        share = user_ops.get_connection_share(conn)
+    except Exception as exc:  # noqa: BLE001 - HTTPException or any node error
+        logger.warning(
+            "connection %s (node %s): config unavailable, showing it without one: %s",
+            conn.id, conn.node_id, exc,
+        )
+        share = {}
     return schemas.BotConnectionInfo(
         id=conn.id,
         type=conn.type,

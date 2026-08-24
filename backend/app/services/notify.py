@@ -22,7 +22,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .. import models
 from ..database import SessionLocal
@@ -120,8 +120,18 @@ def _process_expiry(db: Session, user: models.User, holder, expire_at: dt.dateti
 def run_daily_notify_job() -> None:
     db = SessionLocal()
     try:
+        # Both collections preloaded: the loop below walks user.purchases
+        # for every customer and user.connections for every one of them
+        # too. Left lazy, that is two extra SELECTs per customer - measured
+        # at 26,667 queries for 13,333 linked customers, against 55 with
+        # this (backend/tests/stress_bot.py). Same N+1 shape that
+        # quota_manager.poll_all had.
         users = (
             db.query(models.User)
+            .options(
+                selectinload(models.User.purchases),
+                selectinload(models.User.connections),
+            )
             .filter(models.User.telegram_id.isnot(None))
             .filter(models.User.status != models.UserStatus.disabled)
             .all()

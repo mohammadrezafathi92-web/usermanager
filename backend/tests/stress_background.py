@@ -62,19 +62,29 @@ n_conns = db.query(models.Connection).count()
 print(f"  over {n_users:,} customers / {n_purch:,} purchases / {n_conns:,} connections\n")
 
 
+import datetime as _dt
+
+
 def enforcement_pass():
     """Exactly poll_all's second half - the part that does not need nodes."""
-    users = db.query(models.User).options(
-        selectinload(models.User.connections),
-        selectinload(models.User.purchases),
-    ).all()
-    for user in users:
-        quota_manager._enforce_user_limits(db, user)
-    purchases = db.query(models.Purchase).options(selectinload(models.Purchase.connections)).all()
-    for purchase in purchases:
-        quota_manager._enforce_purchase_limits(db, purchase)
+    now = _dt.datetime.utcnow()
+    pids = quota_manager._purchase_ids_needing_enforcement(db, now)
+    if pids:
+        for p in (db.query(models.Purchase)
+                  .options(selectinload(models.Purchase.connections))
+                  .filter(models.Purchase.id.in_(pids)).all()):
+            quota_manager._enforce_purchase_limits(db, p)
+        db.flush()
+    uids = quota_manager._user_ids_needing_enforcement(db, now)
+    if uids:
+        for u in (db.query(models.User)
+                  .options(selectinload(models.User.connections),
+                           selectinload(models.User.purchases))
+                  .filter(models.User.id.in_(uids)).all()):
+            quota_manager._enforce_user_limits(db, u)
     db.rollback()   # never write to the stress DB; we are timing reads+logic
     db.expunge_all()
+    return len(pids), len(uids)
 
 
 times = []
@@ -102,16 +112,15 @@ print()
 
 # What it would look like at other sizes, measured rather than extrapolated
 # from a formula.
+_p, _u = enforcement_pass()
+print(f"  candidates actually loaded  {_p:,} service(s) + {_u:,} account(s) "
+      f"out of {n_purch:,} + {n_users:,}")
+print()
 print("  same pass at other panel sizes (measured, not guessed):")
 for limit in (2_000, 5_000, 10_000, 20_000):
     _q["n"] = 0
     t = time.perf_counter()
-    users = db.query(models.User).options(
-        selectinload(models.User.connections),
-        selectinload(models.User.purchases),
-    ).limit(limit).all()
-    for u in users:
-        quota_manager._enforce_user_limits(db, u)
+    quota_manager._user_ids_needing_enforcement(db, _dt.datetime.utcnow())
     db.rollback()
     db.expunge_all()
     el = time.perf_counter() - t

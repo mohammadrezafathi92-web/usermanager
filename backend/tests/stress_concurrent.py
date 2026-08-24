@@ -13,7 +13,7 @@ what production has. Writes only to the throwaway stress DB.
 """
 import os, sys, time, threading, statistics, logging
 sys.path.insert(0, "backend")
-os.environ["DATABASE_URL"] = "sqlite:////tmp/stress.db"
+os.environ["DATABASE_URL"] = os.environ.get("STRESS_DB", "sqlite:////tmp/stress_settled.db")
 logging.disable(logging.CRITICAL)
 from sqlalchemy.orm import selectinload
 from app.database import SessionLocal      # the app's engine: WAL + busy_timeout
@@ -27,12 +27,19 @@ latencies, errors = [], []
 
 def reader(idx):
     db = SessionLocal()
+    # The BUSIEST account, not the superadmin: hierarchy.owned_admin_ids
+    # scopes a superadmin to only the customers they made themselves, so
+    # browsing as one measures an almost empty table. Resolved once per
+    # thread rather than re-queried on every iteration.
+    from app.services import hierarchy as h
+    admin = max(db.query(models.AdminUser).filter(models.AdminUser.role == "admin").all(),
+                key=lambda a: db.query(models.User).filter(
+                    models.User.owner_admin_id.in_(h.owned_admin_ids(db, a))).count())
     try:
         while not stop.is_set():
             t = time.perf_counter()
             try:
-                users_router.list_users(page=(idx % 20) + 1, page_size=50, db=db,
-                                        admin=db.query(models.AdminUser).filter_by(is_superadmin=True).first())
+                users_router.list_users(page=(idx % 20) + 1, page_size=50, db=db, admin=admin)
                 latencies.append((time.perf_counter() - t) * 1000)
             except Exception as e:
                 errors.append(f"read: {type(e).__name__}")
@@ -58,17 +65,30 @@ def radius_writer():
         db.close()
 
 def poller():
+    """poll_all's enforcement half, exactly as it now runs in production."""
     db = SessionLocal()
     try:
         while not stop.is_set():
             t = time.perf_counter()
-            users = db.query(models.User).options(
-                selectinload(models.User.connections), selectinload(models.User.purchases)).all()
-            for u in users:
-                quota_manager._enforce_user_limits(db, u)
+            now = dt.datetime.utcnow()
+            pids = quota_manager._purchase_ids_needing_enforcement(db, now)
+            if pids:
+                for p in (db.query(models.Purchase)
+                          .options(selectinload(models.Purchase.connections))
+                          .filter(models.Purchase.id.in_(pids)).all()):
+                    quota_manager._enforce_purchase_limits(db, p)
+                db.flush()
+            uids = quota_manager._user_ids_needing_enforcement(db, now)
+            if uids:
+                for u in (db.query(models.User)
+                          .options(selectinload(models.User.connections),
+                                   selectinload(models.User.purchases))
+                          .filter(models.User.id.in_(uids)).all()):
+                    quota_manager._enforce_user_limits(db, u)
             db.commit()
             db.expunge_all()
-            print(f"    [poll cycle: {time.perf_counter()-t:.1f}s]", flush=True)
+            print(f"    [poll cycle: {time.perf_counter()-t:.2f}s  "
+                  f"{len(pids)} services + {len(uids)} accounts]", flush=True)
             time.sleep(1)
     except Exception as e:
         errors.append(f"poll: {type(e).__name__}: {e}")

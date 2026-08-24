@@ -431,7 +431,18 @@ def poll_all():
         # per-client polling storm. selectinload is SQLAlchemy's recommended
         # strategy for one-to-many collections (a JOIN would duplicate parent
         # rows); this turns the whole loop into 2 queries per collection.
-        users = db.query(models.User).options(selectinload(models.User.connections)).all()
+        # `.purchases` as well as `.connections`: post-migration EVERY
+        # customer takes _enforce_user_limits's "no legacy connections"
+        # branch, which calls _user_status_from_purchases, which walks
+        # user.purchases. Preloading only the connections left that
+        # collection lazy, so the loop issued one extra SELECT per customer
+        # - measured at 20,111 queries for 20,000 customers (backend/tests/
+        # stress_background.py). Exactly the shape of the problem the
+        # comment below already describes, one relationship further along.
+        users = db.query(models.User).options(
+            selectinload(models.User.connections),
+            selectinload(models.User.purchases),
+        ).all()
         for user in users:
             _enforce_user_limits(db, user)
 

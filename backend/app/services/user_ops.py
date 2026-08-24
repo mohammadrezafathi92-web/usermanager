@@ -558,6 +558,19 @@ def bulk_notify_users(db: Session, user_ids: list[int], message: str, admin: Opt
     failed = 0
     total = 0
     first_error: Optional[str] = None
+
+    # Work out WHO first, in one pass, then hand the whole list to one
+    # sender. This used to send inside the loop, one fresh TLS session per
+    # recipient - about 126ms each, so 13,000 customers took 27 minutes and
+    # blew past nginx's timeout while still sending (backend/tests/
+    # stress_bot.py). send_many_sync reuses a single session and paces
+    # itself just under Telegram's own limit instead.
+    #
+    # `id` is the key rather than telegram_id on purpose: one Telegram
+    # account can be linked to several User rows (see models.User.
+    # telegram_id), so keying by chat id would collapse them and report the
+    # wrong counts.
+    recipients: list[tuple[int, int]] = []
     for uid in user_ids:
         user = db.get(models.User, uid)
         if not user:
@@ -568,14 +581,19 @@ def bulk_notify_users(db: Session, user_ids: list[int], message: str, admin: Opt
         if not user.telegram_id:
             skipped_no_telegram += 1
             continue
-        # parse_mode=None: this is free-form admin-typed text, not one of
-        # this codebase's own deliberately-HTML messages - see
-        # send_message_sync's docstring for why HTML here would silently
-        # fail for every recipient the moment the admin's message contains
-        # a stray "<" or "&".
-        ok, error = telegram_bot_runner.send_message_sync_detailed(
-            user.telegram_id, message, parse_mode=None,
-        )
+        recipients.append((user.id, user.telegram_id))
+
+    # parse_mode=None: this is free-form admin-typed text, not one of this
+    # codebase's own deliberately-HTML messages - see send_message_sync's
+    # docstring for why HTML here would silently fail for every recipient
+    # the moment the admin's message contains a stray "<" or "&".
+    results = telegram_bot_runner.send_many_sync(recipients, message, parse_mode=None)
+
+    # Reported in the order asked for, so "the first failure" means the
+    # same thing it did before rather than whichever send happened to
+    # finish first.
+    for key, _chat in recipients:
+        ok, error = results.get(key, (False, "پاسخی از تلگرام دریافت نشد"))
         if ok:
             sent += 1
         else:

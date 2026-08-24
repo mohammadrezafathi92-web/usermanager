@@ -45,9 +45,25 @@ def setup(*, telegram_id=555):
     return db, u
 
 
+# bulk_notify_users now hands the whole recipient list to
+# runner.send_many_sync (one Telegram session for the batch instead of one
+# per person - see test_bulk_notify.py). These stubs stand in for it while
+# keeping each case's intent exactly as it was: a fixed answer for
+# everyone, or a sequence of answers in recipient order.
+def _always(result):
+    return lambda recipients, text, **kw: {key: result for key, _ in recipients}
+
+
+def _in_order(results):
+    def _send(recipients, text, **kw):
+        seq = iter(results)
+        return {key: next(seq) for key, _ in recipients}
+    return _send
+
+
 print("--- a successful send ---")
 db, u = setup()
-telegram_bot_runner.send_message_sync_detailed = lambda *a, **k: (True, None)
+telegram_bot_runner.send_many_sync = _always((True, None))
 res = user_ops.bulk_notify_users(db, [u.id], "سلام")
 check("counted as sent", res["sent_count"], 1)
 check("nothing failed", res["failed_count"], 0)
@@ -55,7 +71,7 @@ check("no error is reported", res["error"], None)
 
 print("\n--- a real failure carries its reason ---")
 db, u = setup()
-telegram_bot_runner.send_message_sync_detailed = lambda *a, **k: (False, "Unauthorized")
+telegram_bot_runner.send_many_sync = _always((False, "Unauthorized"))
 res = user_ops.bulk_notify_users(db, [u.id], "سلام")
 check("counted as failed", res["failed_count"], 1)
 check("the reason survives to the caller", res["error"], "Unauthorized")
@@ -63,7 +79,7 @@ check("...instead of a guess about blocking", "بلاک" in (res["error"] or "")
 
 print("\n--- a customer with no linked Telegram ---")
 db, u = setup(telegram_id=None)
-telegram_bot_runner.send_message_sync_detailed = lambda *a, **k: (True, None)
+telegram_bot_runner.send_many_sync = _always((True, None))
 res = user_ops.bulk_notify_users(db, [u.id], "سلام")
 check("is skipped, not failed", (res["skipped_no_telegram_count"], res["failed_count"]), (1, 0))
 check("and no error is invented", res["error"], None)
@@ -78,8 +94,11 @@ for i in range(3):
     db.commit()
     db.refresh(x)
     ids.append(x.id)
-reasons = iter([(False, "Forbidden: bot was blocked by the user"), (False, "Unauthorized"), (False, "timeout")])
-telegram_bot_runner.send_message_sync_detailed = lambda *a, **k: next(reasons)
+telegram_bot_runner.send_many_sync = _in_order([
+    (False, "Forbidden: bot was blocked by the user"),
+    (False, "Unauthorized"),
+    (False, "timeout"),
+])
 res = user_ops.bulk_notify_users(db, ids, "سلام")
 check("all three failed", res["failed_count"], 3)
 check("the first reason is kept", res["error"], "Forbidden: bot was blocked by the user")

@@ -403,6 +403,97 @@ def send_message_sync_detailed(
         return False, detail
 
 
+def send_many_sync(
+    recipients: list[tuple[int, int]],
+    text: str,
+    timeout: float = 10.0,
+    token: str | None = None,
+    parse_mode: str | object = _UNSET,
+    rate_per_second: float = 25.0,
+    concurrency: int = 15,
+) -> dict[int, tuple[bool, str | None]]:
+    """Send the SAME text to many chats, and report per recipient.
+
+    `recipients` is a list of (key, chat_id); the returned dict is keyed by
+    that key, so the caller can map results back to its own rows without
+    assuming chat ids are unique.
+
+    Why this exists: the broadcast used to call send_message_sync_detailed
+    in a plain loop, and each of those calls builds a fresh Bot, opens a
+    fresh TLS session, sends one message and tears the session down again.
+    Measured at ~126ms per recipient, which is 13,000 customers in 27
+    minutes - past nginx's 660s timeout, so the operator saw a failure
+    while the sending was still going, with no way to tell whether it had
+    worked (backend/tests/stress_bot.py).
+
+    Here ONE session serves the whole batch, and messages go out
+    concurrently up to `concurrency` at a time.
+
+    `rate_per_second` is not a performance knob but a limit: Telegram
+    allows a bot roughly 30 broadcast messages a second and answers 429
+    beyond that. Staying just under it deliberately - going faster does not
+    deliver anything sooner, it only converts messages into retries.
+
+    A per-recipient failure (blocked the bot, deleted account) never stops
+    the batch; it is recorded and the rest continue.
+    """
+    token = token or _lookup_bot_token()
+    if not token:
+        return {key: (False, "توکن ربات تنظیم نشده است") for key, _ in recipients}
+    if not recipients:
+        return {}
+
+    results: dict[int, tuple[bool, str | None]] = {}
+    kwargs = {} if parse_mode is _UNSET else {"parse_mode": parse_mode}
+    min_gap = 1.0 / rate_per_second if rate_per_second > 0 else 0.0
+
+    async def _run():
+        bot = _make_bot(token)
+        gate = asyncio.Semaphore(concurrency)
+        # Serialises only the moment of DEPARTURE, so the whole batch is
+        # paced without the sends themselves being serialised.
+        pacer = asyncio.Lock()
+        next_slot = 0.0
+
+        async def one(key: int, chat_id: int):
+            nonlocal next_slot
+            async with gate:
+                if min_gap:
+                    async with pacer:
+                        now = asyncio.get_event_loop().time()
+                        wait = max(0.0, next_slot - now)
+                        next_slot = max(now, next_slot) + min_gap
+                    if wait:
+                        await asyncio.sleep(wait)
+                try:
+                    await asyncio.wait_for(
+                        bot.send_message(chat_id, text, **kwargs), timeout=timeout)
+                    results[key] = (True, None)
+                except asyncio.TimeoutError:
+                    results[key] = (
+                        False,
+                        f"تلگرام در {timeout:.0f} ثانیه جواب نداد - دسترسی سرور به تلگرام را بررسی کنید",
+                    )
+                except Exception as exc:  # noqa: BLE001 - the message is the point
+                    detail = str(exc).strip() or type(exc).__name__
+                    logger.debug("send to %s failed: %s: %s", chat_id, type(exc).__name__, exc)
+                    results[key] = (False, detail)
+
+        try:
+            await asyncio.gather(*(one(k, c) for k, c in recipients))
+        finally:
+            await bot.session.close()
+
+    try:
+        asyncio.run(_run())
+    except Exception as exc:  # noqa: BLE001 - e.g. the session could not be built at all
+        detail = str(exc).strip() or type(exc).__name__
+        logger.warning("send_many_sync failed wholesale: %s", detail)
+        for key, _ in recipients:
+            results.setdefault(key, (False, detail))
+    return results
+
+
 def send_post_sync(
     chat_id: str | int,
     text: str,

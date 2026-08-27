@@ -155,4 +155,7 @@ services:
     volumes:
       - ./license_server/data:/data
     ports:
-      - "${LICENSE_SERVER_BIND:-127.0.0.1}:9000:9000"
+      # Host port is configurable and defaults to 9100, NOT 9000 - a
+      # self-hosted GlitchTip/Sentry commonly sits on 9000 (it does on this
+      # very server). The container still listens on 9000 internally.
+      - "${LICENSE_SERVER_BIND:-127.0.0.1}:${LICENSE_SERVER_PORT:-9100}:9000"

@@ -47,6 +47,14 @@ services:
       - net.ipv6.conf.default.disable_ipv6=1
     volumes:
       - ./backend/data:/app/data
+      # The HOST's machine-id, read-only. The licence fingerprint
+      # (services/licensing.py) needs a STABLE machine id, but a container's
+      # own /etc/machine-id is regenerated on every image rebuild - which
+      # would invalidate the licence on every `docker compose up --build`.
+      # Mounting the host's real one keeps the fingerprint stable across
+      # updates. Read-only, and only the id is exposed. If the host file is
+      # missing, licensing falls back to CPU/MAC + a persisted random id.
+      - /etc/machine-id:/host/etc/machine-id:ro
       # Let the backend change the panel's own web port with no SSH/password
       # prompt at all (تنظیمات > پورت پنل وب - see services/local_deploy.py):
       # talk to the HOST's docker daemon over its socket, and bind-mount this

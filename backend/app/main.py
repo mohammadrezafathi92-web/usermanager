@@ -19,7 +19,7 @@ from .services.ads import run_due_campaigns
 from .services.radius_server import start_radius_server_in_background, cleanup_stale_radius_sessions, cleanup_old_radius_limit_logs
 from .services.notify import run_daily_notify_job
 from .services.backup import run_scheduled_backup, ha_healthcheck, ha_pull_and_apply, notify_admins_text
-from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, telegram_proxy, tg_tunnel, tutorials, backup, remote_bot, admins, radius_logs, discount_codes, subscription, accounting as accounting_router, ads as ads_router
+from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, telegram_proxy, tg_tunnel, tutorials, backup, remote_bot, admins, radius_logs, discount_codes, subscription, accounting as accounting_router, ads as ads_router, license as license_router
 from .services import accounting as accounting_service
 from .services import purchase_migration
 from .telegram_bot import runner as telegram_bot_runner
@@ -143,6 +143,7 @@ app.include_router(panel_settings.ha_router)
 app.include_router(subscription.router)
 app.include_router(accounting_router.router)
 app.include_router(ads_router.router)
+app.include_router(license_router.router)
 
 scheduler = BackgroundScheduler()
 
@@ -756,6 +757,20 @@ def _start_full_services() -> None:
     # from the panel at runtime, and re-registering jobs on every
     # settings change is a synchronisation problem with nothing to gain.
     scheduler.add_job(run_due_campaigns, "interval", minutes=10, id="ad_campaigns", replace_existing=True)
+
+    # Licence heartbeat to the vendor's control server (see
+    # services/license_state.py). Best-effort and out of band - the panel
+    # runs on its cached verdict between beats, and a failed beat changes
+    # nothing. Skipped entirely on the vendor's own master install.
+    from .services import license_state
+    license_state.refresh()  # prime the cache before the first request
+    if not settings.license_master_install:
+        scheduler.add_job(
+            license_state.heartbeat_job, "interval",
+            minutes=max(5, settings.license_heartbeat_minutes),
+            id="license_heartbeat", replace_existing=True,
+            next_run_time=dt.datetime.now() + dt.timedelta(seconds=30),
+        )
 
     start_radius_server_in_background()
 

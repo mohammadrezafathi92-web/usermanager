@@ -85,6 +85,22 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db
 
     if not ok:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="نام کاربری یا رمز عبور اشتباه است")
+
+    # Licence gate ("قفل خرید" of the panel itself). A panel whose licence
+    # is revoked/expired (scope panel_only or harder) refuses new logins -
+    # the reseller sees why, and recovery is on the vendor's side (un-revoke
+    # from the console, or a fresh monthly key). The vendor's own master
+    # install is never enforced (config.license_master_install), so this can
+    # never lock the operator out of their own control panel. Checked AFTER
+    # the password so a locked panel does not leak which usernames exist.
+    from ..services import license_state
+    enforcement = license_state.current_enforcement()
+    if enforcement.lock_panel:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=enforcement.message or "دسترسی این پنل غیرفعال شده است - با پشتیبانی تماس بگیرید",
+        )
+
     token = create_access_token(admin.username)
     return schemas.Token(access_token=token)
 
@@ -160,7 +176,31 @@ def me(admin: models.AdminUser = Depends(get_current_admin)):
         # aid ("is my change live?").
         "app_version": build["version"],
         "app_commit": build["commit_short"] if admin.is_superadmin else None,
+        # Licence status for the frontend to warn on. `locked` should be
+        # rare here (login is already refused when locked), but an existing
+        # session outlives the moment of locking, so the app shows a
+        # full-screen notice from this. `expires_in_days`/`grace_days_left`
+        # drive a gentle "renew soon" banner while still perfectly valid.
+        "license": _license_block(admin),
     }
+
+
+def _license_block(admin: models.AdminUser) -> dict:
+    from ..services import license_state
+    e = license_state.current_enforcement()
+    out = {
+        "locked": e.lock_panel,
+        "reason": e.reason,
+        "message": e.message,
+        "expires_in_days": e.days_left,
+        "grace_days_left": e.grace_days_left,
+    }
+    # The bot/services flags are only meaningful to the superadmin operating
+    # the panel; a seller does not need to see them.
+    if admin.is_superadmin:
+        out["lock_bot"] = e.lock_bot
+        out["cut_services"] = e.cut_services
+    return out
 
 
 @router.post("/change-password")

@@ -333,6 +333,17 @@ def verify(
     """
     now = now or dt.datetime.utcnow()
 
+    # No public key compiled in => this build does not enforce licences at
+    # all. This is checked FIRST, before the token is even looked at,
+    # because right now no key is baked in and every panel would otherwise
+    # lock itself at login over a missing/garbage token. A build with no key
+    # is a development or not-yet-licensed build, and locking it could only
+    # ever lock US out - so it fails OPEN regardless of what the token is.
+    key = _public_key()
+    if key is None:
+        return LicenseStatus(True, REASON_OK, payload=None,
+                             message="این نسخه بدون کنترل لایسنس ساخته شده است")
+
     if not (token or "").strip():
         return LicenseStatus(False, REASON_MISSING, message=_MESSAGES[REASON_MISSING])
 
@@ -341,13 +352,6 @@ def verify(
     except LicenseError as exc:
         return LicenseStatus(False, REASON_MALFORMED, message=str(exc))
 
-    key = _public_key()
-    if key is None:
-        # No public key compiled in: this build is not licence-enforcing.
-        # Fail OPEN deliberately - a build without a key is a development
-        # build, and locking it would only ever lock US out.
-        return LicenseStatus(True, REASON_OK, payload=payload,
-                             message="این نسخه بدون کنترل لایسنس ساخته شده است")
     try:
         key.verify(signature, body)
     except InvalidSignature:

@@ -114,6 +114,29 @@ class Settings(BaseSettings):
     # Background usage-polling
     poll_interval_seconds: int = int(os.environ.get("POLL_INTERVAL_SECONDS", "30"))
 
+    # ---- licence control (see services/licensing.py + docs/licensing-design.md)
+    # The signed licence token this install runs under. Empty on a build
+    # with no public key compiled in (development) - which fails OPEN, so a
+    # missing token never locks a dev panel.
+    license_key: str = os.environ.get("LICENSE_KEY", "")
+    # Where this panel sends its heartbeat. Domain or IP both work; a domain
+    # is safer because the vendor can move servers without re-issuing keys.
+    license_server_url: str = os.environ.get(
+        "LICENSE_SERVER_URL", "https://license.netcip.ir"
+    )
+    # How often to heartbeat, in minutes.
+    license_heartbeat_minutes: int = int(os.environ.get("LICENSE_HEARTBEAT_MINUTES", "180"))
+    # THE VENDOR'S OWN install. When true, the licence is never enforced on
+    # this panel - it is the master, the one that hosts the control console,
+    # and it must never be able to lock itself out. Set only on the vendor's
+    # server, never shipped to a customer.
+    license_master_install: bool = os.environ.get("LICENSE_MASTER_INSTALL", "false").lower() == "true"
+    # Optional: lock the panel after N days of not reaching the control
+    # server. Default 0 = never lock on silence (the licence's own monthly
+    # expiry enforces payment; the heartbeat only revokes). See
+    # licensing.verify()'s lock_after_silent_days.
+    license_lock_after_silent_days: int = int(os.environ.get("LICENSE_LOCK_AFTER_SILENT_DAYS", "0"))
+
     # RADIUS server (authenticates/accounts OpenVPN & L2TP PPP users for
     # MikroTik routers configured with /radius pointing at this panel)
     radius_enabled: bool = os.environ.get("RADIUS_ENABLED", "true").lower() != "false"

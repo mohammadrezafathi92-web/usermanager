@@ -22,3 +22,7 @@ venv/
 .claude-flow/data/
 .claude-flow/logs/
 .claude-flow/sessions/
+
+# stray files that should never be committed
+_sync_test.txt
+root@*

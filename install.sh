@@ -244,7 +244,47 @@ fetch_source() {
         if [[ -d "$INSTALL_DIR/.git" ]]; then
             (cd "$INSTALL_DIR" && git fetch origin "$USERMANAGER_REPO_BRANCH" && git reset --hard "origin/$USERMANAGER_REPO_BRANCH")
         else
-            git clone --branch "$USERMANAGER_REPO_BRANCH" --depth 1 "$repo_url" "$INSTALL_DIR"
+            # Clone to a TEMP directory and move the result in, rather than
+            # cloning straight into $INSTALL_DIR.
+            #
+            # git refuses to clone into a directory that is not empty, and
+            # $INSTALL_DIR is essentially never empty by the time we get
+            # here: this very script created it and wrote .env into it
+            # ~100 lines above (HOST_PROJECT_DIR must be written before
+            # compose ever runs). So a first-time install from git failed
+            # every single time with "destination path already exists and
+            # is not an empty directory" - the installer tripping over its
+            # own feet. Deleting the directory by hand did not help, because
+            # re-running the script simply recreated it before cloning again.
+            #
+            # Docker also recreates bind-mount source directories under
+            # $INSTALL_DIR whenever a leftover container starts, so "empty"
+            # is not something worth relying on even after a clean rm -rf.
+            local tmp_clone
+            tmp_clone="$(mktemp -d /tmp/usermanager-clone-XXXXXX)"
+            if ! git clone --branch "$USERMANAGER_REPO_BRANCH" --depth 1 "$repo_url" "$tmp_clone/src"; then
+                rm -rf "$tmp_clone"
+                log_err "git clone failed. If the repository is private, set up an access token or"
+                log_err "upload usermanager.tar.gz next to install.sh instead."
+                exit 1
+            fi
+            # .env holds SECRET_KEY and the admin password. If a stray one
+            # ever ends up committed to the repo it must not overwrite the
+            # live one - everybody would be logged out and the stored
+            # password would stop matching.
+            local saved_env=""
+            if [[ -f "$INSTALL_DIR/.env" ]]; then
+                saved_env="$(mktemp /tmp/usermanager-env-XXXXXX)"
+                cp -a "$INSTALL_DIR/.env" "$saved_env"
+            fi
+            # Copy everything across, INCLUDING dotfiles, without disturbing
+            # what is already in place (backend/data, uploads, ...).
+            cp -a "$tmp_clone/src/." "$INSTALL_DIR/"
+            if [[ -n "$saved_env" ]]; then
+                cp -a "$saved_env" "$INSTALL_DIR/.env"
+                rm -f "$saved_env"
+            fi
+            rm -rf "$tmp_clone"
         fi
     fi
 

@@ -130,3 +130,29 @@ services:
       - backend
     ports:
       - "80:80"
+
+  # The licence control server. VENDOR-ONLY: it is gated behind the
+  # "license-server" compose profile so it never starts on a customer's
+  # install - only where the operator explicitly turns it on, e.g.:
+  #   COMPOSE_PROFILES=license-server docker compose up -d
+  # It is a completely separate service (own DB, own login, own port 9000)
+  # from the panel, so a compromised panel does not expose the control data.
+  # Put it behind the operator's own reverse proxy / subdomain; the port is
+  # published on localhost only by default for the same reason the backend
+  # is - nothing here should face the internet unproxied.
+  license-server:
+    build: ./license_server
+    container_name: usermanager-license-server
+    restart: unless-stopped
+    logging: *default-logging
+    profiles:
+      - license-server
+    environment:
+      # First-run console password. After first boot it is stored hashed and
+      # this is ignored; rotate from inside the console. If left empty, a
+      # random one is generated and printed to the logs once on first boot.
+      - LICENSE_ADMIN_PASSWORD=${LICENSE_ADMIN_PASSWORD:-}
+    volumes:
+      - ./license_server/data:/data
+    ports:
+      - "${LICENSE_SERVER_BIND:-127.0.0.1}:9000:9000"

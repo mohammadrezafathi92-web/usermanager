@@ -21,6 +21,7 @@ from sqlalchemy import (
     Boolean, Column, DateTime, Integer, String, Text, create_engine, func,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 Base = declarative_base()
 
@@ -82,8 +83,17 @@ class Install(Base):
 
 
 def make_engine(url: str):
-    connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
-    engine = create_engine(url, connect_args=connect_args, future=True)
+    kwargs: dict = {"future": True}
+    if url.startswith("sqlite"):
+        kwargs["connect_args"] = {"check_same_thread": False}
+        # An in-memory DB lives inside ONE connection. Under the web server
+        # every request/thread would otherwise open its own empty database
+        # and see "no such table". StaticPool keeps a single shared
+        # connection so the schema (and the data) is the same for everyone -
+        # correct for :memory: in tests, and harmless for a real file.
+        if ":memory:" in url or url in ("sqlite://", "sqlite:///:memory:"):
+            kwargs["poolclass"] = StaticPool
+    engine = create_engine(url, **kwargs)
     Base.metadata.create_all(engine)
     return engine
 

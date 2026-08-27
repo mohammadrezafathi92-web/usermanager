@@ -141,29 +141,46 @@ s = verdict(issue(), revoked=True)
 check("a revoked licence is refused", s.valid, False)
 check("...even though it is otherwise perfect", s.reason, licensing.REASON_REVOKED)
 
-print("\n--- the grace period: our server being unreachable ---")
-# This is the half that protects the CUSTOMER, so it gets the most cases.
+print("\n--- silence NEVER locks by default (control server may be down) ---")
+# The whole point of the all-Iran decision: our control server going down
+# must not lock a paying customer. Payment is enforced by the licence's own
+# expiry; the heartbeat only revokes.
 token = issue()
+for label, ago in [("an hour", dt.timedelta(hours=1)),
+                   ("3 days", dt.timedelta(days=3)),
+                   ("30 days", dt.timedelta(days=30)),
+                   ("a year", dt.timedelta(days=365))]:
+    s = verdict(token, last_online_check=NOW - ago)
+    check(f"offline for {label}: still works", s.valid, True)
+s = verdict(token, last_online_check=None)
+check("never checked online at all: still works", s.valid, True)
 
-s = verdict(token, last_online_check=NOW - dt.timedelta(hours=1))
+print("\n--- but silence-locking can be turned ON if the operator wants it ---")
+s = verdict(token, last_online_check=NOW - dt.timedelta(hours=1),
+            lock_after_silent_days=7)
 check("checked an hour ago: fine, no warning", (s.valid, s.grace_days_left), (True, None))
 
-s = verdict(token, last_online_check=NOW - dt.timedelta(days=3))
+s = verdict(token, last_online_check=NOW - dt.timedelta(days=3),
+            lock_after_silent_days=7)
 check("offline 3 days: still working", s.valid, True)
 check("...and warns with days remaining", s.grace_days_left, 4)
 check("...flagged as in grace", s.in_grace, True)
 
-s = verdict(token, last_online_check=NOW - dt.timedelta(days=licensing.GRACE_DAYS, hours=-1))
+s = verdict(token, last_online_check=NOW - dt.timedelta(days=7, hours=-1),
+            lock_after_silent_days=7)
 check("just inside the window: still working", s.valid, True)
 
-s = verdict(token, last_online_check=NOW - dt.timedelta(days=licensing.GRACE_DAYS, hours=1))
+s = verdict(token, last_online_check=NOW - dt.timedelta(days=7, hours=1),
+            lock_after_silent_days=7)
 check("just past it: locked", s.valid, False)
 check("...for the grace reason, not a licence fault", s.reason, licensing.REASON_GRACE_EXHAUSTED)
-check("...and the message names the number of days",
-      str(licensing.GRACE_DAYS) in s.message, True)
+check("...and the message names the number of days", "7" in s.message, True)
 
-s = verdict(token, last_online_check=None)
-check("never checked online at all: still works offline", s.valid, True)
+# An expired LICENCE still stops immediately, silence-locking or not -
+# that is the payment channel and it is always on.
+s = verdict(issue(expires_in_days=-1), last_online_check=NOW - dt.timedelta(hours=1))
+check("an expired licence stops even with silence-locking off", s.valid, False)
+check("...for expiry, the always-on payment reason", s.reason, licensing.REASON_EXPIRED)
 
 print("\n--- turning the clock back ---")
 s = verdict(issue(), highest_seen_time=NOW + dt.timedelta(days=30))

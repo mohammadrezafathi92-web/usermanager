@@ -27,8 +27,34 @@ RUN pip install --no-cache-dir --only-binary=:all: --prefix=/install -r requirem
         && apt-get autoremove -y \
         && rm -rf /var/lib/apt/lists/*)
 
-# ---- stage 2: final runtime image - only what's actually needed to run ----
-FROM python:3.11-slim
+# ---- stage 2 (optional, opt-in): compile services/+telegram_bot/ to .so ----
+# Off by default - see docker-compose.yml's `target:` on the backend service
+# and its BACKEND_BUILD_TARGET env var. Raises the bar against a customer
+# just reading licensing.py/quota_manager.py out of the image and patching
+# it; not attempting (and not able) to make the backend unbreakable - see
+# scripts/cythonize_build.py's docstring for exactly what is and isn't
+# compiled and why.
+#
+# Standalone (not FROM pydeps): cythonize() only transpiles+compiles the
+# .py source text to C - it never imports fastapi/sqlalchemy/etc, so none
+# of requirements.txt is needed here, only cython itself and a C compiler.
+FROM python:3.11-slim AS compile
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir cython==3.3.0 setuptools
+
+WORKDIR /app
+COPY app ./app
+COPY scripts/cythonize_build.py ./cythonize_build.py
+RUN python cythonize_build.py /app \
+    && rm -f cythonize_build.py \
+    && rm -rf _cython_build build
+
+# ---- stage 3: everything the final image needs EXCEPT the app/ source -
+# shared by both leaf targets below so the apt-get layer isn't duplicated ----
+FROM python:3.11-slim AS runtime-base
 
 WORKDIR /app
 
@@ -67,10 +93,26 @@ COPY --from=pydeps /install /usr/local
 # read it, since app.tar.gz containing the source is not the same as this.
 COPY requirements.txt .
 
-COPY app ./app
-
 EXPOSE 8000
 EXPOSE 1812/udp
 EXPOSE 1813/udp
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# ---- stage 4a: services/+telegram_bot/ replaced by compiled .so, opt-in
+# via docker-compose.yml's BACKEND_BUILD_TARGET (see that file). Debugging a
+# panel running this target still works from your own checkout: rebuild
+# runtime-source (the default) at the exact commit the customer is on and
+# reproduce there - the compiled build is for what ships to customers, not
+# for where you diagnose issues. ----
+FROM runtime-base AS runtime-compiled
+COPY --from=compile /app/app ./app
+
+# ---- stage 4b: plain source (DEFAULT - identical to the image before the
+# compile option existed). Deliberately the LAST stage in this file: a bare
+# `docker build ./backend` with no --target (e.g. someone testing locally)
+# builds whichever stage is last, so the safe/unchanged behaviour is what
+# you get if the target is ever omitted, not just when docker-compose.yml
+# happens to set it. ----
+FROM runtime-base AS runtime-source
+COPY app ./app

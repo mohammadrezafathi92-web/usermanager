@@ -12,7 +12,16 @@ x-logging: &default-logging
 
 services:
   backend:
-    build: ./backend
+    # target defaults to runtime-source (plain .py, today's exact behaviour)
+    # unless BACKEND_BUILD_TARGET=runtime-compiled is set (e.g. in a root
+    # .env) - that variant ships services/ and telegram_bot/ as compiled
+    # .so instead of readable .py (see backend/Dockerfile's compile stage
+    # and backend/scripts/cythonize_build.py). A meaningful choice only for
+    # panels going out to customers who could otherwise read the source
+    # straight out of the image; leave unset for your own installs.
+    build:
+      context: ./backend
+      target: ${BACKEND_BUILD_TARGET:-runtime-source}
     container_name: usermanager-backend
     restart: unless-stopped
     logging: *default-logging

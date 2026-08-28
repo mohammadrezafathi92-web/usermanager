@@ -26,6 +26,14 @@ export function AuthProvider({ children }) {
   // True = this account still uses the password published in the repo.
   const [passwordIsDefault, setPasswordIsDefault] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Licence status from /me's own `license` block (backend routers/auth.py's
+  // _license_block) - null until the first /me response arrives. A fresh
+  // login is already refused while locked (see auth.py's login()), so
+  // `locked` becoming true here only ever happens to a session that was
+  // ALREADY open when the panel got locked - that is exactly the case
+  // LicenseLockOverlay.jsx exists to catch, which is why /me is re-polled
+  // periodically below instead of only ever being fetched once at login.
+  const [license, setLicense] = useState(null);
 
   const applyMe = (data) => {
     // Every date in the UI is rendered through utils.js's formatters, which
@@ -40,6 +48,7 @@ export function AuthProvider({ children }) {
     setPermissions(data.permissions || []);
     setBuild({ version: data.app_version || null, commit: data.app_commit || null });
     setPasswordIsDefault(!!data.password_is_default);
+    setLicense(data.license || null);
     setWallet({
       balance: data.balance || 0,
       credit_limit: data.credit_limit || 0,
@@ -62,6 +71,23 @@ export function AuthProvider({ children }) {
       .finally(() => setLoading(false));
   }, [token]);
 
+  // Re-poll /me periodically so a licence lock applied WHILE this tab is
+  // open is actually noticed - without this, an admin who logged in before
+  // the panel got locked would keep working normally until their next
+  // manual page reload, which defeats the point of a lock. 5 minutes: fast
+  // enough that "the vendor just revoked/expired this" is caught promptly,
+  // far too infrequent to be a meaningful load on its own. Best-effort -
+  // a failed poll (network blip) just tries again next tick, same as the
+  // panel's own backend heartbeat_job.
+  useEffect(() => {
+    if (!token) return;
+    const id = setInterval(() => {
+      fetchMe().then((res) => applyMe(res.data)).catch(() => {});
+    }, 5 * 60 * 1000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
   const login = async (u, p) => {
     const res = await apiLogin(u, p);
     localStorage.setItem("um_token", res.data.access_token);
@@ -78,6 +104,7 @@ export function AuthProvider({ children }) {
     setIsSuperadmin(false);
     setRole("seller");
     setPermissions([]);
+    setLicense(null);
   };
 
   // A level-2 Admin gets the same unconditional "yes" a superadmin does -
@@ -97,9 +124,14 @@ export function AuthProvider({ children }) {
   // see task #230/permissions.py's PERMISSION_GROUPS.settings).
   const canAny = (perms) => isAdminOrAbove || (perms || []).some((p) => permissions.includes(p));
 
+  // Lets LicenseLockOverlay re-check immediately after a superadmin saves a
+  // new key from inside the overlay, instead of waiting up to 5 minutes for
+  // the next background poll.
+  const refreshMe = () => fetchMe().then((res) => applyMe(res.data));
+
   return (
     <AuthContext.Provider
-      value={{ build, wallet, passwordIsDefault, token, adminId, username, isSuperadmin, role, isAdminOrAbove, permissions, can, canAny, loading, login, logout }}
+      value={{ build, wallet, passwordIsDefault, license, refreshMe, token, adminId, username, isSuperadmin, role, isAdminOrAbove, permissions, can, canAny, loading, login, logout }}
     >
       {children}
     </AuthContext.Provider>

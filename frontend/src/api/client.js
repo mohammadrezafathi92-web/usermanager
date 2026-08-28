@@ -379,6 +379,14 @@ export const fetchIpBans = () => client.get("/ip-bans");
 export const addIpBan = (ip, reason) => client.post("/ip-bans", { ip, reason });
 export const removeIpBan = (ip) => client.delete(`/ip-bans/${encodeURIComponent(ip)}`);
 
+// License status/key entry (services/license_state.py, routers/license.py) -
+// superadmin-only. fetchMe()'s own `license` block is what drives the
+// app-wide lock overlay (AuthContext.jsx); this richer /license/status is
+// only for the Settings page (fingerprint, exact key details, etc.).
+export const fetchLicenseStatus = () => client.get("/license/status");
+export const checkLicenseNow = () => client.post("/license/check-now");
+export const setLicenseKey = (key) => client.put("/license/key", { key });
+
 // Discount/promo codes (کد تخفیف) - panel-wide, see routers/discount_codes.py.
 export const fetchDiscountCodes = () => client.get("/discount-codes");
 export const createDiscountCode = (data) => client.post("/discount-codes", data);

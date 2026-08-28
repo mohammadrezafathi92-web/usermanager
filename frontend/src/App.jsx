@@ -16,6 +16,7 @@ import DiscountCodes from "./pages/DiscountCodes.jsx";
 import Accounting from "./pages/Accounting.jsx";
 import Ads from "./pages/Ads.jsx";
 import ConfirmPasswordGate from "./components/ConfirmPasswordGate.jsx";
+import LicenseLockOverlay from "./components/LicenseLockOverlay.jsx";
 import Subscription from "./pages/Subscription.jsx";
 
 function Protected({ children }) {
@@ -63,6 +64,9 @@ export default function App() {
       {/* Global password prompt for destructive actions - see the component
           and api/client.js's request interceptor. */}
       <ConfirmPasswordGate />
+      {/* Licence lock notice for a session that was already open when the
+          panel got locked - see the component's own docstring. */}
+      <LicenseLockOverlay />
       <Routes>
       <Route path="/login" element={<Login />} />
       <Route

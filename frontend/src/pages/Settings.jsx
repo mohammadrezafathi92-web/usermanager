@@ -3,6 +3,7 @@ import { KeyRound, Info, Plus, Trash2, Copy, Power, CreditCard, Bot, RefreshCw, 
 import Layout from "../components/Layout.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
 import TelegramTunnelCard from "../components/TelegramTunnelCard.jsx";
+import LicenseCard from "../components/LicenseCard.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import {
@@ -1469,6 +1470,7 @@ export default function Settings() {
 
       {activeTab === "server" && (
         <>
+      {isSuperadmin && <LicenseCard t={t} language={language} />}
       {isSuperadmin && (
         <div className="card mb-4">
           <div className="flex items-center justify-between mb-4">

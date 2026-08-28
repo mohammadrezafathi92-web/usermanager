@@ -370,6 +370,15 @@ export const reparentAdmin = (id, parentAdminId, role) =>
 // panel-wide page (no user_id) or scoped to one user (UserDetail.jsx).
 export const fetchRadiusLimitLogs = (params) => client.get("/radius-logs", { params });
 
+// IP auto-ban list (services/ip_guard.py) - superadmin-only. An IP lands
+// here automatically (too many unauthenticated HTTP requests, too many
+// RADIUS attempts against an unknown username or a disabled connection -
+// exactly the "کاربر ناشناس"/"اتصال غیرفعال" rows on the RADIUS log page)
+// or by hand from Settings.
+export const fetchIpBans = () => client.get("/ip-bans");
+export const addIpBan = (ip, reason) => client.post("/ip-bans", { ip, reason });
+export const removeIpBan = (ip) => client.delete(`/ip-bans/${encodeURIComponent(ip)}`);
+
 // Discount/promo codes (کد تخفیف) - panel-wide, see routers/discount_codes.py.
 export const fetchDiscountCodes = () => client.get("/discount-codes");
 export const createDiscountCode = (data) => client.post("/discount-codes", data);

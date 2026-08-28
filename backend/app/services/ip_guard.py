@@ -57,11 +57,19 @@ POST_BAD_CREDENTIAL_LIMIT = 20
 
 EXEMPT_PATHS = {"/api/auth/login", "/api/health"}
 
+RADIUS_UNKNOWN_WINDOW = dt.timedelta(minutes=10)
+RADIUS_UNKNOWN_LIMIT = 10
+
+RADIUS_INACTIVE_WINDOW = dt.timedelta(minutes=10)
+RADIUS_INACTIVE_LIMIT = 20
+
 _lock = threading.Lock()
 _banned_ips: set[str] = set()
 _banned_loaded = False
 _unknown_hits: dict[str, list[dt.datetime]] = {}
 _post_bad_cred_hits: dict[str, list[dt.datetime]] = {}
+_radius_unknown_hits: dict[str, list[dt.datetime]] = {}
+_radius_inactive_hits: dict[str, list[dt.datetime]] = {}
 
 
 def refresh_from_db(db: Session) -> None:
@@ -85,40 +93,84 @@ def _prune(bucket: list[dt.datetime], cutoff: dt.datetime) -> list[dt.datetime]:
     return [t for t in bucket if t >= cutoff]
 
 
+def _bump_and_maybe_ban(
+    db: Session, ip: str, bucket_store: dict[str, list[dt.datetime]],
+    window: dt.timedelta, limit: int, reason_fmt: str,
+) -> bool:
+    """Records one more hit for `ip` in `bucket_store`, prunes anything
+    outside `window`, and bans once `limit` is reached. Shared by every
+    counter this module keeps (HTTP-unknown, HTTP-POST-bad-credential,
+    RADIUS-unknown-user, RADIUS-inactive-connection) - they differ only in
+    which bucket/window/limit/wording they use."""
+    now = dt.datetime.utcnow()
+    with _lock:
+        bucket = _prune(bucket_store.get(ip, []), now - window)
+        bucket.append(now)
+        bucket_store[ip] = bucket
+        count = len(bucket)
+    if count >= limit:
+        ban(db, ip, reason=reason_fmt.format(count=count), hit_count=count)
+        return True
+    return False
+
+
 def record_failure(db: Session, ip: str | None, method: str, path: str, had_credential: bool) -> bool:
-    """Call once per request that came back 401/403. Returns True if this
-    call is what just banned the IP (so the caller can log it once, loudly,
-    rather than on every subsequent already-banned request)."""
+    """Call once per HTTP request that came back 401/403. Returns True if
+    this call is what just banned the IP (so the caller can log it once,
+    loudly, rather than on every subsequent already-banned request)."""
     if not ip or path in EXEMPT_PATHS:
         return False
 
-    now = dt.datetime.utcnow()
-
     if not had_credential:
-        with _lock:
-            bucket = _prune(_unknown_hits.get(ip, []), now - UNKNOWN_WINDOW)
-            bucket.append(now)
-            _unknown_hits[ip] = bucket
-            count = len(bucket)
-        if count >= UNKNOWN_LIMIT:
-            ban(db, ip, reason=f"{count} درخواست بدون احراز هویت در ۱۰ دقیقه (احتمال اسکن خودکار)", hit_count=count)
-            return True
-        return False
+        return _bump_and_maybe_ban(
+            db, ip, _unknown_hits, UNKNOWN_WINDOW, UNKNOWN_LIMIT,
+            "{count} درخواست بدون احراز هویت در ۱۰ دقیقه (احتمال اسکن خودکار)",
+        )
 
     if method.upper() == "POST":
-        with _lock:
-            bucket = _prune(_post_bad_cred_hits.get(ip, []), now - POST_BAD_CREDENTIAL_WINDOW)
-            bucket.append(now)
-            _post_bad_cred_hits[ip] = bucket
-            count = len(bucket)
-        if count >= POST_BAD_CREDENTIAL_LIMIT:
-            ban(db, ip, reason=f"{count} درخواست POST با اعتبار نامعتبر/غیرفعال در ۱۰ دقیقه", hit_count=count)
-            return True
-        return False
+        return _bump_and_maybe_ban(
+            db, ip, _post_bad_cred_hits, POST_BAD_CREDENTIAL_WINDOW, POST_BAD_CREDENTIAL_LIMIT,
+            "{count} درخواست POST با اعتبار نامعتبر/غیرفعال در ۱۰ دقیقه",
+        )
 
     # A non-POST request WITH a credential that was still rejected (e.g. a
     # GET with an expired token) is not auto-banned - too easy to be a
     # session that simply timed out normally.
+    return False
+
+
+def record_radius_reject(db: Session, ip: str | None, reject_kind: str | None) -> bool:
+    """Call once per REAL RADIUS Access-Request rejection (see
+    services/radius_server.py's HandleAuthPacket) - deliberately BEFORE
+    that function's own `_should_log_rejection` de-dup gate, not after: that
+    gate exists to keep the admin-facing لاگ رادیوس page from filling with
+    duplicate rows for the same repeated failure, and only lets one row
+    through per (kind, username, ip) every 10 minutes. Counting bans off
+    the de-duplicated rate would mean a script hammering the NAS every few
+    seconds still only ever contributes ONE tick per 10 minutes here -
+    the ban would functionally never trip. So this sees every attempt,
+    the log page sees the deduplicated summary of them.
+
+    Only two of radius_server's reject_kind values are covered, matching
+    what was asked for - "کاربر ناشناس" (a username with no matching
+    Connection at all - a blind prober, not a customer) and "اتصال
+    غیرفعال" (a real customer's connection, but administratively
+    disabled/expired) - both to hit a limit here, unlike auth_fail
+    (wrong password on a REAL active account, which happens to real
+    customers who mistype something) or quota_exceeded/expired (an
+    account's own service state, not IP abuse)."""
+    if not ip or not reject_kind:
+        return False
+    if reject_kind == "unknown_user":
+        return _bump_and_maybe_ban(
+            db, ip, _radius_unknown_hits, RADIUS_UNKNOWN_WINDOW, RADIUS_UNKNOWN_LIMIT,
+            "{count} تلاش RADIUS با نام کاربری ناشناس در ۱۰ دقیقه",
+        )
+    if reject_kind == "disabled":
+        return _bump_and_maybe_ban(
+            db, ip, _radius_inactive_hits, RADIUS_INACTIVE_WINDOW, RADIUS_INACTIVE_LIMIT,
+            "{count} تلاش RADIUS به یک اتصال غیرفعال در ۱۰ دقیقه",
+        )
     return False
 
 

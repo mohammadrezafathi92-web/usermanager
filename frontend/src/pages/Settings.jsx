@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { KeyRound, Info, Plus, Trash2, Copy, Power, CreditCard, Bot, RefreshCw, DatabaseBackup, Download, Server, Eye, EyeOff, Upload, Repeat, ChevronDown, Clock, Wallet } from "lucide-react";
+import { KeyRound, Info, Plus, Trash2, Copy, Power, CreditCard, Bot, RefreshCw, DatabaseBackup, Download, Server, Eye, EyeOff, Upload, Repeat, ChevronDown, Clock, Wallet, ShieldAlert } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
 import TelegramTunnelCard from "../components/TelegramTunnelCard.jsx";
@@ -45,6 +45,7 @@ import {
   listTelegramProxyNodes,
   checkTelegramProxyNode,
   setupTelegramProxy,
+  fetchIpBans, addIpBan, removeIpBan,
 } from "../api/client.js";
 import { formatDateTime, formatBytes, copyText, downloadBlob, getDisplayOffset, setDisplayOffset, errorText } from "../utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
@@ -1617,6 +1618,8 @@ export default function Settings() {
           </div>
         </div>
       )}
+
+      <IpBansCard t={t} language={language} />
         </>
       )}
 
@@ -1863,6 +1866,140 @@ function OwnBotCard({ t }) {
           {saving ? t("common.saving") : t("settings.saveAndRestartMyBot")}
         </button>
       </div>
+    </div>
+  );
+}
+
+// services/ip_guard.py's block list - self-contained (own fetch/state) like
+// OwnBotCard above. Superadmin-only in practice (it only renders inside the
+// "server" tab, which is itself hidden from anyone else - see
+// ALL_SETTINGS_TABS), but the fetch would 403 for a non-superadmin anyway
+// (routers/ip_bans.py), so nothing relies on that alone.
+function IpBansCard({ t, language }) {
+  const [bans, setBans] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [newIp, setNewIp] = useState("");
+  const [newReason, setNewReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+
+  const load = () => {
+    setLoading(true);
+    fetchIpBans()
+      .then((res) => {
+        setBans(res.data);
+        setLoadError(false);
+      })
+      .catch(() => setLoadError(true))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const onUnban = (ip) => {
+    if (!window.confirm(t("ipBans.confirmUnban"))) return;
+    removeIpBan(ip).then(load);
+  };
+
+  const submitBan = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    setSaveError("");
+    try {
+      await addIpBan(newIp.trim(), newReason.trim());
+      setModalOpen(false);
+      setNewIp("");
+      setNewReason("");
+      load();
+    } catch (err) {
+      setSaveError(err?.response?.data?.detail || t("ipBans.saveError"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="card mb-4">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <ShieldAlert size={18} className="text-brand-600" />
+          <h3 className="font-bold text-gray-700">{t("ipBans.title")}</h3>
+        </div>
+        <button type="button" className="btn-primary" onClick={() => setModalOpen(true)}>
+          <Plus size={16} /> {t("ipBans.addButton")}
+        </button>
+      </div>
+      <p className="text-xs text-gray-400 mb-4">{t("ipBans.subtitle")}</p>
+
+      {loadError && (
+        <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2 mb-4">{t("ipBans.loadError")}</div>
+      )}
+
+      <div className="overflow-x-auto -mx-2">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-xs text-gray-400 border-b border-gray-50">
+              <th className="text-right font-medium px-2 py-2">{t("ipBans.colIp")}</th>
+              <th className="text-right font-medium px-2 py-2">{t("ipBans.colReason")}</th>
+              <th className="text-right font-medium px-2 py-2">{t("ipBans.colHitCount")}</th>
+              <th className="text-right font-medium px-2 py-2">{t("ipBans.colSource")}</th>
+              <th className="text-right font-medium px-2 py-2">{t("ipBans.colBannedAt")}</th>
+              <th className="text-right font-medium px-2 py-2">{t("ipBans.colAction")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bans.map((b) => (
+              <tr key={b.ip} className="border-t border-gray-50 hover:bg-gray-50/60">
+                <td className="px-2 py-3 font-mono text-gray-800" dir="ltr">{b.ip}</td>
+                <td className="px-2 py-3 text-gray-500">{b.reason || "-"}</td>
+                <td className="px-2 py-3 text-gray-500">{b.hit_count ?? "-"}</td>
+                <td className="px-2 py-3">
+                  <span className={`badge ${b.is_manual ? "bg-amber-50 text-amber-600" : "bg-purple-50 text-purple-600"}`}>
+                    {b.is_manual ? t("ipBans.sourceManual") : t("ipBans.sourceAuto")}
+                  </span>
+                </td>
+                <td className="px-2 py-3 text-gray-500">{b.banned_at ? formatDateTime(b.banned_at, language) : "-"}</td>
+                <td className="px-2 py-3">
+                  <button className="btn-secondary" onClick={() => onUnban(b.ip)}>
+                    <Trash2 size={14} /> {t("ipBans.unban")}
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {!loading && bans.length === 0 && (
+              <tr>
+                <td colSpan={6} className="px-2 py-8 text-center text-gray-400">{t("ipBans.empty")}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={t("ipBans.addModalTitle")}>
+        <form onSubmit={submitBan} className="space-y-4">
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("ipBans.ipField")}</label>
+            <input className="input" dir="ltr" required value={newIp} onChange={(e) => setNewIp(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("ipBans.reasonField")}</label>
+            <input className="input" value={newReason} onChange={(e) => setNewReason(e.target.value)} />
+          </div>
+          {saveError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{saveError}</div>}
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" className="btn-secondary" onClick={() => setModalOpen(false)}>
+              {t("common.cancel")}
+            </button>
+            <button type="submit" disabled={saving} className="btn-primary">
+              {saving ? t("ipBans.saving") : t("ipBans.save")}
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

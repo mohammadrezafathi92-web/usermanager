@@ -50,6 +50,8 @@ def reset_ip_guard_state():
     ip_guard._banned_ips.clear()
     ip_guard._unknown_hits.clear()
     ip_guard._post_bad_cred_hits.clear()
+    ip_guard._radius_unknown_hits.clear()
+    ip_guard._radius_inactive_hits.clear()
 
 
 print("--- unknown caller (no credential at all): banned at exactly 10 ---")
@@ -96,6 +98,39 @@ check("50 failed logins from one IP never trips this module's ban",
       ip_guard.is_banned("10.10.10.10"), False)
 check("...so a real admin mistyping their password can't get permanently locked out here",
       db.query(models.IpBan).filter(models.IpBan.ip == "10.10.10.10").first(), None)
+
+print("\n--- RADIUS: an unknown username (کاربر ناشناس) bans at exactly 10 ---")
+reset_ip_guard_state()
+db = fresh_db()
+banned_at = None
+for i in range(1, 15):
+    just_banned = ip_guard.record_radius_reject(db, "37.114.246.98", "unknown_user")
+    if just_banned and banned_at is None:
+        banned_at = i
+check("bans on the 10th RADIUS attempt with an unknown username",
+      banned_at, ip_guard.RADIUS_UNKNOWN_LIMIT)
+check("is_banned() reflects it", ip_guard.is_banned("37.114.246.98"), True)
+
+print("\n--- RADIUS: a disabled connection (اتصال غیرفعال) bans at exactly 20, not 10 ---")
+reset_ip_guard_state()
+db = fresh_db()
+banned_at = None
+for i in range(1, 25):
+    just_banned = ip_guard.record_radius_reject(db, "79.127.122.174", "disabled")
+    if just_banned and banned_at is None:
+        banned_at = i
+check("bans on the 20th, matching the looser threshold for a real "
+      "(if inactive) account rather than a blind prober",
+      banned_at, ip_guard.RADIUS_INACTIVE_LIMIT)
+
+print("\n--- RADIUS: other reject reasons (wrong password, quota, expiry) never auto-ban ---")
+reset_ip_guard_state()
+db = fresh_db()
+for kind in ("auth_fail", "quota_exceeded", "expired"):
+    for _ in range(50):
+        ip_guard.record_radius_reject(db, "8.8.8.8", kind)
+check("a real customer mistyping a password, or hitting their own quota/expiry, "
+      "never gets their IP banned by this", ip_guard.is_banned("8.8.8.8"), False)
 
 print("\n--- the sliding window: old hits age out and don't count forever ---")
 reset_ip_guard_state()

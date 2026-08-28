@@ -36,6 +36,7 @@ from ..telegram_bot import runner as telegram_bot_runner
 from .quota_manager import _apply_delta, _enforce_user_limits, _enforce_purchase_limits
 from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
 from . import mschapv2
+from . import ip_guard
 
 logger = logging.getLogger("radius_server")
 
@@ -324,6 +325,15 @@ class UserManagerRadiusServer(Server):
             client_ip = _to_str(pkt.get("Calling-Station-Id", [None])[0]) or (
                 pkt.source[0] if getattr(pkt, "source", None) else None
             )
+            # A client_ip already on services/ip_guard.py's block list (auto-
+            # banned for repeated unknown-username/disabled-connection
+            # attempts from here, or banned by hand from Settings) is
+            # refused outright - no DB lookups, no password check, nothing
+            # that could be timing-probed or that costs a query per packet.
+            if client_ip and ip_guard.is_banned(client_ip):
+                reply.code = packet.AccessReject
+                _send_reply(self, pkt, reply)
+                return
             conn = (
                 db.query(models.Connection)
                 .filter(
@@ -529,6 +539,13 @@ class UserManagerRadiusServer(Server):
             # and the ban), so it is skipped here rather than logged twice.
             if not ok:
                 kind = reject_kind
+                # Counted BEFORE the log de-dup gate below, deliberately -
+                # see ip_guard.record_radius_reject's docstring. The log
+                # page collapses a retry storm into one row every 10
+                # minutes; the ban counter must see every single one of
+                # those retries or it would take ~100 minutes to ever trip.
+                if kind and client_ip:
+                    ip_guard.record_radius_reject(db, client_ip, kind)
                 if kind and self._should_log_rejection(f"{kind}:{username}:{client_ip}"):
                     owner_id = None
                     if conn is not None and conn.user is not None:

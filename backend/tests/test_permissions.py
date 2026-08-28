@@ -171,6 +171,77 @@ check("no accounts, nothing to do, still marked done",
       db.query(models.PanelSettings).first().permissions_grandfathered, True)
 db.close()
 
+print("\n--- default preset groups must not silently withhold new permissions ---")
+# Reported 2026-08-28: a Seller in "فروشنده استاندارد" could not enable
+# their own bot - own_bot (and delete_users/bulk_actions/export_users/
+# spend_credit/view_accounting/manage_discount_codes) was never in these
+# two groups' permission strings, because they were seeded back when
+# view_tutorials was the only real permission left, and grandfathering
+# only ever runs once - long before these groups exist on a fresh install.
+Session3 = make_db()
+db = Session3()
+db.commit()
+db.close()
+app_main.SessionLocal = Session3
+app_main._seed_default_permission_groups()
+
+db = Session3()
+standard = db.query(models.AdminPermissionGroup).filter_by(name="فروشنده استاندارد").one()
+limited = db.query(models.AdminPermissionGroup).filter_by(name="فروشنده محدود (بدون آموزش)").one()
+check("a fresh install's standard-seller preset gets EVERY current permission",
+      permissions.parse_permissions(standard.permissions), NEW_KEYS)
+check("...including own_bot specifically (the reported gap)",
+      "own_bot" in permissions.parse_permissions(standard.permissions), True)
+check("the limited preset gets everything EXCEPT view_tutorials, matching its name",
+      permissions.parse_permissions(limited.permissions), NEW_KEYS - {"view_tutorials"})
+check("...it still has own_bot too - only tutorials was ever supposed to be withheld",
+      "own_bot" in permissions.parse_permissions(limited.permissions), True)
+db.close()
+
+print("\n--- an install that already seeded the OLD narrow values gets repaired ---")
+Session4 = make_db()
+db = Session4()
+# Exactly what _seed_default_permission_groups used to write, before this
+# fix - the real state of an existing production install.
+db.add(models.AdminPermissionGroup(name="فروشنده استاندارد", permissions="view_tutorials"))
+db.add(models.AdminPermissionGroup(name="فروشنده محدود (بدون آموزش)", permissions=""))
+# A superadmin's own custom group must never be touched by this repair.
+db.add(models.AdminPermissionGroup(name="گروه دلخواه من", permissions="own_bot"))
+db.commit()
+db.close()
+app_main.SessionLocal = Session4
+app_main._repair_stale_default_permission_groups()
+
+db = Session4()
+standard2 = db.query(models.AdminPermissionGroup).filter_by(name="فروشنده استاندارد").one()
+limited2 = db.query(models.AdminPermissionGroup).filter_by(name="فروشنده محدود (بدون آموزش)").one()
+custom = db.query(models.AdminPermissionGroup).filter_by(name="گروه دلخواه من").one()
+check("the stale standard-seller preset was upgraded to everything",
+      permissions.parse_permissions(standard2.permissions), NEW_KEYS)
+check("the stale limited preset was upgraded to everything except tutorials",
+      permissions.parse_permissions(limited2.permissions), NEW_KEYS - {"view_tutorials"})
+check("a superadmin's own custom group was left completely untouched",
+      custom.permissions, "own_bot")
+db.close()
+
+print("\n--- the repair is safe to run again, and never touches a later edit ---")
+app_main._repair_stale_default_permission_groups()
+db = Session4()
+standard3 = db.query(models.AdminPermissionGroup).filter_by(name="فروشنده استاندارد").one()
+check("a second run changes nothing further", standard3.permissions, standard2.permissions)
+
+# Simulate the superadmin deliberately narrowing the standard preset AFTER
+# it was fixed - a later restart must not silently widen it back out.
+standard3.permissions = "delete_users"
+db.commit()
+db.close()
+app_main._repair_stale_default_permission_groups()
+db = Session4()
+check("a superadmin's later, deliberate edit is never overwritten by this repair",
+      db.query(models.AdminPermissionGroup).filter_by(name="فروشنده استاندارد").one().permissions,
+      "delete_users")
+db.close()
+
 print("\n" + "=" * 60)
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))

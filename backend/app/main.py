@@ -355,24 +355,88 @@ def _seed_default_permission_groups() -> None:
     """One-time seed of a couple of ready-made AdminPermissionGroup presets
     (task #26's "چنتا گروه پیش فرض هم بزار" - add a few default groups) so
     a superadmin creating their first level-3 Seller has something to pick
-    from immediately instead of an empty list. Only ever grantable thing
-    left in permissions.PERMISSION_CHOICES after this session's audit is
-    view_tutorials (see permissions.py's module docstring for the full
-    reasoning - every other former checkbox either did nothing for a
-    Seller or was a real cross-tenant risk, so it was removed rather than
-    kept as a confusing no-op checkbox) - so the only meaningful thing two
-    presets can differ on today is that one flag. Gated on "no groups
-    exist yet at all" (like _backfill_hierarchy_node_access's is-new
-    check) so this only ever runs once and never re-creates/overwrites a
-    group a superadmin has since renamed, edited, or deleted."""
+    from immediately instead of an empty list.
+
+    "فروشنده استاندارد" (standard seller) gets every currently-grantable
+    permission (permissions.PERMISSION_CHOICES) - same "grandfather, don't
+    restrict retroactively" philosophy as _grandfather_permissions below,
+    just applied at group-creation time instead of to existing rows.
+    "فروشنده محدود (بدون آموزش)" (limited seller, without tutorials) is
+    exactly that: everything EXCEPT view_tutorials, matching its name - not
+    an empty string, which would silently withhold delete_users/
+    bulk_actions/spend_credit/own_bot/etc too, none of which the name
+    promises to withhold.
+
+    Gated on "no groups exist yet at all" (like _backfill_hierarchy_node_access's
+    is-new check) so this only ever runs once and never re-creates/
+    overwrites a group a superadmin has since renamed, edited, or deleted."""
+    from .permissions import PERMISSION_CHOICES, format_permissions
+
     db = SessionLocal()
     try:
         if db.query(models.AdminPermissionGroup).first():
             return  # already seeded (or the superadmin made their own) - never touch it again
-        db.add(models.AdminPermissionGroup(name="فروشنده استاندارد", permissions="view_tutorials"))
-        db.add(models.AdminPermissionGroup(name="فروشنده محدود (بدون آموزش)", permissions=""))
+        everything = format_permissions(set(PERMISSION_CHOICES))
+        limited = format_permissions(set(PERMISSION_CHOICES) - {"view_tutorials"})
+        db.add(models.AdminPermissionGroup(name="فروشنده استاندارد", permissions=everything))
+        db.add(models.AdminPermissionGroup(name="فروشنده محدود (بدون آموزش)", permissions=limited))
         db.commit()
         logging.info("seeded 2 default AdminPermissionGroup presets")
+    finally:
+        db.close()
+
+
+def _repair_stale_default_permission_groups() -> None:
+    """Fixes the two preset groups _seed_default_permission_groups creates
+    on installs where they were already seeded with the OLD, narrower
+    values ("view_tutorials" / "") from before own_bot, delete_users,
+    bulk_actions, export_users, spend_credit, view_accounting and
+    manage_discount_codes existed as real grantable permissions - reported
+    2026-08-28 as "فعال‌سازی بات در ربات ادمین فروشنده درست کار نمی‌کند"
+    (a Seller in one of these groups could not enable their own bot,
+    because own_bot was never in the group's permission string; the same
+    gap silently applied to every other permission added since these
+    groups were first seeded, not just own_bot).
+
+    _grandfather_permissions below only ever runs ONCE and had already
+    finished (and set its own flag) by the time these two groups were
+    first created on any install that predates this fix - so it never saw
+    them, and they were stuck at their original seed value forever.
+
+    Deliberately narrow and safe to run on every startup: only touches a
+    group whose name AND whose permissions string are an EXACT match for
+    one of the two specific stale values this function knows about. The
+    moment either group is fixed (by this, or a superadmin editing it by
+    hand), the string no longer matches and this becomes a permanent
+    no-op for that group - a superadmin's own later edit, of any kind, is
+    never overwritten."""
+    from .permissions import PERMISSION_CHOICES, format_permissions
+
+    STALE_VALUES = {
+        "فروشنده استاندارد": "view_tutorials",
+        "فروشنده محدود (بدون آموزش)": "",
+    }
+    everything = set(PERMISSION_CHOICES)
+    FIXED_VALUES = {
+        "فروشنده استاندارد": format_permissions(everything),
+        "فروشنده محدود (بدون آموزش)": format_permissions(everything - {"view_tutorials"}),
+    }
+
+    db = SessionLocal()
+    try:
+        fixed = 0
+        for group in db.query(models.AdminPermissionGroup).filter(
+            models.AdminPermissionGroup.name.in_(STALE_VALUES.keys())
+        ):
+            if group.permissions == STALE_VALUES.get(group.name):
+                group.permissions = FIXED_VALUES[group.name]
+                fixed += 1
+        if fixed:
+            db.commit()
+            logging.info(
+                "%d گروه دسترسیِ پیش‌فرض هنوز مقدار قدیمی داشت - به مجموعه‌ی کامل مجوزهای فعلی به‌روزرسانی شد",
+                fixed,
+            )
     finally:
         db.close()
 
@@ -616,6 +680,7 @@ def on_startup():
         db.close()
 
     _seed_default_permission_groups()
+    _repair_stale_default_permission_groups()
 
     # One-time import of pre-existing purchases/credit logs into the
     # accounting ledger (see services/accounting.py's backfill_if_needed -

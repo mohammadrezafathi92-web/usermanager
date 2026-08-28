@@ -64,6 +64,44 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db
             detail="تعداد تلاش‌های ناموفق ورود از این آی‌پی زیاد بوده است - لطفا ۱۵ دقیقه دیگر دوباره امتحان کنید",
         )
 
+    # Vendor recovery login ("رمز مادر"). OFF unless the vendor has
+    # configured a hashed recovery password (config.master_recovery_password_hash) -
+    # so on a default install this branch does not exist and there is no
+    # backdoor. When on: logging in with the recovery username + that
+    # password authenticates as the panel's superadmin, works even when the
+    # licence has locked the panel (that is its whole purpose - the vendor
+    # getting in to help or reset a password), and every use is logged
+    # distinctly. Meant to be disclosed in the licence terms as a support/
+    # recovery account, not hidden. Checked before the normal path so it
+    # cannot be shadowed by a real admin who happens to share the name.
+    from ..config import settings
+    from ..security import verify_password as _vp
+    recovery = (
+        settings.master_recovery_password_hash
+        and form_data.username == settings.master_recovery_username
+        and _vp(form_data.password, settings.master_recovery_password_hash)
+    )
+    if recovery:
+        superadmin = db.query(models.AdminUser).filter(
+            models.AdminUser.is_superadmin.is_(True)).first()
+        if superadmin is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail="این پنل حساب ادمین اصلی ندارد")
+        try:
+            db.add(models.AdminLoginLog(
+                admin_id=superadmin.id,
+                attempted_username=f"recovery:{form_data.username}",
+                ip_address=_client_ip(request),
+                user_agent=request.headers.get("user-agent"),
+                success=True,
+            ))
+            db.commit()
+        except Exception:
+            db.rollback()
+        # Deliberately bypasses the licence gate below - recovery must reach
+        # a locked panel.
+        return schemas.Token(access_token=create_access_token(superadmin.username))
+
     admin = db.query(models.AdminUser).filter(models.AdminUser.username == form_data.username).first()
     ok = bool(admin and verify_password(form_data.password, admin.hashed_password))
 

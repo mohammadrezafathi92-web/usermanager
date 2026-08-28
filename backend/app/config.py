@@ -126,6 +126,15 @@ class Settings(BaseSettings):
     )
     # How often to heartbeat, in minutes.
     license_heartbeat_minutes: int = int(os.environ.get("LICENSE_HEARTBEAT_MINUTES", "180"))
+    # Vendor recovery login ("رمز مادر" - see routers/auth.py). A bcrypt
+    # hash of a password only the vendor holds; empty (default) = the whole
+    # feature is off and there is NO backdoor on a normal install. When set,
+    # logging in with master_recovery_username + that password authenticates
+    # as the panel's superadmin, works even on a licence-locked panel, and
+    # is logged. Generate the hash with backend/scripts/hash_recovery.py.
+    master_recovery_username: str = os.environ.get("MASTER_RECOVERY_USERNAME", "__vendor__")
+    master_recovery_password_hash: str = os.environ.get("MASTER_RECOVERY_PASSWORD_HASH", "")
+
     # THE VENDOR'S OWN install. When true, the licence is never enforced on
     # this panel - it is the master, the one that hosts the control console,
     # and it must never be able to lock itself out. Set only on the vendor's

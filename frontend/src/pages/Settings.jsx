@@ -4,6 +4,7 @@ import Layout from "../components/Layout.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
 import TelegramTunnelCard from "../components/TelegramTunnelCard.jsx";
 import LicenseCard from "../components/LicenseCard.jsx";
+import DbHealthCard from "../components/DbHealthCard.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import {
@@ -1628,6 +1629,7 @@ export default function Settings() {
       {activeTab === "data" && (
         <>
       {!isSuperadmin && <OwnBackupCard t={t} />}
+      {isSuperadmin && <DbHealthCard t={t} language={language} />}
       {isSuperadmin && (
       <div className="card mb-4">
         <div className="flex items-center justify-between mb-4">

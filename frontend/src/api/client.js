@@ -387,6 +387,10 @@ export const fetchLicenseStatus = () => client.get("/license/status");
 export const checkLicenseNow = () => client.post("/license/check-now");
 export const setLicenseKey = (key) => client.put("/license/key", { key });
 
+// Database health report (services/db_health.py) - superadmin-only,
+// read-only. Run on demand from Settings > data.
+export const runDbHealthCheck = () => client.get("/db-health/check");
+
 // Discount/promo codes (کد تخفیف) - panel-wide, see routers/discount_codes.py.
 export const fetchDiscountCodes = () => client.get("/discount-codes");
 export const createDiscountCode = (data) => client.post("/discount-codes", data);

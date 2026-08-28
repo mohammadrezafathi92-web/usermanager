@@ -358,6 +358,37 @@ class ApiKey(Base):
     last_used_at = Column(DateTime, nullable=True)
 
 
+class IpBan(Base):
+    """An IP address that is blocked from reaching the panel's API at all -
+    every request from it gets a flat 403 before any router/dependency ever
+    runs (see services/ip_guard.py and main.py's ip_guard_middleware).
+
+    Two ways a row gets here:
+      - auto-banned: services/ip_guard.py trips one of its two counters
+        (too many requests with NO credentials at all - a blind scanner/
+        prober - or too many POST requests with WRONG credentials) and
+        writes the row itself. reason/hit_count/is_manual=False describe
+        what tripped it.
+      - manual: a superadmin adds/removes an IP by hand from Settings
+        (is_manual=True), e.g. to block an address ip_guard hasn't caught
+        yet, or to permanently keep out an IP that was only auto-banned
+        once and unbanned.
+
+    Deliberately its own table rather than reusing AdminLoginLog: this is
+    not an attempt log, it's the current STATE of the block list, looked up
+    on every single request - one row per IP, cheap to index and query.
+    """
+
+    __tablename__ = "ip_bans"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ip = Column(String(64), unique=True, index=True, nullable=False)
+    reason = Column(String(255), nullable=True)
+    hit_count = Column(Integer, default=0)
+    is_manual = Column(Boolean, default=False)
+    banned_at = Column(DateTime, default=now, index=True)
+
+
 class Node(Base):
     """A backend server: either a MikroTik router (RouterOS API) hosting
     WireGuard/OpenVPN/L2TP, or a server running Xray-core reachable over SSH."""

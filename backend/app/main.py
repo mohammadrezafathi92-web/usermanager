@@ -5,7 +5,7 @@ import secrets
 
 import sentry_sdk
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect
 
@@ -19,9 +19,10 @@ from .services.ads import run_due_campaigns
 from .services.radius_server import start_radius_server_in_background, cleanup_stale_radius_sessions, cleanup_old_radius_limit_logs
 from .services.notify import run_daily_notify_job
 from .services.backup import run_scheduled_backup, ha_healthcheck, ha_pull_and_apply, notify_admins_text
-from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, telegram_proxy, tg_tunnel, tutorials, backup, remote_bot, admins, radius_logs, discount_codes, subscription, accounting as accounting_router, ads as ads_router, license as license_router
+from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, telegram_proxy, tg_tunnel, tutorials, backup, remote_bot, admins, radius_logs, discount_codes, subscription, accounting as accounting_router, ads as ads_router, license as license_router, ip_bans as ip_bans_router
 from .services import accounting as accounting_service
 from .services import purchase_migration
+from .services import ip_guard
 from .telegram_bot import runner as telegram_bot_runner
 from .telegram_bot.config import parse_id_set
 
@@ -120,6 +121,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def ip_guard_middleware(request: Request, call_next):
+    """Global abuse guard - runs before every single request, ahead of any
+    router or auth dependency, so a banned IP is refused outright rather
+    than merely failing the endpoint's own auth check. The actual logic
+    lives in services/ip_guard.guard_request (kept testable there without
+    booting this whole app)."""
+    return await ip_guard.guard_request(request, call_next, SessionLocal)
+
+
 app.include_router(auth.router)
 app.include_router(nodes.router)
 app.include_router(users.router)
@@ -144,6 +156,7 @@ app.include_router(subscription.router)
 app.include_router(accounting_router.router)
 app.include_router(ads_router.router)
 app.include_router(license_router.router)
+app.include_router(ip_bans_router.router)
 
 scheduler = BackgroundScheduler()
 
@@ -509,6 +522,16 @@ def on_startup():
     _auto_migrate_missing_columns()
     _backfill_hierarchy_node_access(_admin_node_access_is_new)
     _backfill_roles_and_paths()
+
+    # ip_guard's ban list is enforced from an in-memory set (checked on
+    # every single request - a DB hit per request would be needless
+    # overhead) - it has to be primed from the persisted table before the
+    # first request is served, or a redeploy would briefly un-ban everyone.
+    _ipb_db = SessionLocal()
+    try:
+        ip_guard.refresh_from_db(_ipb_db)
+    finally:
+        _ipb_db.close()
     # Must run BEFORE the first request is served: the moment the app is up,
     # a Seller hitting a newly-gated endpoint would get a 403 they never had.
     _grandfather_permissions()

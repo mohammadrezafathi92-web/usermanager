@@ -166,6 +166,116 @@ def _docker_api(path: str) -> dict | None:
             pass
 
 
+def _docker_request(method: str, path: str, body: dict | None = None, timeout: int = 15) -> tuple[int, dict]:
+    """Same unix-socket plumbing as _docker_api, generalised to POST (used
+    to create/start a container) and to return the status code, which a
+    caller needs to tell "created" from "already exists" from "daemon
+    rejected this"."""
+    import http.client
+    import json
+    import socket as _socket
+
+    class _UnixConnection(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            self.sock.settimeout(timeout)
+            self.sock.connect(DOCKER_SOCK)
+
+    conn = _UnixConnection("localhost", timeout=timeout)
+    try:
+        data = None
+        headers = {}
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        conn.request(method, path, body=data, headers=headers)
+        resp = conn.getresponse()
+        raw = resp.read()
+        try:
+            parsed = json.loads(raw) if raw else {}
+        except ValueError:
+            parsed = {"message": raw.decode("utf-8", "replace")}
+        return resp.status, parsed
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def spawn_sibling_container(cmd: list[str], *, log_path: str | None = None) -> None:
+    """Runs `cmd` in a brand-new, independent container - NOT the one this
+    process is running in - that shares this container's project bind-mount
+    and docker socket, then removes itself when done.
+
+    This exists for exactly one caller: services/self_update.py's final
+    step, which must run `docker compose up -d` to recreate THIS very
+    container (usermanager-backend). Running that as an ordinary subprocess
+    of this process does not work: the subprocess lives in this container's
+    own cgroup, so the moment the daemon stops/removes this container to
+    recreate it, the subprocess driving that recreation is killed too, mid-
+    operation. What's left behind is a container that never finished being
+    torn down - and the NEXT update attempt then fails with "Error when
+    allocating new name: ... already in use", exactly what happened on the
+    live server on 2026-08-2x and needed a manual `docker rm -f` over SSH to
+    clear.
+
+    A sibling container has no such problem: it is not part of the compose
+    project being recreated, so killing/replacing usermanager-backend does
+    not touch it, and it finishes the job started by a process that, by the
+    time it finishes, may already be gone.
+
+    Uses the SAME image this container is currently running (already local,
+    no pull needed - it was just built by the step before this one) and the
+    same two bind mounts docker-compose.yml already gives this container
+    (the docker socket, and the project directory at the same path on both
+    sides), so `cmd` sees exactly what a command run in here would.
+    """
+    info = _docker_api(f"/containers/{BACKEND_CONTAINER_NAME}/json")
+    if not info:
+        raise DeployError("اطلاعات کانتینر پنل از داکر قابل خواندن نیست - کانتینر کمکی بروزرسانی ساخته نشد", "")
+    image = (info.get("Config") or {}).get("Image")
+    if not image:
+        raise DeployError("نام ایمیج کانتینر پنل از داکر پیدا نشد", "")
+
+    run_cmd = list(cmd)
+    if log_path:
+        # No shell in the mounted binary itself, so redirection needs one -
+        # /bin/sh exists in this image (python:3.11-slim is Debian-based).
+        quoted = " ".join(_shell_quote(part) for part in run_cmd)
+        run_cmd = ["/bin/sh", "-c", f"{quoted} > {_shell_quote(log_path)} 2>&1"]
+
+    create_body = {
+        "Image": image,
+        "Cmd": run_cmd,
+        "Entrypoint": [],
+        "WorkingDir": HOST_PROJECT_DIR,
+        "HostConfig": {
+            "Binds": [
+                f"{DOCKER_SOCK}:{DOCKER_SOCK}",
+                f"{HOST_PROJECT_DIR}:{HOST_PROJECT_DIR}",
+            ],
+            "AutoRemove": True,
+        },
+    }
+    status, resp = _docker_request("POST", "/containers/create", create_body)
+    if status not in (200, 201):
+        raise DeployError("ساخت کانتینر کمکی بروزرسانی ناموفق بود", str(resp))
+    container_id = resp.get("Id")
+    if not container_id:
+        raise DeployError("شناسه‌ی کانتینر کمکی بروزرسانی برگردانده نشد", str(resp))
+
+    status, resp = _docker_request("POST", f"/containers/{container_id}/start")
+    if status not in (200, 204):
+        raise DeployError("اجرای کانتینر کمکی بروزرسانی ناموفق بود", str(resp))
+    logger.info("بروزرسانی: کانتینر کمکی %s برای بازسازی نهایی شروع شد", container_id[:12])
+
+
+def _shell_quote(s: str) -> str:
+    import shlex
+    return shlex.quote(s)
+
+
 def detect_host_project_dir() -> str | None:
     """Where this container's project mount actually lives on the host.
 

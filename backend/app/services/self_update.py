@@ -19,11 +19,19 @@ container it is about to replace. Three consequences shaped the code:
    a new commit cannot take the panel down. Only a successful build gets as
    far as `up -d`.
 
-3. The restart kills this process. The HTTP response can therefore never be
-   delivered, so `up -d` is deliberately fired in the background after the
-   response is already on its way, and the frontend polls the version
-   endpoint to find out when the new panel is up. Anything else looks to the
-   admin like the update "hung".
+3. The restart kills this process - and the recreate command itself must
+   NOT run as a subprocess of this process, because it too lives inside the
+   container about to be replaced. `docker compose up -d` issued that way
+   gets killed mid-recreate the moment the daemon stops this container,
+   leaving a container that never finished coming down - and the NEXT
+   update then fails with "name already in use" (this happened for real on
+   2026-08-2x and needed a manual `docker rm -f` over SSH). So this last
+   step is handed to a throwaway SIBLING container instead (see
+   local_deploy.spawn_sibling_container) - it shares the docker socket and
+   the project mount but is not part of the compose project being
+   recreated, so it survives this container's death and finishes the job.
+   The frontend polls the version endpoint to find out when the new panel
+   is up; anything else looks to the admin like the update "hung".
 """
 from __future__ import annotations
 
@@ -34,7 +42,13 @@ import subprocess
 import threading
 import time
 
-from .local_deploy import HOST_PROJECT_DIR, DeployError, ensure_docker_compose_cli, verify_host_path
+from .local_deploy import (
+    HOST_PROJECT_DIR,
+    DeployError,
+    ensure_docker_compose_cli,
+    spawn_sibling_container,
+    verify_host_path,
+)
 
 logger = logging.getLogger("self_update")
 
@@ -277,10 +291,30 @@ def apply_update() -> dict:
         # HTTP response has been flushed. A couple of seconds is plenty and
         # keeps the admin from seeing a dead connection instead of a result.
         time.sleep(2)
-        logger.info("بروزرسانی: در حال راه‌اندازی مجدد سرویس‌ها")
-        code, log = _compose("up", "-d", timeout=BUILD_TIMEOUT)
-        if code != 0:
-            logger.error("بروزرسانی: راه‌اندازی مجدد ناموفق بود: %s", log[-2000:])
+        logger.info("بروزرسانی: در حال راه‌اندازی مجدد سرویس‌ها (از طریق کانتینر کمکی)")
+        try:
+            # ensure_docker_compose_cli() downloads/caches the binary and
+            # returns its path AS SEEN FROM THIS CONTAINER (/app/data/...).
+            # The sibling container below does not have that /app/data
+            # mount - it only mounts the project directory at HOST_PROJECT_DIR
+            # (same convention docker-compose.yml itself uses elsewhere) - so
+            # the SAME file has to be addressed by its path under that mount
+            # instead: ./backend/data/.docker-cli/docker-compose, which is
+            # exactly where docker-compose.yml's `./backend/data:/app/data`
+            # bind puts it on the host.
+            ensure_docker_compose_cli()
+            compose_bin_for_sibling = os.path.join(
+                HOST_PROJECT_DIR, "backend", "data", ".docker-cli", "docker-compose")
+            log_path = os.path.join(HOST_PROJECT_DIR, "backend", "data", ".self_update_restart.log")
+            spawn_sibling_container(
+                [compose_bin_for_sibling, "-f", os.path.join(HOST_PROJECT_DIR, "docker-compose.yml"),
+                 "up", "-d", "--remove-orphans"],
+                log_path=log_path,
+            )
+        except DeployError as exc:
+            logger.error("بروزرسانی: راه‌اندازی مجدد ناموفق بود: %s (%s)", exc, exc.log)
+        except Exception:
+            logger.exception("بروزرسانی: راه‌اندازی مجدد با خطای غیرمنتظره مواجه شد")
 
     threading.Thread(target=_restart_soon, daemon=True).start()
 

@@ -39,7 +39,9 @@ doesn't import at all. See main()'s post-compile verification pass.
 """
 from __future__ import annotations
 
+import os
 import pathlib
+import shutil
 import sys
 
 COMPILE_SUBDIRS = ("services", "telegram_bot")
@@ -94,14 +96,34 @@ def compile_all(package_dir: pathlib.Path, targets: list[pathlib.Path]) -> int:
         show_all_warnings=True,
     )
 
-    # setup()'s sys.exit(0)-on-success / raises-on-failure behaviour is
-    # exactly what a build script wants - a failed compile must abort the
-    # image build, not produce a half-built layer.
-    setup(
-        name="usermanager-compiled",
-        ext_modules=compiled,
-        script_args=["build_ext", "--inplace"],
-    )
+    # `build_ext --inplace` has no `packages=`/`package_dir=` mapping to go
+    # on (this is a build script, not a real distributable package), so
+    # setuptools falls back to placing each .so next to the extension's
+    # DOTTED NAME resolved RELATIVE TO THE CURRENT WORKING DIRECTORY - not
+    # relative to package_dir. Inside the real Docker `compile` stage
+    # WORKDIR is /app and package_dir is /app/app, so that happens to
+    # match - but this script must not silently depend on the caller's cwd
+    # already being right (a test, or anyone invoking it from elsewhere,
+    # would otherwise get .so files scattered into whatever directory they
+    # happened to run it from - this was caught for real by
+    # tests/test_cythonize_build.py writing stray .so/build/ output into
+    # this very repo before this chdir was added). Pin the cwd to
+    # package_dir.parent for the duration of the build so "inplace" always
+    # means "next to package_dir", regardless of caller cwd.
+    previous_cwd = os.getcwd()
+    os.chdir(package_dir.parent)
+    try:
+        # setup()'s sys.exit(0)-on-success / raises-on-failure behaviour is
+        # exactly what a build script wants - a failed compile must abort
+        # the image build, not produce a half-built layer.
+        setup(
+            name="usermanager-compiled",
+            ext_modules=compiled,
+            script_args=["build_ext", "--inplace"],
+        )
+    finally:
+        os.chdir(previous_cwd)
+        shutil.rmtree(package_dir.parent / "build", ignore_errors=True)
     return len(compiled)
 
 

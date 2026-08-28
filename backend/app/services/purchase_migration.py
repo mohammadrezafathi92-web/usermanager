@@ -191,6 +191,58 @@ def fix_mixed_users(db: Session) -> int:
     return fixed
 
 
+def migrate_legacy_only_users(db: Session) -> tuple[int, int]:
+    """Sweeps for the OTHER stranded shape fix_mixed_users deliberately
+    leaves alone: a customer with legacy (purchase_id IS NULL) connections
+    and ZERO Purchases at all - "سرویس اشتراکی (قدیمی)" with the manual
+    "تبدیل به سرویس مستقل" button, on an account that may have been bought
+    yesterday.
+
+    migrate_if_needed's one-time pass (gated by
+    PanelSettings.legacy_purchases_migrated) only ever converted the
+    customers that existed the day it ran. Every legacy-pool customer
+    created since then - via a code path that, until 2026-08-28, still put
+    a brand-new "user created with a package" purchase on the shared pool
+    instead of its own independent Purchase (see routers/users.py's
+    create_user, services/user_ops.py's bulk_create_users) - was never
+    swept again, because the flag was already set. Those creation paths
+    are now fixed, but the customers created in between are still stuck,
+    which is exactly what was reported (a service bought minutes earlier
+    still showing the old-model banner).
+
+    Not flag-gated, same as fix_mixed_users: migrate_user() is naturally
+    idempotent (an already-migrated user has no legacy connections left, so
+    it returns (0, 0) immediately), so running this every startup is both
+    self-healing against any future regression and cheap - the query is one
+    SELECT, and almost every row skips instantly."""
+    fixed = 0
+    left_shared = 0
+    users = (
+        db.query(models.User)
+        .options(selectinload(models.User.connections), selectinload(models.User.purchases))
+        .all()
+    )
+    for user in users:
+        if user.purchases:
+            continue  # not pure-legacy - fix_mixed_users' job, not this one
+        if not any(c.purchase_id is None for c in user.connections):
+            continue  # nothing legacy to convert
+        try:
+            converted, skipped = migrate_user(db, user)
+            fixed += converted
+            left_shared += skipped
+        except Exception:
+            logger.exception("failed to migrate legacy-only user %s", user.username)
+            db.rollback()
+    if fixed or left_shared:
+        db.commit()
+        logger.info(
+            "پاکسازی سرویس‌های اشتراکیِ باقی‌مانده: %s سرویس مستقل ساخته شد، %s گروه (پکیج ناشناس) اشتراکی ماند",
+            fixed, left_shared,
+        )
+    return fixed, left_shared
+
+
 def user_ops_absorb(db: Session, user: models.User):
     # Imported lazily - user_ops imports plenty at module load, and this
     # module is itself imported from main.py's startup path.

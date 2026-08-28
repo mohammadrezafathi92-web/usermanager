@@ -450,6 +450,19 @@ def create_user(
             admin_billing.refund_for_package(db, admin, package, units=1)
             reasons = "، ".join(s["reason"] for s in result["skipped"]) or "دلیل نامشخص"
             raise HTTPException(400, f"هیچ‌کدام از سرویس‌های پکیج قابل ساخت نبودند: {reasons}")
+        # Turn what was just provisioned into a real, independently-enforced
+        # Purchase instead of leaving it on the user's shared pool - same
+        # fix as routers/bot.py's create_user (see its own comment on this
+        # same call). Without this, a customer created from the WEB PANEL
+        # with a package started life on the legacy model ("سرویس اشتراکی
+        # (قدیمی)" with a manual "تبدیل به سرویس مستقل" button) even though
+        # a customer created through the bot's purchase flow already got
+        # the new model from minute one - the exact split reported
+        # 2026-08-28. absorb_legacy_pool_into_purchase carries the
+        # user-level quota/usage/expiry it just got above onto the Purchase
+        # 1:1, so nothing is double-counted.
+        if result["created"]:
+            user_ops.absorb_legacy_pool_into_purchase(db, user)
         db.commit()
         db.refresh(user)
 

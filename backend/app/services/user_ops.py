@@ -677,6 +677,13 @@ def bulk_create_users(
             result = provision_package_connections(db, user, package)
             for s in result["skipped"]:
                 skipped.append({"name": f"{username} (اتصال)", "reason": s["reason"]})
+            # Same fix as routers/users.py's single-user create_user and
+            # routers/bot.py's create_user - a bulk-created customer built
+            # from a package must land on the new independently-enforced
+            # Purchase model too, not the legacy shared pool (2026-08-28).
+            if result["created"]:
+                absorb_legacy_pool_into_purchase(db, user)
+                db.commit()
         else:
             user = create_user_record(db, username, quota_gb=quota_gb, expire_days=expire_days, notes=notes)
             user.owner_admin_id = owner_admin_id

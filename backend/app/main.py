@@ -698,6 +698,11 @@ def on_startup():
         # connections - see fix_mixed_users' docstring for why that state
         # silently strands the leftover connections.
         purchase_migration.fix_mixed_users(db)
+        # And anyone with ONLY shared-pool connections and no Purchase at
+        # all - customers created after the one-time migration above already
+        # ran, via a creation path that (until 2026-08-28) still put them on
+        # the old model. See migrate_legacy_only_users' docstring.
+        purchase_migration.migrate_legacy_only_users(db)
     except Exception:
         logging.exception("خطا در مهاجرت سرویس‌های قدیمی به Purchase مستقل")
     finally:

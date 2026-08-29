@@ -93,6 +93,16 @@ COPY --from=pydeps /install /usr/local
 # read it, since app.tar.gz containing the source is not the same as this.
 COPY requirements.txt .
 
+# Only hash_recovery.py, not the whole scripts/ directory - license_tool.py
+# is explicitly meant to run on the VENDOR's own machine and never touch a
+# customer's server (see its own docstring: it takes the private signing
+# key as input), so it must not ship inside every panel image.
+# hash_recovery.py has no such restriction (it only wraps the same bcrypt
+# hash_password() the panel itself already uses) and needs to run wherever
+# "رمز مادر" is being set up, which in practice is on the panel server
+# itself over `docker compose exec backend ...` - so it belongs here.
+COPY scripts/hash_recovery.py ./scripts/hash_recovery.py
+
 EXPOSE 8000
 EXPOSE 1812/udp
 EXPOSE 1813/udp

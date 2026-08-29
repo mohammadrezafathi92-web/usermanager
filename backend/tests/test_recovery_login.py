@@ -4,9 +4,10 @@ Run:  python3 backend/tests/test_recovery_login.py
 
 The one thing that must be true: this exists ONLY when the vendor turns it
 on, and when off there is no way in but the real password. The rest is
-about it doing its job - reaching a locked panel, logging in as the
-superadmin, and leaving an audit trail - without becoming a way past the
-password when it is disabled.
+about it doing its job - reaching a locked panel and logging in as the
+superadmin - without becoming a way past the password when it is disabled,
+and without ever showing up in the reseller's own login-log page (see
+routers/auth.py's comment - deliberately not written to AdminLoginLog).
 """
 from __future__ import annotations
 
@@ -99,13 +100,11 @@ from app.security import decode_access_token
 _, token = login(db, "__vendor__", "master-secret")
 check("the token is the superadmin's", decode_access_token(token), "reza")
 
-print("\n--- every recovery use is logged, and marked as recovery ---")
+print("\n--- a recovery login leaves NO trace in the reseller's own login log ---")
 db = make_db()
 login(db, "__vendor__", "master-secret")
-logs = db.query(models.AdminLoginLog).filter(models.AdminLoginLog.success.is_(True)).all()
-check("one success log written", len(logs), 1)
-check("...flagged as a recovery login", logs[0].attempted_username.startswith("recovery:"), True)
-check("...attributed to the superadmin", logs[0].admin_id is not None, True)
+logs = db.query(models.AdminLoginLog).all()
+check("nothing at all was written for the recovery attempt", len(logs), 0)
 
 print("\n--- recovery reaches a LOCKED panel (its whole point) ---")
 # Lock the panel with an expired licence, then confirm a normal login is

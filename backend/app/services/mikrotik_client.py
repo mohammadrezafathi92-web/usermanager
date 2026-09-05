@@ -103,6 +103,18 @@ class MikrotikClient:
                 context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
                 context.check_hostname = False
                 context.verify_mode = ssl.CERT_NONE
+                # RouterOS's API-SSL doesn't present a real certificate at
+                # all - it only ever negotiates anonymous Diffie-Hellman
+                # (ADH) cipher suites, which modern OpenSSL excludes by
+                # default (both because they're unauthenticated and because
+                # the default security level rejects them outright). Without
+                # this, the handshake fails on every RouterOS box with:
+                # "[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] ssl/tls alert
+                # handshake failure" - the client and server simply have no
+                # cipher suite in common. This is librouteros' own
+                # documented fix for connecting to RouterOS specifically
+                # (not a general-purpose SSL relaxation).
+                context.set_ciphers("ADH:@SECLEVEL=0")
                 kwargs["ssl_wrapper"] = context.wrap_socket
             self._api = librouteros.connect(**kwargs)
         except Exception as exc:  # pragma: no cover - network dependent

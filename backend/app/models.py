@@ -15,7 +15,7 @@ from sqlalchemy import (
     BigInteger,
     UniqueConstraint,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, backref
 
 from .database import Base
 
@@ -879,7 +879,17 @@ class Purchase(Base):
     created_at = Column(DateTime, default=now)
     updated_at = Column(DateTime, default=now, onupdate=now)
 
-    user = relationship("User", foreign_keys=[user_id], backref="purchases")
+    # cascade="all, delete-orphan" on the backref: user_id is NOT NULL, so
+    # without this SQLAlchemy's default behaviour on deleting a User (just
+    # disassociate children by setting their FK to NULL) crashes with
+    # "NOT NULL constraint failed: purchases.user_id" the moment a user
+    # with any Purchase is deleted (reported 2026-09-05 - delete_user_cascade
+    # in services/user_ops.py already deletes the user's Connection rows the
+    # same way, via User.connections' own delete-orphan cascade; Purchase
+    # just never got the same treatment when it was introduced). A Purchase
+    # has no meaning without its user, so deleting it along with the user is
+    # the correct behaviour, not just a crash workaround.
+    user = relationship("User", foreign_keys=[user_id], backref=backref("purchases", cascade="all, delete-orphan"))
     package = relationship("Package", foreign_keys=[package_id])
     reserved_package = relationship("Package", foreign_keys=[reserved_package_id])
     connections = relationship("Connection", back_populates="purchase")

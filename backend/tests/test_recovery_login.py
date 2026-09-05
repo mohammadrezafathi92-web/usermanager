@@ -76,7 +76,11 @@ settings.license_key = ""
 settings.license_master_install = False
 
 
-print("--- with recovery OFF (default) there is no vendor way in ---")
+print("--- with recovery explicitly OFF (empty hash) there is no vendor way in ---")
+# Note: the actual shipped default (config.py) is now a real hash, not
+# empty - every panel has recovery active out of the box. This block tests
+# the underlying on/off mechanism itself (a per-install override to "" still
+# fully disables it), not the shipped default.
 settings.master_recovery_password_hash = ""
 settings.master_recovery_username = "__vendor__"
 db = make_db()

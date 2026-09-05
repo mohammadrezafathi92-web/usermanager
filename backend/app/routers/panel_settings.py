@@ -104,14 +104,6 @@ def update_settings(
     if ha_fields and not admin.is_superadmin:
         raise HTTPException(403, "تنظیمات HA فقط توسط سوپرادمین قابل تغییر است")
 
-    # Same reasoning, different field: this switch decides whether a bot
-    # sale costs the reseller anything. This router is open to level-2
-    # Admins, so without this a reseller could simply turn their own
-    # billing off - the one setting they have the strongest reason to
-    # change and the least right to.
-    if "charge_admins_for_bot_sales" in data and not admin.is_superadmin:
-        raise HTTPException(403, "این تنظیم فقط توسط ادمین اصلی قابل تغییر است")
-
     if data.get("ha_peer_url"):
         # Admins commonly type just "IP:8000" - requests then raises
         # MissingSchema on every health-check/pull, which ha_tick can only

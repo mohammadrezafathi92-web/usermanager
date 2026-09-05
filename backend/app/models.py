@@ -1478,20 +1478,13 @@ class PanelSettings(Base):
     # looks like one of their own settings.
     permissions_grandfathered = Column(Boolean, nullable=False, default=False)
 
-    # Whether a sale made THROUGH THE BOT charges the reseller's credit the
-    # way a sale made from the panel does.
-    #
-    # Defaults to False, which is what the panel did before this existed:
-    # routers/bot.py never touched services/admin_billing, so every purchase
-    # and renewal through a reseller's own Telegram bot - the way most
-    # selling actually happens - was free from the credit system's point of
-    # view, while the identical action from the panel was charged.
-    #
-    # Off by default because switching it on is a real operational event,
-    # not a bug fix: from that moment a reseller with no credit cannot
-    # complete a sale, and their customers wait at the payment step. The
-    # superadmin turns it on when the resellers have been given balances or
-    # overdrafts, and can turn it straight back off if it bites.
+    # LEGACY/UNUSED (2026-09-05): used to be the superadmin-only switch for
+    # whether a sale made THROUGH THE BOT charges the reseller's credit the
+    # way a sale made from the panel does. Billing bot sales is no longer
+    # optional (see routers/bot.py's _charge_seller - always charges now),
+    # so this column is no longer read or written anywhere in the app.
+    # Left in place, like panel_ssh_* above, to avoid a DROP COLUMN
+    # migration - harmless dead data on existing installs.
     charge_admins_for_bot_sales = Column(Boolean, nullable=False, default=False)
     # One-shot guard for services/purchase_migration.py - flipped to True
     # after legacy shared-pool connection groups have been converted into

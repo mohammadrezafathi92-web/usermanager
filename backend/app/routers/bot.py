@@ -108,7 +108,8 @@ def _user_response(user: models.User) -> schemas.BotUserResponse:
 def _charge_seller(
     db: Session, user: models.User, package: Optional[models.Package], add_gb: float = 0,
 ) -> None:
-    """Charges the reseller who owns this customer, if the panel is set to.
+    """Charges the reseller who owns this customer. Always on - see
+    2026-09-05 decision below.
 
     Every sale below used to be free: this router never touched
     services/admin_billing, so a purchase or renewal through a reseller's
@@ -116,17 +117,16 @@ def _charge_seller(
     nothing, while the identical action from the panel was charged. The
     credit system therefore metered the quiet path and ignored the busy one.
 
-    Guarded by PanelSettings.charge_admins_for_bot_sales, default off. See
-    that column: turning it on is an operational decision, not a bug fix,
-    because from that moment a reseller with no credit cannot complete a
-    sale and their customer waits at the payment step.
+    Used to be gated by PanelSettings.charge_admins_for_bot_sales (default
+    off, a superadmin-only switch) so operators could opt in gradually.
+    Removed by explicit request (2026-09-05): billing bot sales is no
+    longer optional, so there is nothing left to toggle - a reseller with
+    no credit simply cannot complete a sale, same as any other charge in
+    this system.
 
     A customer with no owner (the shared bot's own signups) belongs to the
     superadmin, who is never charged - so there is nothing to do.
     """
-    settings_row = db.get(models.PanelSettings, 1)
-    if settings_row is None or not settings_row.charge_admins_for_bot_sales:
-        return
     if user.owner_admin_id is None:
         return
     admin = db.get(models.AdminUser, user.owner_admin_id)

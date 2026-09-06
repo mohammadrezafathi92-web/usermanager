@@ -651,7 +651,16 @@ class DashboardStats(BaseModel):
     # their current AdminUser.balance, so they can see at a glance how much
     # credit they have left to spend on packages. Null for superadmins
     # (unlimited/exempt from this charge - see _charge_admin_for_package).
+    # Meaningless (and not to be shown) when admin_billing_mode == "usage" -
+    # see admin_volume_balance_gb below for that case instead.
     admin_balance: Optional[int] = None
+    # This admin's billing mode ("flat" | "usage" - see AdminUser.billing_mode)
+    # and, when "usage", their current AdminUser.volume_balance_gb - so the
+    # dashboard can show a GB figure instead of a Toman one for an admin
+    # metered by volume rather than cash. Both null for a superadmin, same
+    # as admin_balance.
+    admin_billing_mode: Optional[str] = None
+    admin_volume_balance_gb: Optional[float] = None
     # Live-ish throughput: sum of UsageLog.delta_bytes recorded in the last
     # 60 seconds (across all connections in scope), divided by 60. Since
     # poll_all runs every POLL_INTERVAL_SECONDS (default 30s - see

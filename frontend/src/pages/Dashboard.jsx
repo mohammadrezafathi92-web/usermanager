@@ -26,6 +26,10 @@ function UsageBar({ percent }) {
 
 
 const toman = (n) => Number(n || 0).toLocaleString("en-US");
+// Same rounding as Admins.jsx's own formatGb - kept in sync so an admin's
+// volume balance reads identically whether they see it on their own
+// dashboard or in the superadmin's Admins list.
+const formatGb = (n) => new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 2 }).format(n || 0);
 
 // One actionable tile: a number that means "go do something", with the page
 // it should take you to. Muted (not alarming) when the count is zero, so a
@@ -212,15 +216,38 @@ export default function Dashboard() {
             </div>
             {stats.admin_balance != null && (
               <div className="card flex items-center gap-4">
-                <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400 flex items-center justify-center">
-                  <Wallet size={22} />
-                </div>
-                <div>
-                  <div className="text-2xl font-bold text-gray-800 dark:text-gray-100" dir="ltr">
-                    {new Intl.NumberFormat("fa-IR").format(stats.admin_balance)} <span className="text-sm text-gray-400 font-normal">{t("dashboard.tomanUnit")}</span>
-                  </div>
-                  <div className="text-sm text-gray-400">{t("dashboard.yourBalance")}</div>
-                </div>
+                {/* An admin metered by volume (billing_mode "usage") has no
+                    meaningful Toman balance - admin.balance stays whatever
+                    it happened to be when the mode was switched, it's just
+                    not what's being spent. Show their GB pool instead, same
+                    as the superadmin's own Admins list already does (see
+                    Admins.jsx's per-row balance column) - reported 2026-09-06
+                    as missing here specifically. */}
+                {stats.admin_billing_mode === "usage" ? (
+                  <>
+                    <div className="w-12 h-12 rounded-2xl bg-violet-50 text-violet-600 dark:bg-violet-500/10 dark:text-violet-400 flex items-center justify-center">
+                      <Database size={22} />
+                    </div>
+                    <div>
+                      <div className="text-2xl font-bold text-gray-800 dark:text-gray-100" dir="ltr">
+                        {formatGb(stats.admin_volume_balance_gb)} <span className="text-sm text-gray-400 font-normal">GB</span>
+                      </div>
+                      <div className="text-sm text-gray-400">{t("dashboard.yourBalance")}</div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400 flex items-center justify-center">
+                      <Wallet size={22} />
+                    </div>
+                    <div>
+                      <div className="text-2xl font-bold text-gray-800 dark:text-gray-100" dir="ltr">
+                        {new Intl.NumberFormat("fa-IR").format(stats.admin_balance)} <span className="text-sm text-gray-400 font-normal">{t("dashboard.tomanUnit")}</span>
+                      </div>
+                      <div className="text-sm text-gray-400">{t("dashboard.yourBalance")}</div>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </div>

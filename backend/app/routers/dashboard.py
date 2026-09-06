@@ -215,6 +215,10 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
         total_quota_bytes=total_quota_bytes,
         usage_last_24h=[{"bucket": k, "bytes": v} for k, v in buckets.items()],
         admin_balance=None if admin.is_superadmin else (admin.balance or 0),
+        admin_billing_mode=None if admin.is_superadmin else (admin.billing_mode or "flat"),
+        admin_volume_balance_gb=(
+            None if admin.is_superadmin else (admin.volume_balance_gb or 0)
+        ),
         avg_speed_bps=avg_speed_bps,
         protocol_connection_counts=protocol_counts,
         system_cpu_percent=sys_stats["cpu_percent"] if sys_stats else None,

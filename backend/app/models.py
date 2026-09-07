@@ -979,6 +979,20 @@ class Connection(Base):
     # count across ALL of a user's services - see radius_server.py.
     online = Column(Boolean, default=False)
 
+    # True only while services/quota_manager.py's enforce_concurrent_session_
+    # limits has force-disabled THIS connection for being the excess one
+    # over User.max_concurrent_sessions (reported 2026-09-06: a single-
+    # session account with e.g. one OpenVPN + one WireGuard service could
+    # have BOTH online at once, because only PPP logins are gated live via
+    # RADIUS - WireGuard/Xray have no such login event to refuse, so an
+    # over-the-cap WireGuard/Xray connection can only be caught and cut
+    # after the fact, on the next poll cycle). Kept separate from `enabled`
+    # so the quota/expiry enforcement above never blindly re-enables a
+    # connection this mechanism disabled for an unrelated reason (see
+    # _apply_enabled_state) - only enforce_concurrent_session_limits itself
+    # clears this once the user is genuinely back within their cap.
+    session_limited = Column(Boolean, nullable=False, default=False)
+
     # Last known client IP for this connection - for wireguard, filled from
     # the peer's current-endpoint-address on the router (poll_mikrotik_node);
     # for xray this stays NULL (3X-UI's online-clients API doesn't expose a

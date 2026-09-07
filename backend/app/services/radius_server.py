@@ -33,7 +33,7 @@ from .. import models
 from ..config import settings
 from ..database import SessionLocal
 from ..telegram_bot import runner as telegram_bot_runner
-from .quota_manager import _apply_delta, _enforce_user_limits, _enforce_purchase_limits
+from .quota_manager import _apply_delta, _enforce_user_limits, _enforce_purchase_limits, active_session_count
 from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
 from . import mschapv2
 from . import ip_guard
@@ -429,39 +429,19 @@ class UserManagerRadiusServer(Server):
                             # connections across ALL of this user's services
                             # combined (e.g. an OpenVPN server + a WireGuard
                             # peer + a VLESS account bundled from one
-                            # package), not just PPP ones. PPP (openvpn/
-                            # l2tp) sessions come from RadiusActiveSession
-                            # (real-time, this same auth flow); xray/
-                            # wireguard have no live push to the panel, so
-                            # they're counted from Connection.online, last
-                            # refreshed by the periodic poll (poll_xray_node
-                            # / poll_mikrotik_node in quota_manager.py) -
-                            # meaning a xray/wireguard connection opened
-                            # since the last poll cycle may not be reflected
-                            # yet. This can only ever REJECT a new PPP login
-                            # attempt (the one live enforcement point this
-                            # panel has); it can't kick an already-open
-                            # xray/wireguard session in real time.
+                            # package), not just PPP ones. This can only
+                            # ever REJECT a new PPP login attempt (the one
+                            # live enforcement point this panel has for a
+                            # login event); it can't kick an already-open
+                            # xray/wireguard session in real time - that's
+                            # what quota_manager.enforce_concurrent_session_
+                            # limits is for, reactively, on the next poll
+                            # cycle. Shared counting logic - see
+                            # quota_manager.active_session_count's own
+                            # docstring for exactly how each protocol type
+                            # is counted.
                             limit = user.max_concurrent_sessions
-                            ppp_count = (
-                                db.query(models.RadiusActiveSession)
-                                .join(models.Connection, models.Connection.id == models.RadiusActiveSession.connection_id)
-                                .filter(
-                                    models.Connection.user_id == user.id,
-                                    models.Connection.type.in_(PPP_TYPES),
-                                )
-                                .count()
-                            )
-                            other_online_count = (
-                                db.query(models.Connection)
-                                .filter(
-                                    models.Connection.user_id == user.id,
-                                    models.Connection.type.notin_(PPP_TYPES),
-                                    models.Connection.online.is_(True),
-                                )
-                                .count()
-                            )
-                            active_count = ppp_count + other_online_count
+                            active_count = active_session_count(db, user.id)
                         else:
                             # Legacy behavior: each connection's own cap,
                             # checked independently.

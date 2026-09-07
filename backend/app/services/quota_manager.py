@@ -209,7 +209,7 @@ def _enforce_user_limits(db: Session, user: models.User):
     for conn in user.connections:
         if conn.purchase_id:
             continue  # governed independently by _enforce_purchase_limits
-        _set_connection_enabled(db, conn, enabled=(target_status == models.UserStatus.active))
+        _apply_enabled_state(db, conn, target_status == models.UserStatus.active)
 
 
 def _purchase_ids_needing_enforcement(db: Session, now: dt.datetime) -> list[int]:
@@ -342,7 +342,159 @@ def _enforce_purchase_limits(db: Session, purchase: models.Purchase):
 
     purchase.status = target_status
     for conn in purchase.connections:
-        _set_connection_enabled(db, conn, enabled=(target_status == models.UserStatus.active))
+        _apply_enabled_state(db, conn, target_status == models.UserStatus.active)
+
+
+def _apply_enabled_state(db: Session, connection: models.Connection, target_active: bool) -> None:
+    """Wraps _set_connection_enabled with the concurrent-session override:
+    a connection enforce_concurrent_session_limits force-disabled for being
+    the excess one over User.max_concurrent_sessions must stay disabled
+    even once quota/expiry ALONE would allow it back on - only that
+    function's own re-check, once the session count is genuinely back
+    within the user's cap, is allowed to clear connection.session_limited
+    and re-enable it. Without this, quota enforcement (which re-evaluates
+    every poll cycle regardless of session state) would immediately undo
+    the kick the very next time it saw target_status == active, flapping
+    the peer on the router on and off every single cycle."""
+    if target_active and connection.session_limited:
+        return
+    _set_connection_enabled(db, connection, enabled=target_active)
+
+
+def active_session_count(db: Session, user_id: int) -> int:
+    """How many of this user's connections are active RIGHT NOW, combined
+    across every protocol they might have.
+
+    PPP (openvpn/l2tp/ikev2/sstp) is counted from the live
+    RadiusActiveSession table - real-time, updated on every Access-Request/
+    Accounting packet (see radius_server.py). Everything else (wireguard/
+    xray) has no login event the panel is asked to approve, so it's counted
+    from Connection.online instead, only ever as fresh as the last poll
+    cycle (poll_mikrotik_node / poll_xray_node above).
+
+    Shared by radius_server.py's live accept/reject decision on a new PPP
+    login and enforce_concurrent_session_limits below (the reactive
+    WireGuard/Xray kick), so the two enforcement points can never disagree
+    about what "how many sessions does this user have right now" means."""
+    ppp_count = (
+        db.query(models.RadiusActiveSession)
+        .join(models.Connection, models.Connection.id == models.RadiusActiveSession.connection_id)
+        .filter(
+            models.Connection.user_id == user_id,
+            models.Connection.type.in_(PPP_TYPES),
+        )
+        .count()
+    )
+    other_online_count = (
+        db.query(models.Connection)
+        .filter(
+            models.Connection.user_id == user_id,
+            models.Connection.type.notin_(PPP_TYPES),
+            models.Connection.online.is_(True),
+        )
+        .count()
+    )
+    return ppp_count + other_online_count
+
+
+def enforce_concurrent_session_limits(db: Session) -> int:
+    """Reactively kicks a WireGuard/Xray connection that pushed a user over
+    their own User.max_concurrent_sessions cap, and releases one back once
+    there is genuinely room again.
+
+    OpenVPN/L2TP/IKEv2/SSTP (PPP) sessions are gated LIVE at RADIUS
+    Access-Request time (see radius_server.py's use of active_session_count) -
+    a login that would exceed the cap is simply refused, so PPP alone never
+    needs this. WireGuard and Xray have no such login event: a peer/client
+    that already exists on the node just works the moment its own keys/
+    credentials are used, with no way for this panel to say no in real
+    time. So a customer with, say, one OpenVPN service already connected
+    could still open a second, unrelated WireGuard connection with nothing
+    to stop them at the moment they do it (reported 2026-09-06) - only this
+    periodic check, called from poll_all, can notice and cut the extra one
+    back off, at most POLL_INTERVAL_SECONDS after the fact.
+
+    Deliberately narrow: only ever touches non-PPP connections (the ones
+    that could not have been prevented live), never kicks more than the
+    exact number needed, and never releases one back just because kicking
+    it made the count look fine - see the `effective` count below, which
+    excludes this function's OWN currently-kicked connections entirely, so
+    releasing one is only ever a reaction to some OTHER session of the
+    user's having genuinely ended, never to its own side effect. Without
+    that distinction this would flap a connection on and off forever: kick
+    it -> its own online flag eventually goes False because it's disabled
+    -> naive "count looks fine now" logic releases it -> it reconnects,
+    online again -> kicked again -> repeat.
+
+    Returns how many connections were toggled (kicked or released), purely
+    for poll_all's log line."""
+    candidate_user_ids = {
+        uid for (uid,) in db.query(models.User.id)
+        .filter(models.User.max_concurrent_sessions.isnot(None), models.User.max_concurrent_sessions > 0)
+        .all()
+    } | {
+        uid for (uid,) in db.query(models.Connection.user_id)
+        .filter(models.Connection.session_limited.is_(True))
+        .distinct()
+        .all()
+    }
+    if not candidate_user_ids:
+        return 0
+
+    users = (
+        db.query(models.User)
+        .options(selectinload(models.User.connections).selectinload(models.Connection.purchase))
+        .filter(models.User.id.in_(candidate_user_ids))
+        .all()
+    )
+
+    toggled = 0
+    for user in users:
+        limit = user.max_concurrent_sessions or 0
+        non_ppp = [c for c in user.connections if c.type not in PPP_TYPES]
+        ppp_ids = [c.id for c in user.connections if c.type in PPP_TYPES]
+        ppp_count = (
+            db.query(models.RadiusActiveSession)
+            .filter(models.RadiusActiveSession.connection_id.in_(ppp_ids))
+            .count()
+            if ppp_ids else 0
+        )
+        # Excludes this function's OWN already-kicked connections - see the
+        # docstring above for why that exclusion is what keeps this from
+        # flapping.
+        not_limited_online = [c for c in non_ppp if c.online and not c.session_limited]
+        effective_count = ppp_count + len(not_limited_online)
+
+        if limit:
+            kickable = sorted(
+                (c for c in not_limited_online if c.enabled),
+                key=lambda c: c.id, reverse=True,  # newest connection first
+            )
+            excess = effective_count - limit
+            for conn in kickable:
+                if excess <= 0:
+                    break
+                conn.session_limited = True
+                _set_connection_enabled(db, conn, enabled=False)
+                toggled += 1
+                excess -= 1
+
+        session_limited_conns = [c for c in non_ppp if c.session_limited]
+        if session_limited_conns:
+            room = len(session_limited_conns) if not limit else max(limit - effective_count, 0)
+            for conn in sorted(session_limited_conns, key=lambda c: c.id):
+                if room <= 0:
+                    break
+                governing_status = (
+                    conn.purchase.status if conn.purchase_id and conn.purchase else user.status
+                )
+                if governing_status != models.UserStatus.active:
+                    continue  # quota/expiry still says no - leave it kicked, doesn't consume room
+                conn.session_limited = False
+                _set_connection_enabled(db, conn, enabled=True)
+                toggled += 1
+                room -= 1
+    return toggled
 
 
 def _set_connection_enabled(db: Session, connection: models.Connection, enabled: bool):
@@ -580,10 +732,20 @@ def poll_all():
             for user in users:
                 _enforce_user_limits(db, user)
 
-        if purchase_ids or user_ids:
+        # Last, and deliberately after both enable/disable passes above:
+        # reactively kicks (or releases) a WireGuard/Xray connection over a
+        # user's own concurrent-session cap - needs this cycle's freshly
+        # polled Connection.online values from the node loop at the top of
+        # this function, and needs to run after quota enforcement so
+        # _apply_enabled_state's session_limited override actually has
+        # something to override rather than racing it. See its own
+        # docstring for the full "why" (2026-09-06).
+        session_limited_count = enforce_concurrent_session_limits(db)
+
+        if purchase_ids or user_ids or session_limited_count:
             logger.info(
-                "poll_all: enforced %d purchase(s) and %d account(s)",
-                len(purchase_ids), len(user_ids),
+                "poll_all: enforced %d purchase(s), %d account(s), %d concurrent-session toggle(s)",
+                len(purchase_ids), len(user_ids), session_limited_count,
             )
 
         db.commit()

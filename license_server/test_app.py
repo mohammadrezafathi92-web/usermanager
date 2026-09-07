@@ -117,6 +117,16 @@ client.post("/heartbeat", json={"license_id": "lic1", "fingerprint": "MOVED_SERV
 check("a changed fingerprint raises the warning badge",
       "اثر انگشت عوض شد" in client.get("/console").text, True)
 
+print("\n--- forgetting a row from the console ---")
+check("lic1 is listed before forgetting it", "lic1" in client.get("/console").text, True)
+client.post("/console/forget", data={"license_id": "lic1"})
+check("lic1 is gone from the list", "lic1" in client.get("/console").text, False)
+r = hb()  # lic1 heartbeats again
+check("it just re-registers, unnamed - not blocked", r.json()["revoked"], False)
+check("...and is back in the list", "lic1" in client.get("/console").text, True)
+check("...but the old label did not survive (a fresh row, not a ban)",
+      "فروشگاه رضا" in client.get("/console").text, False)
+
 print("\n--- issuing a license from the console ---")
 r = client.get("/console/issue")
 check("the form needs a session too", "کنسول لایسنس" not in r.text or "رمز عبور" in r.text, True)

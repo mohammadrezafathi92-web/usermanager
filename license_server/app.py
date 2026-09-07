@@ -198,6 +198,11 @@ def console(request: Request, db=Depends(get_db), _=Depends(require_console)):
                 <input name="label" value="{_esc(i.label) or ''}" placeholder="نام" style="width:90px;font-size:12px">
                 <button>ذخیره</button>
               </form>
+              <form method="post" action="/console/forget" style="display:inline"
+                    onsubmit="return confirm('این ردیف از لیست حذف شود؟ اگر همین پنل دوباره پینگ بزند، از نو ثبت می‌شود.')">
+                <input type="hidden" name="license_id" value="{_esc(i.license_id)}">
+                <button style="color:#b91c1c;border-color:#fecaca">حذف</button>
+              </form>
             </td>
           </tr>
         """)
@@ -237,6 +242,19 @@ def scope(db=Depends(get_db), _=Depends(require_console),
 def label(db=Depends(get_db), _=Depends(require_console),
           license_id: str = Form(...), label: str = Form("")):
     store.set_label(db, license_id, label)
+    return RedirectResponse("/console", status_code=303)
+
+
+@app.post("/console/forget")
+def forget(db=Depends(get_db), _=Depends(require_console), license_id: str = Form(...)):
+    """Removes a row from the list - store.forget_install already existed
+    (with its own tests) but had no console route calling it until now.
+    Not a ban: per its own docstring, this clears the row, it does not
+    block the license_id - a panel that heartbeats again afterward simply
+    re-registers, unnamed, as if seen for the first time. Use توگل قفل کن
+    to actually stop a panel from working; use this to tidy up a row from
+    an old test, a mistaken issue, or a decommissioned install."""
+    store.forget_install(db, license_id)
     return RedirectResponse("/console", status_code=303)
 
 

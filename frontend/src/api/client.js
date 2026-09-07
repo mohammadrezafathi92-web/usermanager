@@ -386,6 +386,7 @@ export const removeIpBan = (ip) => client.delete(`/ip-bans/${encodeURIComponent(
 export const fetchLicenseStatus = () => client.get("/license/status");
 export const checkLicenseNow = () => client.post("/license/check-now");
 export const setLicenseKey = (key) => client.put("/license/key", { key });
+export const deleteLicenseKey = () => client.delete("/license/key");
 
 // Database health report (services/db_health.py) - superadmin-only,
 // read-only. Run on demand from Settings > data.

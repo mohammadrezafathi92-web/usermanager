@@ -94,6 +94,33 @@ def set_key(body: dict):
     return status()
 
 
+@router.delete("/key")
+def delete_key():
+    """Removes the current license key - the in-panel counterpart to
+    stripping LICENSE_KEY out of backend/.env by hand over SSH, added
+    2026-09-07 after doing exactly that manually, repeatedly, while
+    activating licensing across several panels (wrong fingerprint pasted,
+    re-issuing for a different machine, etc).
+
+    Deliberately does NOT touch USERMANAGER_LICENSE_PUBKEY. If that is
+    already set on this build, removing the key immediately locks the
+    panel the normal way (REASON_MISSING) - same as any other missing-key
+    state, and just as real as it would be over SSH. The frontend confirms
+    this with the operator before calling here; nothing server-side
+    softens it, because a locked panel refusing login afterward is the
+    expected, honest consequence, not a bug to paper over."""
+    _remove_key_from_env()
+    settings.license_key = ""
+    license_state.set_license_key("")
+    return status()
+
+
+def _env_path() -> str:
+    return os.environ.get(
+        "ENV_FILE_PATH", os.path.join(HOST_PROJECT_DIR, "backend", ".env")
+    )
+
+
 def _persist_key_to_env(token: str) -> None:
     """Write LICENSE_KEY into backend/.env so a restart keeps it. Best-effort;
     if the file cannot be written the key still applies for this process.
@@ -117,9 +144,7 @@ def _persist_key_to_env(token: str) -> None:
     the self-service port-change feature) - so {HOST_PROJECT_DIR}/backend/
     .env genuinely IS the host's file, not a copy, and survives any
     recreate or rebuild."""
-    env_path = os.environ.get(
-        "ENV_FILE_PATH", os.path.join(HOST_PROJECT_DIR, "backend", ".env")
-    )
+    env_path = _env_path()
     try:
         lines = []
         if os.path.exists(env_path):
@@ -128,5 +153,21 @@ def _persist_key_to_env(token: str) -> None:
         lines.append(f"LICENSE_KEY={token}")
         with open(env_path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")
+    except OSError:
+        pass
+
+
+def _remove_key_from_env() -> None:
+    """The inverse of _persist_key_to_env - strips LICENSE_KEY out of the
+    same real host file entirely, so a later restart or recreate does not
+    resurrect a key the operator just removed from the panel."""
+    env_path = _env_path()
+    try:
+        if not os.path.exists(env_path):
+            return
+        with open(env_path, "r", encoding="utf-8") as fh:
+            lines = [ln for ln in fh.read().splitlines() if not ln.startswith("LICENSE_KEY=")]
+        with open(env_path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + ("\n" if lines else ""))
     except OSError:
         pass

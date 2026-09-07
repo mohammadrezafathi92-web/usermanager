@@ -86,6 +86,31 @@ with open(env_file, "r", encoding="utf-8") as fh:
 check("the key is still there after re-importing the module fresh",
       "LICENSE_KEY=NETCIP1.newer.token" in contents, True)
 
+print("\n--- _remove_key_from_env strips it from the same real file ---")
+license_router2._remove_key_from_env()
+with open(env_file, "r", encoding="utf-8") as fh:
+    contents = fh.read()
+check("LICENSE_KEY is gone", "LICENSE_KEY=" in contents, False)
+check("an unrelated setting still there", "SOME_OTHER_SETTING=keep-me" in contents, True)
+
+print("\n--- removing again (nothing to remove) does not crash or touch other lines ---")
+license_router2._remove_key_from_env()
+with open(env_file, "r", encoding="utf-8") as fh:
+    contents = fh.read()
+check("still just the unrelated setting", contents.strip(), "SOME_OTHER_SETTING=keep-me")
+
+print("\n--- the DELETE /key endpoint function clears settings.license_key too ---")
+from app.config import settings  # noqa: E402
+
+license_router2._persist_key_to_env("NETCIP1.about.to.delete")
+settings.license_key = "NETCIP1.about.to.delete"
+result = license_router2.delete_key()
+check("settings.license_key is cleared", settings.license_key, "")
+check("has_key is now False in the returned status", result["has_key"], False)
+with open(env_file, "r", encoding="utf-8") as fh:
+    contents = fh.read()
+check("...and gone from the real file too, not just memory", "LICENSE_KEY=" in contents, False)
+
 print("\n" + "=" * 60)
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))

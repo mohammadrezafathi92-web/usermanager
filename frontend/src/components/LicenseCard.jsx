@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { ShieldCheck, ShieldAlert, ShieldX, Copy, RefreshCw } from "lucide-react";
-import { fetchLicenseStatus, checkLicenseNow, setLicenseKey } from "../api/client.js";
+import { ShieldCheck, ShieldAlert, ShieldX, Copy, RefreshCw, Trash2 } from "lucide-react";
+import { fetchLicenseStatus, checkLicenseNow, setLicenseKey, deleteLicenseKey } from "../api/client.js";
 import { formatDateTime, copyText } from "../utils.js";
 
 /**
@@ -27,6 +27,7 @@ export default function LicenseCard({ t, language, onChanged }) {
   const [saveError, setSaveError] = useState("");
   const [checking, setChecking] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -58,6 +59,26 @@ export default function LicenseCard({ t, language, onChanged }) {
     checkLicenseNow()
       .then((res) => setStatus(res.data))
       .finally(() => setChecking(false));
+  };
+
+  const onDeleteKey = async () => {
+    // Warns explicitly about the exact failure mode this session hit
+    // repeatedly by hand over SSH: if USERMANAGER_LICENSE_PUBKEY is
+    // already active on this build, removing the only valid key locks the
+    // panel immediately (REASON_MISSING) - same as it would from the
+    // command line. No soft-landing here on purpose; the operator needs
+    // to know that BEFORE clicking, not after being locked out.
+    const warn = status?.master_install
+      ? null
+      : t("license.deleteConfirm");
+    if (warn && !window.confirm(warn)) return;
+    setDeleting(true);
+    try {
+      const res = await deleteLicenseKey();
+      setStatus(res.data);
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const submitKey = async (e) => {
@@ -168,6 +189,16 @@ export default function LicenseCard({ t, language, onChanged }) {
             <button type="button" className="btn-secondary" disabled={checking} onClick={onCheckNow}>
               <RefreshCw size={14} className={checking ? "animate-spin" : ""} /> {t("license.checkNow")}
             </button>
+            {status.has_key && (
+              <button
+                type="button"
+                className="btn-secondary text-red-600 hover:bg-red-50"
+                disabled={deleting}
+                onClick={onDeleteKey}
+              >
+                <Trash2 size={14} /> {deleting ? t("license.deleting") : t("license.deleteKey")}
+              </button>
+            )}
           </div>
         </form>
       )}

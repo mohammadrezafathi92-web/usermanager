@@ -159,8 +159,8 @@ async def _notify_admins(pending: dict, bot, reason: str) -> None:
     button on this message - the service is already delivered - so it is
     plain text, deliberately distinguishable from a request awaiting action.
     """
-    from ..telegram_bot.config import config
     from ..telegram_bot.handlers.admin_pending import _pending_summary
+    from ..telegram_bot.handlers.customer import _notify_targets
 
     try:
         text = "🤖 تایید خودکار انجام شد\n\n" + _pending_summary(pending) + f"\n\nدلیل: {reason}"
@@ -168,7 +168,10 @@ async def _notify_admins(pending: dict, bot, reason: str) -> None:
         logger.exception("could not render the auto-approval notice")
         text = f"🤖 درخواست {pending.get('id')} به‌صورت خودکار تایید شد"
 
-    for admin_id in config.approval_targets():
+    # See customer.py's _notify_targets docstring - approval_targets() alone
+    # can miss the actual owning reseller, so their own linked Telegram id
+    # (from pending['owner_admin_id']) is always added too.
+    for admin_id in await _notify_targets(pending):
         try:
             await bot.send_message(admin_id, text)
         except Exception:

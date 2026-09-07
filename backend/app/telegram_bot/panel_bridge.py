@@ -285,6 +285,35 @@ class PanelBridge:
         except ApiError:
             return None
 
+    async def get_admin_telegram_id(self, admin_id: int) -> Optional[int]:
+        """The reverse lookup of get_admin_by_telegram: this AdminUser's own
+        linked numeric Telegram id, or None if they have none.
+
+        Added 2026-09-07 - a reseller's payment-receipt notification was
+        reported to land with the main/shared admin instead of the
+        reseller themselves. config.approval_targets() only ever reflects
+        whichever bot instance's thread actually handled the message (the
+        shared bot's static admin_ids, unless the reseller's own dedicated
+        bot happens to be the one running and correctly linked) - there was
+        no guarantee the reseller who actually OWNS the customer ever got a
+        copy. Callers use this to ALSO notify that owner directly whenever
+        they have a linked Telegram id, regardless of which bot the
+        customer happened to be talking to. Goes straight to the DB rather
+        than through bot_router since this is an internal notification
+        concern, not part of the bot's customer-facing API surface."""
+        def _run():
+            db = SessionLocal()
+            try:
+                admin = db.get(models.AdminUser, admin_id)
+                return admin.telegram_id if admin else None
+            finally:
+                db.close()
+
+        try:
+            return await asyncio.to_thread(_run)
+        except Exception:
+            return None
+
     async def list_users(
         self, page: int = 1, page_size: int = 8, search: Optional[str] = None, owner_admin_id: Optional[int] = None
     ) -> dict:

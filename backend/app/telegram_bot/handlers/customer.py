@@ -35,6 +35,31 @@ logger = logging.getLogger("telegram_bot")
 router = Router(name="customer")
 
 
+async def _notify_targets(pending_row: dict) -> set:
+    """Who should be told about this pending receipt.
+
+    config.approval_targets() only reflects whichever bot instance's
+    thread actually received the message - the shared bot's static
+    admin_ids unless the customer happened to be talking to the owning
+    reseller's own dedicated bot AND it is correctly linked. Reported
+    2026-09-06: a reseller's customer paying through "the reseller's own
+    bot" produced a receipt that reached the main/shared admin instead of
+    the reseller. Whatever the exact routing accident, the pending row's
+    own owner_admin_id (see storage.py) always names the real owner - so
+    that owner's linked Telegram id is added here unconditionally,
+    ensuring they get a copy even when approval_targets() resolves to
+    someone else. Falls back to approval_targets() alone (unchanged
+    behaviour) when the owner has no linked id or the request is
+    ownerless (shared-panel customer)."""
+    targets = set(config.approval_targets())
+    owner_admin_id = pending_row.get("owner_admin_id") if pending_row else None
+    if owner_admin_id:
+        owner_tg = await api.get_admin_telegram_id(owner_admin_id)
+        if owner_tg:
+            targets.add(owner_tg)
+    return targets
+
+
 async def _send_menu_footer(bot: Bot, chat_id: int) -> None:
     """Re-posts the main menu AFTER a batch of config/document messages.
     Those are sent as fresh messages, which pushes the previous menu out of
@@ -669,15 +694,16 @@ async def link_username(message: Message, state: FSMContext, bot: Bot) -> None:
     from ..keyboards import approval_kb
 
     who = f"@{message.from_user.username}" if message.from_user.username else (message.from_user.full_name or str(message.from_user.id))
+    link_pending_row = storage.get_pending(request_id)
     caption = (
         "🔗 درخواست اتصال حساب قبلی\n\n"
-        + _pending_summary(storage.get_pending(request_id))
+        + _pending_summary(link_pending_row)
         + f"\n\nحساب مقصد: «{username}»"
         + (f" ({target_user.get('full_name')})" if target_user.get("full_name") else "")
         + f"\nموجودی فعلی آن حساب: {target_user.get('balance', 0):,} تومان"
         + f"\n\n⚠️ فقط اگر مطمئنید {who} واقعا صاحب این حساب است تایید کنید."
     )
-    for admin_id in config.approval_targets():
+    for admin_id in await _notify_targets(link_pending_row):
         try:
             await bot.send_message(admin_id, caption, reply_markup=approval_kb(request_id))
         except Exception:
@@ -1252,7 +1278,7 @@ async def receive_receipt(message: Message, state: FSMContext, bot: Bot) -> None
     # inside a container, which in practice means written nowhere.
     if auto_note:
         caption += f"\n\n🤖 تایید خودکار انجام نشد: {auto_note}"
-    for admin_id in config.approval_targets():
+    for admin_id in await _notify_targets(pending_row):
         try:
             await bot.send_photo(admin_id, message.photo[-1].file_id, caption=caption, reply_markup=approval_kb(request_id))
         except Exception:
@@ -1367,8 +1393,9 @@ async def receive_topup_receipt(message: Message, state: FSMContext, bot: Bot) -
     from .admin_pending import _pending_summary  # local import avoids a circular import at module load
     from ..keyboards import approval_kb
 
-    caption = "🧾 رسید افزایش اعتبار\n\n" + _pending_summary(storage.get_pending(request_id))
-    for admin_id in config.approval_targets():
+    topup_pending_row = storage.get_pending(request_id)
+    caption = "🧾 رسید افزایش اعتبار\n\n" + _pending_summary(topup_pending_row)
+    for admin_id in await _notify_targets(topup_pending_row):
         try:
             await bot.send_photo(admin_id, message.photo[-1].file_id, caption=caption, reply_markup=approval_kb(request_id))
         except Exception:

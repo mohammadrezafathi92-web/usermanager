@@ -26,3 +26,9 @@ venv/
 # stray files that should never be committed
 _sync_test.txt
 root@*
+
+# The license signing PRIVATE key (backend/scripts/license_tool.py keygen).
+# This is the whole security of the licensing scheme - if it ever lands in
+# this repo (which is PUBLIC), anyone can mint a valid license for any
+# panel. Only the derived PUBLIC key belongs in the source tree.
+.license-keys/

@@ -18,6 +18,7 @@ from .. import models, schemas  # noqa: F401 - schemas kept for symmetry
 from ..config import settings
 from ..deps import require_superadmin
 from ..services import license_state, licensing
+from ..services.local_deploy import HOST_PROJECT_DIR
 
 router = APIRouter(prefix="/api/license", tags=["license"], dependencies=[Depends(require_superadmin)])
 
@@ -95,8 +96,30 @@ def set_key(body: dict):
 
 def _persist_key_to_env(token: str) -> None:
     """Write LICENSE_KEY into backend/.env so a restart keeps it. Best-effort;
-    if the file cannot be written the key still applies for this process."""
-    env_path = os.environ.get("ENV_FILE_PATH", "/app/.env")
+    if the file cannot be written the key still applies for this process.
+
+    Bug fixed 2026-09-07: this used to default to /app/.env, which is NOT
+    the host's backend/.env - the Dockerfile never copies a .env into the
+    image and docker-compose.yml never bind-mounts one there. Writing to it
+    "worked" (the running container's own writable layer took the write,
+    and settings.license_key was also updated in memory for this process),
+    but the very next `docker compose up -d --force-recreate` - needed to
+    pick up any OTHER new env var, e.g. USERMANAGER_LICENSE_PUBKEY - throws
+    that writable layer away and starts a clean container, silently
+    reverting LICENSE_KEY to whatever backend/.env on the HOST actually
+    says. A panel that had a key pasted, then had licensing turned on right
+    after, came back up with no key at all: REASON_MISSING, locked, and
+    login itself refused before the operator could even reach this page
+    again to re-paste it.
+    HOST_PROJECT_DIR is bind-mounted into this container at the SAME path
+    it has on the host (see docker-compose.yml's backend volumes and
+    local_deploy.py's own docstring on exactly this trick, used there for
+    the self-service port-change feature) - so {HOST_PROJECT_DIR}/backend/
+    .env genuinely IS the host's file, not a copy, and survives any
+    recreate or rebuild."""
+    env_path = os.environ.get(
+        "ENV_FILE_PATH", os.path.join(HOST_PROJECT_DIR, "backend", ".env")
+    )
     try:
         lines = []
         if os.path.exists(env_path):

@@ -92,6 +92,26 @@ _HOST_MACHINE_ID_PATHS = (
     "/var/lib/dbus/machine-id",
 )
 
+# Same reasoning, same bug class, found 2026-09-07: _primary_mac() below
+# needs the HOST's network interfaces, not the container's own - a
+# container's /sys/class/net is regenerated (fresh veth pair, fresh MAC)
+# on every recreate, same as its /etc/machine-id would be without the
+# mount above. Unlike machine-id this one was never mounted at all, so
+# the fingerprint silently included a genuinely random component on every
+# single `docker compose up --force-recreate` - which is every routine
+# update. A licence issued right after one recreate mismatched the very
+# next one: REASON_WRONG_MACHINE, panel locked, no code bug in the
+# licence itself, just a fingerprint quietly built from the wrong
+# filesystem. docker-compose.yml now bind-mounts the host's
+# /sys/class/net read-only at /host/sys/class/net for exactly this
+# reason - the container path is preferred, the local one is only a
+# fallback for a bare-metal install (module constant, not inlined in the
+# function, specifically so a test can point it at a fake filesystem).
+_HOST_NET_CLASS_PATHS = (
+    "/host/sys/class/net",
+    "/sys/class/net",
+)
+
 
 def _read_first(paths) -> str:
     for path in paths:
@@ -128,7 +148,7 @@ def _primary_mac() -> str:
     """The MAC of the host's main interface. Read from /host/sys when the
     bind mount is present, since a container's own interfaces are
     generated fresh every start."""
-    for base in ("/host/sys/class/net", "/sys/class/net"):
+    for base in _HOST_NET_CLASS_PATHS:
         try:
             names = sorted(os.listdir(base))
         except OSError:

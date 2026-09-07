@@ -238,6 +238,68 @@ check("is stable across calls", fp1, fp2)
 check("is a sha256 hex digest", len(fp1), 64)
 check("is never empty", bool(fp1.strip()), True)
 
+print("\n--- the MAC component must come from the HOST, not the container ---")
+# Bug found 2026-09-07: _primary_mac() prefers _HOST_NET_CLASS_PATHS[0]
+# (bind-mounted from the host) but falls back to the container's OWN
+# /sys/class/net when that mount is missing - and a container's own
+# network interfaces are regenerated (fresh MAC) on every recreate. A
+# panel with no host mount therefore got a NEW fingerprint on every
+# `docker compose up --force-recreate`, silently mismatching any licence
+# issued moments earlier. This simulates "recreate" as exactly that: the
+# would-be-container-local path's content changing while the host path's
+# content does not - the fingerprint must follow the host path only.
+import tempfile
+import shutil
+
+host_net = tempfile.mkdtemp()
+container_net = tempfile.mkdtemp()
+
+
+def _make_iface(base, name, mac):
+    d = os.path.join(base, name)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "address"), "w") as fh:
+        fh.write(mac + "\n")
+
+
+_make_iface(host_net, "eth0", "aa:bb:cc:dd:ee:01")
+_make_iface(container_net, "eth0", "de:ad:be:ef:00:01")  # "first boot"'s veth
+
+original_net_paths = licensing._HOST_NET_CLASS_PATHS
+licensing._HOST_NET_CLASS_PATHS = (host_net, container_net)
+try:
+    mac_before = licensing._primary_mac()
+    check("reads the HOST path when both are present", mac_before, "aa:bb:cc:dd:ee:01")
+
+    # Simulate a container recreate: the "container-local" path's veth got
+    # a brand new MAC, but the host path (a real bind mount) is untouched.
+    shutil.rmtree(container_net)
+    os.makedirs(container_net)
+    _make_iface(container_net, "eth1", "11:22:33:44:55:66")  # different veth entirely
+
+    mac_after = licensing._primary_mac()
+    check("...and is unaffected by the 'container' side changing", mac_after, mac_before)
+
+    fp_before = licensing.hardware_fingerprint()
+    fp_after = licensing.hardware_fingerprint()
+    check("hardware_fingerprint() is therefore stable across the 'recreate' too", fp_before, fp_after)
+
+    # And the actual failure mode this caused: NO host mount at all (path
+    # doesn't exist), so it falls through to the container-local path -
+    # which is exactly the pre-fix, unmounted production behaviour.
+    licensing._HOST_NET_CLASS_PATHS = ("/no/such/host/mount", container_net)
+    mac_unmounted_1 = licensing._primary_mac()
+    shutil.rmtree(container_net)
+    os.makedirs(container_net)
+    _make_iface(container_net, "vethNEW", "99:88:77:66:55:44")
+    mac_unmounted_2 = licensing._primary_mac()
+    check("without the host mount, it DOES drift across a simulated recreate - reproducing the bug",
+          mac_unmounted_1 == mac_unmounted_2, False)
+finally:
+    licensing._HOST_NET_CLASS_PATHS = original_net_paths
+    shutil.rmtree(host_net, ignore_errors=True)
+    shutil.rmtree(container_net, ignore_errors=True)
+
 print("\n--- round trip through the token format ---")
 original = licensing.LicensePayload(
     license_id="lic_x", customer="نام فارسی", fingerprint=FP,

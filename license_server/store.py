@@ -212,6 +212,35 @@ def set_label(db, license_id: str, label: str, note: Optional[str] = None) -> Op
     return install
 
 
+def register_issued(db, *, license_id: str, fingerprint: Optional[str], label: str) -> Install:
+    """Called right after the operator issues a new licence from the
+    console's صدور لایسنس page (see app.py + signing.py), so it shows up
+    named in the list immediately - rather than as an anonymous row the
+    operator has to find and label after the panel's first heartbeat.
+
+    Not a security boundary: record_heartbeat still runs its own
+    fingerprint-changed tracking normally on top of whatever is set here,
+    same as for any other install."""
+    install = get_install(db, license_id)
+    now = dt.datetime.utcnow()
+    if install is None:
+        install = Install(
+            license_id=license_id,
+            fingerprint=fingerprint,
+            label=label,
+            first_seen=now,
+            last_seen=now,
+            heartbeat_count=0,
+        )
+        db.add(install)
+    else:
+        install.label = label
+        if fingerprint:
+            install.fingerprint = fingerprint
+    db.commit()
+    return install
+
+
 def forget_install(db, license_id: str) -> bool:
     """Remove an install the operator no longer wants listed. It will
     re-register if it heartbeats again - so this is 'clear the row', not

@@ -146,6 +146,30 @@ check("...and the old one stops working", store.check_admin_password(db, "secret
 raw = store._get_setting(db, "admin_password_hash")
 check("stored as a hash, not plaintext", "rotated" not in (raw or ""), True)
 
+print("\n--- register_issued: a licence appears named, before it ever pings ---")
+db = fresh_db()
+inst = store.register_issued(db, license_id="lic_new", fingerprint="fp_new", label="فروشگاه رضا")
+check("it exists", store.get_install(db, "lic_new") is not None, True)
+check("labelled from the start", inst.label, "فروشگاه رضا")
+check("fingerprint pre-filled", inst.fingerprint, "fp_new")
+check("not revoked by default", inst.revoked, False)
+check("zero heartbeats so far", inst.heartbeat_count, 0)
+
+print("\n--- ...and a real heartbeat afterwards just updates that same row ---")
+inst, resp = store.record_heartbeat(db, license_id="lic_new", fingerprint="fp_new",
+                                    ip="9.9.9.9", now=NOW)
+check("still one row, not a duplicate", len(store.list_installs(db)), 1)
+check("the label survived the first real heartbeat", inst.label, "فروشگاه رضا")
+check("heartbeat now counted", inst.heartbeat_count, 1)
+check("not revoked", resp["revoked"], False)
+
+print("\n--- calling register_issued again on the same id just updates it ---")
+inst = store.register_issued(db, license_id="lic_new", fingerprint="fp_renewed", label="فروشگاه رضا (تمدید)")
+check("still one row", len(store.list_installs(db)), 1)
+check("label updated", inst.label, "فروشگاه رضا (تمدید)")
+check("fingerprint updated", inst.fingerprint, "fp_renewed")
+check("heartbeat_count untouched by re-issuing", inst.heartbeat_count, 1)
+
 print("\n--- our scope list matches the panel's ---")
 # The panel and this service each keep their own copy of the scope names
 # (they ship separately). If they ever drift, an operator picks a scope the

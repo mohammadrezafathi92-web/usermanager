@@ -2,3 +2,7 @@ fastapi==0.115.0
 uvicorn==0.30.6
 sqlalchemy==2.0.32
 python-multipart==0.0.9
+# For signing.py's صدور لایسنس console page - same version the panel's own
+# backend/requirements.txt pins, kept in sync deliberately (not shared code,
+# but no reason to drift on a security-relevant dependency).
+cryptography==42.0.7

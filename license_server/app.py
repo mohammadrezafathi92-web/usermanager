@@ -18,6 +18,7 @@ import secrets
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+import signing
 import store
 
 DB_URL = os.environ.get("LICENSE_DB_URL", "sqlite:////data/license.db")
@@ -163,12 +164,21 @@ def console(request: Request, db=Depends(get_db), _=Depends(require_console)):
             badge = '<span style="background:#fee2e2;color:#b91c1c;padding:2px 6px;border-radius:6px">اثر انگشت عوض شد</span>'
         status_cell = ('<span style="color:#b91c1c">قفل‌شده</span>' if i.revoked
                        else '<span style="color:#059669">فعال</span>')
+        # A row created by صدور لایسنس (register_issued) before the panel's
+        # first heartbeat has heartbeat_count 0 - last_seen is just when it
+        # was issued, not a real check-in, so saying "چند لحظه پیش" would
+        # falsely claim it already reported home.
+        ping_cell = (
+            '<i style="color:#999">هنوز پینگ نزده</i>'
+            if not i.heartbeat_count
+            else f"{_ago(silent)} پیش<br>{_esc(i.last_ip) or ''}"
+        )
         rows.append(f"""
           <tr style="border-top:1px solid #eee{';background:#fff7ed' if stale else ''}">
             <td>{_esc(i.label) or '<i style=color:#999>بی‌نام</i>'}<br>
                 <code style="font-size:11px;color:#666">{_esc(i.license_id)}</code></td>
             <td>{status_cell}</td>
-            <td style="font-size:12px">{_ago(silent)} پیش<br>{_esc(i.last_ip) or ''}</td>
+            <td style="font-size:12px">{ping_cell}</td>
             <td style="font-size:12px">{_esc(i.panel_version) or '?'}<br>{i.reported_customers if i.reported_customers is not None else ''} کاربر</td>
             <td>{badge}</td>
             <td>
@@ -194,7 +204,7 @@ def console(request: Request, db=Depends(get_db), _=Depends(require_console)):
     body = f"""
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2>نصب‌های فعال ({len(rows)})</h2>
-        <a href="/console/logout">خروج</a>
+        <div><a href="/console/issue" style="margin-left:16px">+ صدور لایسنس جدید</a> <a href="/console/logout">خروج</a></div>
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:14px">
         <tr style="text-align:right;color:#666">
@@ -228,6 +238,71 @@ def label(db=Depends(get_db), _=Depends(require_console),
           license_id: str = Form(...), label: str = Form("")):
     store.set_label(db, license_id, label)
     return RedirectResponse("/console", status_code=303)
+
+
+# --------------------------------------------------------------------------
+# console: issue a new license (signing.py) - added 2026-09-07 so this does
+# not require running backend/scripts/license_tool.py by hand every time.
+# --------------------------------------------------------------------------
+@app.get("/console/issue", response_class=HTMLResponse)
+def issue_form(_=Depends(require_console)):
+    back = '<p><a href="/console">&larr; بازگشت</a></p>'
+    if not signing.has_signing_key():
+        return _page("صدور لایسنس", back + f"""
+          <p style="color:#b91c1c">کلید خصوصی امضا روی این سرور پیدا نشد
+          (مسیر مورد انتظار: <code>{_esc(signing.PRIVATE_KEY_PATH)}</code>).</p>
+          <p style="color:#666;font-size:13px">این کلید یک‌بار با
+          <code>backend/scripts/license_tool.py keygen</code> ساخته می‌شود و باید
+          دستی روی همین سرور، توی پوشه‌ی <code>license_server/data/</code>
+          (که همون مسیر بالا رو داخل کانتینر نشون میده) قرار بگیره - هرگز
+          توی گیت یا روی سرور مشتری نه.</p>
+        """)
+    return _page("صدور لایسنس", back + """
+      <form method="post" action="/console/issue" style="max-width:420px">
+        <h2>صدور لایسنس جدید</h2>
+        <label>نام مشتری</label><br>
+        <input name="customer" required style="width:100%;padding:8px;margin:4px 0 12px;box-sizing:border-box">
+        <label>اثر انگشت سرور مشتری (خالی = روی هر سروری کار می‌کند - فقط برای تست)</label><br>
+        <input name="fingerprint" style="width:100%;padding:8px;margin:4px 0 12px;box-sizing:border-box;font-family:monospace" dir="ltr">
+        <label>مدت اعتبار به روز (خالی = همیشگی)</label><br>
+        <input name="days" type="number" value="365" style="width:100%;padding:8px;margin:4px 0 12px;box-sizing:border-box">
+        <label>یادداشت داخلی (اختیاری)</label><br>
+        <input name="note" style="width:100%;padding:8px;margin:4px 0 12px;box-sizing:border-box">
+        <button style="padding:10px 20px">صدور لایسنس</button>
+      </form>
+    """)
+
+
+@app.post("/console/issue", response_class=HTMLResponse)
+def issue_submit(
+    db=Depends(get_db), _=Depends(require_console),
+    customer: str = Form(...), fingerprint: str = Form(""), days: str = Form(""), note: str = Form(""),
+):
+    back = '<p><a href="/console">&larr; بازگشت</a></p>'
+    days_int = int(days) if days.strip().isdigit() else None
+    try:
+        token, license_id = signing.issue(
+            customer=customer.strip(), fingerprint=fingerprint.strip(),
+            days=days_int, note=note.strip(),
+        )
+    except signing.SigningKeyMissing as exc:
+        return _page("صدور لایسنس", back + f'<p style="color:#b91c1c">{_esc(str(exc))}</p>')
+
+    # So the operator sees a named row immediately in the list, before the
+    # panel's first heartbeat - not a security boundary, just friendlier.
+    store.register_issued(
+        db, license_id=license_id, fingerprint=fingerprint.strip() or None, label=customer.strip(),
+    )
+
+    return _page("لایسنس صادر شد", back + f"""
+      <h2>لایسنس صادر شد</h2>
+      <p>مشتری: <b>{_esc(customer)}</b> &nbsp; شناسه: <code>{_esc(license_id)}</code></p>
+      <textarea readonly onclick="this.select()"
+        style="width:100%;height:140px;font-family:monospace;font-size:12px;padding:8px;box-sizing:border-box"
+        dir="ltr">{_esc(token)}</textarea>
+      <p style="color:#666;font-size:13px">این متن را کامل کپی کنید و در پنل مشتری،
+      تنظیمات &larr; کارت «لایسنس»، در کادر کلید بچسبانید و «ذخیره‌ی کلید» را بزنید.</p>
+    """)
 
 
 # --------------------------------------------------------------------------

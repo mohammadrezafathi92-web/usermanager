@@ -8,7 +8,7 @@ WORKDIR /srv
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY store.py app.py ./
+COPY store.py app.py signing.py ./
 
 # The DB lives on a mounted volume so revoke state and the console password
 # survive restarts and rebuilds.

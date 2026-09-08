@@ -6,7 +6,7 @@ import MoneyInput from "../components/MoneyInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import { fetchDiscountCodes, createDiscountCode, updateDiscountCode, deleteDiscountCode, fetchDiscountCodeRedemptions } from "../api/client.js";
-import { formatDateTime } from "../utils.js";
+import { formatDateTime, formatToman } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 
@@ -152,7 +152,7 @@ export default function DiscountCodes() {
                     </td>
                   )}
                   <td className="px-4 py-3 text-gray-600">
-                    {c.kind === "percent" ? `${c.value}%` : `${c.value.toLocaleString()} ${t("discountCodes.toman")}`}
+                    {c.kind === "percent" ? `${c.value}%` : `${formatToman(c.value, language)} ${t("discountCodes.toman")}`}
                   </td>
                   <td className="px-4 py-3">
                     <button
@@ -230,8 +230,8 @@ export default function DiscountCodes() {
                 {redemptions.map((r) => (
                   <tr key={r.id} className="border-t border-gray-50">
                     <td className="px-3 py-2 font-mono text-gray-700 dark:text-gray-200">{r.username || (r.user_id ? `#${r.user_id}` : "-")}</td>
-                    <td className="px-3 py-2 text-gray-500" dir="ltr">{r.package_price != null ? r.package_price.toLocaleString() : "-"}</td>
-                    <td className="px-3 py-2 text-emerald-600 font-medium" dir="ltr">{r.discount_amount != null ? r.discount_amount.toLocaleString() : "-"}</td>
+                    <td className="px-3 py-2 text-gray-500" dir="ltr">{r.package_price != null ? formatToman(r.package_price, language) : "-"}</td>
+                    <td className="px-3 py-2 text-emerald-600 font-medium" dir="ltr">{r.discount_amount != null ? formatToman(r.discount_amount, language) : "-"}</td>
                     <td className="px-3 py-2 text-gray-400 text-xs" dir="ltr">{formatDateTime(r.created_at, language)}</td>
                   </tr>
                 ))}

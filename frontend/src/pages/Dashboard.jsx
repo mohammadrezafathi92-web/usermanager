@@ -6,7 +6,7 @@ import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import StatCard from "../components/StatCard.jsx";
 import { fetchDashboard } from "../api/client.js";
-import { formatBytes, formatBitrate, formatUptime, toDisplayDate } from "../utils.js";
+import { formatBytes, formatBitrate, formatUptime, toDisplayDate, formatToman, formatGb } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
 const PROTOCOL_LABELS = { wireguard: "WireGuard", openvpn: "OpenVPN", l2tp: "L2TP", ikev2: "IKEv2", sstp: "SSTP", xray: "V2Ray/Xray" };
@@ -24,12 +24,6 @@ function UsageBar({ percent }) {
   );
 }
 
-
-const toman = (n) => Number(n || 0).toLocaleString("en-US");
-// Same rounding as Admins.jsx's own formatGb - kept in sync so an admin's
-// volume balance reads identically whether they see it on their own
-// dashboard or in the superadmin's Admins list.
-const formatGb = (n) => new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 2 }).format(n || 0);
 
 // One actionable tile: a number that means "go do something", with the page
 // it should take you to. Muted (not alarming) when the count is zero, so a
@@ -61,12 +55,12 @@ function ActionCard({ icon: Icon, label, hint, value, tone, onClick }) {
   );
 }
 
-function MoneyTile({ label, value, t, sub }) {
+function MoneyTile({ label, value, t, lang, sub }) {
   return (
     <div className="card">
       <div className="text-sm text-gray-400">{label}</div>
       <div className="text-xl sm:text-2xl font-bold text-gray-800 dark:text-gray-100 tnum mt-1" dir="ltr">
-        {toman(value)} <span className="text-sm font-normal text-gray-400">{t("dashboard.toman")}</span>
+        {formatToman(value, lang)} <span className="text-sm font-normal text-gray-400">{t("dashboard.toman")}</span>
       </div>
       {sub}
     </div>
@@ -76,7 +70,7 @@ function MoneyTile({ label, value, t, sub }) {
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const navigate = useNavigate();
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
 
   const load = () => fetchDashboard().then((res) => setStats(res.data));
 
@@ -139,11 +133,12 @@ export default function Dashboard() {
 
           <div className="section-title mb-2">{t("dashboard.money")}</div>
           <div className="grid grid-cols-1 xs:grid-cols-3 gap-3 sm:gap-4 mb-6">
-            <MoneyTile label={t("dashboard.salesToday")} value={stats.sales_today} t={t} />
+            <MoneyTile label={t("dashboard.salesToday")} value={stats.sales_today} t={t} lang={language} />
             <MoneyTile
               label={t("dashboard.salesMonth")}
               value={stats.sales_month}
               t={t}
+              lang={language}
               sub={
                 stats.sales_prev_month > 0 ? (
                   <div className={`text-xs mt-1 ${stats.sales_month >= stats.sales_prev_month ? "text-emerald-600" : "text-red-500"}`}>
@@ -154,7 +149,7 @@ export default function Dashboard() {
                 ) : null
               }
             />
-            <MoneyTile label={t("dashboard.salesPrevMonth")} value={stats.sales_prev_month} t={t} />
+            <MoneyTile label={t("dashboard.salesPrevMonth")} value={stats.sales_prev_month} t={t} lang={language} />
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -230,7 +225,7 @@ export default function Dashboard() {
                     </div>
                     <div>
                       <div className="text-2xl font-bold text-gray-800 dark:text-gray-100" dir="ltr">
-                        {formatGb(stats.admin_volume_balance_gb)} <span className="text-sm text-gray-400 font-normal">GB</span>
+                        {formatGb(stats.admin_volume_balance_gb, language)} <span className="text-sm text-gray-400 font-normal">GB</span>
                       </div>
                       <div className="text-sm text-gray-400">{t("dashboard.yourBalance")}</div>
                     </div>

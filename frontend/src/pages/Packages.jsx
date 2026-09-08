@@ -16,6 +16,7 @@ import {
 } from "../api/client.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
+import { formatToman as formatTomanUtil } from "../utils.js";
 
 const emptyForm = {
   name: "",
@@ -56,12 +57,12 @@ const MIKROTIK_PROTOCOLS = ["wireguard", "openvpn", "l2tp", "ikev2", "sstp"];
 const XRAY_PROTOCOLS = ["xray"];
 const protocolsForType = (type) => (type === "xray" ? XRAY_PROTOCOLS : MIKROTIK_PROTOCOLS);
 
-function formatToman(n) {
-  return new Intl.NumberFormat("fa-IR").format(n || 0);
-}
-
 export default function Packages() {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
+  // Hardcoded "fa-IR" before regardless of the active language (found
+  // during the 2026-09 full-codebase audit) - now matches every other
+  // number/date on this page.
+  const formatToman = (n) => formatTomanUtil(n, language);
   const { role, wallet } = useAuth();
   const isSeller = role === "seller";
   const [items, setItems] = useState([]);

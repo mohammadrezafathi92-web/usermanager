@@ -24,16 +24,9 @@ import {
   setAdminNodes,
   reparentAdmin,
 } from "../api/client.js";
-import { formatDateTime } from "../utils.js";
+import { formatDateTime, formatToman as formatTomanUtil, formatGb as formatGbUtil } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
-
-function formatToman(n) {
-  return new Intl.NumberFormat("fa-IR").format(n || 0);
-}
-function formatGb(n) {
-  return new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 2 }).format(n || 0);
-}
 
 // یوزرنیم/پسورد رندوم برای دکمه‌های "تولید خودکار" - فقط حروف/عدد لاتین تا
 // همه‌جا (لاگین پنل، URL اختصاصی و غیره) بدون مشکل کاراکترهای فارسی کار کنه.
@@ -82,6 +75,11 @@ const emptyGroupForm = { name: "", permissions: [] };
 
 export default function Admins() {
   const { t, language } = useLanguage();
+  // Followed a hardcoded "fa-IR" regardless of the active language before
+  // (found during the 2026-09 full-codebase audit) - now match every other
+  // number/date on this page.
+  const formatToman = (n) => formatTomanUtil(n, language);
+  const formatGb = (n) => formatGbUtil(n, language);
   const { isSuperadmin, adminId } = useAuth();
   const [items, setItems] = useState([]);
   const [choices, setChoices] = useState({});
@@ -472,7 +470,7 @@ export default function Admins() {
         );
       }
       if (data.balance) {
-        lines.push(t("admins.deleteLosesBalance", { amount: data.balance.toLocaleString("fa-IR") }));
+        lines.push(t("admins.deleteLosesBalance", { amount: formatToman(data.balance) }));
       }
       if (lines.length) detail = "\n\n" + lines.join("\n");
     } catch {

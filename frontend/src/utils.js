@@ -166,6 +166,26 @@ export function formatDateTime(value, lang = "fa") {
   return `${formatDate(value, lang)} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
 }
 
+// formatToman/formatGb - money/volume formatting used across Dashboard,
+// Accounting, Admins, Packages, UserDetail and DiscountCodes. These used
+// to be reimplemented separately in each file with inconsistent locales
+// (some "en-US" always, some hardcoded "fa-IR" regardless of the active
+// language, some no locale argument at all) - an admin's own balance
+// could show as "۱۲۳۴۵۶" on one page and "123456" on another for the
+// exact same number, and switching the panel to English didn't change
+// the Persian-digit pages at all (found during the 2026-09 full-codebase
+// audit). Both now follow the SAME active-language switch formatDate/
+// formatDateTime already use.
+export function formatToman(amount, lang = "fa") {
+  if (amount === null || amount === undefined || Number.isNaN(Number(amount))) return "-";
+  return Number(amount).toLocaleString(lang === "en" ? "en-US" : "fa-IR");
+}
+
+export function formatGb(gb, lang = "fa", maximumFractionDigits = 2) {
+  if (gb === null || gb === undefined || Number.isNaN(Number(gb))) return "-";
+  return Number(gb).toLocaleString(lang === "en" ? "en-US" : "fa-IR", { maximumFractionDigits });
+}
+
 // navigator.clipboard.writeText only works in a "secure context" (https or
 // localhost). Since this panel is often accessed over plain http://IP, we
 // fall back to the older execCommand("copy") trick so the copy buttons

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { Wallet, TrendingUp, TrendingDown, CreditCard, PiggyBank, Coins, Trash2, Download, Plus } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
 import Layout from "../components/Layout.jsx";
@@ -19,14 +19,18 @@ import {
 } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
-import { formatDateTime, isoToJalali, errorText } from "../utils.js";
+import { formatDateTime, isoToJalali, errorText, formatToman } from "../utils.js";
 
 // The «حساب‌داری» section - see backend routers/accounting.py +
 // services/accounting.py. The backend already scopes everything by role
 // (superadmin = whole panel, level-2 admin = own tree, seller = self), so
 // this page only decides WHICH cards/blocks make sense to render per role
 // (e.g. expenses/net-profit are superadmin-only concepts).
-const fmt = (n) => (n === null || n === undefined ? "-" : Number(n).toLocaleString("en-US"));
+//
+// `fmt` used to always format with "en-US" regardless of the active
+// language, unlike formatDate/formatToman elsewhere in the panel - moved
+// inside the component below so it can follow `language` like everywhere
+// else (found during the 2026-09 full-codebase audit).
 
 function KindBadge({ kind, t }) {
   const tones = {
@@ -73,6 +77,7 @@ function DateFilters({ dateFrom, dateTo, setDateFrom, setDateTo, t, lang, childr
 
 export default function Accounting() {
   const { t, language } = useLanguage();
+  const fmt = (n) => formatToman(n, language);
   const { isSuperadmin, isAdminOrAbove, wallet } = useAuth();
   const [tab, setTab] = useState("dashboard");
   const [dateFrom, setDateFrom] = useState("");
@@ -90,11 +95,19 @@ export default function Accounting() {
   const clearError = (key) => setErrors((e) => ({ ...e, [key]: null }));
 
   // ---------------- dashboard ----------------
+  // Sequence guards below: without them, a slower earlier response (e.g.
+  // right after changing the date range) could resolve AFTER a newer one
+  // and overwrite it with stale data - same out-of-order-response bug
+  // fixed on Users.jsx (found during the 2026-09 full-codebase audit).
+  const summarySeq = useRef(0);
+  const txSeq = useRef(0);
+  const subtreeSeq = useRef(0);
   const [summary, setSummary] = useState(null);
   const loadSummary = useCallback(() => {
+    const seq = ++summarySeq.current;
     fetchAccountingSummary({ date_from: dateFrom || undefined, date_to: dateTo || undefined })
-      .then((res) => { setSummary(res.data); clearError("dashboard"); })
-      .catch((err) => { setSummary(null); fail("dashboard")(err); });
+      .then((res) => { if (seq !== summarySeq.current) return; setSummary(res.data); clearError("dashboard"); })
+      .catch((err) => { if (seq !== summarySeq.current) return; setSummary(null); fail("dashboard")(err); });
   }, [dateFrom, dateTo]);
 
   // ---------------- transactions ----------------
@@ -102,6 +115,7 @@ export default function Accounting() {
   const [txKind, setTxKind] = useState("");
   const [tx, setTx] = useState(null);
   const loadTx = useCallback(() => {
+    const seq = ++txSeq.current;
     fetchAccountingTransactions({
       page: txPage,
       page_size: 50,
@@ -109,8 +123,8 @@ export default function Accounting() {
       date_to: dateTo || undefined,
       kind: txKind || undefined,
     })
-      .then((res) => { setTx(res.data); clearError("transactions"); })
-      .catch((err) => { setTx(null); fail("transactions")(err); });
+      .then((res) => { if (seq !== txSeq.current) return; setTx(res.data); clearError("transactions"); })
+      .catch((err) => { if (seq !== txSeq.current) return; setTx(null); fail("transactions")(err); });
   }, [txPage, txKind, dateFrom, dateTo]);
 
   // ---------------- expenses (superadmin) ----------------
@@ -192,9 +206,10 @@ export default function Accounting() {
   // list.
   const [subtree, setSubtree] = useState(null);
   const loadSubtree = useCallback(() => {
+    const seq = ++subtreeSeq.current;
     fetchAccountingSubtree({ date_from: dateFrom || undefined, date_to: dateTo || undefined })
-      .then((res) => { setSubtree(res.data || []); clearError("subtree"); })
-      .catch((err) => { setSubtree([]); fail("subtree")(err); });
+      .then((res) => { if (seq !== subtreeSeq.current) return; setSubtree(res.data || []); clearError("subtree"); })
+      .catch((err) => { if (seq !== subtreeSeq.current) return; setSubtree([]); fail("subtree")(err); });
   }, [dateFrom, dateTo]);
 
   // ---------------- reports ----------------
@@ -360,7 +375,20 @@ export default function Accounting() {
       {/* ================= transactions ================= */}
       {tab === "transactions" && (
         <>
-          <DateFilters dateFrom={dateFrom} dateTo={dateTo} setDateFrom={setDateFrom} setDateTo={setDateTo} t={t} lang={language}>
+          <DateFilters
+            dateFrom={dateFrom}
+            dateTo={dateTo}
+            // Unlike the kind filter's own onChange just below (which
+            // already resets txPage), changing either date used to leave
+            // txPage wherever it was - an admin on page 3 who narrowed the
+            // range to a period with only a couple of rows saw an empty
+            // table even though page 1 had data (found during the 2026-09
+            // full-codebase audit).
+            setDateFrom={(v) => { setDateFrom(v); setTxPage(1); }}
+            setDateTo={(v) => { setDateTo(v); setTxPage(1); }}
+            t={t}
+            lang={language}
+          >
             <div>
               <label className="block text-xs text-gray-400 mb-1">{t("accounting.filterKind")}</label>
               <select className="input" value={txKind} onChange={(e) => { setTxKind(e.target.value); setTxPage(1); }}>
@@ -409,7 +437,7 @@ export default function Accounting() {
                 </tbody>
               </table>
               <div className="flex items-center justify-between px-4 py-3 text-sm text-gray-400 border-t border-gray-50">
-                <span>{tx.total.toLocaleString("en-US")}</span>
+                <span>{fmt(tx.total)}</span>
                 <div className="flex gap-2">
                   <button type="button" className="btn-secondary" disabled={txPage <= 1} onClick={() => { setTxPage(txPage - 1); }}>‹</button>
                   <span className="py-2">{txPage}</span>

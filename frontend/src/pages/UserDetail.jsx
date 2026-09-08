@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import QRCode from "qrcode";
 import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, ShieldCheck, Lock, Save, KeyRound, Power, ShieldEllipsis, RefreshCw, Pencil, Package, LogOut, Send } from "lucide-react";
@@ -37,7 +37,7 @@ import {
   fetchSubscriptionLink,
   regenerateSubscriptionLink,
 } from "../api/client.js";
-import { statusLabel, STATUS_STYLES, gbToBytes, bytesToGb, formatBytes, formatDateTime, copyText, downloadTextFile } from "../utils.js";
+import { statusLabel, STATUS_STYLES, gbToBytes, bytesToGb, formatBytes, formatDateTime, copyText, downloadTextFile, formatToman } from "../utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
@@ -105,6 +105,11 @@ export default function UserDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const [user, setUser] = useState(null);
+  // Rebuilds a Map + sorts on every render otherwise, including ones
+  // triggered by unrelated state (e.g. typing in the message textarea) -
+  // memoized so it only recomputes when the connections actually change
+  // (found during the 2026-09 full-codebase audit).
+  const connectionGroups = useMemo(() => groupConnectionsByPurchase(user?.connections || []), [user?.connections]);
   const [nodes, setNodes] = useState([]);
   const [admins, setAdmins] = useState([]);
   const [editOpen, setEditOpen] = useState(false);
@@ -738,7 +743,7 @@ export default function UserDetail() {
               {t("userDetail.nearestExpiry", { value: nearestExpiry ? formatDateTime(nearestExpiry, language) : t("userDetail.noExpiry") })}
             </span>
             <span className="badge bg-gray-50 text-gray-600 dark:bg-slate-800 dark:text-gray-300">
-              {t("userDetail.balance", { value: (user.balance || 0).toLocaleString() })}
+              {t("userDetail.balance", { value: formatToman(user.balance || 0, language) })}
             </span>
             {isSuperadmin && (
               <span className="badge bg-gray-50 text-gray-600 dark:bg-slate-800 dark:text-gray-300">
@@ -835,7 +840,7 @@ export default function UserDetail() {
       </div>
 
       <div className="space-y-5">
-        {groupConnectionsByPurchase(user.connections).map((group) => {
+        {connectionGroups.map((group) => {
           // Real, independently-enforced quota/usage/expiry for this
           // specific purchase (see models.Purchase) - only present for
           // groups created via "افزودن پکیج"; every other group (the

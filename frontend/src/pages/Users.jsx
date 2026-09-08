@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Plus, Search, Trash2, RotateCcw, Network, Layers, PencilLine, ChevronRight, ChevronLeft, X, ArrowUpDown, FileDown, Wand2, CheckSquare, Send, Lock } from "lucide-react";
 
@@ -56,6 +56,16 @@ const SORT_OPTIONS = [
 ];
 
 export default function Users() {
+  // Guards against an out-of-order response: with no sequencing, a slower
+  // earlier request (e.g. right before the 350ms search debounce fires a
+  // newer one) could resolve AFTER a later one and overwrite its results -
+  // showing data for a filter combination that's no longer selected. Most
+  // likely on this page specifically: it's the highest-traffic list in the
+  // panel (tested at 20k users) and the deployment runs over often-
+  // throttled Iranian networks, both of which make responses land out of
+  // order more often than usual (found during the 2026-09 full-codebase
+  // audit).
+  const loadSeq = useRef(0);
   const { isSuperadmin } = useAuth();
   const { t, language } = useLanguage();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -153,8 +163,9 @@ export default function Users() {
     }
   };
 
-  const load = () =>
-    fetchUsers(page, PAGE_SIZE, search, {
+  const load = () => {
+    const seq = ++loadSeq.current;
+    return fetchUsers(page, PAGE_SIZE, search, {
       status: statusFilter,
       onlineOnly,
       sortBy,
@@ -162,9 +173,15 @@ export default function Users() {
       ownerAdminId: ownerAdminFilter,
       packageId: packageFilter,
     }).then((res) => {
+      // A newer load() has started since this one went out - its own
+      // response (in flight or already applied) is the one that should
+      // win, so a late response here is discarded instead of overwriting
+      // state with stale results.
+      if (seq !== loadSeq.current) return;
       setUsers(res.data.items);
       setTotal(res.data.total);
     });
+  };
 
   useEffect(() => {
     load();

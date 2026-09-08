@@ -102,11 +102,24 @@ _HOST_MACHINE_ID_PATHS = (
 # update. A licence issued right after one recreate mismatched the very
 # next one: REASON_WRONG_MACHINE, panel locked, no code bug in the
 # licence itself, just a fingerprint quietly built from the wrong
-# filesystem. docker-compose.yml now bind-mounts the host's
-# /sys/class/net read-only at /host/sys/class/net for exactly this
-# reason - the container path is preferred, the local one is only a
-# fallback for a bare-metal install (module constant, not inlined in the
-# function, specifically so a test can point it at a fake filesystem).
+# filesystem.
+#
+# UPDATE 2026-09-08: mounting only the host's /sys/class/net (as
+# docker-compose.yml used to) was STILL not enough on its own - every
+# entry under /sys/class/net is a symlink with a RELATIVE target that
+# climbs back out of that directory (e.g. ens160 -> ../../devices/
+# pci0000:00/.../net/ens160), which only resolves if /sys/devices is
+# ALSO reachable at the same relative position. `ls` on the symlink
+# looks completely fine either way (it just prints the link text, never
+# resolves it) - only actually opening the file to read the MAC exposes
+# the break, so this looked fixed and wasn't. docker-compose.yml now
+# mounts the whole host /sys tree read-only at /host/sys (still just
+# device/network metadata, nothing writable, nothing secret) so these
+# relative symlinks resolve for real. _primary_mac() itself is
+# unchanged below - the container path (still /host/sys/class/net,
+# now reachable) is preferred, the local one is only a fallback for a
+# bare-metal install (module constant, not inlined in the function,
+# specifically so a test can point it at a fake filesystem).
 _HOST_NET_CLASS_PATHS = (
     "/host/sys/class/net",
     "/sys/class/net",

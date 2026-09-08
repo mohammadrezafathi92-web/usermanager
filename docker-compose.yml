@@ -72,9 +72,25 @@ services:
       # Every `docker compose up --force-recreate` therefore produced a
       # brand new fingerprint, so a licence issued a minute earlier
       # mismatched the very next restart (REASON_WRONG_MACHINE) with no
-      # fault in the licence itself. Read-only, and only interface names/
-      # addresses are exposed - nothing else from /sys.
-      - /sys/class/net:/host/sys/class/net:ro
+      # fault in the licence itself.
+      #
+      # UPDATE 2026-09-08: mounting ONLY /sys/class/net (as this line used
+      # to) was itself still broken. Every entry under /sys/class/net is a
+      # symlink with a RELATIVE target that climbs back out of that
+      # directory - e.g. ens160 -> ../../devices/pci0000:00/.../net/ens160
+      # - which only resolves if /sys/devices is ALSO present at the same
+      # relative position. With just /sys/class/net mounted, that target
+      # doesn't exist inside the container (confirmed: `cat .../ens160/
+      # address` failed with "No such file or directory" even though `ls`
+      # on the symlink itself looked completely normal - `ls` just prints
+      # the link text, it never has to actually resolve it). _primary_mac
+      # silently fell through to the container's own ephemeral interface
+      # again, so the fingerprint kept drifting exactly as before this
+      # mount was ever added. Mounting the whole /sys tree (still
+      # read-only) lets the relative symlinks resolve for real. Only
+      # device/network metadata lives under /sys - no secrets, nothing
+      # writable.
+      - /sys:/host/sys:ro
       # Let the backend change the panel's own web port with no SSH/password
       # prompt at all (تنظیمات > پورت پنل وب - see services/local_deploy.py):
       # talk to the HOST's docker daemon over its socket, and bind-mount this

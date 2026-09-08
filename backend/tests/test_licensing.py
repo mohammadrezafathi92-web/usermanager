@@ -300,6 +300,69 @@ finally:
     shutil.rmtree(host_net, ignore_errors=True)
     shutil.rmtree(container_net, ignore_errors=True)
 
+print("\n--- mounting ONLY .../class/net is not enough - the symlinks inside it escape the mount ---")
+# Second bug found 2026-09-08, on top of the one above: every real entry
+# under a real /sys/class/net is a symlink with a RELATIVE target that
+# climbs back OUT of that directory, e.g.
+#   ens160 -> ../../devices/pci0000:00/0000:00:15.0/0000:03:00.0/net/ens160
+# docker-compose.yml used to bind-mount only the host's /sys/class/net
+# (not the rest of /sys) at the container path _HOST_NET_CLASS_PATHS[0]
+# points at - which means that relative target resolves to a path that
+# was NEVER mounted (.../devices/... sits outside /sys/class/net
+# entirely), so actually reading the MAC through the symlink fails even
+# though `os.listdir` and `ls` on the symlink itself look completely
+# normal (listing a symlink never has to resolve it). _primary_mac()
+# silently fell through to the next entry, then to the container-local
+# path - reproducing the exact original bug via a DIFFERENT root cause.
+# Confirmed against the real deployment: `cat .../ens160/address` failed
+# with ENOENT while `ls -la` on the same symlink showed nothing wrong.
+fake_root = tempfile.mkdtemp()  # simulates mounting the WHOLE host /sys
+broken_leaf = tempfile.mkdtemp()  # simulates mounting ONLY .../class/net
+container_net2 = tempfile.mkdtemp()
+_make_iface(container_net2, "eth0", "de:ad:be:ef:00:02")
+
+
+def _make_real_sysfs_iface(sys_root, name, mac):
+    """Builds `<sys_root>/class/net/<name>` as a symlink pointing at
+    `<sys_root>/devices/<name>/net/<name>` via the SAME 2-levels-up
+    relative form the real kernel uses, plus the real device directory it
+    points to - i.e. a faithful mini sysfs, not a shortcut."""
+    class_net = os.path.join(sys_root, "class", "net")
+    os.makedirs(class_net, exist_ok=True)
+    device_dir = os.path.join(sys_root, "devices", name, "net", name)
+    os.makedirs(device_dir, exist_ok=True)
+    with open(os.path.join(device_dir, "address"), "w") as fh:
+        fh.write(mac + "\n")
+    os.symlink(os.path.join("..", "..", "devices", name, "net", name), os.path.join(class_net, name))
+
+
+_make_real_sysfs_iface(fake_root, "ens160", "00:50:56:98:cf:c4")
+
+# The broken mount: ONLY the "class/net" leaf exists on this side, same
+# symlink target string as above, but its ".." parents lead nowhere real.
+os.symlink(
+    os.path.join("..", "..", "devices", "ens160", "net", "ens160"),
+    os.path.join(broken_leaf, "ens160"),
+)
+
+try:
+    licensing._HOST_NET_CLASS_PATHS = (broken_leaf, container_net2)
+    check(
+        "mounting only the leaf dir: the symlink can't resolve, falls through to the container path (the bug)",
+        licensing._primary_mac(), "de:ad:be:ef:00:02",
+    )
+
+    licensing._HOST_NET_CLASS_PATHS = (os.path.join(fake_root, "class", "net"), container_net2)
+    check(
+        "mounting the whole tree: the same relative symlink resolves, reads the real host MAC (the fix)",
+        licensing._primary_mac(), "00:50:56:98:cf:c4",
+    )
+finally:
+    licensing._HOST_NET_CLASS_PATHS = original_net_paths
+    shutil.rmtree(fake_root, ignore_errors=True)
+    shutil.rmtree(broken_leaf, ignore_errors=True)
+    shutil.rmtree(container_net2, ignore_errors=True)
+
 print("\n--- round trip through the token format ---")
 original = licensing.LicensePayload(
     license_id="lic_x", customer="نام فارسی", fingerprint=FP,

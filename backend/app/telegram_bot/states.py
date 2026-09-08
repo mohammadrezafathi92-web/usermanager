@@ -5,8 +5,10 @@ class AdminCreateUserStates(StatesGroup):
     waiting_username = State()
     picking_node = State()      # NodeCB callback expected
     picking_protocol = State()  # ProtocolCB callback expected
-    waiting_quota = State()
-    waiting_days = State()
+    # AdminCreatePkgCB callback expected - replaces the old waiting_quota/
+    # waiting_days free-text prompts (2026-09-08): the admin bot's user
+    # creation now only offers package selection, never manual GB/day entry.
+    picking_package = State()
 
 
 class AdminSearchStates(StatesGroup):
@@ -15,7 +17,10 @@ class AdminSearchStates(StatesGroup):
 
 
 class AdminRenewStates(StatesGroup):
-    waiting_values = State()  # "<add_gb> <add_days>"
+    # AdminRenewPkgCB callback expected - replaces the old free-text
+    # "<add_gb> <add_days>" prompt (2026-09-08), same reasoning as
+    # AdminCreateUserStates.picking_package above.
+    picking_package = State()
 
 
 class AdminBalanceStates(StatesGroup):

@@ -4,13 +4,18 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from ..panel_bridge import api, ApiError
-from ..callbacks import MenuCB, AdminListPageCB, AdminUserCB, AdminServiceCB, AdminPkgPickCB, NodeCB, ProtocolCB
+from ..callbacks import (
+    MenuCB, AdminListPageCB, AdminUserCB, AdminServiceCB, AdminPkgPickCB,
+    AdminCreatePkgCB, AdminRenewPkgCB, NodeCB, ProtocolCB,
+)
 from ..admin_scope import resolve_admin_scope
 from ..keyboards import (
     admin_users_list_kb,
     admin_user_detail_kb,
     admin_services_kb,
     admin_packages_kb,
+    admin_create_packages_kb,
+    admin_renew_packages_kb,
     confirm_delete_kb,
     nodes_kb,
     protocols_kb,
@@ -116,7 +121,7 @@ async def cmd_admin_create(message: Message, state: FSMContext) -> None:
 async def cmd_admin_list(message: Message, state: FSMContext, acting_scope: dict) -> None:
     """Slash-command shortcut for "📋 لیست کاربران". Registered here, before
     any of this router's state catch-all handlers (waiting_username,
-    waiting_quota, ...) so it always works as an escape hatch mid-flow -
+    picking_package, ...) so it always works as an escape hatch mid-flow -
     see customer.py's matching comment for the full rationale."""
     await state.clear()
     await _show_user_list(message, page=1, search=None, owner_admin_id=acting_scope["owner_admin_id"])
@@ -157,47 +162,63 @@ async def admin_pick_node(call: CallbackQuery, callback_data: NodeCB, state: FSM
 
 
 @router.callback_query(ProtocolCB.filter(), AdminCreateUserStates.picking_protocol)
-async def admin_pick_protocol(call: CallbackQuery, callback_data: ProtocolCB, state: FSMContext) -> None:
+async def admin_pick_protocol(call: CallbackQuery, callback_data: ProtocolCB, state: FSMContext, acting_scope: dict) -> None:
+    # Package-only from here on (2026-09-08): the admin bot used to ask for
+    # a manual quota (GB) and then a manual duration (days) as two free-text
+    # prompts. Both are removed - the admin now always picks one of the
+    # panel's own packages, same as a customer would, so a user's quota/
+    # duration/price can never drift from what's actually configured there.
+    try:
+        packages = await api.list_packages(owner_admin_id=acting_scope["owner_admin_id"])
+    except ApiError as exc:
+        await call.message.edit_text(f"خطا: {exc}", reply_markup=home_kb())
+        await state.clear()
+        await call.answer()
+        return
+    if not packages:
+        await call.message.edit_text("هیچ پکیجی تعریف نشده است - ابتدا از پنل یک پکیج بسازید.", reply_markup=home_kb())
+        await state.clear()
+        await call.answer()
+        return
     await state.update_data(protocol=callback_data.protocol)
-    await state.set_state(AdminCreateUserStates.waiting_quota)
-    await call.message.edit_text("حجم مصرفی (GB) را بفرستید (برای نامحدود 0 بفرستید):", reply_markup=cancel_kb())
+    await state.set_state(AdminCreateUserStates.picking_package)
+    await call.message.edit_text("کدام پکیج برای این کاربر انتخاب شود؟", reply_markup=admin_create_packages_kb(packages))
     await call.answer()
 
 
-@router.message(AdminCreateUserStates.waiting_quota)
-async def admin_create_quota(message: Message, state: FSMContext) -> None:
-    try:
-        quota_gb = float((message.text or "0").strip())
-    except ValueError:
-        await message.answer("یک عدد بفرستید (مثلا 20 یا 0 برای نامحدود):")
-        return
-    await state.update_data(quota_gb=quota_gb)
-    await state.set_state(AdminCreateUserStates.waiting_days)
-    await message.answer("تعداد روز اعتبار را بفرستید (برای بدون‌انقضا 0 بفرستید):", reply_markup=cancel_kb())
-
-
-@router.message(AdminCreateUserStates.waiting_days)
-async def admin_create_days(message: Message, state: FSMContext, acting_scope: dict) -> None:
-    try:
-        days = int((message.text or "0").strip())
-    except ValueError:
-        await message.answer("یک عدد صحیح بفرستید (مثلا 30 یا 0 برای بدون‌انقضا):")
-        return
+@router.callback_query(AdminCreatePkgCB.filter(), AdminCreateUserStates.picking_package)
+async def admin_create_pick_package(call: CallbackQuery, callback_data: AdminCreatePkgCB, state: FSMContext, acting_scope: dict, bot) -> None:
     data = await state.get_data()
+    await call.answer("در حال ساخت کاربر...")
+    try:
+        packages = await api.list_packages(owner_admin_id=acting_scope["owner_admin_id"])
+    except ApiError as exc:
+        await call.message.edit_text(f"خطا: {exc}", reply_markup=home_kb())
+        await state.clear()
+        return
+    package = next((p for p in packages if p["id"] == callback_data.package_id), None)
+    if not package:
+        await call.message.edit_text("این پکیج دیگر در دسترس نیست.", reply_markup=home_kb())
+        await state.clear()
+        return
     try:
         user = await api.create_user(
             username=data["new_username"],
-            quota_gb=data["quota_gb"],
-            expire_days=days or None,
+            quota_gb=package.get("quota_gb") or 0,
+            expire_days=package.get("duration_days") or None,
             connections=[{"node_id": data["node_id"], "protocol": data["protocol"]}],
             owner_admin_id=acting_scope["owner_admin_id"],
+            package_id=package["id"],
+            package_name=package.get("name"),
         )
     except ApiError as exc:
-        await message.answer(f"خطا در ساخت کاربر: {exc}", reply_markup=home_kb())
+        await call.message.edit_text(f"خطا در ساخت کاربر: {exc}", reply_markup=home_kb())
         await state.clear()
         return
     await state.clear()
-    await message.answer("✅ کاربر ساخته شد:\n\n" + _user_detail_text(user), reply_markup=home_kb())
+    await call.message.edit_text("✅ کاربر ساخته شد:\n\n" + _user_detail_text(user), reply_markup=home_kb())
+    if user.get("connections"):
+        await send_connections(bot, call.from_user.id, user["connections"])
 
 
 # --------------------------------------------------------------- list/search
@@ -325,62 +346,75 @@ async def cb_user_renew_ask(call: CallbackQuery, callback_data: AdminUserCB, sta
         await call.answer()
         return
 
-    await state.set_state(AdminRenewStates.waiting_values)
-    await state.update_data(
-        username=username,
-        purchase_id=purchases[0]["id"] if len(purchases) == 1 else None,
-    )
-    await call.message.edit_text(
-        "مقدار حجم اضافه (GB) و تعداد روز اضافه را با فاصله بفرستید.\nمثلا: <code>20 30</code>\n(برای صفر کردن مصرف فعلی هم، بعدش عدد ۳ رو تنها بفرستید)",
-        reply_markup=cancel_kb(),
-    )
+    await _ask_renew_package(call.message, state, username, purchases[0]["id"] if len(purchases) == 1 else None, acting_scope)
     await call.answer()
 
 
 @router.callback_query(AdminServiceCB.filter(F.action == "renew"))
-async def cb_service_renew_ask(call: CallbackQuery, callback_data: AdminServiceCB, state: FSMContext) -> None:
-    await state.set_state(AdminRenewStates.waiting_values)
-    await state.update_data(username=callback_data.username, purchase_id=callback_data.purchase_id)
-    await call.message.edit_text(
-        "مقدار حجم اضافه (GB) و تعداد روز اضافه را با فاصله بفرستید.\nمثلا: <code>20 30</code>\n(برای صفر کردن مصرف فعلی هم، بعدش عدد ۳ رو تنها بفرستید)",
-        reply_markup=cancel_kb(),
-    )
+async def cb_service_renew_ask(call: CallbackQuery, callback_data: AdminServiceCB, state: FSMContext, acting_scope: dict) -> None:
+    await _ask_renew_package(call.message, state, callback_data.username, callback_data.purchase_id, acting_scope)
     await call.answer()
 
 
-@router.message(AdminRenewStates.waiting_values)
-async def admin_renew_values(message: Message, state: FSMContext, acting_scope: dict) -> None:
+async def _ask_renew_package(target_message, state: FSMContext, username: str, purchase_id: int | None, acting_scope: dict) -> None:
+    # Package-only from here on (2026-09-08): the admin bot used to ask the
+    # admin to type "<add_gb> <add_days>" free-text (plus a "send just 3"
+    # escape hatch to reset usage, redundant with the dedicated "🔄 ریست
+    # مصرف" button on the user's own detail screen). Renewal now always
+    # picks one of the panel's own packages, same as creating a user.
+    try:
+        packages = await api.list_packages(owner_admin_id=acting_scope["owner_admin_id"])
+    except ApiError as exc:
+        await target_message.edit_text(f"خطا: {exc}", reply_markup=home_kb())
+        return
+    if not packages:
+        await target_message.edit_text("هیچ پکیجی تعریف نشده است - ابتدا از پنل یک پکیج بسازید.", reply_markup=home_kb())
+        return
+    await state.set_state(AdminRenewStates.picking_package)
+    await state.update_data(username=username, purchase_id=purchase_id)
+    await target_message.edit_text(
+        "کدام پکیج برای تمدید این سرویس اضافه شود؟",
+        reply_markup=admin_renew_packages_kb(packages, username),
+    )
+
+
+@router.callback_query(AdminRenewPkgCB.filter(), AdminRenewStates.picking_package)
+async def admin_renew_pick_package(call: CallbackQuery, callback_data: AdminRenewPkgCB, state: FSMContext, acting_scope: dict) -> None:
     data = await state.get_data()
     username = data["username"]
-    parts = (message.text or "").split()
-    reset_usage = parts == ["3"]
-    add_gb, add_days = 0.0, 0
-    if not reset_usage:
-        try:
-            add_gb = float(parts[0]) if len(parts) > 0 else 0
-            add_days = int(parts[1]) if len(parts) > 1 else 0
-        except ValueError:
-            await message.answer("فرمت درست نیست. مثلا: 20 30")
-            return
     purchase_id = data.get("purchase_id")
+    await call.answer("در حال تمدید...")
+    try:
+        packages = await api.list_packages(owner_admin_id=acting_scope["owner_admin_id"])
+    except ApiError as exc:
+        await call.message.edit_text(f"خطا: {exc}", reply_markup=home_kb())
+        await state.clear()
+        return
+    package = next((p for p in packages if p["id"] == callback_data.package_id), None)
+    if not package:
+        await call.message.edit_text("این پکیج دیگر در دسترس نیست.", reply_markup=home_kb())
+        await state.clear()
+        return
+    add_gb = package.get("quota_gb") or 0
+    add_days = package.get("duration_days") or 0
     try:
         if purchase_id:
-            user = await api.renew_service(
-                username, purchase_id, add_gb=add_gb, add_days=add_days, reset_usage=reset_usage,
-                owner_admin_id=acting_scope["owner_admin_id"],
+            await api.renew_service(
+                username, purchase_id, add_gb=add_gb, add_days=add_days,
+                owner_admin_id=acting_scope["owner_admin_id"], package_id=package["id"],
             )
         else:
-            user = await api.renew(
-                username, add_gb=add_gb, add_days=add_days, reset_usage=reset_usage,
-                owner_admin_id=acting_scope["owner_admin_id"],
+            await api.renew(
+                username, add_gb=add_gb, add_days=add_days,
+                owner_admin_id=acting_scope["owner_admin_id"], package_id=package["id"],
             )
     except ApiError as exc:
-        await message.answer(f"خطا: {exc}", reply_markup=home_kb())
+        await call.message.edit_text(f"خطا: {exc}", reply_markup=home_kb())
         await state.clear()
         return
     await state.clear()
-    await message.answer("✅ بروزرسانی شد.")
-    await _show_user_detail(message, username, acting_scope["owner_admin_id"])
+    await call.message.edit_text("✅ سرویس تمدید شد.")
+    await _show_user_detail(call.message, username, acting_scope["owner_admin_id"])
 
 
 # ------------------------------------------------------- افزودن پکیج

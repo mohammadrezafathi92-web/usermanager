@@ -8,6 +8,8 @@ from .callbacks import (
     AdminUserCB,
     AdminServiceCB,
     AdminPkgPickCB,
+    AdminCreatePkgCB,
+    AdminRenewPkgCB,
     NodeCB,
     ProtocolCB,
     PackageCB,
@@ -202,6 +204,31 @@ def admin_packages_kb(username: str, packages: list[dict]) -> InlineKeyboardMark
             text=package_button_label(p),
             callback_data=AdminPkgPickCB(username=username, package_id=p["id"]),
         )
+    kb.button(text="✖️ انصراف", callback_data=AdminUserCB(action="view", username=username))
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def admin_create_packages_kb(packages: list[dict]) -> InlineKeyboardMarkup:
+    """Package picker shown while creating a BRAND NEW user via the bot's
+    admin «➕ ساخت کاربر» flow, right after node+protocol are picked -
+    replaces the old two free-text prompts (manual GB, then manual days).
+    Cancels back to the main menu since the user being created doesn't
+    exist yet to "view"."""
+    kb = InlineKeyboardBuilder()
+    for p in packages:
+        kb.button(text=package_button_label(p), callback_data=AdminCreatePkgCB(package_id=p["id"]))
+    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def admin_renew_packages_kb(packages: list[dict], username: str) -> InlineKeyboardMarkup:
+    """Package picker shown for the bot's admin «♻️ تمدید سرویس» flow -
+    replaces the old free-text "<GB> <days>" prompt."""
+    kb = InlineKeyboardBuilder()
+    for p in packages:
+        kb.button(text=package_button_label(p), callback_data=AdminRenewPkgCB(package_id=p["id"]))
     kb.button(text="✖️ انصراف", callback_data=AdminUserCB(action="view", username=username))
     kb.adjust(1)
     return kb.as_markup()

@@ -46,6 +46,24 @@ class AdminPkgPickCB(CallbackData, prefix="apkg"):
     package_id: int
 
 
+class AdminCreatePkgCB(CallbackData, prefix="acpkg"):
+    """Package chosen while creating a BRAND NEW user via the bot's admin
+    «➕ ساخت کاربر» flow (see handlers/admin_users.py). Replaces what used
+    to be two free-text prompts ("حجم به GB؟" then "چند روز؟") - the admin
+    now only picks a package, which already carries its own quota_gb/
+    duration_days. The pending username/node/protocol are already sitting
+    in FSM state (AdminCreateUserStates), so this only needs the package id."""
+    package_id: int
+
+
+class AdminRenewPkgCB(CallbackData, prefix="arpkg"):
+    """Package chosen to renew an existing service via the bot's admin
+    «♻️ تمدید سرویس» flow. Replaces the old free-text "<GB> <days>" prompt.
+    The target username/purchase_id are already in FSM state
+    (AdminRenewStates), so this only needs the package id."""
+    package_id: int
+
+
 class NodeCB(CallbackData, prefix="node"):
     node_id: int
 

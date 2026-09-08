@@ -672,10 +672,27 @@ def poll_all():
     try:
         nodes = db.query(models.Node).filter(models.Node.enabled == True).all()  # noqa: E712
         for node in nodes:
-            if node.type == models.NodeType.mikrotik:
-                poll_mikrotik_node(db, node)
-            elif node.type == models.NodeType.xray:
-                poll_xray_node(db, node)
+            # Each node gets its own try/except + commit. Before this fix,
+            # ANY uncaught exception from a single node - poll_mikrotik_node/
+            # poll_xray_node only catch their own MikrotikError/XrayError,
+            # so a raw exception from lower down (e.g. mikrotik_client.py
+            # or the xray client) propagated straight out of this loop -
+            # hit the blanket `except Exception` far below and rolled back
+            # the ENTIRE cycle's session in one shot, silently discarding
+            # every usage/billing/enforcement change already made for every
+            # node processed earlier in the SAME cycle, just because one
+            # later router was flaky. Committing per node means one bad
+            # node now costs exactly that node's data for this cycle -
+            # nothing more (found during the 2026-09 full-codebase audit).
+            try:
+                if node.type == models.NodeType.mikrotik:
+                    poll_mikrotik_node(db, node)
+                elif node.type == models.NodeType.xray:
+                    poll_xray_node(db, node)
+                db.commit()
+            except Exception:
+                logger.exception("poll_all: node %s failed, rolling back only this node's changes", node.id)
+                db.rollback()
 
         # selectinload, not lazy loading: both enforce functions walk
         # `.connections`, so plain .all() issued one extra SELECT per user and

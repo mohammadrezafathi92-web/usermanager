@@ -173,7 +173,19 @@ services:
     depends_on:
       - backend
     ports:
-      - "80:80"
+      # PANEL_WEB_PORT lives in the repo-root .env (gitignored - see
+      # HOST_PROJECT_DIR/COMPOSE_PROFILES above for the same mechanism),
+      # NOT hardcoded here. Until 2026-09-08, "پورت پنل وب" in Settings
+      # (services/local_deploy.py's change_panel_port_local) worked by
+      # rewriting the literal "CURRENT:80" string directly in THIS
+      # tracked file - which meant every future `git pull` had to fight a
+      # locally-modified docker-compose.yml, and any update that touched
+      # this file too (like the fix just above this one) either refused
+      # to pull at all or, once force-resolved, silently reverted the
+      # port back to 80. Storing it in the untracked .env instead means a
+      # port change never shows up as a local modification to a tracked
+      # file again - `git pull` never has anything to fight here.
+      - "${PANEL_WEB_PORT:-80}:80"
 
   # The licence control server. VENDOR-ONLY: it is gated behind the
   # "license-server" compose profile so it never starts on a customer's

@@ -313,14 +313,57 @@ def verify_host_path() -> str:
 
 
 
+def _root_env_path() -> str:
+    """The repo-root .env - gitignored, already the established home for
+    HOST_PROJECT_DIR/COMPOSE_PROFILES/MARIADB_* (see docker-compose.yml's
+    own comments). NOT the same file as backend/.env (routers/license.py's
+    LICENSE_KEY persistence) - that one is loaded via `env_file:` into the
+    backend container only; this one is read directly by the `docker
+    compose` CLI itself for ${VAR} substitution inside docker-compose.yml,
+    which is why PANEL_WEB_PORT belongs here instead."""
+    return os.path.join(HOST_PROJECT_DIR, ".env")
+
+
+def _read_env_var(path: str, key: str) -> str | None:
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith(f"{key}="):
+                    return line[len(key) + 1:].strip()
+    except OSError:
+        pass
+    return None
+
+
+def _write_env_var(path: str, key: str, value: str) -> None:
+    lines: list[str] = []
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as fh:
+            lines = [ln for ln in fh.read().splitlines() if not ln.startswith(f"{key}=")]
+    lines.append(f"{key}={value}")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
 def change_panel_port_local(current_port: int, new_port: int) -> str:
-    """Rewrites the frontend service's host-side port mapping in
-    docker-compose.yml (only the exact "CURRENT:80" string, same
-    conservative approach the old SSH version used - never a generic port
-    regex) and recreates just that one container via the local docker
-    socket. Raises DeployError with a Persian message on any failure."""
+    """Sets PANEL_WEB_PORT in the repo-root .env (docker-compose.yml's
+    frontend service maps "${PANEL_WEB_PORT:-80}:80") and recreates just
+    the frontend container via the local docker socket.
+
+    Until 2026-09-08 this rewrote the literal "CURRENT:80" string directly
+    inside docker-compose.yml - a tracked file - which meant a port change
+    showed up as a local modification that every future `git pull` had to
+    fight (see docker-compose.yml's own comment on this same line). Any
+    update that also touched docker-compose.yml either got refused outright
+    (dirty working tree) or, once force-resolved by hand, silently reverted
+    the port back to 80. The untracked .env has no such problem - `git
+    pull` never looks at it. Raises DeployError with a Persian message on
+    any failure."""
     verify_host_path()
     compose_path = os.path.join(HOST_PROJECT_DIR, "docker-compose.yml")
+    env_path = _root_env_path()
     log_lines: list[str] = []
 
     def log(line: str) -> None:
@@ -333,50 +376,40 @@ def change_panel_port_local(current_port: int, new_port: int) -> str:
             f"احتمالا مسیر پروژه روی سرور با {HOST_PROJECT_DIR} فرق دارد.",
             "\n".join(log_lines),
         )
-    log(f"فایل {compose_path} پیدا شد.")
 
-    try:
-        with open(compose_path, "r", encoding="utf-8") as f:
-            content = f.read()
-    except OSError as exc:
-        raise DeployError(f"خواندن docker-compose.yml ناموفق بود: {exc}", "\n".join(log_lines))
-
-    old_mapping = f'"{current_port}:80"'
-    new_mapping = f'"{new_port}:80"'
-    if old_mapping not in content:
+    existing = _read_env_var(env_path, "PANEL_WEB_PORT")
+    actual_current = int(existing) if existing and existing.isdigit() else 80
+    if actual_current != current_port:
         raise DeployError(
-            f"رشته {old_mapping} در docker-compose.yml پیدا نشد - احتمالا پورت فعلی با مقدار "
-            f"ذخیره‌شده در پنل ({current_port}) یکی نیست. لطفا فایل را روی سرور دستی چک کنید.",
+            f"پورت فعلی روی سرور ({actual_current}) با مقدار ذخیره‌شده در پنل ({current_port}) یکی نیست. "
+            "لطفا فایل .env را روی سرور دستی چک کنید.",
             "\n".join(log_lines),
         )
-    log(f"در حال تغییر {old_mapping} به {new_mapping} ...")
+    log(f"در حال تغییر PANEL_WEB_PORT از {current_port} به {new_port} در {env_path} ...")
 
-    new_content = content.replace(old_mapping, new_mapping)
     try:
-        with open(compose_path, "w", encoding="utf-8") as f:
-            f.write(new_content)
+        _write_env_var(env_path, "PANEL_WEB_PORT", str(new_port))
     except OSError as exc:
-        raise DeployError(f"نوشتن docker-compose.yml ناموفق بود: {exc}", "\n".join(log_lines))
-    log("فایل docker-compose.yml بروزرسانی شد.")
+        raise DeployError(f"نوشتن {env_path} ناموفق بود: {exc}", "\n".join(log_lines))
+    log(".env بروزرسانی شد.")
 
     try:
         compose_bin = ensure_docker_compose_cli()
     except DeployError:
-        with open(compose_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        log("(فایل docker-compose.yml به حالت قبل بازگردانده شد.)")
+        try:
+            _write_env_var(env_path, "PANEL_WEB_PORT", str(current_port))
+            log("(.env به حالت قبل بازگردانده شد.)")
+        except OSError:
+            pass
         raise
     log("در حال بازسازی کانتینر frontend ...")
     code, out, err = _run([compose_bin, "-f", compose_path, "up", "-d", "frontend"], timeout=120)
     if code != 0:
-        # Roll the file back to the old mapping so a failed attempt doesn't
-        # leave docker-compose.yml pointing at a port that isn't actually
-        # live - the next attempt (or next `docker compose up -d` the admin
-        # runs by hand) shouldn't silently diverge from reality.
+        # Roll the value back so a failed attempt doesn't leave .env
+        # pointing at a port that isn't actually live.
         try:
-            with open(compose_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            log("(فایل docker-compose.yml به حالت قبل بازگردانده شد.)")
+            _write_env_var(env_path, "PANEL_WEB_PORT", str(current_port))
+            log("(.env به حالت قبل بازگردانده شد.)")
         except OSError:
             pass
         raise DeployError(

@@ -104,7 +104,25 @@ def _frontend_port() -> str | None:
 
 
 def _restore_frontend_port(port: str) -> None:
-    """Re-applies a custom panel port to the freshly pulled compose file.
+    """Re-applies a custom panel port after a pull discarded a locally
+    modified docker-compose.yml (see apply_update below).
+
+    Two generations of this feature, both handled here:
+      - Pre-2026-09-08 installs: the port lived as a literal "PORT:80" in
+        docker-compose.yml itself, which is exactly the locally-modified
+        file this whole code path exists to rescue. If the FRESHLY PULLED
+        file still has that literal pattern (i.e. this update itself
+        predates the .env migration below), rewrite it the same way as
+        before.
+      - Post-migration installs (this fix and anything after it): the
+        freshly pulled docker-compose.yml maps "${PANEL_WEB_PORT:-80}:80"
+        instead - no literal digits left to match - so the port is written
+        into the repo-root .env instead (see local_deploy.py's
+        change_panel_port_local for why: an untracked file can never
+        conflict with a `git pull` again). This is also what silently
+        completes the one-time migration for an install that had an old
+        literal port when this exact update landed - nothing manual
+        required.
 
     Failure here is logged, never raised: the update itself has already
     succeeded at this point, and the worst case is that the panel comes back
@@ -116,14 +134,21 @@ def _restore_frontend_port(port: str) -> None:
         with open(path, encoding="utf-8") as f:
             content = f.read()
         match = _COMPOSE_PORT_RE.search(content)
-        if not match:
-            logger.warning("بروزرسانی: نگاشت پورت در docker-compose.yml جدید پیدا نشد - پورت %s اعمال نشد", port)
+        if match:
+            if match.group(1) != port:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(content.replace(match.group(0), f'"{port}:80"', 1))
+                logger.info("بروزرسانی: پورت پنل %s دوباره اعمال شد (docker-compose.yml)", port)
             return
-        if match.group(1) == port:
+        # New format: no literal port left in docker-compose.yml at all -
+        # persist it via .env instead, same mechanism local_deploy.py uses.
+        from .local_deploy import _read_env_var, _write_env_var, _root_env_path
+
+        env_path = _root_env_path()
+        if _read_env_var(env_path, "PANEL_WEB_PORT") == port:
             return
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content.replace(match.group(0), f'"{port}:80"', 1))
-        logger.info("بروزرسانی: پورت پنل %s دوباره اعمال شد", port)
+        _write_env_var(env_path, "PANEL_WEB_PORT", port)
+        logger.info("بروزرسانی: پورت پنل %s دوباره اعمال شد (.env)", port)
     except OSError:
         logger.exception("بروزرسانی: اعمال دوباره‌ی پورت پنل ناموفق بود")
 

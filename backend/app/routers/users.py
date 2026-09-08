@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from sqlalchemy import func, nullsfirst, nullslast, or_
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -542,7 +543,11 @@ def export_users(
         tmp_path,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=f"users_export_{stamp}.xlsx",
-        background=None,
+        # background=None meant this temp file was NEVER cleaned up - it
+        # leaked one .xlsx under the OS temp dir on every single export
+        # (found during the 2026-09 full-codebase audit). BackgroundTask
+        # deletes it once the response has actually been sent.
+        background=BackgroundTask(lambda: os.unlink(tmp_path) if os.path.exists(tmp_path) else None),
     )
 
 

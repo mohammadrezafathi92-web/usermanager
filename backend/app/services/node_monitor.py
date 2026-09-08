@@ -115,3 +115,13 @@ def fetch_all(nodes: list[models.Node], force: bool = False) -> list[dict]:
             _cache[r["node_id"]] = r
         _cache_at = time.monotonic()
     return results
+
+
+def forget_node(node_id: int) -> None:
+    """Drops a node's cached entry - call this when a node is deleted.
+    Without it, _cache above kept a stale entry forever (nothing ever
+    evicts a key here), found during the 2026-09 full-codebase audit. Not
+    a large leak in practice (bounded by how many nodes have ever
+    existed, not by customer count), but a real one - free to fix."""
+    with _cache_lock:
+        _cache.pop(node_id, None)

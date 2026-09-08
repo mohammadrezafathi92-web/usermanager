@@ -81,7 +81,22 @@ _NEW_COLUMNS = {
 
 @contextmanager
 def _conn():
-    conn = sqlite3.connect(config.db_path)
+    # This one file is shared by EVERY reseller's dedicated bot, each
+    # running on its own OS thread (see config.py's threading.local
+    # RuntimeConfig) - under sqlite's default rollback-journal mode a
+    # writer takes an exclusive lock on the whole file, and the default
+    # busy_timeout is 0, so a second thread hitting this at the same
+    # moment got an immediate, uncaught "database is locked"
+    # sqlite3.OperationalError instead of just waiting its turn (found
+    # during the 2026-09 full-codebase audit). WAL mode lets readers and
+    # a writer proceed concurrently, and the busy_timeout below makes any
+    # remaining writer-vs-writer contention wait a few seconds and retry
+    # instead of failing outright. Both are cheap - WAL only needs to be
+    # set once per database file, but re-issuing it on every connect is a
+    # no-op and keeps this self-contained.
+    conn = sqlite3.connect(config.db_path, timeout=5.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     try:
         yield conn

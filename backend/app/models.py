@@ -1551,6 +1551,17 @@ class PaymentCard(Base):
     owner_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=True, index=True)
     card_number = Column(String(64), nullable=False)
     card_holder = Column(String(128), nullable=True)
+    # Numeric Telegram id (user or group/channel) that should be notified
+    # whenever a customer's receipt for THIS specific card comes in for
+    # approval - added 2026-09-08 so different cards can be watched by
+    # different people (e.g. each card belongs to a different person who
+    # only wants to see receipts for their own card) instead of every
+    # receipt always going to the same panel-wide/admin-wide approval
+    # targets. NULL (the default) changes nothing: the receipt still goes
+    # out to the normal approval targets exactly as before - this id is
+    # always ADDED to that set, never a replacement for it (see telegram_
+    # bot/handlers/customer.py's _notify_targets).
+    approval_telegram_id = Column(BigInteger, nullable=True)
     # Unchecking this takes the card out of both manual selection AND the
     # rotation pool without deleting its row (e.g. temporarily pulling a
     # card that just got frozen, without losing its saved number/holder).

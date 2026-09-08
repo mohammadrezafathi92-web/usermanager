@@ -133,6 +133,24 @@ class PanelBridge:
         row = await _call(bot_router.get_payment_info, owner_admin_id=_scope(owner_admin_id))
         return _dump(schemas.PanelSettingsOut.model_validate(row))
 
+    async def get_payment_card(self, card_id: int) -> Optional[dict]:
+        """Single card lookup by id - see routers/bot.py's get_payment_card
+        docstring for why this must look up the EXACT card recorded on a
+        pending request rather than whichever one is currently active in
+        the pool. None if the card no longer exists (e.g. deleted since).
+
+        get_payment_card returns a bare ORM PaymentCard row (like create_
+        payment_card/update_payment_card elsewhere in this codebase do) -
+        real HTTP callers get it auto-converted via response_model, but
+        this in-process path bypasses that layer entirely (see this
+        module's docstring), so it has to be converted explicitly here,
+        same as list_packages/get_payment_info do below."""
+        try:
+            card = await _call(bot_router.get_payment_card, card_id)
+        except ApiError:
+            return None
+        return _dump(schemas.PaymentCardOut.model_validate(card))
+
     async def get_sales_stats(self, owner_admin_id: Optional[int] = None) -> dict:
         """Sales summary for the bot's admin report screen - see
         routers/bot.py's get_sales_stats."""

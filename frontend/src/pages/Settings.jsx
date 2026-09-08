@@ -462,6 +462,10 @@ export default function Settings() {
     await updatePaymentCard(card.id, { is_active: !card.is_active });
     await reloadPaymentCards();
   };
+  const setCardApprovalIdHandler = async (cardId, approvalId) => {
+    await updatePaymentCard(cardId, { approval_telegram_id: approvalId });
+    await reloadPaymentCards();
+  };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -963,6 +967,7 @@ export default function Settings() {
           onDelete={deletePaymentCardHandler}
           onActivate={activatePaymentCardHandler}
           onToggleActive={toggleCardActiveHandler}
+          onSetApprovalId={setCardApprovalIdHandler}
         />
       </div>
       )}
@@ -2020,14 +2025,22 @@ function IpBansCard({ t, language }) {
 function PaymentCardsManager({
   t, cards, mode, activeCardId, threshold,
   onSaveModeThreshold, savingModeThreshold,
-  onAdd, onDelete, onActivate, onToggleActive,
+  onAdd, onDelete, onActivate, onToggleActive, onSetApprovalId,
 }) {
   const [newNumber, setNewNumber] = useState("");
   const [newHolder, setNewHolder] = useState("");
+  const [newApprovalId, setNewApprovalId] = useState("");
   const [adding, setAdding] = useState(false);
   const [localMode, setLocalMode] = useState(mode || "manual");
   const [localThreshold, setLocalThreshold] = useState(threshold || "");
   const [busyId, setBusyId] = useState(null);
+  // Per-card approval id being edited right now - keyed by card id, so
+  // typing in one card's box doesn't affect any other's. Seeded lazily
+  // from each card's own approval_telegram_id the first time it's touched
+  // (see the input's value fallback below), not on every render, so a
+  // background reload while the admin is mid-edit doesn't stomp on what
+  // they're typing.
+  const [approvalDrafts, setApprovalDrafts] = useState({});
 
   useEffect(() => setLocalMode(mode || "manual"), [mode]);
   useEffect(() => setLocalThreshold(threshold || ""), [threshold]);
@@ -2037,11 +2050,32 @@ function PaymentCardsManager({
     if (!newNumber.trim()) return;
     setAdding(true);
     try {
-      await onAdd({ card_number: newNumber.trim(), card_holder: newHolder.trim() || null });
+      const approvalId = newApprovalId.trim();
+      await onAdd({
+        card_number: newNumber.trim(),
+        card_holder: newHolder.trim() || null,
+        approval_telegram_id: approvalId ? Number(approvalId) : null,
+      });
       setNewNumber("");
       setNewHolder("");
+      setNewApprovalId("");
     } finally {
       setAdding(false);
+    }
+  };
+
+  const saveApprovalId = async (cardId) => {
+    const raw = (approvalDrafts[cardId] ?? "").trim();
+    setBusyId(cardId);
+    try {
+      await onSetApprovalId(cardId, raw ? Number(raw) : null);
+      setApprovalDrafts((d) => {
+        const next = { ...d };
+        delete next[cardId];
+        return next;
+      });
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -2057,7 +2091,8 @@ function PaymentCardsManager({
   return (
     <div className="mt-6 pt-6 border-t border-gray-100">
       <h4 className="font-bold text-gray-700 text-sm mb-1">{t("settings.multiCardTitle")}</h4>
-      <p className="text-xs text-gray-400 mb-4">{t("settings.multiCardHint")}</p>
+      <p className="text-xs text-gray-400 mb-1">{t("settings.multiCardHint")}</p>
+      <p className="text-xs text-gray-400 mb-4">{t("settings.cardApprovalIdHint")}</p>
 
       <div className="flex flex-wrap items-end gap-3 mb-4">
         <div>
@@ -2099,55 +2134,77 @@ function PaymentCardsManager({
         {(cards || []).map((c) => (
           <div
             key={c.id}
-            className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 ${
+            className={`rounded-lg border px-3 py-2 ${
               c.id === activeCardId ? "border-brand-300 bg-brand-50/40" : "border-gray-200"
             }`}
           >
-            <div className="flex items-center gap-2">
-              <input
-                type="radio"
-                name="activePaymentCard"
-                checked={c.id === activeCardId}
-                disabled={!c.is_active || busyId === c.id}
-                onChange={withBusy(c.id, () => onActivate(c.id))}
-              />
-              <div>
-                <div className="text-sm font-mono" dir="ltr">{c.card_number}</div>
-                {c.card_holder && <div className="text-xs text-gray-400">{c.card_holder}</div>}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="activePaymentCard"
+                  checked={c.id === activeCardId}
+                  disabled={!c.is_active || busyId === c.id}
+                  onChange={withBusy(c.id, () => onActivate(c.id))}
+                />
+                <div>
+                  <div className="text-sm font-mono" dir="ltr">{c.card_number}</div>
+                  {c.card_holder && <div className="text-xs text-gray-400">{c.card_holder}</div>}
+                </div>
+                {c.id === activeCardId && (
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">
+                    {t("settings.cardActiveBadge")}
+                  </span>
+                )}
+                {!c.is_active && (
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-400">
+                    {t("settings.cardDisabledBadge")}
+                  </span>
+                )}
               </div>
-              {c.id === activeCardId && (
-                <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">
-                  {t("settings.cardActiveBadge")}
-                </span>
-              )}
-              {!c.is_active && (
-                <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-400">
-                  {t("settings.cardDisabledBadge")}
-                </span>
-              )}
+              <div className="flex items-center gap-3">
+                {localMode === "threshold" && (
+                  <span className="text-xs text-gray-400" dir="ltr">
+                    {(c.accumulated_amount || 0).toLocaleString()} / {threshold ? Number(threshold).toLocaleString() : "-"}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="text-xs text-gray-500 hover:text-gray-700"
+                  disabled={busyId === c.id}
+                  onClick={withBusy(c.id, () => onToggleActive(c))}
+                >
+                  {c.is_active ? t("settings.cardDeactivate") : t("settings.cardActivateToggle")}
+                </button>
+                <button
+                  type="button"
+                  className="text-red-500 hover:text-red-600"
+                  disabled={busyId === c.id}
+                  onClick={withBusy(c.id, () => onDelete(c.id))}
+                  title={t("settings.cardDelete")}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
             </div>
-            <div className="flex items-center gap-3">
-              {localMode === "threshold" && (
-                <span className="text-xs text-gray-400" dir="ltr">
-                  {(c.accumulated_amount || 0).toLocaleString()} / {threshold ? Number(threshold).toLocaleString() : "-"}
-                </span>
-              )}
+            <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-100">
+              <label className="text-xs text-gray-500 whitespace-nowrap">{t("settings.cardApprovalIdLabel")}</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                dir="ltr"
+                className="input input-sm w-40"
+                placeholder={t("settings.cardApprovalIdPlaceholder")}
+                value={approvalDrafts[c.id] ?? (c.approval_telegram_id ?? "")}
+                onChange={(e) => setApprovalDrafts((d) => ({ ...d, [c.id]: e.target.value }))}
+              />
               <button
                 type="button"
-                className="text-xs text-gray-500 hover:text-gray-700"
+                className="btn-secondary text-xs px-2 py-1"
                 disabled={busyId === c.id}
-                onClick={withBusy(c.id, () => onToggleActive(c))}
+                onClick={() => saveApprovalId(c.id)}
               >
-                {c.is_active ? t("settings.cardDeactivate") : t("settings.cardActivateToggle")}
-              </button>
-              <button
-                type="button"
-                className="text-red-500 hover:text-red-600"
-                disabled={busyId === c.id}
-                onClick={withBusy(c.id, () => onDelete(c.id))}
-                title={t("settings.cardDelete")}
-              >
-                <Trash2 size={14} />
+                {t("settings.cardApprovalIdSave")}
               </button>
             </div>
           </div>
@@ -2168,6 +2225,18 @@ function PaymentCardsManager({
         <div>
           <label className="block text-xs text-gray-500 mb-1">{t("settings.cardHolder")}</label>
           <input className="input" value={newHolder} onChange={(e) => setNewHolder(e.target.value)} />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">{t("settings.cardApprovalIdLabel")}</label>
+          <input
+            type="text"
+            inputMode="numeric"
+            dir="ltr"
+            className="input"
+            placeholder={t("settings.cardApprovalIdPlaceholder")}
+            value={newApprovalId}
+            onChange={(e) => setNewApprovalId(e.target.value)}
+          />
         </div>
         <button type="submit" className="btn-primary text-sm" disabled={adding}>
           <Plus size={14} className="inline -mt-0.5 ml-1" />
@@ -2247,6 +2316,10 @@ function OwnPaymentCard({ t }) {
   };
   const toggleCardActive = async (card) => {
     await updateMyPaymentCard(card.id, { is_active: !card.is_active });
+    await reloadCards();
+  };
+  const setCardApprovalId = async (cardId, approvalId) => {
+    await updateMyPaymentCard(cardId, { approval_telegram_id: approvalId });
     await reloadCards();
   };
 
@@ -2334,6 +2407,7 @@ function OwnPaymentCard({ t }) {
         onDelete={deleteCard}
         onActivate={activateCard}
         onToggleActive={toggleCardActive}
+        onSetApprovalId={setCardApprovalId}
       />
     </div>
   );

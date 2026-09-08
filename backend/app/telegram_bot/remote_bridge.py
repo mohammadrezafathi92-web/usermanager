@@ -100,6 +100,15 @@ class RemoteBridge:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         return await self._call("GET", "/payment-info", params=params)
 
+    async def get_payment_card(self, card_id: int) -> Optional[dict]:
+        """See panel_bridge.PanelBridge's version - same contract (None if
+        the card no longer exists), just reached over HTTP here."""
+        from .panel_bridge import ApiError  # local import - see module docstring for why
+        try:
+            return await self._call("GET", f"/payment-cards/{card_id}")
+        except ApiError:
+            return None
+
     async def get_sales_stats(self, owner_admin_id: Optional[int] = None) -> dict:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         return await self._call("GET", "/sales-stats", params=params) or {}

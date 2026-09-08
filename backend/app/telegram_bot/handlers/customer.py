@@ -50,13 +50,27 @@ async def _notify_targets(pending_row: dict) -> set:
     ensuring they get a copy even when approval_targets() resolves to
     someone else. Falls back to approval_targets() alone (unchanged
     behaviour) when the owner has no linked id or the request is
-    ownerless (shared-panel customer)."""
+    ownerless (shared-panel customer).
+
+    Also adds the specific PAYMENT CARD's own approval_telegram_id (see
+    models.PaymentCard), if the admin set one for it - lets different
+    cards be watched by different people (e.g. each card belongs to
+    someone who only wants to see receipts paid to their own card) on top
+    of, never instead of, the targets above. Looked up by the exact
+    payment_card_id recorded on this request at payment-screen time, not
+    whichever card the pool currently considers active - the pool may
+    have rotated to a different card since."""
     targets = set(config.approval_targets())
     owner_admin_id = pending_row.get("owner_admin_id") if pending_row else None
     if owner_admin_id:
         owner_tg = await api.get_admin_telegram_id(owner_admin_id)
         if owner_tg:
             targets.add(owner_tg)
+    payment_card_id = pending_row.get("payment_card_id") if pending_row else None
+    if payment_card_id:
+        card = await api.get_payment_card(payment_card_id)
+        if card and card.get("approval_telegram_id"):
+            targets.add(card["approval_telegram_id"])
     return targets
 
 

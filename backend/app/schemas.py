@@ -930,6 +930,11 @@ class PaymentCardOut(BaseModel):
     accumulated_amount: int = 0  # تومان - only meaningful in "threshold" mode, see models.PaymentCard
     last_used_at: Optional[dt.datetime] = None
     created_at: Optional[dt.datetime] = None
+    # See models.PaymentCard.approval_telegram_id - numeric Telegram id to
+    # notify (in ADDITION to the normal approval targets) for a receipt
+    # paid to this specific card. None = no per-card routing, unchanged
+    # behaviour.
+    approval_telegram_id: Optional[int] = None
 
 
 class PaymentCardCreate(BaseModel):
@@ -937,6 +942,7 @@ class PaymentCardCreate(BaseModel):
     card_holder: Optional[str] = None
     is_active: bool = True
     sort_order: int = 0
+    approval_telegram_id: Optional[int] = None
 
 
 class PaymentCardUpdate(BaseModel):
@@ -944,6 +950,7 @@ class PaymentCardUpdate(BaseModel):
     card_holder: Optional[str] = None
     is_active: Optional[bool] = None
     sort_order: Optional[int] = None
+    approval_telegram_id: Optional[int] = None
 
 
 class PanelSettingsOut(BaseModel):

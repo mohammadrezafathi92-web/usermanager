@@ -424,6 +424,23 @@ def get_payment_info(owner_admin_id: Optional[int] = None, db: Session = Depends
     return out
 
 
+@router.get("/payment-cards/{card_id}", response_model=schemas.PaymentCardOut)
+def get_payment_card(card_id: int, db: Session = Depends(get_db)):
+    """Single card lookup by id - used by the bot to find out which
+    Telegram id (if any) a customer's receipt should ALSO be routed to for
+    approval (see models.PaymentCard.approval_telegram_id and telegram_bot/
+    handlers/customer.py's _notify_targets). Deliberately looks up the
+    EXACT card recorded on the pending request (its payment_card_id) by
+    id, rather than re-resolving whichever card the pool currently
+    considers active (get_payment_info's job) - the pool may well have
+    rotated to a different card since the customer's receipt came in, and
+    approval must still go by what was actually shown to them."""
+    card = db.get(models.PaymentCard, card_id)
+    if not card:
+        raise HTTPException(404, "کارت پیدا نشد")
+    return card
+
+
 @router.post("/payment-cards/{card_id}/record-payment")
 def record_payment_card_use(card_id: int, payload: schemas.BotRecordCardPaymentRequest, db: Session = Depends(get_db)):
     """Called once by telegram_bot/handlers/admin_pending.py right after a

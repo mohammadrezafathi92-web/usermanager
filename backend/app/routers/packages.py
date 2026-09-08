@@ -242,6 +242,30 @@ def delete_package(package_id: int, db: Session = Depends(get_db), admin: models
     pkg = _get_scoped_package(db, package_id, admin)
     for f in pkg.files:
         _unlink_quiet(f.stored_path)
+
+    # users.package_id/reserved_package_id and purchases.package_id/
+    # reserved_package_id are all nullable with NO ondelete configured at
+    # the DB level (see models.py) - Package.connections/files above are
+    # safe because those ARE ORM-cascaded via delete-orphan, but nothing
+    # cascades these four. MariaDB's default RESTRICT rejects db.delete
+    # (pkg) below the moment any user/purchase has ever been created from
+    # or queued to renew into this package (i.e. almost always in
+    # production) - found during the 2026-09 full-codebase audit.
+    # package_name_snapshot on both tables already preserves the display
+    # name independently, so nulling the live FK loses no history.
+    db.query(models.User).filter(models.User.package_id == pkg.id).update(
+        {"package_id": None}, synchronize_session=False
+    )
+    db.query(models.User).filter(models.User.reserved_package_id == pkg.id).update(
+        {"reserved_package_id": None}, synchronize_session=False
+    )
+    db.query(models.Purchase).filter(models.Purchase.package_id == pkg.id).update(
+        {"package_id": None}, synchronize_session=False
+    )
+    db.query(models.Purchase).filter(models.Purchase.reserved_package_id == pkg.id).update(
+        {"reserved_package_id": None}, synchronize_session=False
+    )
+
     db.delete(pkg)
     db.commit()
     return {"ok": True}

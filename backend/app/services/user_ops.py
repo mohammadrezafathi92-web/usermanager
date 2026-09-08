@@ -472,8 +472,33 @@ def reconcile_user_connections(db: Session, user: models.User):
 
 
 def delete_user_cascade(db: Session, user: models.User):
+    connection_ids = [c.id for c in user.connections]
     for conn in list(user.connections):
         deprovision_connection(conn)
+
+    # radius_active_sessions.connection_id and usage_logs.user_id are both
+    # NOT NULL with no ondelete configured at the DB level (see models.py) -
+    # MariaDB's default RESTRICT rejects db.delete(user) below the moment
+    # this user has ever had a live RADIUS session or a single usage-chart
+    # data point (i.e. almost always in production). Same bug class as the
+    # Purchase-cascade fix and the delete_admin cascade fix, found during
+    # the 2026-09 full-codebase audit.
+    if connection_ids:
+        db.query(models.RadiusActiveSession).filter(
+            models.RadiusActiveSession.connection_id.in_(connection_ids)
+        ).delete(synchronize_session=False)
+    db.query(models.UsageLog).filter(models.UsageLog.user_id == user.id).delete(synchronize_session=False)
+    # radius_limit_event_logs.user_id/connection_id ARE nullable - this
+    # table is a permanent audit trail of past over-limit attempts/bans, so
+    # it is detached (kept, just unlinked) rather than deleted.
+    db.query(models.RadiusLimitEventLog).filter(models.RadiusLimitEventLog.user_id == user.id).update(
+        {"user_id": None}, synchronize_session=False
+    )
+    if connection_ids:
+        db.query(models.RadiusLimitEventLog).filter(
+            models.RadiusLimitEventLog.connection_id.in_(connection_ids)
+        ).update({"connection_id": None}, synchronize_session=False)
+
     db.delete(user)
     db.commit()
 
@@ -1437,6 +1462,20 @@ def deprovision_connection(connection: models.Connection):
 
 def delete_connection(db: Session, connection: models.Connection):
     deprovision_connection(connection)
+    # Same NOT-NULL/no-ondelete situation as delete_user_cascade, scoped to
+    # just this one connection - kick_connection (below) already clears
+    # radius_active_sessions for a kick; a full delete never did, and
+    # MariaDB's default RESTRICT rejects db.delete(connection) below the
+    # moment this connection has ever had a live RADIUS session.
+    db.query(models.RadiusActiveSession).filter(
+        models.RadiusActiveSession.connection_id == connection.id
+    ).delete(synchronize_session=False)
+    db.query(models.UsageLog).filter(models.UsageLog.connection_id == connection.id).update(
+        {"connection_id": None}, synchronize_session=False
+    )
+    db.query(models.RadiusLimitEventLog).filter(
+        models.RadiusLimitEventLog.connection_id == connection.id
+    ).update({"connection_id": None}, synchronize_session=False)
     db.delete(connection)
     db.commit()
 

@@ -849,6 +849,34 @@ def delete_admin(
     db.query(models.Tutorial).filter(models.Tutorial.owner_admin_id == admin.id).update(
         {"owner_admin_id": resource_heir_id}, synchronize_session=False
     )
+
+    # Audit-log rows this account either owns or acted on. Unlike Users/
+    # Packages/Tutorials above, admin_balance_logs.admin_id and
+    # admin_volume_logs.admin_id are NOT NULL - there is nothing sensible
+    # to inherit them to (they record changes made TO this specific
+    # account's own balance/volume), so they are deleted outright. Without
+    # this, db.delete(admin) throws IntegrityError under MariaDB's default
+    # RESTRICT behavior the moment this admin has ever received a manual
+    # top-up or correction (the same bug class as the earlier Purchase-
+    # cascade fix, found during the 2026-09 full-codebase audit).
+    db.query(models.AdminBalanceLog).filter(models.AdminBalanceLog.admin_id == admin.id).delete(synchronize_session=False)
+    db.query(models.AdminVolumeLog).filter(models.AdminVolumeLog.admin_id == admin.id).delete(synchronize_session=False)
+    # created_by_id IS nullable (NULL already means "no separate actor") -
+    # clear it rather than delete rows that belong to OTHER admins just
+    # because this admin was the one who happened to make the change.
+    db.query(models.AdminBalanceLog).filter(models.AdminBalanceLog.created_by_id == admin.id).update(
+        {"created_by_id": None}, synchronize_session=False
+    )
+    db.query(models.AdminVolumeLog).filter(models.AdminVolumeLog.created_by_id == admin.id).update(
+        {"created_by_id": None}, synchronize_session=False
+    )
+    # admin_login_logs.admin_id is nullable too - keep the login history
+    # (ip_address/attempted_username) but detach it from the now-deleted
+    # account, the same treatment an unresolvable username already gets.
+    db.query(models.AdminLoginLog).filter(models.AdminLoginLog.admin_id == admin.id).update(
+        {"admin_id": None}, synchronize_session=False
+    )
+
     db.delete(admin)
     db.commit()
     return {"ok": True}

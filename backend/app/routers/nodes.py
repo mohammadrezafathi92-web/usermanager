@@ -9,7 +9,7 @@ from ..database import get_db
 from ..deps import get_current_admin, require_permission, require_confirm_password
 from ..services.mikrotik_client import MikrotikClient, MikrotikError
 from ..services.xray_client import XrayError, client_for_node
-from ..services import user_ops, hierarchy
+from ..services import user_ops, hierarchy, node_monitor
 from ..services.keys import generate_password
 
 
@@ -176,8 +176,19 @@ def delete_node(node_id: int, db: Session = Depends(get_db), admin: models.Admin
         raise HTTPException(403, "فقط سازنده این سرور یا ادمین اصلی می‌تواند آن را حذف کند")
     if node.connections:
         raise HTTPException(400, "ابتدا کانکشن‌های متصل به این نود را حذف کنید")
+    # package_connections.node_id is a SEPARATE, NOT NULL FK to nodes.id
+    # (a package's own bundled server list, distinct from node.connections
+    # above which is real customers' live connections) with no ondelete
+    # configured - MariaDB's default RESTRICT rejects db.delete(node) below
+    # if any package still bundles this node, and this was never checked
+    # (found during the 2026-09 full-codebase audit). Same "make the admin
+    # clean it up first" treatment as node.connections, rather than
+    # silently ripping the node out of packages that still advertise it.
+    if db.query(models.PackageConnection).filter(models.PackageConnection.node_id == node.id).first():
+        raise HTTPException(400, "ابتدا این سرور را از پکیج‌هایی که استفاده می‌کنند حذف کنید")
     db.delete(node)
     db.commit()
+    node_monitor.forget_node(node_id)
     return {"ok": True}
 
 

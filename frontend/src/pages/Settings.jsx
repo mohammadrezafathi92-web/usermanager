@@ -9,6 +9,7 @@ import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import {
   changePassword,
+  changeUsername,
   fetchApiKeys,
   createApiKey,
   toggleApiKey,
@@ -220,7 +221,7 @@ function TimezoneCard({ t }) {
 // so there is no longer a switch here to show.
 
 export default function Settings() {
-  const { isSuperadmin, isAdminOrAbove } = useAuth();
+  const { isSuperadmin, isAdminOrAbove, username, refreshMe } = useAuth();
   const { t, language } = useLanguage();
 
   // Menu audit (3-tier hierarchy, task #26): tab visibility no longer
@@ -260,6 +261,10 @@ export default function Settings() {
   const [newPassword, setNewPassword] = useState("");
   const [message, setMessage] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [usernamePassword, setUsernamePassword] = useState("");
+  const [newUsername, setNewUsername] = useState("");
+  const [usernameMessage, setUsernameMessage] = useState(null);
+  const [savingUsername, setSavingUsername] = useState(false);
 
   const [keys, setKeys] = useState([]);
   const [keyModalOpen, setKeyModalOpen] = useState(false);
@@ -471,6 +476,30 @@ export default function Settings() {
       setMessage({ type: "err", text: err?.response?.data?.detail || t("settings.msgPasswordChangeError") });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const submitUsername = async (e) => {
+    e.preventDefault();
+    setSavingUsername(true);
+    setUsernameMessage(null);
+    try {
+      const res = await changeUsername(usernamePassword, newUsername);
+      // The JWT's sub claim IS the username - the moment this committed on
+      // the backend, the token this tab is still holding stopped resolving
+      // to anyone. Swap in the fresh token the backend just issued for the
+      // new username BEFORE refreshing /me, since api/client.js's request
+      // interceptor reads localStorage fresh on every call - otherwise the
+      // very next request (refreshMe itself) would 401.
+      localStorage.setItem("um_token", res.data.access_token);
+      await refreshMe();
+      setUsernameMessage({ type: "ok", text: t("settings.msgUsernameChanged") });
+      setUsernamePassword("");
+      setNewUsername("");
+    } catch (err) {
+      setUsernameMessage({ type: "err", text: err?.response?.data?.detail || t("settings.msgUsernameChangeError") });
+    } finally {
+      setSavingUsername(false);
     }
   };
 
@@ -805,6 +834,34 @@ export default function Settings() {
             )}
             <button type="submit" disabled={saving} className="btn-primary">
               {saving ? t("settings.saving") : t("settings.saveNewPassword")}
+            </button>
+          </form>
+        </div>
+
+        <div className="card">
+          <div className="flex items-center gap-2 mb-4">
+            <KeyRound size={18} className="text-brand-600" />
+            <h3 className="font-bold text-gray-700">{t("settings.changeUsername")}</h3>
+          </div>
+          <form onSubmit={submitUsername} className="space-y-4">
+            <div className="text-xs text-gray-400">
+              {t("settings.currentUsername")}: <span dir="ltr">{username}</span>
+            </div>
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">{t("settings.newUsername")}</label>
+              <input type="text" className="input" required dir="ltr" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">{t("settings.currentPassword")}</label>
+              <input type="password" className="input" required value={usernamePassword} onChange={(e) => setUsernamePassword(e.target.value)} />
+            </div>
+            {usernameMessage && (
+              <div className={`text-sm rounded-lg px-3 py-2 ${usernameMessage.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+                {usernameMessage.text}
+              </div>
+            )}
+            <button type="submit" disabled={savingUsername} className="btn-primary">
+              {savingUsername ? t("settings.saving") : t("settings.saveNewUsername")}
             </button>
           </form>
         </div>

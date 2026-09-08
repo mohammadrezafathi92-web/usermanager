@@ -19,6 +19,11 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 
+class ChangeUsernameRequest(BaseModel):
+    current_password: str
+    new_username: str
+
+
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 # Brute-force protection: after this many failed attempts from the same IP
@@ -244,3 +249,45 @@ def change_password(
     admin.hashed_password = hash_password(payload.new_password)
     db.commit()
     return {"ok": True}
+
+
+@router.post("/change-username")
+def change_username(
+    payload: ChangeUsernameRequest,
+    admin: models.AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Self-service username change for the LOGGED-IN admin's own account -
+    every account, including the superadmin, since routers/admins.py's
+    update_admin explicitly refuses to touch a superadmin row at all, and
+    doesn't even carry a username field for anyone else either. Requires
+    re-entering the current password, same as change-password above: a
+    stolen/borrowed open session shouldn't be enough on its own to rename
+    the account someone logs in as. Symmetric with change-password rather
+    than folded into it, so a failed username change (e.g. taken) never
+    risks also silently skipping a password change in the same request.
+
+    The JWT's own subject claim IS the username (security.py's
+    create_access_token/decode_access_token, and deps.get_current_admin
+    looks the admin up BY username from it) - so the moment this commits,
+    the token the browser is still holding stops resolving to anyone and
+    every next request would 401. A fresh token for the NEW username is
+    issued and returned so the frontend can swap it in place instead of
+    the admin being silently logged out by their own settings change."""
+    if not verify_password(payload.current_password, admin.hashed_password):
+        raise HTTPException(status_code=400, detail="رمز عبور فعلی اشتباه است")
+    new_username = payload.new_username.strip()
+    if not new_username:
+        raise HTTPException(status_code=400, detail="نام کاربری نمی‌تواند خالی باشد")
+    if new_username == admin.username:
+        return {"ok": True, "username": admin.username, "access_token": create_access_token(admin.username)}
+    clash = (
+        db.query(models.AdminUser)
+        .filter(models.AdminUser.username == new_username, models.AdminUser.id != admin.id)
+        .first()
+    )
+    if clash:
+        raise HTTPException(status_code=400, detail="این نام کاربری قبلا ثبت شده است")
+    admin.username = new_username
+    db.commit()
+    return {"ok": True, "username": admin.username, "access_token": create_access_token(admin.username)}

@@ -92,6 +92,8 @@ export const login = (username, password) => {
 export const fetchMe = () => client.get("/auth/me");
 export const changePassword = (old_password, new_password) =>
   client.post("/auth/change-password", { old_password, new_password });
+export const changeUsername = (current_password, new_username) =>
+  client.post("/auth/change-username", { current_password, new_username });
 
 export const fetchDashboard = () => client.get("/dashboard/stats");
 

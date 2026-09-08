@@ -2128,7 +2128,7 @@ function PaymentCardsManager({
 // back to the panel-wide default automatically - no need to duplicate the
 // support text or leave a field "wrong" just to have something in it.
 function OwnPaymentCard({ t }) {
-  const [form, setForm] = useState({ payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "" });
+  const [form, setForm] = useState({ payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "", support_contact_text: "" });
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -2241,6 +2241,17 @@ function OwnPaymentCard({ t }) {
             onChange={(e) => set("topup_presets", e.target.value)}
           />
           <p className="text-xs text-gray-400 mt-1">{t("settings.topupPresetsHint")}</p>
+        </div>
+        <div className="md:col-span-2">
+          <label className="block text-sm text-gray-600 mb-1">{t("settings.supportContactLabel")}</label>
+          <textarea
+            className="input"
+            rows={2}
+            placeholder={t("settings.supportContactPlaceholder")}
+            value={form.support_contact_text || ""}
+            onChange={(e) => set("support_contact_text", e.target.value)}
+          />
+          <p className="text-xs text-gray-400 mt-1">{t("settings.supportContactHint")}</p>
         </div>
         {msg && (
           <div className={`md:col-span-2 text-sm rounded-lg px-3 py-2 ${msg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>

@@ -225,6 +225,18 @@ class AdminUser(Base):
     own_payment_instructions = Column(Text, nullable=True)
     own_topup_presets = Column(String(255), nullable=True)
 
+    # This Admin's/Seller's OWN "پشتیبانی" contact text/id, shown to
+    # customers who tap 🎧 پشتیبانی in THEIR OWN dedicated bot (see
+    # own_bot_token above) instead of the single global
+    # PanelSettings.support_contact_text - same per-field overlay shape as
+    # the payment fields just above (routers/bot.py's get_payment_info).
+    # NULL/empty = falls back to the panel-wide default, so an admin who
+    # never sets this still shows customers something rather than nothing.
+    # Requested 2026-09: every admin with a dedicated bot needs their own
+    # support id available from the Settings page, not just the
+    # superadmin's shared-bot one.
+    own_support_contact_text = Column(Text, nullable=True)
+
     # Multi-card support (چند شماره کارت + انتخاب/چرخش بین آن‌ها) - see
     # PaymentCard below. own_payment_card_number/holder above stay as the
     # legacy single-card fallback (still shown if this Admin/Seller never

@@ -1134,6 +1134,9 @@ class OwnPaymentSettingsOut(BaseModel):
     active_payment_card_id: Optional[int] = None
     payment_card_switch_threshold: Optional[int] = None
     payment_cards: List[PaymentCardOut] = []
+    # This admin's own 🎧 پشتیبانی text/id, shown in THEIR OWN dedicated
+    # bot - see models.AdminUser.own_support_contact_text.
+    support_contact_text: Optional[str] = ""
 
 
 class OwnPaymentSettingsUpdate(BaseModel):
@@ -1144,6 +1147,7 @@ class OwnPaymentSettingsUpdate(BaseModel):
     payment_card_mode: Optional[str] = None
     active_payment_card_id: Optional[int] = None
     payment_card_switch_threshold: Optional[int] = None
+    support_contact_text: Optional[str] = None
 
 
 # ---------- Remote bot deployment (install the interactive bot on a 2nd server) ----------

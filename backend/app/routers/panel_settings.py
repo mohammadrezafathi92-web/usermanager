@@ -274,6 +274,7 @@ def _own_payment_out(db: Session, admin: models.AdminUser) -> schemas.OwnPayment
         payment_cards=[
             schemas.PaymentCardOut.model_validate(c) for c in payment_cards_service.list_cards(db, admin.id)
         ],
+        support_contact_text=admin.own_support_contact_text or "",
     )
 
 
@@ -310,6 +311,8 @@ def update_my_payment(
         admin.own_active_payment_card_id = data["active_payment_card_id"]
     if "payment_card_switch_threshold" in data:
         admin.own_payment_card_switch_threshold = data["payment_card_switch_threshold"]
+    if "support_contact_text" in data:
+        admin.own_support_contact_text = (data["support_contact_text"] or "").strip() or None
     db.commit()
     db.refresh(admin)
     return _own_payment_out(db, admin)

@@ -368,9 +368,12 @@ def get_payment_info(owner_admin_id: Optional[int] = None, db: Session = Depends
     PanelSettings row IN-MEMORY (never committed - same trick as
     list_packages's per-seller price overlay), one field at a time: any
     field they haven't set themselves still falls back to the panel-wide
-    default instead of showing the customer nothing. referral/loyalty/
-    support-contact-text/HA/port fields are untouched - still panel-wide
-    only, not part of this per-admin overlay.
+    default instead of showing the customer nothing. support_contact_text
+    is overlaid the same way (own_support_contact_text, set via PUT
+    /api/settings/my-payment - added 2026-09 so every admin with a
+    dedicated bot has their own پشتیبانی contact, not just the shared
+    bot's). referral/loyalty/HA/port fields remain untouched - still
+    panel-wide only, not part of this per-admin overlay.
 
     Multi-card pools (services/payment_cards.py) then take priority over
     whichever single payment_card_number/holder the block above landed on:
@@ -400,6 +403,8 @@ def get_payment_info(owner_admin_id: Optional[int] = None, db: Session = Depends
             row.payment_instructions = own_admin.own_payment_instructions
         if own_admin.own_topup_presets:
             row.topup_presets = own_admin.own_topup_presets
+        if own_admin.own_support_contact_text:
+            row.support_contact_text = own_admin.own_support_contact_text
 
     if own_admin is not None:
         pool_owner_id = own_admin.id

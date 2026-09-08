@@ -175,8 +175,12 @@ export default function Packages() {
 
   const onDeleteFile = async (fileId) => {
     if (!editingId) return;
-    await deletePackageFile(editingId, fileId);
-    setEditingFiles((files) => files.filter((f) => f.id !== fileId));
+    try {
+      await deletePackageFile(editingId, fileId);
+      setEditingFiles((files) => files.filter((f) => f.id !== fileId));
+    } catch (err) {
+      alert(err?.response?.data?.detail || t("packages.deleteFileError"));
+    }
   };
 
   const submit = async (e) => {
@@ -207,13 +211,26 @@ export default function Packages() {
 
   const onDelete = async (id) => {
     if (!confirm(t("packages.deleteConfirm"))) return;
-    await deletePackage(id);
-    load();
+    try {
+      await deletePackage(id);
+      load();
+    } catch (err) {
+      // No try/catch here before meant ANY failure - wrong/expired confirm
+      // password, a package still referenced somewhere, a network hiccup -
+      // surfaced as nothing at all: the row just stayed put with no
+      // explanation, identical to the button not working (same bug class
+      // already fixed once for Users.jsx's onDelete).
+      alert(err?.response?.data?.detail || t("packages.deleteError"));
+    }
   };
 
   const onToggle = async (pkg) => {
-    await updatePackage(pkg.id, { enabled: !pkg.enabled });
-    load();
+    try {
+      await updatePackage(pkg.id, { enabled: !pkg.enabled });
+      load();
+    } catch (err) {
+      alert(err?.response?.data?.detail || t("packages.toggleError"));
+    }
   };
 
   const startEditPrice = (pkg) => {

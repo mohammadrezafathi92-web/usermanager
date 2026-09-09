@@ -377,6 +377,20 @@ async def _approval_actor(request_id: int, telegram_id: int) -> tuple[bool, bool
     - A recognized admin (resolve_admin_scope) is allowed as before, still
       subject to the normal owner_ids/may_handle ownership check in
       cb_approval below - unchanged behaviour.
+    - A Seller (or any recognized panel account that is NOT a full admin -
+      resolve_admin_scope's is_full_admin excludes ROLE_SELLER) who is the
+      ACTUAL OWNER of the customer this specific request belongs to is also
+      allowed, but ONLY for THIS ONE pending request. Reported 2026-09-09:
+      customer.py's _notify_targets already sends the owning admin a copy
+      of the receipt via pending_row["owner_admin_id"] regardless of role
+      (a Seller's own customer's owner_admin_id IS the Seller), so a Seller
+      legitimately sees real Approve/Reject buttons - but until this check,
+      _approval_actor only ever recognized full admins or a card's exact
+      approval_telegram_id, so tapping the button always failed with
+      "دسترسی ندارید" even though the Seller genuinely owns that customer.
+      Scoped the same way as the card-approval-id path below: grants
+      nothing beyond this one request, no owner_ids, no access to any
+      other handler in `router` above.
     - Someone who is NOT a recognized admin at all can still be allowed,
       but ONLY for THIS ONE pending request, and ONLY if their Telegram id
       is exactly the approval_telegram_id of the SPECIFIC PaymentCard this
@@ -390,6 +404,10 @@ async def _approval_actor(request_id: int, telegram_id: int) -> tuple[bool, bool
         return True, True, scope
 
     pending = storage.get_pending(request_id)
+
+    if scope and pending and pending.get("owner_admin_id") == scope["owner_admin_id"]:
+        return True, False, None
+
     card_id = pending.get("payment_card_id") if pending else None
     if card_id:
         try:

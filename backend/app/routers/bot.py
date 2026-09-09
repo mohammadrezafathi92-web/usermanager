@@ -217,6 +217,46 @@ def _ensure_telegram_can_buy(db: Session, telegram_id: Optional[int]) -> None:
         _ensure_can_buy(blocked)
 
 
+def _ensure_one_time_package_not_reused(
+    db: Session, package: Optional[models.Package], *,
+    user: Optional[models.User] = None, telegram_id: Optional[int] = None,
+) -> None:
+    """package.one_time_per_user ("فقط یک‌بار قابل خرید") - for a trial/
+    heavily-discounted package an admin doesn't want the same customer
+    buying twice through the bot's own self-service purchase flow.
+
+    Checked across EVERY User row tied to the same Telegram id, not just
+    `user` - otherwise the limit is trivially dodged by signing up a
+    second account (same reasoning as _ensure_telegram_can_buy above).
+    `user`/`telegram_id` are both optional and additive: purchase_package
+    below has an existing `user`; create_user below only has a
+    `telegram_id` (the account being created can't have bought anything
+    itself yet, but a SIBLING account on the same Telegram id might have).
+
+    Deliberately never called from routers/users.py (the admin panel's own
+    apply_package/create_user) - an admin or seller can always manually
+    grant this package again; only a customer buying it themselves is
+    limited."""
+    if not package or not package.one_time_per_user:
+        return
+    user_ids: set[int] = set()
+    if user is not None:
+        user_ids.add(user.id)
+    if telegram_id:
+        user_ids.update(
+            uid for (uid,) in db.query(models.User.id).filter(models.User.telegram_id == telegram_id).all()
+        )
+    if not user_ids:
+        return
+    already = (
+        db.query(models.Purchase.id)
+        .filter(models.Purchase.package_id == package.id, models.Purchase.user_id.in_(user_ids))
+        .first()
+    )
+    if already is not None:
+        raise HTTPException(403, "این بسته فقط یک‌بار برای هر مشتری قابل خرید است و قبلاً توسط شما خریداری شده.")
+
+
 def _get_user_or_404(db: Session, username: str, owner_admin_id: Optional[int] = None) -> models.User:
     """owner_admin_id, when given, scopes this lookup to one admin's group -
     used by the built-in bot when a linked group-admin (see
@@ -635,6 +675,10 @@ def create_user(payload: schemas.BotCreateUserRequest, db: Session = Depends(get
     # same Telegram id and keep buying - that would leave the lock looking
     # enforced while doing nothing at all.
     _ensure_telegram_can_buy(db, payload.telegram_id)
+    if payload.package_id:
+        _ensure_one_time_package_not_reused(
+            db, db.get(models.Package, payload.package_id), telegram_id=payload.telegram_id,
+        )
     user = user_ops.create_user_record(
         db, payload.username, payload.full_name, payload.quota_gb, payload.expire_days,
         telegram_id=payload.telegram_id, owner_admin_id=payload.owner_admin_id,
@@ -673,7 +717,7 @@ def create_user(payload: schemas.BotCreateUserRequest, db: Session = Depends(get
     # exists, User.effective_quota_bytes stops reading the user-level
     # number at all.
     if payload.connections:
-        user_ops.absorb_legacy_pool_into_purchase(db, user)
+        user_ops.absorb_legacy_pool_into_purchase(db, user, comment=payload.comment)
 
     package = db.get(models.Package, payload.package_id) if payload.package_id else None
     # Charged AFTER provisioning here, unlike everywhere else: this endpoint
@@ -714,6 +758,7 @@ def purchase_package(
     package = db.get(models.Package, payload.package_id)
     if not package:
         raise HTTPException(404, "پکیج پیدا نشد")
+    _ensure_one_time_package_not_reused(db, package, user=user, telegram_id=user.telegram_id)
     override = (
         [{"node_id": c.node_id, "protocol": c.protocol, "flow": c.flow or ""} for c in payload.connections]
         if payload.connections else None
@@ -905,6 +950,29 @@ def list_user_purchases(username: str, db: Session = Depends(get_db), owner_admi
         info.connection_count = len(p.connections)
         out.append(info)
     return out
+
+
+@router.get("/users/{username}/subscription-link", response_model=schemas.BotSubscriptionLinkOut)
+def get_bot_subscription_link(username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None):
+    """Bot counterpart of routers/users.py's get_subscription_link, for the
+    "🔗 دریافت لینک ساب" bot menu button (telegram_bot/handlers/
+    customer.py) - a customer fetching their OWN link, rather than an
+    admin looking one up from the panel.
+
+    Unlike the admin-panel version, this returns ABSOLUTE urls: the bot
+    process has no browser "origin" to prefix a relative path with (see
+    schemas.BotSubscriptionLinkOut's docstring), so it needs
+    PanelSettings.panel_public_url, set once from Settings. Both fields
+    come back None until an admin configures that - the bot tells the
+    customer support needs to set it up rather than sending a link that
+    can never resolve to anything."""
+    user = _get_user_or_404(db, username, owner_admin_id)
+    settings_row = db.get(models.PanelSettings, 1)
+    base = (settings_row.panel_public_url or "").strip().rstrip("/") if settings_row else ""
+    if not base:
+        return schemas.BotSubscriptionLinkOut()
+    token = user_ops.ensure_subscription_token(db, user)
+    return schemas.BotSubscriptionLinkOut(web_url=f"{base}/s/{token}", app_url=f"{base}/api/subscribe/{token}")
 
 
 @router.post("/users/{username}/purchases/{purchase_id}/renew", response_model=schemas.BotUserResponse)

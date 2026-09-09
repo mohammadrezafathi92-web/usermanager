@@ -28,6 +28,7 @@ const emptyForm = {
   enabled: true,
   bot_enabled: true,
   seller_visible: true,
+  one_time_per_user: false,
   sort_order: 0,
   max_concurrent_sessions: "",
   speed_limit_mbps: "",
@@ -368,6 +369,9 @@ export default function Packages() {
                         {t("packages.sellers")}: {p.seller_visible ? t("status.active") : t("status.disabled")}
                       </span>
                     )}
+                    {p.one_time_per_user && (
+                      <span className="badge bg-amber-50 text-amber-600">{t("packages.oneTimePerUser")}</span>
+                    )}
                   </div>
                 </td>
                 <td className="px-4 py-3">
@@ -464,7 +468,12 @@ export default function Packages() {
               <input type="checkbox" checked={form.seller_visible} onChange={(e) => set("seller_visible", e.target.checked)} />
               {t("packages.showToSellers")}
             </label>
+            <label className="flex items-center gap-2 text-sm text-gray-600">
+              <input type="checkbox" checked={form.one_time_per_user} onChange={(e) => set("one_time_per_user", e.target.checked)} />
+              {t("packages.oneTimePerUser")}
+            </label>
           </div>
+          <div className="text-xs text-gray-400 -mt-2">{t("packages.oneTimePerUserHint")}</div>
 
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldMaxConcurrent")}</label>

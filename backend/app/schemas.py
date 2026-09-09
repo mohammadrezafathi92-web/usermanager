@@ -379,6 +379,17 @@ class SubscriptionLinkOut(BaseModel):
     app_path: str
 
 
+class BotSubscriptionLinkOut(BaseModel):
+    """Bot counterpart of SubscriptionLinkOut - the bot has no browser
+    origin to prefix a relative path with, so this carries ABSOLUTE links
+    built server-side from PanelSettings.panel_public_url instead. Both
+    None when that setting has never been configured - the bot shows the
+    customer a "ask support to set this up" message rather than a broken
+    relative link."""
+    web_url: Optional[str] = None
+    app_url: Optional[str] = None
+
+
 # ---------- User ----------
 class UserBase(BaseModel):
     username: str
@@ -750,6 +761,10 @@ class PackageBase(BaseModel):
     # `enabled` above (which already governs panel visibility for
     # everyone, including the owning Admin); never affects the bot.
     seller_visible: bool = True
+    # See models.Package.one_time_per_user - blocks a CUSTOMER from buying
+    # this package via the bot's self-service purchase endpoints more than
+    # once. Never restricts an admin/seller manually granting it.
+    one_time_per_user: bool = False
     sort_order: int = 0
     # Combined cap across every bundled OpenVPN/L2TP service together (not
     # per service) - copied onto User.max_concurrent_sessions when a user
@@ -795,6 +810,7 @@ class PackageUpdate(BaseModel):
     enabled: Optional[bool] = None
     bot_enabled: Optional[bool] = None
     seller_visible: Optional[bool] = None
+    one_time_per_user: Optional[bool] = None
     sort_order: Optional[int] = None
     max_concurrent_sessions: Optional[int] = None
     speed_limit_mbps: Optional[int] = None
@@ -999,6 +1015,9 @@ class PanelSettingsOut(BaseModel):
     panel_port_changed_at: Optional[dt.datetime] = None
     # Support contact shown by the bot's "🎧 پشتیبانی" button (see models.PanelSettings)
     support_contact_text: Optional[str] = None
+    # See models.PanelSettings.panel_public_url - the panel's own public
+    # address, used to build an absolute subscription link for the bot.
+    panel_public_url: Optional[str] = None
     # Referral program (کد دعوت) reward amounts - all 0 = feature is a no-op
     referral_referrer_reward_credit: int = 0
     referral_referrer_reward_gb: float = 0
@@ -1025,6 +1044,7 @@ class PanelSettingsUpdate(BaseModel):
     ha_peer_url: Optional[str] = None
     ha_peer_api_key: Optional[str] = None
     support_contact_text: Optional[str] = None
+    panel_public_url: Optional[str] = None
     referral_referrer_reward_credit: Optional[int] = None
     referral_referrer_reward_gb: Optional[float] = None
     referral_new_user_reward_credit: Optional[int] = None
@@ -1211,6 +1231,14 @@ class BotCreateUserRequest(BaseModel):
     # `connections` above (all sharing ONE auto-generated purchase batch) -
     # see models.Connection.package_name_snapshot.
     package_name: Optional[str] = None
+    # The customer's own typed label for this (their first) service - see
+    # user_ops.absorb_legacy_pool_into_purchase's `comment` param and
+    # _auto_service_label's docstring for the sequential "اکانت N" fallback
+    # used when this is left empty. Previously this brand-new-signup path
+    # had no field to carry it at all, even though the bot's own purchase
+    # flow (customer.py) already asked for one - it was captured into the
+    # pending-request store and then silently dropped (2026-09-09).
+    comment: Optional[str] = None
     # Set by the built-in bot when a linked group-admin (not the global bot
     # admin list) creates this user - puts them straight into that admin's
     # group, same as creating them from the panel would. None (the sales

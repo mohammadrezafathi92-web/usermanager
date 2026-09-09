@@ -128,6 +128,13 @@ def update_settings(
                 "برای شبکه‌ی داخلی، آدرس خصوصی (۱۹۲.۱۶۸.x.x، ۱۰.x.x.x یا localhost) مجاز است.",
             )
         data["ha_peer_url"] = url
+    if "panel_public_url" in data:
+        # Stored without a trailing slash so routers/bot.py's
+        # get_subscription_link can just concatenate it with the relative
+        # web_path/app_path (which already start with "/") without ever
+        # producing a doubled "//".
+        url = (data["panel_public_url"] or "").strip()
+        data["panel_public_url"] = url.rstrip("/") or None
     for k, v in data.items():
         setattr(row, k, v)
     db.commit()

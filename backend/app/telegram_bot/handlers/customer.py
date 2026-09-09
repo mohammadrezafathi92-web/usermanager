@@ -487,6 +487,42 @@ async def cb_account(call: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     await call.answer()
 
 
+@router.callback_query(MenuCB.filter(F.action == "cust_sublink"))
+async def cb_sublink(call: CallbackQuery, state: FSMContext) -> None:
+    """Sends the customer their OWN subscription link (see routers/
+    subscription.py) - one link that always reflects every Xray/VLESS
+    service on this account combined, for pasting straight into a V2ray-
+    family client instead of importing each service's link by hand.
+    Deliberately account-level (see keyboards.py's purchases_kb), since the
+    underlying endpoint is inherently per-User, not per-connection."""
+    user = await _resolve_account(call, state, call.from_user.id, "cust_account")
+    if user == "ambiguous":
+        return
+    if not user:
+        await call.answer("ابتدا باید یک حساب داشته باشید.", show_alert=True)
+        return
+    try:
+        link = await api.get_subscription_link(user["username"])
+    except ApiError as exc:
+        await call.answer(f"خطا: {exc}", show_alert=True)
+        return
+    app_url = link.get("app_url")
+    if not app_url:
+        await call.answer(
+            "لینک ساب هنوز توسط پشتیبانی تنظیم نشده - لطفاً با پشتیبانی تماس بگیرید.",
+            show_alert=True,
+        )
+        return
+    text = (
+        "🔗 <b>لینک ساب شما</b>\n\n"
+        "این لینک همیشه ثابت است و همه‌ی سرویس‌های V2ray/Xray شما را با هم نشان می‌دهد - "
+        "کافی است آن را در برنامه‌ی وی‌پی‌ان خود به‌عنوان Subscribe اضافه کنید:\n\n"
+        f"<code>{app_url}</code>"
+    )
+    await call.message.answer(text)
+    await call.answer()
+
+
 @router.callback_query(MenuCB.filter(F.action == "cust_support"))
 async def cb_support(call: CallbackQuery) -> None:
     """Static support text/contact the admin sets from the panel's Settings

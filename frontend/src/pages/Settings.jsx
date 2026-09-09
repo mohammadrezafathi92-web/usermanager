@@ -10,6 +10,7 @@ import Modal from "../components/Modal.jsx";
 import {
   changePassword,
   changeUsername,
+  changeTelegramId,
   fetchApiKeys,
   createApiKey,
   toggleApiKey,
@@ -221,7 +222,7 @@ function TimezoneCard({ t }) {
 // so there is no longer a switch here to show.
 
 export default function Settings() {
-  const { isSuperadmin, isAdminOrAbove, username, refreshMe } = useAuth();
+  const { isSuperadmin, isAdminOrAbove, username, telegramId, refreshMe } = useAuth();
   const { t, language } = useLanguage();
 
   // Menu audit (3-tier hierarchy, task #26): tab visibility no longer
@@ -266,6 +267,13 @@ export default function Settings() {
   const [usernameMessage, setUsernameMessage] = useState(null);
   const [savingUsername, setSavingUsername] = useState(false);
 
+  const [telegramIdInput, setTelegramIdInput] = useState("");
+  const [telegramIdMessage, setTelegramIdMessage] = useState(null);
+  const [savingTelegramId, setSavingTelegramId] = useState(false);
+  useEffect(() => {
+    setTelegramIdInput(telegramId ? String(telegramId) : "");
+  }, [telegramId]);
+
   const [keys, setKeys] = useState([]);
   const [keyModalOpen, setKeyModalOpen] = useState(false);
   const [newLabel, setNewLabel] = useState("");
@@ -284,7 +292,7 @@ export default function Settings() {
 
   const [payment, setPayment] = useState({
     payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "",
-    support_contact_text: "",
+    support_contact_text: "", panel_public_url: "",
     referral_referrer_reward_credit: 0, referral_referrer_reward_gb: 0,
     referral_new_user_reward_credit: 0, referral_new_user_reward_gb: 0,
     loyalty_purchase_threshold: 0, loyalty_reward_credit: 0, loyalty_reward_gb: 0,
@@ -504,6 +512,22 @@ export default function Settings() {
       setUsernameMessage({ type: "err", text: err?.response?.data?.detail || t("settings.msgUsernameChangeError") });
     } finally {
       setSavingUsername(false);
+    }
+  };
+
+  const submitTelegramId = async (e) => {
+    e.preventDefault();
+    setSavingTelegramId(true);
+    setTelegramIdMessage(null);
+    try {
+      const trimmed = telegramIdInput.trim();
+      await changeTelegramId(trimmed ? Number(trimmed) : null);
+      await refreshMe();
+      setTelegramIdMessage({ type: "ok", text: t("settings.msgTelegramIdSaved") });
+    } catch (err) {
+      setTelegramIdMessage({ type: "err", text: err?.response?.data?.detail || t("settings.msgSaveError") });
+    } finally {
+      setSavingTelegramId(false);
     }
   };
 
@@ -872,6 +896,35 @@ export default function Settings() {
 
         <div className="card">
           <div className="flex items-center gap-2 mb-4">
+            <Bot size={18} className="text-brand-600" />
+            <h3 className="font-bold text-gray-700">{t("settings.myTelegramId")}</h3>
+          </div>
+          <p className="text-xs text-gray-400 mb-4">{t("settings.myTelegramIdHint")}</p>
+          <form onSubmit={submitTelegramId} className="space-y-4">
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">{t("settings.telegramIdLabel")}</label>
+              <input
+                type="number"
+                className="input"
+                dir="ltr"
+                placeholder={t("settings.telegramIdPlaceholder")}
+                value={telegramIdInput}
+                onChange={(e) => setTelegramIdInput(e.target.value)}
+              />
+            </div>
+            {telegramIdMessage && (
+              <div className={`text-sm rounded-lg px-3 py-2 ${telegramIdMessage.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+                {telegramIdMessage.text}
+              </div>
+            )}
+            <button type="submit" disabled={savingTelegramId} className="btn-primary">
+              {savingTelegramId ? t("settings.saving") : t("settings.saveTelegramId")}
+            </button>
+          </form>
+        </div>
+
+        <div className="card">
+          <div className="flex items-center gap-2 mb-4">
             <Info size={18} className="text-brand-600" />
             <h3 className="font-bold text-gray-700">{t("settings.configTips")}</h3>
           </div>
@@ -992,6 +1045,20 @@ export default function Settings() {
               onChange={(e) => setPayment((p) => ({ ...p, support_contact_text: e.target.value }))}
             />
           </div>
+
+          {isSuperadmin && (
+            <div className="md:col-span-2">
+              <label className="block text-sm text-gray-600 mb-1">{t("settings.panelPublicUrl")}</label>
+              <input
+                className="input"
+                dir="ltr"
+                placeholder="https://panel.example.com"
+                value={payment.panel_public_url || ""}
+                onChange={(e) => setPayment((p) => ({ ...p, panel_public_url: e.target.value }))}
+              />
+              <p className="text-xs text-gray-400 mt-1">{t("settings.panelPublicUrlHint")}</p>
+            </div>
+          )}
 
           <div className="md:col-span-2 border-t border-gray-100 dark:border-slate-800 pt-3 mt-1">
             <p className="text-sm font-medium text-gray-600 mb-2">{t("settings.referralTitle")}</p>

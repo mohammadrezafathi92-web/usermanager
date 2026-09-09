@@ -439,6 +439,10 @@ def purchases_kb(groups: list[dict]) -> InlineKeyboardMarkup:
             kb.button(text=g["label"], callback_data=ConnectionCB(connection_id=g["connections"][0]["id"]))
         else:
             kb.button(text=g["label"], callback_data=PurchaseCB(key=g["key"]))
+    # One link per CUSTOMER (covers every Xray/VLESS service combined - see
+    # routers/subscription.py), not per purchase/connection, so it sits
+    # here at the account level rather than inside any one group's submenu.
+    kb.button(text="🔗 دریافت لینک ساب", callback_data=MenuCB(action="cust_sublink"))
     kb.button(text="🏠 منوی اصلی", callback_data=MenuCB(action="home"))
     kb.adjust(1)
     return kb.as_markup()

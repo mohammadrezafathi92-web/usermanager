@@ -151,6 +151,15 @@ class PanelBridge:
             return None
         return _dump(schemas.PaymentCardOut.model_validate(card))
 
+    async def get_subscription_link(self, username: str, owner_admin_id: Optional[int] = None) -> dict:
+        """Absolute web/app subscription urls for the bot's "🔗 دریافت لینک
+        ساب" button - see routers/bot.py's get_bot_subscription_link.
+        Already returns a real Pydantic model (BotSubscriptionLinkOut), not
+        a bare ORM row, so _dump() converts it the same way it does any
+        other schema return here - no explicit .model_validate() needed
+        (unlike get_payment_card above, which returns a raw ORM object)."""
+        return _dump(await _call(bot_router.get_bot_subscription_link, username, owner_admin_id=_scope(owner_admin_id)))
+
     async def get_sales_stats(self, owner_admin_id: Optional[int] = None) -> dict:
         """Sales summary for the bot's admin report screen - see
         routers/bot.py's get_sales_stats."""
@@ -265,6 +274,7 @@ class PanelBridge:
         package_name: Optional[str] = None,
         package_id: Optional[int] = None,
         sale_info: Optional[dict] = None,
+        comment: Optional[str] = None,
     ) -> dict:
         payload = schemas.BotCreateUserRequest(
             username=username,
@@ -276,6 +286,7 @@ class PanelBridge:
             owner_admin_id=_scope(owner_admin_id),
             package_name=package_name,
             package_id=package_id,
+            comment=comment,
             **(sale_info or {}),
         )
         return _dump(await _call(bot_router.create_user, payload))

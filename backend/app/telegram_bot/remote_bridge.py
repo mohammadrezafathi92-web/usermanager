@@ -109,6 +109,12 @@ class RemoteBridge:
         except ApiError:
             return None
 
+    async def get_subscription_link(self, username: str, owner_admin_id: Optional[int] = None) -> dict:
+        """See panel_bridge.PanelBridge's version - same contract, reached
+        over HTTP here."""
+        params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
+        return await self._call("GET", f"/users/{username}/subscription-link", params=params) or {}
+
     async def get_sales_stats(self, owner_admin_id: Optional[int] = None) -> dict:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         return await self._call("GET", "/sales-stats", params=params) or {}
@@ -182,6 +188,7 @@ class RemoteBridge:
         package_name: Optional[str] = None,
         package_id: Optional[int] = None,
         sale_info: Optional[dict] = None,
+        comment: Optional[str] = None,
     ) -> dict:
         payload = {
             "username": username,
@@ -193,6 +200,7 @@ class RemoteBridge:
             "owner_admin_id": owner_admin_id,
             "package_name": package_name,
             "package_id": package_id,
+            "comment": comment,
             **(sale_info or {}),
         }
         return await self._call("POST", "/users", json=payload)

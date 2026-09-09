@@ -1200,6 +1200,20 @@ class Package(Base):
     # Telegram bot in any way (see bot_enabled above for that) - this is
     # panel-only, checked in routers/packages.py's list_packages.
     seller_visible = Column(Boolean, nullable=False, default=True)
+    # For a trial/heavily-discounted package an admin does not want resold
+    # to the same customer over and over: once True, routers/bot.py's
+    # customer-facing purchase endpoints (create_user/purchase_package -
+    # the ONLY self-service purchase surfaces, see their docstrings) refuse
+    # a repeat purchase of THIS package by anyone who already has a
+    # Purchase row for it, checked across every account tied to the same
+    # Telegram id (not just the one username being bought under) so the
+    # limit can't be dodged by signing up a second account - same reasoning
+    # as User.purchases_blocked's cross-account check. Deliberately NOT
+    # enforced in routers/users.py's apply_package/create_user (the admin
+    # panel's own "افزودن پکیج"/user-creation) - an admin or seller can
+    # always manually grant this package again; the limit is only ever on
+    # the customer buying it themselves.
+    one_time_per_user = Column(Boolean, nullable=False, default=False)
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime, default=now)
 
@@ -1476,6 +1490,21 @@ class PanelSettings(Base):
     # support info isn't configured yet, rather than hiding the button
     # entirely (simpler than threading "is this set?" into every menu build).
     support_contact_text = Column(Text, nullable=True)
+
+    # ---------------------------------------------------------------------
+    # The panel's own public address (e.g. https://panel.example.com or
+    # http://1.2.3.4:8080), WITHOUT a trailing slash - needed to turn
+    # routers/subscription.py's relative web_path/app_path (see
+    # schemas.SubscriptionLinkOut) into an absolute link the Telegram bot
+    # can actually send a customer (see routers/bot.py's
+    # get_subscription_link / telegram_bot/handlers/customer.py's
+    # "🔗 دریافت لینک ساب"). The admin-panel FRONTEND never needed this -
+    # UserDetail.jsx already had a real browser location to read
+    # (window.location.origin) - but nothing server-side (the bot process)
+    # has any notion of "what domain am I reachable at", so it has to be
+    # typed in once. NULL/empty = the bot tells the customer this isn't
+    # configured yet instead of sending a broken relative path.
+    panel_public_url = Column(String(255), nullable=True)
 
     # ---------------------------------------------------------------------
     # Referral program (کد دعوت): every User gets a unique referral_code

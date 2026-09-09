@@ -84,6 +84,7 @@ export default function Packages() {
   const [editingPriceId, setEditingPriceId] = useState(null);
   const [priceDraft, setPriceDraft] = useState("");
   const [priceSaving, setPriceSaving] = useState(false);
+  const [priceError, setPriceError] = useState("");
 
   const load = () => fetchPackages().then((res) => setItems(res.data));
   useEffect(() => {
@@ -107,6 +108,14 @@ export default function Packages() {
     perGbRate > 0 && Number(form.quota_gb) > 0 ? Math.round(Number(form.quota_gb) * perGbRate) : null;
   const belowFloor =
     costFloor !== null && form.cooperation_price !== "" && Number(form.cooperation_price) < costFloor;
+
+  // The package's own retail price must never undercut what it actually
+  // costs (see routers/packages.py's _effective_package_cost/
+  // _check_price_floor) - the real per-GB cost when one is configured,
+  // otherwise whatever cooperation_price was typed above.
+  const priceFloor =
+    costFloor !== null ? costFloor : form.cooperation_price !== "" ? Number(form.cooperation_price) : null;
+  const belowPriceFloor = priceFloor !== null && Number(form.price) < priceFloor;
 
   const nodeName = (id) => nodes.find((n) => n.id === Number(id))?.name || `#${id}`;
 
@@ -238,17 +247,27 @@ export default function Packages() {
   const startEditPrice = (pkg) => {
     setEditingPriceId(pkg.id);
     setPriceDraft(pkg.my_price != null ? String(pkg.my_price) : String(pkg.price));
+    setPriceError("");
   };
   const cancelEditPrice = () => {
     setEditingPriceId(null);
     setPriceDraft("");
+    setPriceError("");
   };
   const saveMyPrice = async (pkgId) => {
     setPriceSaving(true);
+    setPriceError("");
     try {
       await setMyPackagePrice(pkgId, priceDraft === "" ? null : Number(priceDraft));
       await load();
       cancelEditPrice();
+    } catch (err) {
+      // The backend refuses a resale price below the package's cooperation
+      // cost (routers/packages.py's _check_price_floor) - without this the
+      // editor just silently stayed open with the rejected value still in
+      // it and no explanation, identical in spirit to the delete-button
+      // bug already fixed once on this same page.
+      setPriceError(err?.response?.data?.detail || t("packages.saveError"));
     } finally {
       setPriceSaving(false);
     }
@@ -334,25 +353,33 @@ export default function Packages() {
                     </div>
                   )}
                   {isSeller && editingPriceId === p.id && (
-                    <div className="flex items-center gap-1" dir="ltr">
-                      <MoneyInput
-                        autoFocus
-                        small
-                        className="w-28"
-                        value={priceDraft}
-                        onChange={setPriceDraft}
-                      />
-                      <button disabled={priceSaving} title={t("common.save")} onClick={() => saveMyPrice(p.id)} className="text-emerald-500 hover:text-emerald-600">
-                        <Check size={16} />
-                      </button>
-                      <button disabled={priceSaving} title={t("common.cancel")} onClick={cancelEditPrice} className="text-gray-400 hover:text-gray-600">
-                        <X size={16} />
-                      </button>
-                      {p.my_price != null && (
-                        <button disabled={priceSaving} title={t("packages.resetMyPrice")} onClick={() => clearMyPrice(p.id)} className="text-xs text-gray-400 hover:text-red-500 underline">
-                          {t("packages.resetMyPrice")}
+                    <div dir="ltr">
+                      <div className="flex items-center gap-1">
+                        <MoneyInput
+                          autoFocus
+                          small
+                          className="w-28"
+                          value={priceDraft}
+                          onChange={(v) => { setPriceDraft(v); setPriceError(""); }}
+                        />
+                        <button disabled={priceSaving} title={t("common.save")} onClick={() => saveMyPrice(p.id)} className="text-emerald-500 hover:text-emerald-600">
+                          <Check size={16} />
                         </button>
+                        <button disabled={priceSaving} title={t("common.cancel")} onClick={cancelEditPrice} className="text-gray-400 hover:text-gray-600">
+                          <X size={16} />
+                        </button>
+                        {p.my_price != null && (
+                          <button disabled={priceSaving} title={t("packages.resetMyPrice")} onClick={() => clearMyPrice(p.id)} className="text-xs text-gray-400 hover:text-red-500 underline">
+                            {t("packages.resetMyPrice")}
+                          </button>
+                        )}
+                      </div>
+                      {p.cooperation_price != null && priceDraft !== "" && Number(priceDraft) < p.cooperation_price && (
+                        <div className="text-xs mt-1 text-red-600 font-medium" dir="rtl">
+                          {t("packages.priceBelowCost", { floor: formatToman(p.cooperation_price) })}
+                        </div>
                       )}
+                      {priceError && <div className="text-xs mt-1 text-red-600" dir="rtl">{priceError}</div>}
                     </div>
                   )}
                 </td>
@@ -424,6 +451,11 @@ export default function Packages() {
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldPrice")}</label>
               <MoneyInput value={form.price} onChange={(v) => set("price", v === "" ? 0 : Number(v))} />
+              {belowPriceFloor && (
+                <div className="text-xs mt-1 text-red-600 font-medium">
+                  {t("packages.priceBelowCost", { floor: formatToman(priceFloor) })}
+                </div>
+              )}
             </div>
           </div>
 

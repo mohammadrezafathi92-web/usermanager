@@ -64,6 +64,42 @@ def _check_cooperation_floor(admin: models.AdminUser, quota_gb, cooperation_pric
     )
 
 
+def _effective_package_cost(owner_admin, quota_gb, cooperation_price) -> int | None:
+    """The real floor nobody reselling this package - the owning Admin's
+    own retail `price`, or a level-3 Seller's own `my_price` override
+    (routers/packages.py's set_my_package_price) - may go under without
+    taking a loss.
+
+    Requested 2026-09-09: recomputed fresh from the owning Admin's own
+    per-GB rate (admin_billing.minimum_cooperation_price) when they are
+    billed that way, the same reasoning _check_cooperation_floor already
+    uses to validate cooperation_price itself - a per-GB rate is the
+    CURRENT truth, more reliable than trusting a flat cooperation_price
+    that may have gone stale since the rate last changed. Falls back to
+    the flat cooperation_price when there is no per-GB rate (a fixed-price
+    Admin, or a superadmin's own global package with no owner at all).
+    None when neither is available - nothing to enforce."""
+    if owner_admin is not None:
+        per_gb_floor = admin_billing.minimum_cooperation_price(owner_admin, quota_gb)
+        if per_gb_floor is not None:
+            return per_gb_floor
+    return cooperation_price
+
+
+def _check_price_floor(floor: int | None, price, *, field_label: str) -> None:
+    """Shared by create_package/update_package (the Admin's own retail
+    `price`) and set_my_package_price (a Seller's own `my_price`) - see
+    _effective_package_cost's docstring for what `floor` is."""
+    if floor is None or price is None:
+        return
+    if int(price) < floor:
+        raise HTTPException(
+            400,
+            f"{field_label} نمی‌تواند کمتر از قیمت همکاری این پکیج ({floor:,} تومان) باشد - "
+            "فروش زیر این عدد یعنی ضرر کردن در همان لحظه‌ی فروش.",
+        )
+
+
 def _out(pkg: models.Package, my_price: int | None = None) -> models.Package:
     """Bolts the owner's username (and, for a Seller caller, their own
     resale price override - see models.PackageSellerPrice) onto the ORM
@@ -204,6 +240,10 @@ def list_packages(db: Session = Depends(get_db), admin: models.AdminUser = Depen
 def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     _require_package_manager(admin)
     _check_cooperation_floor(admin, payload.quota_gb, payload.cooperation_price)
+    _check_price_floor(
+        _effective_package_cost(admin, payload.quota_gb, payload.cooperation_price),
+        payload.price, field_label="قیمت پکیج",
+    )
     data = payload.model_dump(exclude={"connections", "ovpn_templates"})
     # owner_admin_id is always derived from who's creating it, never taken
     # from the payload - a superadmin's packages stay global (NULL), a
@@ -233,6 +273,12 @@ def update_package(package_id: int, payload: schemas.PackageUpdate, db: Session 
         admin,
         data.get("quota_gb", pkg.quota_gb),
         data.get("cooperation_price", pkg.cooperation_price),
+    )
+    _check_price_floor(
+        _effective_package_cost(
+            admin, data.get("quota_gb", pkg.quota_gb), data.get("cooperation_price", pkg.cooperation_price),
+        ),
+        data.get("price", pkg.price), field_label="قیمت پکیج",
     )
     data.pop("owner_admin_id", None)  # ownership never changes via this endpoint
     for k, v in data.items():
@@ -335,6 +381,16 @@ def set_my_package_price(
 
     if payload.price < 0:
         raise HTTPException(400, "قیمت نمی‌تواند منفی باشد")
+    # The floor is computed from the PACKAGE OWNER's own rate (the Admin
+    # who set cooperation_price on it), never this Seller's own account -
+    # see _effective_package_cost's docstring; a Seller has no wholesale
+    # rate of their own to fall back to (admin_billing.minimum_
+    # cooperation_price's docstring), so this always resolves to either
+    # the owning Admin's per-GB cost or the package's flat cooperation_price.
+    _check_price_floor(
+        _effective_package_cost(pkg.owner_admin, pkg.quota_gb, pkg.cooperation_price),
+        payload.price, field_label="قیمت فروش شما",
+    )
     if row:
         row.price = payload.price
     else:

@@ -276,6 +276,27 @@ def delete_package(package_id: int, db: Session = Depends(get_db), admin: models
         {"reserved_package_id": None}, synchronize_session=False
     )
 
+    # PackageOvpnTemplate.package_id and PackageSellerPrice.package_id DO
+    # both carry ondelete="CASCADE" in models.py - but that DDL only ever
+    # actually lands on the live database at the moment SQLAlchemy first
+    # CREATEs that table (create_all()). Neither table gets its
+    # constraints re-checked/re-applied afterward - main.py's own
+    # auto-migration only ever ADDs a missing COLUMN to an EXISTING table,
+    # it never ALTERs an existing constraint - so an install whose
+    # database predates either column gaining that clause could easily be
+    # running with a plain (RESTRICT-by-default) foreign key today despite
+    # what the current models.py says, and would hit the exact same
+    # "پاک نمی‌شود، هیچ خطایی هم نمی‌دهد" failure this whole block exists
+    # to prevent. Neither relationship is ORM-cascaded either (no
+    # cascade="all, delete-orphan" the way connections/files above have) -
+    # deleted explicitly here rather than trusted to either layer.
+    db.query(models.PackageOvpnTemplate).filter(models.PackageOvpnTemplate.package_id == pkg.id).delete(
+        synchronize_session=False
+    )
+    db.query(models.PackageSellerPrice).filter(models.PackageSellerPrice.package_id == pkg.id).delete(
+        synchronize_session=False
+    )
+
     db.delete(pkg)
     db.commit()
     return {"ok": True}

@@ -381,6 +381,22 @@ def list_packages(owner_admin_id: Optional[int] = None, db: Session = Depends(ge
         q = q.filter(models.Package.owner_admin_id.is_(None))
 
     pkgs = q.order_by(models.Package.sort_order, models.Package.id).all()
+    if target is not None and hierarchy.role(target) == hierarchy.ROLE_SELLER:
+        # Same restriction as routers/packages.py's panel list_packages -
+        # an Admin can keep a package for their own use without handing it
+        # to this Seller at all, and that has to hold everywhere this
+        # Seller's owner_admin_id reaches: both the shared bot's
+        # admin-menu package pickers (telegram_bot/handlers/admin_users.py,
+        # the Seller creating/renewing a purchase for their own customer)
+        # AND the Seller's OWN dedicated bot's customer-facing checkout
+        # (AdminUser.own_bot_token) - both land in this exact function with
+        # the same owner_admin_id, indistinguishable from here. Reported
+        # 2026-09-09: seller_visible=False hid a package on the panel's
+        # Packages page but it still showed up (and was purchasable) in the
+        # bot either way - models.Package.seller_visible's docstring
+        # claimed this was panel-only by design; it wasn't meant to leave
+        # the bot as a back door around it.
+        pkgs = [p for p in pkgs if p.seller_visible]
     for p in pkgs:
         if p.id in seller_prices:
             # In-memory only, on this freshly-queried (never committed)

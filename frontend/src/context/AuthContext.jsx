@@ -8,6 +8,10 @@ export function AuthProvider({ children }) {
   const [token, setToken] = useState(() => localStorage.getItem("um_token"));
   const [adminId, setAdminId] = useState(null);
   const [username, setUsername] = useState(null);
+  // This account's own linked Telegram id (models.AdminUser.telegram_id),
+  // for Settings.jsx's self-service "change-telegram-id" field - see
+  // routers/auth.py's change_telegram_id.
+  const [telegramId, setTelegramId] = useState(null);
   const [isSuperadmin, setIsSuperadmin] = useState(false);
   // 3-tier hierarchy role ("superadmin" | "admin" | "seller" - see backend
   // services/hierarchy.py). A level-2 "admin" gets the exact same full
@@ -43,6 +47,7 @@ export function AuthProvider({ children }) {
     setDisplayOffset(data.display_utc_offset_minutes);
     setAdminId(data.id ?? null);
     setUsername(data.username);
+    setTelegramId(data.telegram_id ?? null);
     setIsSuperadmin(!!data.is_superadmin);
     setRole(data.role || (data.is_superadmin ? "superadmin" : "seller"));
     setPermissions(data.permissions || []);
@@ -131,7 +136,7 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider
-      value={{ build, wallet, passwordIsDefault, license, refreshMe, token, adminId, username, isSuperadmin, role, isAdminOrAbove, permissions, can, canAny, loading, login, logout }}
+      value={{ build, wallet, passwordIsDefault, license, refreshMe, token, adminId, username, telegramId, isSuperadmin, role, isAdminOrAbove, permissions, can, canAny, loading, login, logout }}
     >
       {children}
     </AuthContext.Provider>

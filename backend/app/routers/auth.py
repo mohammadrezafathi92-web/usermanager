@@ -1,4 +1,5 @@
 import datetime as dt
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -22,6 +23,12 @@ class ChangePasswordRequest(BaseModel):
 class ChangeUsernameRequest(BaseModel):
     current_password: str
     new_username: str
+
+
+class ChangeTelegramIdRequest(BaseModel):
+    # int, not str: BigInteger column, and 0/None both mean "unlink" - see
+    # change_telegram_id's docstring.
+    telegram_id: Optional[int] = None
 
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -184,6 +191,9 @@ def me(admin: models.AdminUser = Depends(get_current_admin)):
     return {
         "id": admin.id,
         "username": admin.username,
+        # For Settings.jsx's self-service "آیدی تلگرام" field (see
+        # change_telegram_id below) to show the currently-linked id, if any.
+        "telegram_id": admin.telegram_id,
         "is_superadmin": admin.is_superadmin,
         "role": hierarchy.role(admin),
         "permissions": sorted(effective_permissions(admin)),
@@ -291,3 +301,42 @@ def change_username(
     admin.username = new_username
     db.commit()
     return {"ok": True, "username": admin.username, "access_token": create_access_token(admin.username)}
+
+
+@router.post("/change-telegram-id")
+def change_telegram_id(
+    payload: ChangeTelegramIdRequest,
+    admin: models.AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Self-service link/unlink of the LOGGED-IN admin's own Telegram id
+    (models.AdminUser.telegram_id) - this is what telegram_bot/admin_scope.py's
+    resolve_admin_scope keys off of to decide "is this Telegram user an
+    admin, and whose customers do they see" (see that module's docstring).
+
+    Before this, the ONLY way to set it was routers/admins.py's update_admin
+    - reachable by a superadmin for any Admin/Seller, or by a level-2 Admin
+    for their OWN Sellers (services/hierarchy.py's can_create_sub_admin
+    scope), but never by an account for ITSELF: `_scope_or_403` there
+    requires `target.parent_admin_id == current.id`, which is never true
+    for `target == current`. So a level-2 Admin (and, since update_admin
+    also flatly refuses to touch a superadmin row at all, even a
+    superadmin) had no way to set their OWN telegram_id without asking
+    someone else to do it via the database directly - reported 2026-09-09.
+    Every account, including the superadmin, can now do this for itself
+    here, same universality as change_username above.
+
+    0 is treated as "unlink", same convention update_admin's telegram_id
+    handling already uses - 0 is never a real Telegram user id."""
+    tg_id = payload.telegram_id or None
+    if tg_id:
+        clash = (
+            db.query(models.AdminUser)
+            .filter(models.AdminUser.telegram_id == tg_id, models.AdminUser.id != admin.id)
+            .first()
+        )
+        if clash:
+            raise HTTPException(400, f"این آیدی تلگرام قبلا برای ادمین «{clash.username}» ثبت شده است")
+    admin.telegram_id = tg_id
+    db.commit()
+    return {"ok": True, "telegram_id": admin.telegram_id}

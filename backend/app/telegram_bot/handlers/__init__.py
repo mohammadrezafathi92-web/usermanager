@@ -22,7 +22,10 @@ def _detach(router: Router) -> None:
 
 def build_router() -> Router:
     root = Router(name="root")
-    for r in (start.router, admin_users.router, admin_pending.router, admin_broadcast.router, customer.router, tutorials.router):
+    for r in (
+        start.router, admin_users.router, admin_pending.router, admin_pending.approval_router,
+        admin_broadcast.router, customer.router, tutorials.router,
+    ):
         _detach(r)
         root.include_router(r)
     return root

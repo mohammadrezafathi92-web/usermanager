@@ -54,6 +54,26 @@ def _filters(scope: dict | None) -> tuple:
 router.message.filter(_is_admin_filter)
 router.callback_query.filter(_is_admin_filter)
 
+# Separate, more narrowly-scoped router for JUST the Approve/Reject button
+# (see cb_approval below) - deliberately NOT gated by the router-level
+# _is_admin_filter above. A payment card's approval_telegram_id (see
+# models.PaymentCard, set from Settings > چند شماره کارت) is not
+# necessarily a recognized admin at all - it might be some other numeric
+# Telegram id the admin wants receipts for THIS card copied to. Before
+# this, that id's copy of the receipt looked completely real (same photo,
+# same buttons - telegram_bot/handlers/customer.py's _notify_targets
+# already sent it there) but tapping either button did nothing: the
+# router-level filter below rejected the callback before cb_approval ever
+# ran, and a rejected router filter means aiogram just moves on to try
+# other routers - nothing answers the callback, nothing is logged, so it
+# looked to the user exactly like a dead button. cb_approval itself now
+# checks two independent ways to be allowed to act (see _approval_actor) -
+# a recognized admin, same as before, OR someone whose Telegram id matches
+# the SPECIFIC card this ONE request's receipt was shown against. The
+# latter grants no access beyond that single button tap: they cannot list
+# pending requests, use /pending, or reach anything else in `router` above.
+approval_router = Router(name="admin_pending_approval")
+
 
 def _pending_summary(p: dict) -> str:
     who = f"@{p['telegram_username']}" if p.get("telegram_username") else p.get("telegram_name") or str(p["telegram_id"])
@@ -349,10 +369,41 @@ async def perform_approval(pending: dict, bot: Bot) -> tuple[bool, str]:
     return True, "✅ تایید و فعال‌سازی شد."
 
 
-@router.callback_query(ApprovalCB.filter())
+async def _approval_actor(request_id: int, telegram_id: int) -> tuple[bool, bool, dict | None]:
+    """Who is allowed to act on ONE specific approval callback, and how.
+
+    Returns (allowed, is_full_admin, scope):
+    - A recognized admin (resolve_admin_scope) is allowed as before, still
+      subject to the normal owner_ids/may_handle ownership check in
+      cb_approval below - unchanged behaviour.
+    - Someone who is NOT a recognized admin at all can still be allowed,
+      but ONLY for THIS ONE pending request, and ONLY if their Telegram id
+      is exactly the approval_telegram_id of the SPECIFIC PaymentCard this
+      request's receipt was shown against (models.PaymentCard) - they were
+      deliberately given a copy of the receipt to decide on, so the button
+      has to actually work for them. This grants nothing beyond that one
+      request: no ownership scope, no access to any other handler in
+      `router` above (list/history/etc. stay admin-only)."""
+    scope = await resolve_admin_scope(telegram_id)
+    if scope and scope["is_full_admin"]:
+        return True, True, scope
+
+    pending = storage.get_pending(request_id)
+    card_id = pending.get("payment_card_id") if pending else None
+    if card_id:
+        try:
+            card = await api.get_payment_card(card_id)
+        except ApiError:
+            card = None
+        if card and card.get("approval_telegram_id") == telegram_id:
+            return True, False, None
+    return False, False, None
+
+
+@approval_router.callback_query(ApprovalCB.filter())
 async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) -> None:
-    scope = await _scope_of(call)
-    if not scope or not scope["is_full_admin"]:
+    allowed, is_full_admin, scope = await _approval_actor(callback_data.request_id, call.from_user.id)
+    if not allowed:
         await call.answer("دسترسی ندارید", show_alert=True)
         return
 
@@ -361,14 +412,20 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
         await call.answer("این درخواست قبلا رسیدگی شده است", show_alert=True)
         return
 
-    # Re-checked here and not only when the list was drawn: this arrives as
-    # a callback carrying a request id, and an id is guessable. Without it
-    # any admin could approve a sale belonging to another admin's customer
-    # by pressing a button meant for someone else.
-    owner_ids, include_unowned = _filters(scope)
-    if not storage.may_handle(pending, owner_ids, include_unowned):
-        await call.answer("این درخواست مربوط به مجموعه‌ی شما نیست", show_alert=True)
-        return
+    if is_full_admin:
+        # Re-checked here and not only when the list was drawn: this
+        # arrives as a callback carrying a request id, and an id is
+        # guessable. Without it any admin could approve a sale belonging
+        # to another admin's customer by pressing a button meant for
+        # someone else. A card-approval-id actor (is_full_admin False)
+        # has no owner_ids of their own to check against - _approval_actor
+        # above already scoped them to exactly this one request via the
+        # card match, which is a narrower guarantee than this check gives
+        # a real admin, not a weaker one.
+        owner_ids, include_unowned = _filters(scope)
+        if not storage.may_handle(pending, owner_ids, include_unowned):
+            await call.answer("این درخواست مربوط به مجموعه‌ی شما نیست", show_alert=True)
+            return
 
     # Atomically claim this request before doing anything else - if two
     # admins tap Approve/Reject on the same request at nearly the same time

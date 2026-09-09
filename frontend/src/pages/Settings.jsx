@@ -1048,7 +1048,7 @@ export default function Settings() {
 
           {isSuperadmin && (
             <div className="md:col-span-2">
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.panelPublicUrl")}</label>
+              <label className="block text-sm text-gray-600 mb-1">{t("settings.subLinkBaseUrl")}</label>
               <input
                 className="input"
                 dir="ltr"
@@ -1056,7 +1056,7 @@ export default function Settings() {
                 value={payment.panel_public_url || ""}
                 onChange={(e) => setPayment((p) => ({ ...p, panel_public_url: e.target.value }))}
               />
-              <p className="text-xs text-gray-400 mt-1">{t("settings.panelPublicUrlHint")}</p>
+              <p className="text-xs text-gray-400 mt-1">{t("settings.subLinkBaseUrlHint")}</p>
             </div>
           )}
 

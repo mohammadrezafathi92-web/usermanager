@@ -27,6 +27,7 @@ const emptyForm = {
   description: "",
   enabled: true,
   bot_enabled: true,
+  seller_visible: true,
   sort_order: 0,
   max_concurrent_sessions: "",
   speed_limit_mbps: "",
@@ -362,6 +363,11 @@ export default function Packages() {
                     <span className={`badge ${p.bot_enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
                       {t("packages.bot")}: {p.bot_enabled ? t("status.active") : t("status.disabled")}
                     </span>
+                    {!isSeller && (
+                      <span className={`badge ${p.seller_visible ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                        {t("packages.sellers")}: {p.seller_visible ? t("status.active") : t("status.disabled")}
+                      </span>
+                    )}
                   </div>
                 </td>
                 <td className="px-4 py-3">
@@ -445,7 +451,7 @@ export default function Packages() {
               <input type="number" className="input" value={form.sort_order} onChange={(e) => set("sort_order", Number(e.target.value))} />
             </div>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <label className="flex items-center gap-2 text-sm text-gray-600">
               <input type="checkbox" checked={form.enabled} onChange={(e) => set("enabled", e.target.checked)} />
               {t("packages.showInPanel")}
@@ -453,6 +459,10 @@ export default function Packages() {
             <label className="flex items-center gap-2 text-sm text-gray-600">
               <input type="checkbox" checked={form.bot_enabled} onChange={(e) => set("bot_enabled", e.target.checked)} />
               {t("packages.showInBot")}
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-600">
+              <input type="checkbox" checked={form.seller_visible} onChange={(e) => set("seller_visible", e.target.checked)} />
+              {t("packages.showToSellers")}
             </label>
           </div>
 

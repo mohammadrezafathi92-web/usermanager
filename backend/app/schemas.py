@@ -745,6 +745,11 @@ class PackageBase(BaseModel):
     description: Optional[str] = None
     enabled: bool = True  # visible in the web panel's package pickers
     bot_enabled: bool = True  # visible in the Telegram bot's package picker
+    # See models.Package.seller_visible - whether this Admin's own level-3
+    # Sellers can see/use this package in the WEB PANEL. Independent of
+    # `enabled` above (which already governs panel visibility for
+    # everyone, including the owning Admin); never affects the bot.
+    seller_visible: bool = True
     sort_order: int = 0
     # Combined cap across every bundled OpenVPN/L2TP service together (not
     # per service) - copied onto User.max_concurrent_sessions when a user
@@ -789,6 +794,7 @@ class PackageUpdate(BaseModel):
     description: Optional[str] = None
     enabled: Optional[bool] = None
     bot_enabled: Optional[bool] = None
+    seller_visible: Optional[bool] = None
     sort_order: Optional[int] = None
     max_concurrent_sessions: Optional[int] = None
     speed_limit_mbps: Optional[int] = None

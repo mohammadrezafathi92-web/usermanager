@@ -1187,6 +1187,19 @@ class Package(Base):
     # as a self-serve bot purchase option, or vice versa).
     enabled = Column(Boolean, default=True)
     bot_enabled = Column(Boolean, default=True)
+    # Whether this Admin's own level-3 Sellers can see/use this package in
+    # the WEB PANEL (create-user / renew-quick-action dropdowns, and the
+    # Packages.jsx list itself) - independent of `enabled` above, which
+    # already governs those same dropdowns for everyone including the
+    # owning Admin. False lets an Admin keep a package for their OWN use
+    # only (e.g. an internally-negotiated deal) without handing it to
+    # every Seller underneath them, without needing to disable it
+    # panel-wide. Meaningless (never checked) for a superadmin's own
+    # packages, since a superadmin has no Sellers of their own directly
+    # under them in this sense - only Admins do. Never affects the
+    # Telegram bot in any way (see bot_enabled above for that) - this is
+    # panel-only, checked in routers/packages.py's list_packages.
+    seller_visible = Column(Boolean, nullable=False, default=True)
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime, default=now)
 

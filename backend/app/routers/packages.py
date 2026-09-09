@@ -179,10 +179,20 @@ def list_packages(db: Session = Depends(get_db), admin: models.AdminUser = Depen
     # Seller's, matching every other per-tenant resource.
     q = db.query(models.Package).filter(hierarchy.owner_id_in_clause(models.Package.owner_admin_id, allowed))
     pkgs = q.order_by(models.Package.sort_order, models.Package.id).all()
+    is_seller = hierarchy.is_seller(admin)
+    if is_seller:
+        # models.Package.seller_visible - an Admin can keep a package for
+        # their own use only (e.g. an internally-negotiated deal) without
+        # handing it to every Seller under them, without needing to
+        # disable it panel-wide via `enabled`. Filtered here (not just
+        # hidden client-side) so a Seller's own create/renew package
+        # dropdowns never even receive it - same reasoning as every other
+        # hierarchy-scoping filter in this file.
+        pkgs = [p for p in pkgs if p.seller_visible]
     # A Seller sees their own resale price override (if set) next to each
     # package's base price - fetched in one query rather than N+1.
     my_prices: dict[int, int] = {}
-    if hierarchy.is_seller(admin):
+    if is_seller:
         my_prices = {
             row.package_id: row.price
             for row in db.query(models.PackageSellerPrice).filter(models.PackageSellerPrice.seller_admin_id == admin.id).all()

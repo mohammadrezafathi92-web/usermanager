@@ -228,6 +228,7 @@ async def perform_approval(pending: dict, bot: Bot) -> tuple[bool, str]:
                     package_name=(pkg or {}).get("name"),
                     package_id=(pkg or {}).get("id"),
                     sale_info=sale_info,
+                    comment=pending.get("comment"),
                 )
                 new_connections = user["connections"]
                 # Brand-new account - this is the ONE choke point new

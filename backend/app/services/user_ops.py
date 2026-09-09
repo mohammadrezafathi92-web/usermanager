@@ -1148,7 +1148,24 @@ def provision_package_connections(db: Session, user: models.User, package: model
     return {"created": created, "skipped": skipped}
 
 
-def absorb_legacy_pool_into_purchase(db: Session, user: models.User) -> Optional[models.Purchase]:
+def _auto_service_label(db: Session, user_id: int) -> str:
+    """Sequential fallback label ("اکانت 1", "اکانت 2", ...) for a Purchase
+    whose customer did not type their own at purchase time - see
+    apply_package_as_purchase/absorb_legacy_pool_into_purchase below.
+
+    Feature requested 2026-09-09: a customer with several services and no
+    custom labels saw every one of them as a blank "📝 افزودن یادداشت" in
+    UserDetail.jsx (and nothing at all on their public subscription page -
+    see schemas.SubscriptionConnectionOut.comment) - impossible to tell
+    apart without opening each one. Counts this customer's OWN existing
+    Purchase rows (not other accounts sharing the same Telegram id - the
+    numbering is scoped per username, same as UserDetail.jsx/the bot's own
+    "اکانت من" screen already group everything per-User)."""
+    n = db.query(models.Purchase).filter(models.Purchase.user_id == user_id).count() + 1
+    return f"اکانت {n}"
+
+
+def absorb_legacy_pool_into_purchase(db: Session, user: models.User, comment: Optional[str] = None) -> Optional[models.Purchase]:
     """Moves a customer's leftover shared-pool connections into a Purchase
     of their own, carrying the user-level quota/usage/expiry across 1:1.
 
@@ -1164,6 +1181,12 @@ def absorb_legacy_pool_into_purchase(db: Session, user: models.User) -> Optional
     No-op for a customer with no legacy connections, or one who has ONLY
     legacy connections (nothing has changed for them - their pool is still
     live and their renewals still update it).
+
+    `comment`, when given, is the customer's own typed label for this
+    (their first) service - see routers/bot.py's create_user, the only
+    caller that ever has one; the startup migration
+    (services/purchase_migration.py) calls this with none, so those get
+    the auto-generated fallback instead.
 
     Returns the created Purchase, or None when nothing needed doing."""
     legacy = [c for c in user.connections if c.purchase_id is None]
@@ -1189,6 +1212,9 @@ def absorb_legacy_pool_into_purchase(db: Session, user: models.User) -> Optional
         reserved_duration_days=user.reserved_duration_days,
         reserved_created_at=user.reserved_created_at,
         created_at=min((c.created_at for c in legacy if c.created_at), default=user.created_at),
+        # Falls back to a sequential "اکانت N" when the customer didn't type
+        # their own label - see _auto_service_label's docstring.
+        comment=(comment or "").strip() or _auto_service_label(db, user.id),
     )
     db.add(purchase)
     db.flush()  # assigns purchase.id for the links below
@@ -1249,9 +1275,13 @@ def apply_package_as_purchase(
         ),
         max_concurrent_sessions=package.max_concurrent_sessions,
         status=models.UserStatus.active,
-        # Optional customer-written label from the bot's purchase flow -
-        # see models.Purchase.comment.
-        comment=(comment or None),
+        # Customer-written label from the bot's purchase flow, falling back
+        # to a sequential "اکانت N" when they skipped it - see
+        # _auto_service_label's docstring. absorb_legacy_pool_into_purchase
+        # just above may itself have created an earlier Purchase for this
+        # same user (their pre-existing legacy pool) - it always flushes
+        # before returning, so that row is already counted here too.
+        comment=(comment or "").strip() or _auto_service_label(db, user.id),
     )
     db.add(purchase)
     db.flush()  # assigns purchase.id inside this same transaction

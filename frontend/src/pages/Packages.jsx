@@ -298,22 +298,147 @@ export default function Packages() {
         <div className="text-xs text-gray-400 mb-4">{t("packages.sellerPriceHint")}</div>
       )}
 
-      <div className="card !p-0 overflow-x-auto">
-        <table className="w-full text-sm min-w-[48rem]">
-          <thead className="bg-gray-50 text-gray-500 text-xs">
-            <tr>
-              <th className="text-right font-medium px-4 py-3">{t("packages.colName")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("packages.colQuota")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("packages.colDuration")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("packages.colPrice")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("packages.colStatus")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("packages.colActions")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((p) => (
-              <tr key={p.id} className="border-t border-gray-50 hover:bg-gray-50/60">
-                <td className="px-4 py-3">
+      <div className="card !p-0">
+        {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
+        <div className="hidden md:block overflow-x-auto">
+          <table className="w-full text-sm min-w-[48rem]">
+            <thead className="bg-gray-50 text-gray-500 text-xs">
+              <tr>
+                <th className="text-right font-medium px-4 py-3">{t("packages.colName")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("packages.colQuota")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("packages.colDuration")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("packages.colPrice")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("packages.colStatus")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("packages.colActions")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((p) => (
+                <tr key={p.id} className="border-t border-gray-50 hover:bg-gray-50/60">
+                  <td className="px-4 py-3">
+                    <div className="font-medium text-gray-800">{p.name}</div>
+                    {p.description && <div className="text-xs text-gray-400">{p.description}</div>}
+                    {p.connections?.length > 0 && (
+                      <div className="text-xs text-brand-600 flex items-center gap-1 mt-1">
+                        <Server size={12} /> {t("packages.bundledServices", { count: p.connections.length })}
+                        {p.max_concurrent_sessions ? t("packages.maxConcurrent", { count: p.max_concurrent_sessions }) : ""}
+                      </div>
+                    )}
+                    {p.speed_limit_mbps ? (
+                      <div className="text-xs text-amber-600 mt-1">{t("packages.speedLimitBadge", { mbps: p.speed_limit_mbps })}</div>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-3 text-gray-600">{p.quota_gb ? `${p.quota_gb} GB` : t("packages.unlimited")}</td>
+                  <td className="px-4 py-3 text-gray-600">{p.duration_days ? t("packages.days", { count: p.duration_days }) : t("packages.noExpiry")}</td>
+                  <td className="px-4 py-3 text-gray-600" dir="ltr">
+                    {!isSeller && (
+                      <>
+                        {formatToman(p.price)}
+                        {p.cooperation_price != null && (
+                          <div className="text-xs text-gray-400">{t("packages.cooperationLabel", { price: formatToman(p.cooperation_price) })}</div>
+                        )}
+                      </>
+                    )}
+                    {isSeller && editingPriceId !== p.id && (
+                      <div className="flex items-center gap-2">
+                        <div>
+                          <div className={p.my_price != null ? "text-gray-400 line-through text-xs" : ""}>{formatToman(p.price)}</div>
+                          {p.my_price != null && (
+                            <div className="text-brand-600 font-medium flex items-center gap-1">
+                              <Tag size={12} /> {formatToman(p.my_price)}
+                            </div>
+                          )}
+                        </div>
+                        <button title={t("packages.editMyPrice")} onClick={() => startEditPrice(p)} className="text-gray-400 hover:text-brand-600">
+                          <Pencil size={14} />
+                        </button>
+                      </div>
+                    )}
+                    {isSeller && editingPriceId === p.id && (
+                      <div dir="ltr">
+                        <div className="flex items-center gap-1">
+                          <MoneyInput
+                            autoFocus
+                            small
+                            className="w-28"
+                            value={priceDraft}
+                            onChange={(v) => { setPriceDraft(v); setPriceError(""); }}
+                          />
+                          <button disabled={priceSaving} title={t("common.save")} onClick={() => saveMyPrice(p.id)} className="text-emerald-500 hover:text-emerald-600">
+                            <Check size={16} />
+                          </button>
+                          <button disabled={priceSaving} title={t("common.cancel")} onClick={cancelEditPrice} className="text-gray-400 hover:text-gray-600">
+                            <X size={16} />
+                          </button>
+                          {p.my_price != null && (
+                            <button disabled={priceSaving} title={t("packages.resetMyPrice")} onClick={() => clearMyPrice(p.id)} className="text-xs text-gray-400 hover:text-red-500 underline">
+                              {t("packages.resetMyPrice")}
+                            </button>
+                          )}
+                        </div>
+                        {p.cooperation_price != null && priceDraft !== "" && Number(priceDraft) < p.cooperation_price && (
+                          <div className="text-xs mt-1 text-red-600 font-medium" dir="rtl">
+                            {t("packages.priceBelowCost", { floor: formatToman(p.cooperation_price) })}
+                          </div>
+                        )}
+                        {priceError && <div className="text-xs mt-1 text-red-600" dir="rtl">{priceError}</div>}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-col gap-1 items-start">
+                      <span className={`badge ${p.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                        {t("packages.webPanel")}: {p.enabled ? t("status.active") : t("status.disabled")}
+                      </span>
+                      <span className={`badge ${p.bot_enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                        {t("packages.bot")}: {p.bot_enabled ? t("status.active") : t("status.disabled")}
+                      </span>
+                      {!isSeller && (
+                        <span className={`badge ${p.seller_visible ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                          {t("packages.sellers")}: {p.seller_visible ? t("status.active") : t("status.disabled")}
+                        </span>
+                      )}
+                      {p.one_time_per_user && (
+                        <span className="badge bg-amber-50 text-amber-600">{t("packages.oneTimePerUser")}</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    {!isSeller && (
+                      <div className="flex items-center gap-2">
+                        <button title={p.enabled ? t("packages.disable") : t("packages.enable")} onClick={() => onToggle(p)} className="text-gray-400 hover:text-brand-600">
+                          <Power size={16} />
+                        </button>
+                        <button title={t("packages.editTitle")} onClick={() => openEdit(p)} className="text-gray-400 hover:text-brand-600">
+                          <Pencil size={16} />
+                        </button>
+                        <button title={t("packages.deleteTitle")} onClick={() => onDelete(p.id)} className="text-gray-400 hover:text-red-600">
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    )}
+                    {isSeller && <span className="text-gray-300 text-xs">—</span>}
+                  </td>
+                </tr>
+              ))}
+              {items.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="empty-state">
+                    <PackageIcon size={28} className="mx-auto mb-2 text-gray-300" />
+                    {t("packages.empty")}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
+        <div className="md:hidden divide-y divide-gray-50">
+          {items.map((p) => (
+            <div key={p.id} className="p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
                   <div className="font-medium text-gray-800">{p.name}</div>
                   {p.description && <div className="text-xs text-gray-400">{p.description}</div>}
                   {p.connections?.length > 0 && (
@@ -325,35 +450,54 @@ export default function Packages() {
                   {p.speed_limit_mbps ? (
                     <div className="text-xs text-amber-600 mt-1">{t("packages.speedLimitBadge", { mbps: p.speed_limit_mbps })}</div>
                   ) : null}
-                </td>
-                <td className="px-4 py-3 text-gray-600">{p.quota_gb ? `${p.quota_gb} GB` : t("packages.unlimited")}</td>
-                <td className="px-4 py-3 text-gray-600">{p.duration_days ? t("packages.days", { count: p.duration_days }) : t("packages.noExpiry")}</td>
-                <td className="px-4 py-3 text-gray-600" dir="ltr">
-                  {!isSeller && (
-                    <>
-                      {formatToman(p.price)}
-                      {p.cooperation_price != null && (
-                        <div className="text-xs text-gray-400">{t("packages.cooperationLabel", { price: formatToman(p.cooperation_price) })}</div>
+                </div>
+                {!isSeller ? (
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <button title={p.enabled ? t("packages.disable") : t("packages.enable")} onClick={() => onToggle(p)} className="text-gray-400 hover:text-brand-600">
+                      <Power size={16} />
+                    </button>
+                    <button title={t("packages.editTitle")} onClick={() => openEdit(p)} className="text-gray-400 hover:text-brand-600">
+                      <Pencil size={16} />
+                    </button>
+                    <button title={t("packages.deleteTitle")} onClick={() => onDelete(p.id)} className="text-gray-400 hover:text-red-600">
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ) : (
+                  editingPriceId !== p.id && (
+                    <button title={t("packages.editMyPrice")} onClick={() => startEditPrice(p)} className="text-gray-400 hover:text-brand-600 flex-shrink-0">
+                      <Pencil size={14} />
+                    </button>
+                  )
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-xs text-gray-600">
+                <span>{p.quota_gb ? `${p.quota_gb} GB` : t("packages.unlimited")}</span>
+                <span>{p.duration_days ? t("packages.days", { count: p.duration_days }) : t("packages.noExpiry")}</span>
+                {!isSeller && (
+                  <span dir="ltr">
+                    {formatToman(p.price)}
+                    {p.cooperation_price != null && (
+                      <span className="text-gray-400"> ({t("packages.cooperationLabel", { price: formatToman(p.cooperation_price) })})</span>
+                    )}
+                  </span>
+                )}
+              </div>
+
+              {isSeller && (
+                <div className="mt-1" dir="ltr">
+                  {editingPriceId !== p.id ? (
+                    <div className="flex items-center gap-1 text-xs">
+                      <span className={p.my_price != null ? "text-gray-400 line-through" : "text-gray-600"}>{formatToman(p.price)}</span>
+                      {p.my_price != null && (
+                        <span className="text-brand-600 font-medium flex items-center gap-1">
+                          <Tag size={12} /> {formatToman(p.my_price)}
+                        </span>
                       )}
-                    </>
-                  )}
-                  {isSeller && editingPriceId !== p.id && (
-                    <div className="flex items-center gap-2">
-                      <div>
-                        <div className={p.my_price != null ? "text-gray-400 line-through text-xs" : ""}>{formatToman(p.price)}</div>
-                        {p.my_price != null && (
-                          <div className="text-brand-600 font-medium flex items-center gap-1">
-                            <Tag size={12} /> {formatToman(p.my_price)}
-                          </div>
-                        )}
-                      </div>
-                      <button title={t("packages.editMyPrice")} onClick={() => startEditPrice(p)} className="text-gray-400 hover:text-brand-600">
-                        <Pencil size={14} />
-                      </button>
                     </div>
-                  )}
-                  {isSeller && editingPriceId === p.id && (
-                    <div dir="ltr">
+                  ) : (
+                    <div>
                       <div className="flex items-center gap-1">
                         <MoneyInput
                           autoFocus
@@ -382,53 +526,34 @@ export default function Packages() {
                       {priceError && <div className="text-xs mt-1 text-red-600" dir="rtl">{priceError}</div>}
                     </div>
                   )}
-                </td>
-                <td className="px-4 py-3">
-                  <div className="flex flex-col gap-1 items-start">
-                    <span className={`badge ${p.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
-                      {t("packages.webPanel")}: {p.enabled ? t("status.active") : t("status.disabled")}
-                    </span>
-                    <span className={`badge ${p.bot_enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
-                      {t("packages.bot")}: {p.bot_enabled ? t("status.active") : t("status.disabled")}
-                    </span>
-                    {!isSeller && (
-                      <span className={`badge ${p.seller_visible ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
-                        {t("packages.sellers")}: {p.seller_visible ? t("status.active") : t("status.disabled")}
-                      </span>
-                    )}
-                    {p.one_time_per_user && (
-                      <span className="badge bg-amber-50 text-amber-600">{t("packages.oneTimePerUser")}</span>
-                    )}
-                  </div>
-                </td>
-                <td className="px-4 py-3">
-                  {!isSeller && (
-                    <div className="flex items-center gap-2">
-                      <button title={p.enabled ? t("packages.disable") : t("packages.enable")} onClick={() => onToggle(p)} className="text-gray-400 hover:text-brand-600">
-                        <Power size={16} />
-                      </button>
-                      <button title={t("packages.editTitle")} onClick={() => openEdit(p)} className="text-gray-400 hover:text-brand-600">
-                        <Pencil size={16} />
-                      </button>
-                      <button title={t("packages.deleteTitle")} onClick={() => onDelete(p.id)} className="text-gray-400 hover:text-red-600">
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  )}
-                  {isSeller && <span className="text-gray-300 text-xs">—</span>}
-                </td>
-              </tr>
-            ))}
-            {items.length === 0 && (
-              <tr>
-                <td colSpan={6} className="empty-state">
-                  <PackageIcon size={28} className="mx-auto mb-2 text-gray-300" />
-                  {t("packages.empty")}
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-1 items-center mt-2">
+                <span className={`badge ${p.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                  {t("packages.webPanel")}: {p.enabled ? t("status.active") : t("status.disabled")}
+                </span>
+                <span className={`badge ${p.bot_enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                  {t("packages.bot")}: {p.bot_enabled ? t("status.active") : t("status.disabled")}
+                </span>
+                {!isSeller && (
+                  <span className={`badge ${p.seller_visible ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                    {t("packages.sellers")}: {p.seller_visible ? t("status.active") : t("status.disabled")}
+                  </span>
+                )}
+                {p.one_time_per_user && (
+                  <span className="badge bg-amber-50 text-amber-600">{t("packages.oneTimePerUser")}</span>
+                )}
+              </div>
+            </div>
+          ))}
+          {items.length === 0 && (
+            <div className="empty-state">
+              <PackageIcon size={28} className="mx-auto mb-2 text-gray-300" />
+              {t("packages.empty")}
+            </div>
+          )}
+        </div>
       </div>
 
       <Modal open={open} onClose={() => setOpen(false)} title={editingId ? t("packages.editModal") : t("packages.newModal")} width="max-w-2xl">

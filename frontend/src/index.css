@@ -113,9 +113,6 @@
   .btn-sm {
     @apply px-3 text-xs gap-1.5 min-h-10 sm:min-h-8 rounded-lg;
   }
-  .btn-icon {
-    @apply px-0 w-11 sm:w-9 shrink-0;
-  }
   .btn-primary {
     @apply btn bg-brand-600 text-white shadow-sm hover:bg-brand-700 active:bg-brand-800;
   }
@@ -137,6 +134,18 @@
   .btn-success {
     @apply btn bg-emerald-50 text-emerald-700 hover:bg-emerald-100
            dark:bg-emerald-950 dark:text-emerald-400 dark:hover:bg-emerald-900;
+  }
+  /* Must come AFTER every .btn-* variant above: each of them re-applies
+     .btn's own px-4 via @apply, and in a same-specificity tie Tailwind's
+     compiled CSS resolves in source order, so a .btn-icon defined earlier
+     in this file (as it used to be) lost its px-0 override to whichever
+     variant came later - the icon button still measured w-9/w-11 on the
+     outside, but 1rem of left+right padding was eating almost all of that
+     width, squeezing the icon down to a sliver. Root cause of the
+     2026-09 "icons look tiny on Windows" report - it wasn't OS/browser
+     specific, just never visually caught on this screen before. */
+  .btn-icon {
+    @apply px-0 w-11 sm:w-9 shrink-0;
   }
 
   /* ----------------------------------------------------------------- fields */

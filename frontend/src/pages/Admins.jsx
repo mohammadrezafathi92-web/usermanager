@@ -574,115 +574,210 @@ export default function Admins() {
         </button>
       </div>
 
-      <div className="card !p-0 overflow-x-auto">
-        <table className="w-full text-sm min-w-[48rem]">
-          <thead className="bg-gray-50 text-gray-500 text-xs">
-            <tr>
-              <th className="text-right font-medium px-4 py-3">{t("admins.colUsername")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("admins.colRole")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("admins.colPermissions")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("admins.colUsersCount")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("admins.colBalance")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("admins.colTelegramBot")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("admins.colLoginLink")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("admins.colActions")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((a) => (
-              <tr key={a.id} className="border-t border-gray-50 hover:bg-gray-50/60">
-                <td className="px-4 py-3 font-medium text-gray-800">{a.username}</td>
-                <td className="px-4 py-3">
-                  {a.is_superadmin ? (
-                    <span className="badge bg-brand-50 text-brand-600 flex items-center gap-1 w-fit">
-                      <ShieldCheck size={12} /> {t("admins.mainAdmin")}
-                    </span>
-                  ) : a.role === "admin" ? (
-                    <span className="badge bg-violet-50 text-violet-600 flex items-center gap-1 w-fit">
-                      <ShieldCheck size={12} /> {t("admins.roleAdmin")}
-                    </span>
-                  ) : (
-                    <div className="flex flex-col gap-0.5 w-fit">
-                      <span className="badge bg-gray-100 text-gray-500 w-fit">{t("admins.roleSeller")}</span>
-                      {a.parent_admin_username && (
-                        <span className="text-[11px] text-gray-400">
-                          {t("admins.parentAdminLabel", { name: a.parent_admin_username })}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-xs text-gray-500">
-                  {a.is_superadmin ? (
-                    t("admins.everything")
-                  ) : a.group_name ? (
-                    <span className="badge bg-violet-50 text-violet-600 flex items-center gap-1 w-fit">
-                      <UsersRound size={12} /> {t("admins.groupLabel", { name: a.group_name })}
-                    </span>
-                  ) : a.permissions?.length ? (
-                    a.permissions.map((p) => choices[p] || p).join("، ")
-                  ) : (
-                    t("admins.onlyUsers")
-                  )}
-                </td>
-                <td className="px-4 py-3 text-gray-600">
-                  <span className="flex items-center gap-1">
-                    <UsersIcon size={13} className="text-gray-400" /> {a.users_count}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-gray-600" dir="ltr">
-                  {!a.is_superadmin &&
-                    (a.billing_mode === "usage" ? (
-                      <span className="flex items-center gap-1 justify-end">
-                        <Database size={12} className="text-violet-400" /> {formatGb(a.volume_balance_gb)} GB
+      <div className="card !p-0">
+        {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
+        <div className="hidden md:block overflow-x-auto">
+          <table className="w-full text-sm min-w-[48rem]">
+            <thead className="bg-gray-50 text-gray-500 text-xs">
+              <tr>
+                <th className="text-right font-medium px-4 py-3">{t("admins.colUsername")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("admins.colRole")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("admins.colPermissions")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("admins.colUsersCount")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("admins.colBalance")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("admins.colTelegramBot")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("admins.colLoginLink")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("admins.colActions")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((a) => (
+                <tr key={a.id} className="border-t border-gray-50 hover:bg-gray-50/60">
+                  <td className="px-4 py-3 font-medium text-gray-800">{a.username}</td>
+                  <td className="px-4 py-3">
+                    {a.is_superadmin ? (
+                      <span className="badge bg-brand-50 text-brand-600 flex items-center gap-1 w-fit">
+                        <ShieldCheck size={12} /> {t("admins.mainAdmin")}
+                      </span>
+                    ) : a.role === "admin" ? (
+                      <span className="badge bg-violet-50 text-violet-600 flex items-center gap-1 w-fit">
+                        <ShieldCheck size={12} /> {t("admins.roleAdmin")}
                       </span>
                     ) : (
-                      <span className="flex items-center gap-1 justify-end">
-                        <Wallet size={12} className="text-gray-400" /> {formatToman(a.balance)}
+                      <div className="flex flex-col gap-0.5 w-fit">
+                        <span className="badge bg-gray-100 text-gray-500 w-fit">{t("admins.roleSeller")}</span>
+                        {a.parent_admin_username && (
+                          <span className="text-[11px] text-gray-400">
+                            {t("admins.parentAdminLabel", { name: a.parent_admin_username })}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-gray-500">
+                    {a.is_superadmin ? (
+                      t("admins.everything")
+                    ) : a.group_name ? (
+                      <span className="badge bg-violet-50 text-violet-600 flex items-center gap-1 w-fit">
+                        <UsersRound size={12} /> {t("admins.groupLabel", { name: a.group_name })}
                       </span>
-                    ))}
-                </td>
-                <td className="px-4 py-3 text-gray-500 text-xs" dir="ltr">
-                  {a.telegram_id ? (
-                    <span className="flex items-center gap-1 justify-end">
+                    ) : a.permissions?.length ? (
+                      a.permissions.map((p) => choices[p] || p).join("، ")
+                    ) : (
+                      t("admins.onlyUsers")
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-gray-600">
+                    <span className="flex items-center gap-1">
+                      <UsersIcon size={13} className="text-gray-400" /> {a.users_count}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-gray-600" dir="ltr">
+                    {!a.is_superadmin &&
+                      (a.billing_mode === "usage" ? (
+                        <span className="flex items-center gap-1 justify-end">
+                          <Database size={12} className="text-violet-400" /> {formatGb(a.volume_balance_gb)} GB
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1 justify-end">
+                          <Wallet size={12} className="text-gray-400" /> {formatToman(a.balance)}
+                        </span>
+                      ))}
+                  </td>
+                  <td className="px-4 py-3 text-gray-500 text-xs" dir="ltr">
+                    {a.telegram_id ? (
+                      <span className="flex items-center gap-1 justify-end">
+                        <Send size={12} /> {a.telegram_id}
+                      </span>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-gray-500 text-xs" dir="ltr">
+                    {a.login_slug ? (
+                      <span className="flex items-center gap-1 justify-end">
+                        <Link2 size={12} /> /a/{a.login_slug}
+                      </span>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    {!a.is_superadmin && (
+                      <div className="flex items-center gap-2">
+                        <button title={t("admins.editTitle")} onClick={() => openEdit(a)} className="text-gray-400 hover:text-brand-600">
+                          <Pencil size={16} />
+                        </button>
+                        <button title={t("admins.deleteTitle")} onClick={() => onDelete(a)} className="text-gray-400 hover:text-red-600">
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {items.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="empty-state">
+                    {t("admins.empty")}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
+        <div className="md:hidden divide-y divide-gray-50">
+          {items.map((a) => (
+            <div key={a.id} className="p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="font-medium text-gray-800 truncate">{a.username}</div>
+                  <div className="mt-1">
+                    {a.is_superadmin ? (
+                      <span className="badge bg-brand-50 text-brand-600 flex items-center gap-1 w-fit">
+                        <ShieldCheck size={12} /> {t("admins.mainAdmin")}
+                      </span>
+                    ) : a.role === "admin" ? (
+                      <span className="badge bg-violet-50 text-violet-600 flex items-center gap-1 w-fit">
+                        <ShieldCheck size={12} /> {t("admins.roleAdmin")}
+                      </span>
+                    ) : (
+                      <div className="flex flex-col gap-0.5 w-fit">
+                        <span className="badge bg-gray-100 text-gray-500 w-fit">{t("admins.roleSeller")}</span>
+                        {a.parent_admin_username && (
+                          <span className="text-[11px] text-gray-400">
+                            {t("admins.parentAdminLabel", { name: a.parent_admin_username })}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                {!a.is_superadmin && (
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <button title={t("admins.editTitle")} onClick={() => openEdit(a)} className="text-gray-400 hover:text-brand-600">
+                      <Pencil size={16} />
+                    </button>
+                    <button title={t("admins.deleteTitle")} onClick={() => onDelete(a)} className="text-gray-400 hover:text-red-600">
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="text-xs text-gray-500 mt-2">
+                {a.is_superadmin ? (
+                  t("admins.everything")
+                ) : a.group_name ? (
+                  <span className="badge bg-violet-50 text-violet-600 flex items-center gap-1 w-fit">
+                    <UsersRound size={12} /> {t("admins.groupLabel", { name: a.group_name })}
+                  </span>
+                ) : a.permissions?.length ? (
+                  a.permissions.map((p) => choices[p] || p).join("، ")
+                ) : (
+                  t("admins.onlyUsers")
+                )}
+              </div>
+
+              <div className="flex items-center justify-between mt-2 text-xs text-gray-600">
+                <span className="flex items-center gap-1">
+                  <UsersIcon size={13} className="text-gray-400" /> {a.users_count}
+                </span>
+                {!a.is_superadmin && (
+                  <span className="flex items-center gap-1" dir="ltr">
+                    {a.billing_mode === "usage" ? (
+                      <>
+                        <Database size={12} className="text-violet-400" /> {formatGb(a.volume_balance_gb)} GB
+                      </>
+                    ) : (
+                      <>
+                        <Wallet size={12} className="text-gray-400" /> {formatToman(a.balance)}
+                      </>
+                    )}
+                  </span>
+                )}
+              </div>
+
+              {(a.telegram_id || a.login_slug) && (
+                <div className="flex items-center gap-3 mt-2 text-xs text-gray-500" dir="ltr">
+                  {a.telegram_id && (
+                    <span className="flex items-center gap-1">
                       <Send size={12} /> {a.telegram_id}
                     </span>
-                  ) : (
-                    "—"
                   )}
-                </td>
-                <td className="px-4 py-3 text-gray-500 text-xs" dir="ltr">
-                  {a.login_slug ? (
-                    <span className="flex items-center gap-1 justify-end">
+                  {a.login_slug && (
+                    <span className="flex items-center gap-1">
                       <Link2 size={12} /> /a/{a.login_slug}
                     </span>
-                  ) : (
-                    "—"
                   )}
-                </td>
-                <td className="px-4 py-3">
-                  {!a.is_superadmin && (
-                    <div className="flex items-center gap-2">
-                      <button title={t("admins.editTitle")} onClick={() => openEdit(a)} className="text-gray-400 hover:text-brand-600">
-                        <Pencil size={16} />
-                      </button>
-                      <button title={t("admins.deleteTitle")} onClick={() => onDelete(a)} className="text-gray-400 hover:text-red-600">
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {items.length === 0 && (
-              <tr>
-                <td colSpan={8} className="empty-state">
-                  {t("admins.empty")}
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+                </div>
+              )}
+            </div>
+          ))}
+          {items.length === 0 && <div className="empty-state">{t("admins.empty")}</div>}
+        </div>
       </div>
 
       <div className="card mt-6">

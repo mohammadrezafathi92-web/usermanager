@@ -2016,7 +2016,8 @@ function IpBansCard({ t, language }) {
         <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2 mb-4">{t("ipBans.loadError")}</div>
       )}
 
-      <div className="overflow-x-auto -mx-2">
+      {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
+      <div className="hidden md:block overflow-x-auto -mx-2">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-xs text-gray-400 border-b border-gray-50">
@@ -2049,11 +2050,36 @@ function IpBansCard({ t, language }) {
             ))}
             {!loading && bans.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-2 py-8 text-center text-gray-400">{t("ipBans.empty")}</td>
+                <td colSpan={6} className="empty-state">{t("ipBans.empty")}</td>
               </tr>
             )}
           </tbody>
         </table>
+      </div>
+
+      {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
+      <div className="md:hidden divide-y divide-gray-50 -mx-4">
+        {bans.map((b) => (
+          <div key={b.ip} className="px-4 py-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-mono text-gray-800 text-sm" dir="ltr">{b.ip}</span>
+              <span className={`badge ${b.is_manual ? "bg-amber-50 text-amber-600" : "bg-purple-50 text-purple-600"}`}>
+                {b.is_manual ? t("ipBans.sourceManual") : t("ipBans.sourceAuto")}
+              </span>
+            </div>
+            {b.reason && <div className="text-xs text-gray-500 mt-1">{b.reason}</div>}
+            <div className="flex items-center justify-between mt-2">
+              <span className="text-xs text-gray-400">
+                {b.banned_at ? formatDateTime(b.banned_at, language) : "-"}
+                {b.hit_count != null && ` · ${b.hit_count}`}
+              </span>
+              <button className="btn-secondary" onClick={() => onUnban(b.ip)}>
+                <Trash2 size={14} /> {t("ipBans.unban")}
+              </button>
+            </div>
+          </div>
+        ))}
+        {!loading && bans.length === 0 && <div className="empty-state">{t("ipBans.empty")}</div>}
       </div>
 
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={t("ipBans.addModalTitle")}>

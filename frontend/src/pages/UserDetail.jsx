@@ -1147,7 +1147,8 @@ export default function UserDetail() {
       {limitLogs.length > 0 && (
         <div className="card mt-4">
           <h3 className="font-bold text-gray-700 mb-3">{t("userDetail.limitLogHeading")}</h3>
-          <div className="overflow-x-auto">
+          {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-xs text-gray-400">
@@ -1208,6 +1209,47 @@ export default function UserDetail() {
                 })}
               </tbody>
             </table>
+          </div>
+
+          {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
+          <div className="md:hidden divide-y divide-gray-50">
+            {limitLogs.map((l) => {
+              const relatedConn = user.connections.find((c) => c.id === l.connection_id);
+              const stillBanned = relatedConn && relatedConn.banned_until && new Date(relatedConn.banned_until) > new Date();
+              return (
+                <div key={l.id} className="py-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span
+                      className={`badge ${
+                        l.event_type === "ban"
+                          ? "bg-red-50 text-red-600"
+                          : l.event_type === "unban"
+                          ? "bg-emerald-50 text-emerald-600"
+                          : "bg-amber-50 text-amber-600"
+                      }`}
+                    >
+                      {l.event_type === "ban"
+                        ? t("radiusLogs.eventBan")
+                        : l.event_type === "unban"
+                        ? t("radiusLogs.eventUnban")
+                        : t("radiusLogs.eventReject")}
+                    </span>
+                    {stillBanned && (
+                      <button className="text-red-500 underline text-xs whitespace-nowrap" onClick={() => unban(relatedConn)}>
+                        {t("userDetail.forceUnban")}
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-gray-500">
+                    {l.connection_type && <span>{l.connection_type}</span>}
+                    {l.client_ip && <span className="font-mono" dir="ltr">{l.client_ip}</span>}
+                    <span>{l.active_count ?? "-"}/{l.limit_value ?? "-"}</span>
+                    {l.banned_until && <span>{formatDateTime(l.banned_until, language)}</span>}
+                  </div>
+                  <div className="text-xs text-gray-400 mt-1">{formatDateTime(l.created_at, language)}</div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

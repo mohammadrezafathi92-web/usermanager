@@ -72,6 +72,23 @@ async def resolve_admin_scope(tg_id: int) -> Optional[AdminScope]:
     except ApiError:
         info = None
 
+    # get_admin_by_telegram looks this id up PANEL-WIDE - it has no idea
+    # which bot instance is asking. That's fine for the shared/global bot
+    # (config.bot_owner_admin_id is None), which was always meant to show
+    # every linked admin their own scope. But a dedicated per-admin/
+    # per-seller bot (see runner.py's start_admin_bot: "admin_ids here is
+    # ONLY this admin's own linked telegram_id - nobody else gets the admin
+    # command menu on THIS bot") must reject anyone whose id isn't that
+    # exact one, even though they resolve to a perfectly real AdminUser
+    # account elsewhere in the panel. Reported 2026-09-10: an Admin/Seller
+    # linked to their OWN bot elsewhere still saw the full admin menu after
+    # messaging a DIFFERENT admin's dedicated bot - this id-in-admin_ids
+    # check is exactly what start_admin_bot already scoped config.admin_ids
+    # to, it just was never consulted here before falling through to a
+    # global, unscoped lookup.
+    if info and config.bot_owner_admin_id is not None and tg_id not in config.admin_ids:
+        info = None
+
     if info:
         if info.get("is_superadmin"):
             role = ROLE_SUPERADMIN

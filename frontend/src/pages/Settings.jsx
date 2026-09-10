@@ -1679,7 +1679,15 @@ export default function Settings() {
       {activeTab === "data" && (
         <>
       {!isSuperadmin && <OwnBackupCard t={t} />}
-      {isSuperadmin && <DbHealthCard t={t} language={language} />}
+      {/* Design review item #5 (2026-09-10): this tab used to be one long
+          single-column scroll (DB health -> backups+restore -> API keys)
+          while the "general" tab paired its smaller cards side by side.
+          Backups stays full-width first (the main point of this tab, and
+          the tallest card once the backup list/restore section are open);
+          DB Health and API Keys are both shorter, summary-style cards, so
+          they're now paired in the same 2-column grid "general" uses,
+          right below - less scrolling to reach API keys, and a consistent
+          layout language across tabs. */}
       {isSuperadmin && (
       <div className="card mb-4">
         <div className="flex items-center justify-between mb-4">
@@ -1754,6 +1762,8 @@ export default function Settings() {
       )}
 
       {isSuperadmin && (
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <DbHealthCard t={t} language={language} />
       <div className="card">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
@@ -1802,6 +1812,7 @@ export default function Settings() {
           ))}
           {keys.length === 0 && <div className="text-center text-gray-400 py-6 text-sm">{t("settings.noKeysYet")}</div>}
         </div>
+      </div>
       </div>
       )}
         </>

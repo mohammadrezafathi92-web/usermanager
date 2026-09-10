@@ -5,24 +5,12 @@ import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import StatCard from "../components/StatCard.jsx";
+import UsageBar from "../components/UsageBar.jsx";
 import { fetchDashboard } from "../api/client.js";
 import { formatBytes, formatBitrate, formatUptime, toDisplayDate, formatToman, formatGb } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
 const PROTOCOL_LABELS = { wireguard: "WireGuard", openvpn: "OpenVPN", l2tp: "L2TP", ikev2: "IKEv2", sstp: "SSTP", xray: "V2Ray/Xray" };
-
-// Small horizontal usage bar (CPU/RAM/disk %) - color shifts from the
-// brand/emerald "fine" range up through amber/red as it approaches full,
-// same at-a-glance severity cue the reference panel's own gauges use.
-function UsageBar({ percent }) {
-  const pct = Math.max(0, Math.min(100, percent || 0));
-  const color = pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-500" : "bg-emerald-500";
-  return (
-    <div className="w-full h-1.5 rounded-full bg-gray-100 dark:bg-slate-800 overflow-hidden">
-      <div className={`h-full rounded-full ${color} transition-all`} style={{ width: `${pct}%` }} />
-    </div>
-  );
-}
 
 
 // One actionable tile: a number that means "go do something", with the page

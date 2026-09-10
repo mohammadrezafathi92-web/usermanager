@@ -3,6 +3,7 @@ import { Plus, Trash2, Pencil, Wifi, Globe, PlugZap, CheckCircle2, XCircle, Powe
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
+import UsageBar from "../components/UsageBar.jsx";
 import { fetchNodes, fetchNodeResources, createNode, updateNode, deleteNode, testNode, pushRadiusConfig, pushSstpConfig, pushL2tpConfig, pushIkev2Config, importPppUsers, importUserManagerUsers, import3xuiClients, rebuildNodeClients } from "../api/client.js";
 import { formatDateTime } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
@@ -63,15 +64,11 @@ const fmtGB = (bytes) => {
 };
 
 function ResourceRow({ icon: Icon, label, percent, text }) {
-  const p = Math.max(0, Math.min(100, percent || 0));
-  const color = p >= 90 ? "bg-red-500" : p >= 70 ? "bg-amber-500" : "bg-emerald-500";
   return (
     <div className="flex items-center gap-2 text-[11px] text-gray-500">
       <Icon size={12} className="text-gray-400 shrink-0" />
       <span className="w-8 shrink-0">{label}</span>
-      <div className="flex-1 h-1.5 rounded-full bg-gray-200 dark:bg-slate-700 overflow-hidden">
-        <div className={`h-full rounded-full ${color} transition-all`} style={{ width: `${p}%` }} />
-      </div>
+      <UsageBar percent={percent} className="flex-1" />
       <span className="shrink-0 tabular-nums" dir="ltr">{text}</span>
     </div>
   );

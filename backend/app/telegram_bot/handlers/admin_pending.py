@@ -1,4 +1,5 @@
 import logging
+from typing import Optional
 
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
@@ -75,13 +76,24 @@ router.callback_query.filter(_is_admin_filter)
 approval_router = Router(name="admin_pending_approval")
 
 
-def _pending_summary(p: dict) -> str:
+def _pending_summary(p: dict, owner_label: Optional[str] = None) -> str:
+    """owner_label: the resolved username of the admin/seller this request
+    belongs to (p["owner_admin_id"]) - see _owner_label/_owner_labels below.
+    Added 2026-09-10: a superadmin's «درخواست‌های در انتظار» legitimately
+    shows every Admin's/Seller's pending requests (a superadmin owns the
+    whole tree - see routers/bot.py's get_admin_by_telegram), but with
+    nothing distinguishing whose request was whose, mixed together in one
+    list. None (no owner at all - the shared/global bot's own requests, or
+    the lookup failed) omits the line entirely rather than showing a
+    confusing blank tag."""
     who = f"@{p['telegram_username']}" if p.get("telegram_username") else p.get("telegram_name") or str(p["telegram_id"])
     kind_txt = {"new": "خرید جدید", "renew": "تمدید", "topup": "افزایش اعتبار", "link": "اتصال حساب قبلی"}.get(p["kind"], p["kind"])
     lines = [
         f"#{p['id']} — {kind_txt}",
-        f"مشتری: {who} (<code>{p['telegram_id']}</code>)",
     ]
+    if owner_label:
+        lines.append(f"👤 مربوط به: {owner_label}")
+    lines.append(f"مشتری: {who} (<code>{p['telegram_id']}</code>)")
     if p["kind"] == "link":
         lines.append(f"می‌خواهد به حساب «{p['target_username']}» وصل شود.")
     elif p["kind"] == "topup":
@@ -105,6 +117,28 @@ def _pending_summary(p: dict) -> str:
     return "\n".join(lines)
 
 
+async def _owner_label(owner_admin_id: Optional[int]) -> Optional[str]:
+    """Single-request version of _owner_labels below - None (no tag) for
+    an ownerless request or a failed lookup, never an exception."""
+    if not owner_admin_id:
+        return None
+    return await api.get_admin_username(owner_admin_id)
+
+
+async def _owner_labels(items: list[dict]) -> dict[int, str]:
+    """owner_admin_id -> username for every DISTINCT owner across a batch
+    of pending items, resolved once per admin rather than once per item -
+    used by the /pending list views below, which can mix many admins'
+    requests together (see _pending_summary's docstring)."""
+    ids = {p.get("owner_admin_id") for p in items if p.get("owner_admin_id")}
+    labels: dict[int, str] = {}
+    for admin_id in ids:
+        name = await api.get_admin_username(admin_id)
+        if name:
+            labels[admin_id] = name
+    return labels
+
+
 @router.callback_query(MenuCB.filter(F.action == "admin_pending"), _is_admin_filter)
 async def cb_admin_pending(call: CallbackQuery) -> None:
     owner_ids, include_unowned = _filters(await _scope_of(call))
@@ -114,8 +148,9 @@ async def cb_admin_pending(call: CallbackQuery) -> None:
         await call.answer()
         return
     await call.message.edit_text(f"📥 {len(items)} درخواست در انتظار تایید:", reply_markup=home_kb())
+    owner_labels = await _owner_labels(items)
     for p in items:
-        await call.message.answer(_pending_summary(p), reply_markup=approval_kb(p["id"]))
+        await call.message.answer(_pending_summary(p, owner_labels.get(p.get("owner_admin_id"))), reply_markup=approval_kb(p["id"]))
     await call.answer()
 
 
@@ -128,8 +163,9 @@ async def cmd_admin_pending(message: Message) -> None:
         await message.answer("درخواست در انتظاری وجود ندارد.", reply_markup=home_kb())
         return
     await message.answer(f"📥 {len(items)} درخواست در انتظار تایید:", reply_markup=home_kb())
+    owner_labels = await _owner_labels(items)
     for p in items:
-        await message.answer(_pending_summary(p), reply_markup=approval_kb(p["id"]))
+        await message.answer(_pending_summary(p, owner_labels.get(p.get("owner_admin_id"))), reply_markup=approval_kb(p["id"]))
 
 
 

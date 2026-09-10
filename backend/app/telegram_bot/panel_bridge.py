@@ -343,6 +343,31 @@ class PanelBridge:
         except Exception:
             return None
 
+    async def get_admin_username(self, admin_id: int) -> Optional[str]:
+        """This AdminUser's own username - used to tag a pending request
+        with WHICH admin/seller it belongs to (see handlers/admin_pending.py's
+        _pending_summary). Added 2026-09-10: reported that a superadmin
+        opening «درخواست‌های در انتظار» sees every Admin's/Seller's pending
+        requests mixed together with no indication of whose is whose - by
+        design (a superadmin owns the whole tree, same as everywhere else
+        in the panel - see routers/bot.py's get_admin_by_telegram), but
+        confusing without a label. Same direct-DB pattern as
+        get_admin_telegram_id just above and for the same reason: an
+        internal display concern, not part of the bot's customer-facing
+        API surface."""
+        def _run():
+            db = SessionLocal()
+            try:
+                admin = db.get(models.AdminUser, admin_id)
+                return admin.username if admin else None
+            finally:
+                db.close()
+
+        try:
+            return await asyncio.to_thread(_run)
+        except Exception:
+            return None
+
     async def list_users(
         self, page: int = 1, page_size: int = 8, search: Optional[str] = None, owner_admin_id: Optional[int] = None
     ) -> dict:

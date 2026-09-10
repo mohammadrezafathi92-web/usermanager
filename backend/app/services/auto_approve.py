@@ -159,11 +159,12 @@ async def _notify_admins(pending: dict, bot, reason: str) -> None:
     button on this message - the service is already delivered - so it is
     plain text, deliberately distinguishable from a request awaiting action.
     """
-    from ..telegram_bot.handlers.admin_pending import _pending_summary
+    from ..telegram_bot.handlers.admin_pending import _pending_summary, _owner_label
     from ..telegram_bot.handlers.customer import _notify_targets
 
     try:
-        text = "🤖 تایید خودکار انجام شد\n\n" + _pending_summary(pending) + f"\n\nدلیل: {reason}"
+        owner_label = await _owner_label(pending.get("owner_admin_id"))
+        text = "🤖 تایید خودکار انجام شد\n\n" + _pending_summary(pending, owner_label) + f"\n\nدلیل: {reason}"
     except Exception:
         logger.exception("could not render the auto-approval notice")
         text = f"🤖 درخواست {pending.get('id')} به‌صورت خودکار تایید شد"

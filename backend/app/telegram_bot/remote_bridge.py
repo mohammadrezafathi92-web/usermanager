@@ -233,6 +233,17 @@ class RemoteBridge:
         except ApiError:
             return None
 
+    async def get_admin_username(self, admin_id: int) -> Optional[str]:
+        """Mirrors panel_bridge.PanelBridge.get_admin_username - see its
+        docstring."""
+        from .panel_bridge import ApiError
+
+        try:
+            data = await self._call("GET", f"/admin-username/{admin_id}")
+            return data.get("username") if data else None
+        except ApiError:
+            return None
+
     async def list_users(
         self, page: int = 1, page_size: int = 8, search: Optional[str] = None, owner_admin_id: Optional[int] = None
     ) -> dict:

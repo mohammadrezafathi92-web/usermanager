@@ -661,6 +661,22 @@ def get_admin_by_telegram(tg_id: int, db: Session = Depends(get_db)):
     )
 
 
+@router.get("/admin-username/{admin_id}")
+def get_admin_username(admin_id: int, db: Session = Depends(get_db)):
+    """This AdminUser's own username - used only to tag a pending request
+    in the bot's «درخواست‌های در انتظار» list with WHICH admin/seller it
+    belongs to (telegram_bot/handlers/admin_pending.py's _pending_summary,
+    added 2026-09-10 - a superadmin legitimately sees every Admin's/
+    Seller's pending requests mixed together with no indication of whose
+    is whose). 404 if no such account, matching get_admin_by_telegram's
+    convention just above - panel_bridge.py's/remote_bridge.py's
+    get_admin_username both treat that as None (no tag), never an error."""
+    admin = db.get(models.AdminUser, admin_id)
+    if not admin:
+        raise HTTPException(404, "ادمین پیدا نشد")
+    return {"username": admin.username}
+
+
 @router.get("/telegram-user-ids", response_model=list[int])
 def telegram_user_ids(db: Session = Depends(get_db), owner_admin_id: Optional[int] = None):
     """Every DISTINCT telegram id currently linked to a panel account - used

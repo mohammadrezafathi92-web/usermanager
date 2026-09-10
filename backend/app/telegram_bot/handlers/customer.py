@@ -740,14 +740,14 @@ async def link_username(message: Message, state: FSMContext, bot: Bot) -> None:
         reply_markup=home_kb(),
     )
 
-    from .admin_pending import _pending_summary  # local import avoids a circular import at module load
+    from .admin_pending import _pending_summary, _owner_label  # local import avoids a circular import at module load
     from ..keyboards import approval_kb
 
     who = f"@{message.from_user.username}" if message.from_user.username else (message.from_user.full_name or str(message.from_user.id))
     link_pending_row = storage.get_pending(request_id)
     caption = (
         "🔗 درخواست اتصال حساب قبلی\n\n"
-        + _pending_summary(link_pending_row)
+        + _pending_summary(link_pending_row, await _owner_label(link_pending_row.get("owner_admin_id")))
         + f"\n\nحساب مقصد: «{username}»"
         + (f" ({target_user.get('full_name')})" if target_user.get("full_name") else "")
         + f"\nموجودی فعلی آن حساب: {target_user.get('balance', 0):,} تومان"
@@ -1299,7 +1299,7 @@ async def receive_receipt(message: Message, state: FSMContext, bot: Bot) -> None
     await state.clear()
     await message.answer("✅ رسید شما ثبت شد و برای بررسی ادمین ارسال شد. نتیجه به همین چت اطلاع داده می‌شود.", reply_markup=home_kb())
 
-    from .admin_pending import _pending_summary  # local import avoids a circular import at module load
+    from .admin_pending import _pending_summary, _owner_label  # local import avoids a circular import at module load
     from ..keyboards import approval_kb
 
     pending_row = storage.get_pending(request_id)
@@ -1321,7 +1321,7 @@ async def receive_receipt(message: Message, state: FSMContext, bot: Bot) -> None
         logger.exception("auto-approve raised - falling back to manual approval")
         auto_note = "بررسی تایید خودکار با خطا مواجه شد"
 
-    caption = "🧾 رسید پرداخت جدید\n\n" + _pending_summary(pending_row)
+    caption = "🧾 رسید پرداخت جدید\n\n" + _pending_summary(pending_row, await _owner_label(pending_row.get("owner_admin_id")))
     # Says WHY this one still needs a human. Without it, an owner who has
     # switched auto-approval on sees an ordinary approval prompt and can
     # only conclude the feature is broken - the reason was written to a log
@@ -1440,11 +1440,11 @@ async def receive_topup_receipt(message: Message, state: FSMContext, bot: Bot) -
     await state.clear()
     await message.answer("✅ رسید شما ثبت شد و برای بررسی ادمین ارسال شد. نتیجه به همین چت اطلاع داده می‌شود.", reply_markup=home_kb())
 
-    from .admin_pending import _pending_summary  # local import avoids a circular import at module load
+    from .admin_pending import _pending_summary, _owner_label  # local import avoids a circular import at module load
     from ..keyboards import approval_kb
 
     topup_pending_row = storage.get_pending(request_id)
-    caption = "🧾 رسید افزایش اعتبار\n\n" + _pending_summary(topup_pending_row)
+    caption = "🧾 رسید افزایش اعتبار\n\n" + _pending_summary(topup_pending_row, await _owner_label(topup_pending_row.get("owner_admin_id")))
     for admin_id in await _notify_targets(topup_pending_row):
         try:
             await bot.send_photo(admin_id, message.photo[-1].file_id, caption=caption, reply_markup=approval_kb(request_id))

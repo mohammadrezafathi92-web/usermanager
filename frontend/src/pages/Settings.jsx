@@ -1007,7 +1007,7 @@ export default function Settings() {
               value={payment.topup_presets || ""}
               onChange={(e) => setPayment((p) => ({ ...p, topup_presets: e.target.value }))}
             />
-            <p className="text-xs text-gray-400 mt-1">{t("settings.topupPresetsHint")}</p>
+            <p className="hint">{t("settings.topupPresetsHint")}</p>
           </div>
           {paymentMsg && (
             <div className={`md:col-span-2 text-sm rounded-lg px-3 py-2 ${paymentMsg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
@@ -1131,7 +1131,7 @@ export default function Settings() {
               value={botForm.telegram_api_proxy_url || ""}
               onChange={(e) => setBotForm((f) => ({ ...f, telegram_api_proxy_url: e.target.value }))}
             />
-            <div className="text-xs text-gray-400 mt-1">{t("settings.telegramProxyUrlHint")}</div>
+            <div className="hint">{t("settings.telegramProxyUrlHint")}</div>
           </div>
           <div className="md:col-span-2">
             <label className="block text-sm text-gray-600 mb-1">{t("settings.telegramSocksUrl")}</label>
@@ -1142,7 +1142,7 @@ export default function Settings() {
               value={botForm.telegram_proxy_url || ""}
               onChange={(e) => setBotForm((f) => ({ ...f, telegram_proxy_url: e.target.value }))}
             />
-            <div className="text-xs text-gray-400 mt-1">{t("settings.telegramSocksUrlHint")}</div>
+            <div className="hint">{t("settings.telegramSocksUrlHint")}</div>
           </div>
 
           {/* راه‌اندازی خودکار روی یک نود میکروتیک. Placed directly under the
@@ -1323,7 +1323,7 @@ export default function Settings() {
                   value={botForm.auto_approve_max_amount ?? 0}
                   onChange={(v) => setBotForm((f) => ({ ...f, auto_approve_max_amount: v === "" ? 0 : Number(v) }))}
                 />
-                <div className="text-xs text-gray-400 mt-1">{t("settings.autoApproveMaxAmountHint")}</div>
+                <div className="hint">{t("settings.autoApproveMaxAmountHint")}</div>
               </div>
               <div className="flex items-start pt-5">
                 <label className="flex items-center gap-2 cursor-pointer">
@@ -1427,7 +1427,7 @@ export default function Settings() {
                 value={deployForm.panel_public_url}
                 onChange={(e) => setDeployForm((f) => ({ ...f, panel_public_url: e.target.value }))}
               />
-              <p className="text-xs text-gray-400 mt-1">{t("settings.panelPublicUrlHint")}</p>
+              <p className="hint">{t("settings.panelPublicUrlHint")}</p>
             </div>
             <div className="md:col-span-2">
               <button type="submit" disabled={deploying} className="btn-primary">
@@ -1556,7 +1556,7 @@ export default function Settings() {
               value={payment.panel_public_url || ""}
               onChange={(e) => setPayment((p) => ({ ...p, panel_public_url: e.target.value }))}
             />
-            <p className="text-xs text-gray-400 mt-1">{t("settings.subLinkBaseUrlHint")}</p>
+            <p className="hint">{t("settings.subLinkBaseUrlHint")}</p>
             {publicUrlMsg && (
               <div className={`text-sm rounded-lg px-3 py-2 mt-3 ${publicUrlMsg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
                 {publicUrlMsg.text}
@@ -1733,7 +1733,7 @@ export default function Settings() {
               <div key={b.filename} className="flex items-center justify-between border border-gray-100 rounded-xl px-4 py-3">
                 <div>
                   <div className="font-mono text-sm text-gray-800">{b.filename}</div>
-                  <div className="text-xs text-gray-400 mt-1">
+                  <div className="hint">
                     {formatDateTime(b.created_at, language)} — {formatBytes(b.size_bytes)}
                   </div>
                 </div>
@@ -2434,7 +2434,7 @@ function OwnPaymentCard({ t }) {
             value={form.topup_presets || ""}
             onChange={(e) => set("topup_presets", e.target.value)}
           />
-          <p className="text-xs text-gray-400 mt-1">{t("settings.topupPresetsHint")}</p>
+          <p className="hint">{t("settings.topupPresetsHint")}</p>
         </div>
         <div className="md:col-span-2">
           <label className="block text-sm text-gray-600 mb-1">{t("settings.supportContactLabel")}</label>
@@ -2445,7 +2445,7 @@ function OwnPaymentCard({ t }) {
             value={form.support_contact_text || ""}
             onChange={(e) => set("support_contact_text", e.target.value)}
           />
-          <p className="text-xs text-gray-400 mt-1">{t("settings.supportContactHint")}</p>
+          <p className="hint">{t("settings.supportContactHint")}</p>
         </div>
         {msg && (
           <div className={`md:col-span-2 text-sm rounded-lg px-3 py-2 ${msg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>

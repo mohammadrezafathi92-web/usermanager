@@ -259,16 +259,16 @@ export default function Accounting() {
     <Layout>
       <Topbar title={t("accounting.title")} subtitle={t("accounting.subtitle")} />
 
-      <div className="flex gap-2 mb-6 flex-wrap">
+      <div className="flex items-center gap-1 border-b border-gray-100 dark:border-slate-800 mb-4 overflow-x-auto">
         {tabs.map((x) => (
           <button
             key={x.id}
             type="button"
             onClick={() => setTab(x.id)}
-            className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
               tab === x.id
-                ? "bg-brand-600 text-white"
-                : "bg-white text-gray-500 hover:bg-gray-50 dark:bg-slate-900 dark:text-gray-400 dark:hover:bg-slate-800"
+                ? "border-brand-600 text-brand-600"
+                : "border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
             }`}
           >
             {x.label}

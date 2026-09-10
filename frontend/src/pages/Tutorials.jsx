@@ -231,7 +231,7 @@ export default function Tutorials() {
             ))}
             {items.length === 0 && (
               <tr>
-                <td colSpan={5} className="text-center text-gray-400 py-10">
+                <td colSpan={5} className="empty-state">
                   <GraduationCap size={28} className="mx-auto mb-2 text-gray-300" />
                   {t("tutorials.empty")}
                 </td>

@@ -421,7 +421,7 @@ export default function Packages() {
             ))}
             {items.length === 0 && (
               <tr>
-                <td colSpan={6} className="text-center text-gray-400 py-10">
+                <td colSpan={6} className="empty-state">
                   <PackageIcon size={28} className="mx-auto mb-2 text-gray-300" />
                   {t("packages.empty")}
                 </td>
@@ -441,12 +441,12 @@ export default function Packages() {
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldQuota")}</label>
               <input type="number" step="0.1" min="0" className="input" value={form.quota_gb} onChange={(e) => set("quota_gb", Number(e.target.value))} />
-              <div className="text-xs text-gray-400 mt-1">{t("packages.quotaHint")}</div>
+              <div className="hint">{t("packages.quotaHint")}</div>
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldDuration")}</label>
               <input type="number" min="0" className="input" value={form.duration_days ?? ""} onChange={(e) => set("duration_days", e.target.value ? Number(e.target.value) : null)} />
-              <div className="text-xs text-gray-400 mt-1">{t("packages.durationHint")}</div>
+              <div className="hint">{t("packages.durationHint")}</div>
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldPrice")}</label>
@@ -466,7 +466,7 @@ export default function Packages() {
               value={form.cooperation_price}
               onChange={(v) => set("cooperation_price", v)}
             />
-            <div className="text-xs text-gray-400 mt-1">
+            <div className="hint">
               {t("packages.cooperationHint")}
             </div>
             {costFloor !== null && (
@@ -517,7 +517,7 @@ export default function Packages() {
               value={form.max_concurrent_sessions}
               onChange={(e) => set("max_concurrent_sessions", e.target.value)}
             />
-            <div className="text-xs text-gray-400 mt-1">
+            <div className="hint">
               {t("packages.maxConcurrentHint")}
             </div>
           </div>
@@ -532,7 +532,7 @@ export default function Packages() {
               value={form.speed_limit_mbps}
               onChange={(e) => set("speed_limit_mbps", e.target.value)}
             />
-            <div className="text-xs text-gray-400 mt-1">{t("packages.speedLimitHint")}</div>
+            <div className="hint">{t("packages.speedLimitHint")}</div>
           </div>
 
           <div className="border-t border-gray-100 pt-3">

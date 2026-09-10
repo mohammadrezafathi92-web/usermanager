@@ -856,7 +856,7 @@ export default function UserDetail() {
             {group.packageName && (
               <div className="flex items-center gap-2 mb-2 px-1">
                 <Package size={14} className="text-brand-500" />
-                <span className="text-sm font-semibold text-gray-700">{group.packageName}</span>
+                <span className="section-title">{group.packageName}</span>
                 {group.createdAt && (
                   <span className="text-xs text-gray-400">
                     {t("userDetail.purchasedAt", { value: formatDateTime(group.createdAt, language) })}
@@ -883,13 +883,13 @@ export default function UserDetail() {
                   {" · "}
                   {t("userDetail.expiry", { value: user.expire_at ? formatDateTime(user.expire_at, language) : t("userDetail.noExpiry") })}
                 </div>
-                <div className="text-xs text-gray-400 mt-1">{t("userDetail.sharedPoolHint")}</div>
+                <div className="hint">{t("userDetail.sharedPoolHint")}</div>
               </div>
             )}
             {purchase && (
               <div className="card mb-3">
                 <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-sm font-semibold text-gray-700">{t("userDetail.purchaseUsageHeading")}</h4>
+                  <h4 className="section-title">{t("userDetail.purchaseUsageHeading")}</h4>
                   <span className={`badge ${STATUS_STYLES[purchase.status]}`}>{statusLabel(purchase.status, language)}</span>
                 </div>
                 <QuotaBar used={purchase.used_bytes} total={purchase.quota_bytes} />
@@ -900,7 +900,7 @@ export default function UserDetail() {
                       : t("userDetail.unlimited"),
                   })}
                 </div>
-                <div className="text-xs text-gray-400 mt-1">
+                <div className="hint">
                   {t("userDetail.expiry", {
                     value: purchase.expire_days_after_first_use
                       ? t("userDetail.expiryFirstUse", { days: purchase.expire_days_after_first_use })
@@ -1086,7 +1086,7 @@ export default function UserDetail() {
           );
         })}
         {user.connections.length === 0 && (
-          <div className="card text-center text-gray-400 py-10">{t("userDetail.noConnections")}</div>
+          <div className="card empty-state">{t("userDetail.noConnections")}</div>
         )}
       </div>
 
@@ -1277,7 +1277,7 @@ export default function UserDetail() {
               value={editForm.telegram_id}
               onChange={(e) => setEditForm({ ...editForm, telegram_id: e.target.value })}
             />
-            <div className="text-xs text-gray-400 mt-1">
+            <div className="hint">
               {t("userDetail.telegramIdHint")}
             </div>
           </div>
@@ -1326,7 +1326,7 @@ export default function UserDetail() {
                   value={editForm.expire_days}
                   onChange={(e) => setEditForm({ ...editForm, expire_days: e.target.value })}
                 />
-                <div className="text-xs text-gray-400 mt-1">
+                <div className="hint">
                   {t("userDetail.firstUseHint", { days: editForm.expire_days || "N" })}
                 </div>
               </>
@@ -1364,7 +1364,7 @@ export default function UserDetail() {
                   value={editForm.purchases_blocked_reason}
                   onChange={(e) => setEditForm({ ...editForm, purchases_blocked_reason: e.target.value })}
                 />
-                <div className="text-xs text-gray-400 mt-1">{t("userDetail.blockReasonHint")}</div>
+                <div className="hint">{t("userDetail.blockReasonHint")}</div>
               </div>
             )}
           </div>
@@ -1501,7 +1501,7 @@ export default function UserDetail() {
                 </option>
               ))}
             </select>
-            <div className="text-xs text-gray-400 mt-1">{t("userDetail.addPackageHint")}</div>
+            <div className="hint">{t("userDetail.addPackageHint")}</div>
           </div>
           {applyPackageError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{applyPackageError}</div>}
           <div className="flex justify-end gap-2 pt-2">
@@ -1591,7 +1591,7 @@ export default function UserDetail() {
                   value={limitValue}
                   onChange={(e) => setLimitValue(e.target.value)}
                 />
-                <div className="text-xs text-gray-400 mt-1">
+                <div className="hint">
                   {t("userDetail.banHint")}
                 </div>
               </div>
@@ -1607,7 +1607,7 @@ export default function UserDetail() {
                   value={speedLimitValue}
                   onChange={(e) => setSpeedLimitValue(e.target.value)}
                 />
-                <div className="text-xs text-gray-400 mt-1">{t("userDetail.speedLimitHint")}</div>
+                <div className="hint">{t("userDetail.speedLimitHint")}</div>
               </div>
             ) : (
               <div className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2">

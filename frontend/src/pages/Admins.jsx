@@ -676,7 +676,7 @@ export default function Admins() {
             ))}
             {items.length === 0 && (
               <tr>
-                <td colSpan={8} className="text-center text-gray-400 py-10">
+                <td colSpan={8} className="empty-state">
                   {t("admins.empty")}
                 </td>
               </tr>
@@ -859,7 +859,7 @@ export default function Admins() {
                       ))}
                 </select>
               </div>
-              <div className="text-xs text-gray-400 mt-1">{t("admins.fieldRoleHint")}</div>
+              <div className="hint">{t("admins.fieldRoleHint")}</div>
             </div>
           )}
 
@@ -907,7 +907,7 @@ export default function Admins() {
                   {roleSaving ? t("common.saving") : t("admins.saveRole")}
                 </button>
               </div>
-              <div className="text-xs text-gray-400 mt-1">{t("admins.changeRoleHint")}</div>
+              <div className="hint">{t("admins.changeRoleHint")}</div>
               {roleSaved && <div className="text-xs text-emerald-600 mt-1">{t("admins.roleChangeSaved")}</div>}
               {roleError && <div className="text-xs text-red-500 mt-1">{roleError}</div>}
             </div>
@@ -923,7 +923,7 @@ export default function Admins() {
                 </option>
               ))}
             </select>
-            <div className="text-xs text-gray-400 mt-1">
+            <div className="hint">
               {t("admins.groupHint")}
             </div>
           </div>
@@ -999,7 +999,7 @@ export default function Admins() {
               <option value="flat">{t("admins.billingFlat")}</option>
               <option value="usage">{t("admins.billingUsage")}</option>
             </select>
-            <div className="text-xs text-gray-400 mt-1">
+            <div className="hint">
               {t("admins.billingHint")}
             </div>
           </div>
@@ -1014,7 +1014,7 @@ export default function Admins() {
                 value={form.initial_balance}
                 onChange={(e) => set("initial_balance", e.target.value)}
               />
-              <div className="text-xs text-gray-400 mt-1">
+              <div className="hint">
                 {t("admins.initialBalanceHint")}
               </div>
             </div>
@@ -1030,7 +1030,7 @@ export default function Admins() {
                 value={form.initial_volume_gb}
                 onChange={(e) => set("initial_volume_gb", e.target.value)}
               />
-              <div className="text-xs text-gray-400 mt-1">
+              <div className="hint">
                 {t("admins.initialVolumeHint")}
               </div>
             </div>
@@ -1065,7 +1065,7 @@ export default function Admins() {
                     value={form.credit_limit ?? 0}
                     onChange={(v) => set("credit_limit", v === "" ? 0 : Number(v))}
                   />
-                  <div className="text-xs text-gray-400 mt-1">
+                  <div className="hint">
                     {Number(form.credit_limit) > 0
                       ? t("admins.creditLimitActive", {
                           available: formatToman((Number(form.balance) || 0) + Number(form.credit_limit)),
@@ -1083,7 +1083,7 @@ export default function Admins() {
                       value={form.wholesale_price_per_gb ?? 0}
                       onChange={(v) => set("wholesale_price_per_gb", v === "" ? 0 : Number(v))}
                     />
-                    <div className="text-xs text-gray-400 mt-1">
+                    <div className="hint">
                       {Number(form.wholesale_price_per_gb) > 0
                         ? t("admins.wholesalePerGbActive", {
                             example: formatToman(Number(form.wholesale_price_per_gb) * 50),
@@ -1160,7 +1160,7 @@ export default function Admins() {
                 </button>
               </div>
               {topupVolumeError && <div className="text-xs text-red-500 mt-1">{topupVolumeError}</div>}
-              <div className="text-xs text-gray-400 mt-1">
+              <div className="hint">
                 {t("admins.volumeHint")}
               </div>
 
@@ -1209,7 +1209,7 @@ export default function Admins() {
               value={form.telegram_id}
               onChange={(e) => set("telegram_id", e.target.value)}
             />
-            <div className="text-xs text-gray-400 mt-1">
+            <div className="hint">
               {t("admins.telegramIdHint")}
             </div>
           </div>
@@ -1225,7 +1225,7 @@ export default function Admins() {
                 onChange={(e) => set("login_slug", e.target.value.replace(/[^a-zA-Z0-9_-]/g, ""))}
               />
             </div>
-            <div className="text-xs text-gray-400 mt-1">
+            <div className="hint">
               {t("admins.loginSlugHint")}
             </div>
           </div>

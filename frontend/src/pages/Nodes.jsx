@@ -687,7 +687,7 @@ export default function Nodes() {
                         value={radiusInterimUpdate}
                         onChange={(e) => setRadiusInterimUpdate(e.target.value)}
                       />
-                      <div className="text-xs text-gray-400 mt-1">
+                      <div className="hint">
                         {t("nodes.interimUpdateHint")}
                       </div>
                     </div>
@@ -876,7 +876,7 @@ export default function Nodes() {
                   </button>
                 </div>
                 {form.xr_panel_mode === "3xui" && (
-                  <p className="text-xs text-gray-400 mt-1">
+                  <p className="hint">
                     {t("nodes.threexuiHint")}
                   </p>
                 )}

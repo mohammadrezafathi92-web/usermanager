@@ -762,7 +762,7 @@ export default function Users() {
             ))}
             {users.length === 0 && (
               <tr>
-                <td colSpan={isSuperadmin ? 8 : 7} className="text-center text-gray-400 py-10">
+                <td colSpan={isSuperadmin ? 8 : 7} className="empty-state">
                   {t("users.noUsers")}
                 </td>
               </tr>
@@ -854,7 +854,7 @@ export default function Users() {
               ))}
             </select>
             {form.package_id && (
-              <div className="text-xs text-gray-400 mt-1">
+              <div className="hint">
                 {t("users.packageDerivedHint")}
                 {!isSuperadmin && (() => {
                   const pkg = packages.find((p) => String(p.id) === String(form.package_id));
@@ -942,7 +942,7 @@ export default function Users() {
                       value={form.expire_days}
                       onChange={(e) => setForm({ ...form, expire_days: e.target.value })}
                     />
-                    <div className="text-xs text-gray-400 mt-1">
+                    <div className="hint">
                       {t("users.firstUseHint", { days: form.expire_days || "N" })}
                     </div>
                   </>
@@ -980,7 +980,7 @@ export default function Users() {
                 value={bulkCreateForm.prefix}
                 onChange={(e) => setBulkCreateForm((f) => ({ ...f, prefix: e.target.value }))}
               />
-              <div className="text-xs text-gray-400 mt-1">
+              <div className="hint">
                 {t("users.usernamePreviewHint", { prefix: bulkCreateForm.prefix || "user" })}
               </div>
             </div>
@@ -1015,7 +1015,7 @@ export default function Users() {
                 ))}
               </select>
               {bulkCreateForm.package_id && (
-                <div className="text-xs text-gray-400 mt-1">
+                <div className="hint">
                   {t("users.packageDerivedHintPlural")}
                   {!isSuperadmin && (() => {
                     const pkg = packages.find((p) => String(p.id) === String(bulkCreateForm.package_id));

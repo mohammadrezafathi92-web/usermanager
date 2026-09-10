@@ -293,12 +293,31 @@ export default function Settings() {
   const [payment, setPayment] = useState({
     payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "",
     support_contact_text: "", panel_public_url: "",
-    referral_referrer_reward_credit: 0, referral_referrer_reward_gb: 0,
-    referral_new_user_reward_credit: 0, referral_new_user_reward_gb: 0,
-    loyalty_purchase_threshold: 0, loyalty_reward_credit: 0, loyalty_reward_gb: 0,
   });
   const [paymentMsg, setPaymentMsg] = useState(null);
   const [savingPayment, setSavingPayment] = useState(false);
+
+  // Its own small save action (2026-09-10 design pass, item #4 - folded
+  // out of the old combined "growth" form into its own card on the Server
+  // tab, next to License/HA/port). Still reads/writes payment.panel_public_url
+  // (same field, same `payment` state, loaded by the same fetchPanelSettings
+  // effect below) - just a separate PUT so editing it never depends on
+  // submitting the unrelated support-text form on a different tab.
+  const [savingPublicUrl, setSavingPublicUrl] = useState(false);
+  const [publicUrlMsg, setPublicUrlMsg] = useState(null);
+  const submitPublicUrl = async (e) => {
+    e.preventDefault();
+    setSavingPublicUrl(true);
+    setPublicUrlMsg(null);
+    try {
+      await updatePanelSettings({ panel_public_url: payment.panel_public_url });
+      setPublicUrlMsg({ type: "ok", text: t("settings.msgPaymentSaved") });
+    } catch (err) {
+      setPublicUrlMsg({ type: "err", text: err?.response?.data?.detail || t("settings.msgSaveError") });
+    } finally {
+      setSavingPublicUrl(false);
+    }
+  };
 
   const [ha, setHa] = useState({
     ha_enabled: false,
@@ -348,9 +367,6 @@ export default function Settings() {
       setPayment({
         payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "",
         support_contact_text: "",
-        referral_referrer_reward_credit: 0, referral_referrer_reward_gb: 0,
-        referral_new_user_reward_credit: 0, referral_new_user_reward_gb: 0,
-        loyalty_purchase_threshold: 0, loyalty_reward_credit: 0, loyalty_reward_gb: 0,
         ...res.data,
       });
       setHa((h) => ({ ...h, ...res.data }));
@@ -1043,83 +1059,6 @@ export default function Settings() {
             />
           </div>
 
-          {isSuperadmin && (
-            <div className="md:col-span-2">
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.subLinkBaseUrl")}</label>
-              <input
-                className="input"
-                dir="ltr"
-                placeholder="https://panel.example.com"
-                value={payment.panel_public_url || ""}
-                onChange={(e) => setPayment((p) => ({ ...p, panel_public_url: e.target.value }))}
-              />
-              <p className="text-xs text-gray-400 mt-1">{t("settings.subLinkBaseUrlHint")}</p>
-            </div>
-          )}
-
-          <div className="md:col-span-2 border-t border-gray-100 dark:border-slate-800 pt-3 mt-1">
-            <p className="text-sm font-medium text-gray-600 mb-2">{t("settings.referralTitle")}</p>
-          </div>
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.referralReferrerCredit")}</label>
-            <MoneyInput
-              value={payment.referral_referrer_reward_credit ?? 0}
-              onChange={(v) => setPayment((p) => ({ ...p, referral_referrer_reward_credit: v === "" ? 0 : Number(v) }))}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.referralReferrerGb")}</label>
-            <input
-              type="number" min="0" step="0.1" className="input" dir="ltr"
-              value={payment.referral_referrer_reward_gb ?? 0}
-              onChange={(e) => setPayment((p) => ({ ...p, referral_referrer_reward_gb: Number(e.target.value) }))}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.referralNewUserCredit")}</label>
-            <MoneyInput
-              value={payment.referral_new_user_reward_credit ?? 0}
-              onChange={(v) => setPayment((p) => ({ ...p, referral_new_user_reward_credit: v === "" ? 0 : Number(v) }))}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.referralNewUserGb")}</label>
-            <input
-              type="number" min="0" step="0.1" className="input" dir="ltr"
-              value={payment.referral_new_user_reward_gb ?? 0}
-              onChange={(e) => setPayment((p) => ({ ...p, referral_new_user_reward_gb: Number(e.target.value) }))}
-            />
-          </div>
-
-          <div className="md:col-span-2 border-t border-gray-100 dark:border-slate-800 pt-3 mt-1">
-            <p className="text-sm font-medium text-gray-600 mb-2">{t("settings.loyaltyTitle")}</p>
-          </div>
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.loyaltyThreshold")}</label>
-            <input
-              type="number" min="0" className="input" dir="ltr"
-              placeholder={t("settings.loyaltyThresholdPlaceholder")}
-              value={payment.loyalty_purchase_threshold ?? 0}
-              onChange={(e) => setPayment((p) => ({ ...p, loyalty_purchase_threshold: Number(e.target.value) }))}
-            />
-          </div>
-          <div />
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.loyaltyRewardCredit")}</label>
-            <MoneyInput
-              value={payment.loyalty_reward_credit ?? 0}
-              onChange={(v) => setPayment((p) => ({ ...p, loyalty_reward_credit: v === "" ? 0 : Number(v) }))}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.loyaltyRewardGb")}</label>
-            <input
-              type="number" min="0" step="0.1" className="input" dir="ltr"
-              value={payment.loyalty_reward_gb ?? 0}
-              onChange={(e) => setPayment((p) => ({ ...p, loyalty_reward_gb: Number(e.target.value) }))}
-            />
-          </div>
-
           <div className="md:col-span-2">
             <button type="submit" disabled={savingPayment} className="btn-primary">
               {savingPayment ? t("settings.saving") : t("settings.savePaymentInfo")}
@@ -1553,6 +1492,36 @@ export default function Settings() {
           tab. */}
       {isSuperadmin && <UpdateCard t={t} />}
       {isSuperadmin && <TimezoneCard t={t} />}
+      {/* Folded out of the old combined "growth" card on the General tab
+          (2026-09-10 design pass, item #4) - this is the panel's own
+          public address, same "server identity" family as License/
+          Update/Timezone right above, not a support/growth concept. */}
+      {isSuperadmin && (
+        <div className="card mb-4">
+          <div className="flex items-center gap-2 mb-4">
+            <Server size={18} className="text-brand-600" />
+            <h3 className="font-bold text-gray-700">{t("settings.subLinkBaseUrl")}</h3>
+          </div>
+          <form onSubmit={submitPublicUrl}>
+            <input
+              className="input"
+              dir="ltr"
+              placeholder="https://panel.example.com"
+              value={payment.panel_public_url || ""}
+              onChange={(e) => setPayment((p) => ({ ...p, panel_public_url: e.target.value }))}
+            />
+            <p className="text-xs text-gray-400 mt-1">{t("settings.subLinkBaseUrlHint")}</p>
+            {publicUrlMsg && (
+              <div className={`text-sm rounded-lg px-3 py-2 mt-3 ${publicUrlMsg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+                {publicUrlMsg.text}
+              </div>
+            )}
+            <button type="submit" disabled={savingPublicUrl} className="btn-primary mt-3">
+              {savingPublicUrl ? t("settings.saving") : t("common.save")}
+            </button>
+          </form>
+        </div>
+      )}
       {isSuperadmin && (
         <div className="card mb-4">
           <div className="flex items-center justify-between mb-4">

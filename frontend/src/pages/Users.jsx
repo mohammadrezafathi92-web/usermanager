@@ -677,98 +677,171 @@ export default function Users() {
         </div>
       </div>
 
-      <div className="card !p-0 overflow-x-auto">
-        <table className="w-full text-sm min-w-[48rem]">
-          <thead className="bg-gray-50 text-gray-500 text-xs">
-            <tr>
-              <th className="text-right font-medium px-4 py-3 w-8">
-                <input type="checkbox" checked={allOnPageSelected} onChange={toggleAllOnPage} />
-              </th>
-              <th className="text-right font-medium px-4 py-3">{t("users.colUser")}</th>
-              {isSuperadmin && <th className="text-right font-medium px-4 py-3">{t("users.colAdmin")}</th>}
-              <th className="text-right font-medium px-4 py-3">{t("users.colStatus")}</th>
-              <th className="text-right font-medium px-4 py-3 w-56">{t("users.colUsage")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("users.colConnections")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("users.colExpiry")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("users.colActions")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map((u) => (
-              <tr key={u.id} className="border-t border-gray-50 hover:bg-gray-50/60">
-                <td className="px-4 py-3">
-                  <input type="checkbox" checked={selected.has(u.id)} onChange={() => toggleOne(u.id)} />
-                </td>
-                <td className="px-4 py-3">
-                  <Link to={`/users/${u.id}`} className="font-medium text-gray-800 hover:text-brand-600 inline-flex items-center gap-1.5">
-                    <span
-                      className={`inline-block w-2 h-2 rounded-full ${u.online ? "bg-emerald-500" : "bg-gray-300"}`}
-                      title={u.online ? t("users.online") : t("users.offline")}
-                    />
-                    {u.username}
-                  </Link>
-                  {u.full_name && <div className="text-xs text-gray-400">{u.full_name}</div>}
-                </td>
-                {isSuperadmin && (
-                  <td className="px-4 py-3 text-xs text-gray-500">
-                    {u.owner_admin_username ||
-                      (u.created_via === "bot" ? (
-                        <span className="text-gray-400">{t("userDetail.ownerBot")}</span>
-                      ) : (
-                        <span className="text-gray-300">—</span>
-                      ))}
-                  </td>
-                )}
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-1.5">
-                    <span className={`badge ${STATUS_STYLES[u.status]}`}>{statusLabel(u.status, language)}</span>
-                    {/* A locked customer is still active - the lock rides
-                        ALONGSIDE the status rather than replacing it. */}
-                    {u.purchases_blocked && (
-                      <span title={t("userDetail.purchasesLockedDefault")} className="text-amber-500">
-                        <Lock size={13} />
-                      </span>
-                    )}
-                  </div>
-                </td>
-                <td className="px-4 py-3">
-                  <QuotaBar used={u.used_bytes} total={u.total_quota_bytes} />
-                </td>
-                <td className="px-4 py-3 text-gray-500">
-                  <span className="inline-flex items-center gap-1">
-                    <Network size={14} /> {u.connections_count}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-gray-500">
-                  {!u.expire_at && u.expire_days_after_first_use ? (
-                    <span className="text-amber-600" title={t("users.notConnectedYet")}>
-                      {t("users.fromFirstConnection", { days: u.expire_days_after_first_use })}
-                    </span>
-                  ) : (
-                    formatDate(u.expire_at, language)
-                  )}
-                </td>
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <button title={t("users.resetUsage")} onClick={() => onReset(u.id)} className="text-gray-400 hover:text-brand-600">
-                      <RotateCcw size={16} />
-                    </button>
-                    <button title={t("common.delete")} onClick={() => onDelete(u.id)} className="text-gray-400 hover:text-red-600">
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {users.length === 0 && (
+      <div className="card !p-0">
+        {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
+        <div className="hidden md:block overflow-x-auto">
+          <table className="w-full text-sm min-w-[48rem]">
+            <thead className="bg-gray-50 text-gray-500 text-xs">
               <tr>
-                <td colSpan={isSuperadmin ? 8 : 7} className="empty-state">
-                  {t("users.noUsers")}
-                </td>
+                <th className="text-right font-medium px-4 py-3 w-8">
+                  <input type="checkbox" checked={allOnPageSelected} onChange={toggleAllOnPage} />
+                </th>
+                <th className="text-right font-medium px-4 py-3">{t("users.colUser")}</th>
+                {isSuperadmin && <th className="text-right font-medium px-4 py-3">{t("users.colAdmin")}</th>}
+                <th className="text-right font-medium px-4 py-3">{t("users.colStatus")}</th>
+                <th className="text-right font-medium px-4 py-3 w-56">{t("users.colUsage")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("users.colConnections")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("users.colExpiry")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("users.colActions")}</th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {users.map((u) => (
+                <tr key={u.id} className="border-t border-gray-50 hover:bg-gray-50/60">
+                  <td className="px-4 py-3">
+                    <input type="checkbox" checked={selected.has(u.id)} onChange={() => toggleOne(u.id)} />
+                  </td>
+                  <td className="px-4 py-3">
+                    <Link to={`/users/${u.id}`} className="font-medium text-gray-800 hover:text-brand-600 inline-flex items-center gap-1.5">
+                      <span
+                        className={`inline-block w-2 h-2 rounded-full ${u.online ? "bg-emerald-500" : "bg-gray-300"}`}
+                        title={u.online ? t("users.online") : t("users.offline")}
+                      />
+                      {u.username}
+                    </Link>
+                    {u.full_name && <div className="text-xs text-gray-400">{u.full_name}</div>}
+                  </td>
+                  {isSuperadmin && (
+                    <td className="px-4 py-3 text-xs text-gray-500">
+                      {u.owner_admin_username ||
+                        (u.created_via === "bot" ? (
+                          <span className="text-gray-400">{t("userDetail.ownerBot")}</span>
+                        ) : (
+                          <span className="text-gray-300">—</span>
+                        ))}
+                    </td>
+                  )}
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`badge ${STATUS_STYLES[u.status]}`}>{statusLabel(u.status, language)}</span>
+                      {/* A locked customer is still active - the lock rides
+                          ALONGSIDE the status rather than replacing it. */}
+                      {u.purchases_blocked && (
+                        <span title={t("userDetail.purchasesLockedDefault")} className="text-amber-500">
+                          <Lock size={13} />
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <QuotaBar used={u.used_bytes} total={u.total_quota_bytes} />
+                  </td>
+                  <td className="px-4 py-3 text-gray-500">
+                    <span className="inline-flex items-center gap-1">
+                      <Network size={14} /> {u.connections_count}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-gray-500">
+                    {!u.expire_at && u.expire_days_after_first_use ? (
+                      <span className="text-amber-600" title={t("users.notConnectedYet")}>
+                        {t("users.fromFirstConnection", { days: u.expire_days_after_first_use })}
+                      </span>
+                    ) : (
+                      formatDate(u.expire_at, language)
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <button title={t("users.resetUsage")} onClick={() => onReset(u.id)} className="text-gray-400 hover:text-brand-600">
+                        <RotateCcw size={16} />
+                      </button>
+                      <button title={t("common.delete")} onClick={() => onDelete(u.id)} className="text-gray-400 hover:text-red-600">
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {users.length === 0 && (
+                <tr>
+                  <td colSpan={isSuperadmin ? 8 : 7} className="empty-state">
+                    {t("users.noUsers")}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
+        <div className="md:hidden divide-y divide-gray-50">
+          {users.map((u) => (
+            <div key={u.id} className="p-4">
+              <div className="flex items-start justify-between gap-2">
+                <label className="flex items-start gap-2 min-w-0">
+                  <input type="checkbox" className="mt-1" checked={selected.has(u.id)} onChange={() => toggleOne(u.id)} />
+                  <span className="min-w-0">
+                    <Link to={`/users/${u.id}`} className="font-medium text-gray-800 hover:text-brand-600 inline-flex items-center gap-1.5">
+                      <span
+                        className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${u.online ? "bg-emerald-500" : "bg-gray-300"}`}
+                        title={u.online ? t("users.online") : t("users.offline")}
+                      />
+                      <span className="truncate">{u.username}</span>
+                    </Link>
+                    {u.full_name && <div className="text-xs text-gray-400">{u.full_name}</div>}
+                    {isSuperadmin && (
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        {u.owner_admin_username ||
+                          (u.created_via === "bot" ? (
+                            <span className="text-gray-400">{t("userDetail.ownerBot")}</span>
+                          ) : (
+                            <span className="text-gray-300">—</span>
+                          ))}
+                      </div>
+                    )}
+                  </span>
+                </label>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <button title={t("users.resetUsage")} onClick={() => onReset(u.id)} className="text-gray-400 hover:text-brand-600">
+                    <RotateCcw size={16} />
+                  </button>
+                  <button title={t("common.delete")} onClick={() => onDelete(u.id)} className="text-gray-400 hover:text-red-600">
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between mt-2">
+                <div className="flex items-center gap-1.5">
+                  <span className={`badge ${STATUS_STYLES[u.status]}`}>{statusLabel(u.status, language)}</span>
+                  {u.purchases_blocked && (
+                    <span title={t("userDetail.purchasesLockedDefault")} className="text-amber-500">
+                      <Lock size={13} />
+                    </span>
+                  )}
+                </div>
+                <span className="inline-flex items-center gap-1 text-xs text-gray-500">
+                  <Network size={14} /> {u.connections_count}
+                </span>
+              </div>
+
+              <div className="mt-2">
+                <QuotaBar used={u.used_bytes} total={u.total_quota_bytes} />
+              </div>
+
+              <div className="text-xs text-gray-500 mt-2">
+                {!u.expire_at && u.expire_days_after_first_use ? (
+                  <span className="text-amber-600" title={t("users.notConnectedYet")}>
+                    {t("users.fromFirstConnection", { days: u.expire_days_after_first_use })}
+                  </span>
+                ) : (
+                  formatDate(u.expire_at, language)
+                )}
+              </div>
+            </div>
+          ))}
+          {users.length === 0 && <div className="empty-state">{t("users.noUsers")}</div>}
+        </div>
 
         <div className="flex items-center justify-between px-4 py-3 border-t border-gray-50 text-sm text-gray-500">
           <div>

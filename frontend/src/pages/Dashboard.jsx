@@ -237,7 +237,7 @@ export default function Dashboard() {
                     </div>
                     <div>
                       <div className="text-2xl font-bold text-gray-800 dark:text-gray-100" dir="ltr">
-                        {new Intl.NumberFormat("fa-IR").format(stats.admin_balance)} <span className="text-sm text-gray-400 font-normal">{t("dashboard.tomanUnit")}</span>
+                        {formatToman(stats.admin_balance, language)} <span className="text-sm text-gray-400 font-normal">{t("dashboard.tomanUnit")}</span>
                       </div>
                       <div className="text-sm text-gray-400">{t("dashboard.yourBalance")}</div>
                     </div>

@@ -633,7 +633,7 @@ export default function Nodes() {
                             onClick={() => removeDnsRow(i)}
                             disabled={dnsRows.length <= 1}
                           >
-                            <X size={14} />
+                            <X size={16} />
                           </button>
                         </div>
                       ))}

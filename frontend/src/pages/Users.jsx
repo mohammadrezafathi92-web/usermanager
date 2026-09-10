@@ -603,7 +603,7 @@ export default function Users() {
                 setPage(1);
               }}
             >
-              <ArrowUpDown size={16} />
+              <ArrowUpDown size={18} />
             </button>
           </div>
 

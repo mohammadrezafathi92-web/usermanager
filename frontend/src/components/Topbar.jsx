@@ -50,7 +50,7 @@ export default function Topbar({ title, subtitle, actions = null }) {
           <span className="max-w-[10rem] truncate">{username || t("topbar.admin")}</span>
         </div>
         <button onClick={logout} className="btn-secondary btn-icon" title={t("topbar.logout")} aria-label={t("topbar.logout")}>
-          <LogOut size={16} />
+          <LogOut size={18} />
         </button>
       </div>
     </div>

@@ -94,7 +94,8 @@ export default function RadiusLogs() {
       </div>
 
       <div className="card !p-0 overflow-hidden">
-        <div className="overflow-x-auto">
+        {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs text-gray-400 border-b border-gray-50">
@@ -135,13 +136,43 @@ export default function RadiusLogs() {
               ))}
               {!loading && logs.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-gray-400">
+                  <td colSpan={7} className="empty-state">
                     {t("radiusLogs.empty")}
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
+        </div>
+
+        {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
+        <div className="md:hidden divide-y divide-gray-50">
+          {logs.map((l) => (
+            <div key={l.id} className="p-4">
+              <div className="flex items-center justify-between gap-2">
+                <span className={`badge ${eventBadgeClass(l.event_type)}`}>
+                  {t(eventLabelKey(l.event_type))}
+                </span>
+                <span className="text-xs text-gray-400">{formatDateTime(l.created_at, language)}</span>
+              </div>
+              <div className="mt-2">
+                {l.user_id ? (
+                  <Link to={`/users/${l.user_id}`} className="font-medium text-gray-800 hover:text-brand-600">
+                    {l.username || l.user_id}
+                  </Link>
+                ) : (
+                  <span className="text-gray-600">{l.username || "-"}</span>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-gray-500">
+                {l.connection_type && <span>{l.connection_type}</span>}
+                {l.client_ip && <span className="font-mono" dir="ltr">{l.client_ip}</span>}
+                <span>{l.active_count ?? "-"}/{l.limit_value ?? "-"}</span>
+                {l.banned_until && <span>{t("radiusLogs.colBannedUntil")}: {formatDateTime(l.banned_until, language)}</span>}
+              </div>
+            </div>
+          ))}
+          {!loading && logs.length === 0 && <div className="empty-state">{t("radiusLogs.empty")}</div>}
         </div>
       </div>
     </Layout>

@@ -409,33 +409,56 @@ export default function Accounting() {
           ) : tx.items.length === 0 ? (
             <div className="card text-gray-400">{t("accounting.noData")}</div>
           ) : (
-            <div className="card overflow-x-auto p-0">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-xs text-gray-400 border-b border-gray-50">
-                    <th className="text-right font-medium px-4 py-3">{t("accounting.kind")}</th>
-                    <th className="text-right font-medium px-4 py-3">{t("accounting.amount")}</th>
-                    <th className="text-right font-medium px-4 py-3">{t("accounting.customer")}</th>
-                    <th className="text-right font-medium px-4 py-3">{t("accounting.colAdmin")}</th>
-                    <th className="text-right font-medium px-4 py-3">{t("accounting.package")}</th>
-                    <th className="text-right font-medium px-4 py-3">{t("accounting.method")}</th>
-                    <th className="text-right font-medium px-4 py-3">{t("accounting.date")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {tx.items.map((e) => (
-                    <tr key={e.id} className="border-t border-gray-50 hover:bg-gray-50/60 dark:hover:bg-slate-800/40">
-                      <td className="px-4 py-3"><KindBadge kind={e.kind} t={t} /></td>
-                      <td className="px-4 py-3 font-medium" dir="ltr">{fmt(e.amount)}</td>
-                      <td className="px-4 py-3">{e.username_snapshot || "-"}</td>
-                      <td className="px-4 py-3">{e.admin_username_snapshot || "-"}</td>
-                      <td className="px-4 py-3">{e.package_name_snapshot || e.category || "-"}</td>
-                      <td className="px-4 py-3">{e.payment_method ? t(`accounting.method.${e.payment_method}`) : "-"}</td>
-                      <td className="px-4 py-3 text-gray-400 text-xs" dir="ltr">{formatDateTime(e.created_at, language)}</td>
+            <div className="card p-0">
+              {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
+              <div className="hidden md:block overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs text-gray-400 border-b border-gray-50">
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.kind")}</th>
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.amount")}</th>
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.customer")}</th>
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.colAdmin")}</th>
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.package")}</th>
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.method")}</th>
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.date")}</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {tx.items.map((e) => (
+                      <tr key={e.id} className="border-t border-gray-50 hover:bg-gray-50/60 dark:hover:bg-slate-800/40">
+                        <td className="px-4 py-3"><KindBadge kind={e.kind} t={t} /></td>
+                        <td className="px-4 py-3 font-medium" dir="ltr">{fmt(e.amount)}</td>
+                        <td className="px-4 py-3">{e.username_snapshot || "-"}</td>
+                        <td className="px-4 py-3">{e.admin_username_snapshot || "-"}</td>
+                        <td className="px-4 py-3">{e.package_name_snapshot || e.category || "-"}</td>
+                        <td className="px-4 py-3">{e.payment_method ? t(`accounting.method.${e.payment_method}`) : "-"}</td>
+                        <td className="px-4 py-3 text-gray-400 text-xs" dir="ltr">{formatDateTime(e.created_at, language)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
+              <div className="md:hidden divide-y divide-gray-50">
+                {tx.items.map((e) => (
+                  <div key={e.id} className="p-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <KindBadge kind={e.kind} t={t} />
+                      <span className="font-medium" dir="ltr">{fmt(e.amount)}</span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-gray-500">
+                      {e.username_snapshot && <span>{e.username_snapshot}</span>}
+                      {e.admin_username_snapshot && <span>{e.admin_username_snapshot}</span>}
+                      {(e.package_name_snapshot || e.category) && <span>{e.package_name_snapshot || e.category}</span>}
+                      {e.payment_method && <span>{t(`accounting.method.${e.payment_method}`)}</span>}
+                    </div>
+                    <div className="text-gray-400 text-xs mt-1" dir="ltr">{formatDateTime(e.created_at, language)}</div>
+                  </div>
+                ))}
+              </div>
+
               <div className="flex items-center justify-between px-4 py-3 text-sm text-gray-400 border-t border-gray-50">
                 <span>{fmt(tx.total)}</span>
                 <div className="flex gap-2">
@@ -483,33 +506,55 @@ export default function Accounting() {
           ) : expenses.items.length === 0 ? (
             <div className="card text-gray-400">{t("accounting.noData")}</div>
           ) : (
-            <div className="card overflow-x-auto p-0">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-xs text-gray-400 border-b border-gray-50">
-                    <th className="text-right font-medium px-4 py-3">{t("accounting.amount")}</th>
-                    <th className="text-right font-medium px-4 py-3">{t("accounting.category")}</th>
-                    <th className="text-right font-medium px-4 py-3">{t("accounting.note")}</th>
-                    <th className="text-right font-medium px-4 py-3">{t("accounting.date")}</th>
-                    <th className="text-right font-medium px-4 py-3"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {expenses.items.map((e) => (
-                    <tr key={e.id} className="border-t border-gray-50">
-                      <td className="px-4 py-3 font-medium" dir="ltr">{fmt(e.amount)}</td>
-                      <td className="px-4 py-3">{e.category || "-"}</td>
-                      <td className="px-4 py-3 text-gray-500">{e.note || "-"}</td>
-                      <td className="px-4 py-3 text-gray-400 text-xs" dir="ltr">{language === "en" ? (e.created_at || "").slice(0, 10) : isoToJalali(e.created_at)}</td>
-                      <td className="px-4 py-3">
-                        <button type="button" className="text-red-500 hover:text-red-700" onClick={() => removeExpense(e.id)} title={t("accounting.deleteExpense")}>
-                          <Trash2 size={16} />
-                        </button>
-                      </td>
+            <div className="card p-0">
+              {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
+              <div className="hidden md:block overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs text-gray-400 border-b border-gray-50">
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.amount")}</th>
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.category")}</th>
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.note")}</th>
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.date")}</th>
+                      <th className="text-right font-medium px-4 py-3"></th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {expenses.items.map((e) => (
+                      <tr key={e.id} className="border-t border-gray-50">
+                        <td className="px-4 py-3 font-medium" dir="ltr">{fmt(e.amount)}</td>
+                        <td className="px-4 py-3">{e.category || "-"}</td>
+                        <td className="px-4 py-3 text-gray-500">{e.note || "-"}</td>
+                        <td className="px-4 py-3 text-gray-400 text-xs" dir="ltr">{language === "en" ? (e.created_at || "").slice(0, 10) : isoToJalali(e.created_at)}</td>
+                        <td className="px-4 py-3">
+                          <button type="button" className="text-red-500 hover:text-red-700" onClick={() => removeExpense(e.id)} title={t("accounting.deleteExpense")}>
+                            <Trash2 size={16} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
+              <div className="md:hidden divide-y divide-gray-50">
+                {expenses.items.map((e) => (
+                  <div key={e.id} className="p-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium" dir="ltr">{fmt(e.amount)}</span>
+                      <button type="button" className="text-red-500 hover:text-red-700" onClick={() => removeExpense(e.id)} title={t("accounting.deleteExpense")}>
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                    <div className="text-sm text-gray-600 mt-1">{e.category || "-"}</div>
+                    {e.note && <div className="text-xs text-gray-500 mt-1">{e.note}</div>}
+                    <div className="text-gray-400 text-xs mt-1" dir="ltr">
+                      {language === "en" ? (e.created_at || "").slice(0, 10) : isoToJalali(e.created_at)}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </>
@@ -556,47 +601,79 @@ export default function Accounting() {
                 />
               </div>
 
-              <div className="card overflow-x-auto p-0">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-xs text-gray-400 border-b border-gray-50">
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.colAdmin")}</th>
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.subtreeCustomers")}</th>
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.subtreeSales")}</th>
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.creditBalance")}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {subtree.map((r) => (
-                      <tr key={r.id} className="border-b border-gray-50 last:border-0">
-                        <td className="px-4 py-3">
-                          <div className="font-medium text-gray-700">{r.username}</div>
-                          <div className="text-xs text-gray-400">
-                            {r.role === "admin" ? t("admins.roleAdmin") : t("admins.roleSellerPlain")}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 tabular-nums" dir="ltr">
-                          {fmt(r.customers)}
-                          {/* Active is the number that says whether those
-                              customers are still worth anything. */}
-                          <span className="text-xs text-gray-400"> ({fmt(r.active_customers)})</span>
-                        </td>
-                        <td className="px-4 py-3 tabular-nums" dir="ltr">
-                          {fmt(r.sales_total)}
-                          <span className="text-xs text-gray-400"> ({fmt(r.sales_count)})</span>
-                        </td>
-                        <td className="px-4 py-3 tabular-nums" dir="ltr">
-                          <span className={r.in_debt ? "text-red-500 font-medium" : "text-gray-700"}>
-                            {fmt(r.balance)}
-                          </span>
-                          {r.credit_limit > 0 && (
-                            <span className="text-xs text-gray-400"> / -{fmt(r.credit_limit)}</span>
-                          )}
-                        </td>
+              <div className="card p-0">
+                {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
+                <div className="hidden md:block overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-xs text-gray-400 border-b border-gray-50">
+                        <th className="text-right font-medium px-4 py-3">{t("accounting.colAdmin")}</th>
+                        <th className="text-right font-medium px-4 py-3">{t("accounting.subtreeCustomers")}</th>
+                        <th className="text-right font-medium px-4 py-3">{t("accounting.subtreeSales")}</th>
+                        <th className="text-right font-medium px-4 py-3">{t("accounting.creditBalance")}</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {subtree.map((r) => (
+                        <tr key={r.id} className="border-b border-gray-50 last:border-0">
+                          <td className="px-4 py-3">
+                            <div className="font-medium text-gray-700">{r.username}</div>
+                            <div className="text-xs text-gray-400">
+                              {r.role === "admin" ? t("admins.roleAdmin") : t("admins.roleSellerPlain")}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 tabular-nums" dir="ltr">
+                            {fmt(r.customers)}
+                            {/* Active is the number that says whether those
+                                customers are still worth anything. */}
+                            <span className="text-xs text-gray-400"> ({fmt(r.active_customers)})</span>
+                          </td>
+                          <td className="px-4 py-3 tabular-nums" dir="ltr">
+                            {fmt(r.sales_total)}
+                            <span className="text-xs text-gray-400"> ({fmt(r.sales_count)})</span>
+                          </td>
+                          <td className="px-4 py-3 tabular-nums" dir="ltr">
+                            <span className={r.in_debt ? "text-red-500 font-medium" : "text-gray-700"}>
+                              {fmt(r.balance)}
+                            </span>
+                            {r.credit_limit > 0 && (
+                              <span className="text-xs text-gray-400"> / -{fmt(r.credit_limit)}</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
+                <div className="md:hidden divide-y divide-gray-50">
+                  {subtree.map((r) => (
+                    <div key={r.id} className="p-4">
+                      <div className="font-medium text-gray-700">{r.username}</div>
+                      <div className="text-xs text-gray-400 mb-2">
+                        {r.role === "admin" ? t("admins.roleAdmin") : t("admins.roleSellerPlain")}
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 text-xs" dir="ltr">
+                        <div>
+                          <div className="text-gray-400">{t("accounting.subtreeCustomers")}</div>
+                          <div className="tabular-nums">{fmt(r.customers)} <span className="text-gray-400">({fmt(r.active_customers)})</span></div>
+                        </div>
+                        <div>
+                          <div className="text-gray-400">{t("accounting.subtreeSales")}</div>
+                          <div className="tabular-nums">{fmt(r.sales_total)} <span className="text-gray-400">({fmt(r.sales_count)})</span></div>
+                        </div>
+                        <div>
+                          <div className="text-gray-400">{t("accounting.creditBalance")}</div>
+                          <div className="tabular-nums">
+                            <span className={r.in_debt ? "text-red-500 font-medium" : "text-gray-700"}>{fmt(r.balance)}</span>
+                            {r.credit_limit > 0 && <span className="text-gray-400"> / -{fmt(r.credit_limit)}</span>}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             </>
           )}
@@ -624,69 +701,122 @@ export default function Accounting() {
           ) : admins.length === 0 ? (
             <div className="card text-gray-400">{t("accounting.noAdmins")}</div>
           ) : (
-            <div className="card overflow-x-auto p-0">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-xs text-gray-400 border-b border-gray-50">
-                    <th className="text-right font-medium px-4 py-3">{t("accounting.colAdmin")}</th>
-                    <th className="text-right font-medium px-4 py-3">{t("accounting.creditBalance")}</th>
-                    <th className="text-right font-medium px-4 py-3">{t("accounting.creditChange")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {admins.map((a) => {
-                    const f = creditForm[a.id] || { amount: "", note: "" };
-                    const usageMode = a.billing_mode === "usage";
-                    return (
-                      <tr key={a.id} className="border-t border-gray-50">
-                        <td className="px-4 py-3">
+            <div className="card p-0">
+              {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
+              <div className="hidden md:block overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs text-gray-400 border-b border-gray-50">
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.colAdmin")}</th>
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.creditBalance")}</th>
+                      <th className="text-right font-medium px-4 py-3">{t("accounting.creditChange")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {admins.map((a) => {
+                      const f = creditForm[a.id] || { amount: "", note: "" };
+                      const usageMode = a.billing_mode === "usage";
+                      return (
+                        <tr key={a.id} className="border-t border-gray-50">
+                          <td className="px-4 py-3">
+                            <div className="font-medium text-gray-800 dark:text-gray-100">{a.username}</div>
+                            {a.parent_admin_username && (
+                              <div className="text-xs text-gray-400">{a.parent_admin_username}</div>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 font-medium" dir="ltr">
+                            {usageMode
+                              ? `${fmt(a.volume_balance_gb)} GB`
+                              : `${fmt(a.balance)} ${t("accounting.toman")}`}
+                          </td>
+                          <td className="px-4 py-3">
+                            {usageMode ? (
+                              <span className="text-xs text-gray-400">{t("accounting.usageModeHint")}</span>
+                            ) : (
+                              <div className="flex flex-wrap gap-2 items-center">
+                                {/* The one place a minus sign is meaningful: a
+                                    negative amount deducts credit instead of
+                                    adding it. */}
+                                <MoneyInput
+                                  allowNegative
+                                  className="w-36"
+                                  placeholder={t("accounting.creditAmountPlaceholder")}
+                                  value={f.amount}
+                                  onChange={(v) => setCreditForm((c) => ({ ...c, [a.id]: { ...f, amount: v } }))}
+                                />
+                                <input
+                                  className="input w-44"
+                                  placeholder={t("accounting.expenseNote")}
+                                  value={f.note || ""}
+                                  onChange={(e) => setCreditForm((c) => ({ ...c, [a.id]: { ...f, note: e.target.value } }))}
+                                />
+                                <button
+                                  type="button"
+                                  className="btn-secondary shrink-0"
+                                  disabled={creditSaving === a.id || !Number(f.amount)}
+                                  onClick={() => submitCredit(a.id)}
+                                >
+                                  {creditSaving === a.id ? "..." : t("accounting.apply")}
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
+              <div className="md:hidden divide-y divide-gray-50">
+                {admins.map((a) => {
+                  const f = creditForm[a.id] || { amount: "", note: "" };
+                  const usageMode = a.billing_mode === "usage";
+                  return (
+                    <div key={a.id} className="p-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
                           <div className="font-medium text-gray-800 dark:text-gray-100">{a.username}</div>
                           {a.parent_admin_username && (
                             <div className="text-xs text-gray-400">{a.parent_admin_username}</div>
                           )}
-                        </td>
-                        <td className="px-4 py-3 font-medium" dir="ltr">
-                          {usageMode
-                            ? `${fmt(a.volume_balance_gb)} GB`
-                            : `${fmt(a.balance)} ${t("accounting.toman")}`}
-                        </td>
-                        <td className="px-4 py-3">
-                          {usageMode ? (
-                            <span className="text-xs text-gray-400">{t("accounting.usageModeHint")}</span>
-                          ) : (
-                            <div className="flex flex-wrap gap-2 items-center">
-                              {/* The one place a minus sign is meaningful: a
-                                  negative amount deducts credit instead of
-                                  adding it. */}
-                              <MoneyInput
-                                allowNegative
-                                className="w-36"
-                                placeholder={t("accounting.creditAmountPlaceholder")}
-                                value={f.amount}
-                                onChange={(v) => setCreditForm((c) => ({ ...c, [a.id]: { ...f, amount: v } }))}
-                              />
-                              <input
-                                className="input w-44"
-                                placeholder={t("accounting.expenseNote")}
-                                value={f.note || ""}
-                                onChange={(e) => setCreditForm((c) => ({ ...c, [a.id]: { ...f, note: e.target.value } }))}
-                              />
-                              <button
-                                type="button"
-                                className="btn-secondary shrink-0"
-                                disabled={creditSaving === a.id || !Number(f.amount)}
-                                onClick={() => submitCredit(a.id)}
-                              >
-                                {creditSaving === a.id ? "..." : t("accounting.apply")}
-                              </button>
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                        </div>
+                        <span className="font-medium text-sm" dir="ltr">
+                          {usageMode ? `${fmt(a.volume_balance_gb)} GB` : `${fmt(a.balance)} ${t("accounting.toman")}`}
+                        </span>
+                      </div>
+                      {usageMode ? (
+                        <div className="text-xs text-gray-400 mt-2">{t("accounting.usageModeHint")}</div>
+                      ) : (
+                        <div className="flex flex-col gap-2 mt-3">
+                          <MoneyInput
+                            allowNegative
+                            placeholder={t("accounting.creditAmountPlaceholder")}
+                            value={f.amount}
+                            onChange={(v) => setCreditForm((c) => ({ ...c, [a.id]: { ...f, amount: v } }))}
+                          />
+                          <input
+                            className="input"
+                            placeholder={t("accounting.expenseNote")}
+                            value={f.note || ""}
+                            onChange={(e) => setCreditForm((c) => ({ ...c, [a.id]: { ...f, note: e.target.value } }))}
+                          />
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            disabled={creditSaving === a.id || !Number(f.amount)}
+                            onClick={() => submitCredit(a.id)}
+                          >
+                            {creditSaving === a.id ? "..." : t("accounting.apply")}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
               <div className="px-4 py-3 text-xs text-gray-400 border-t border-gray-50">{t("accounting.creditHint")}</div>
             </div>
           )}

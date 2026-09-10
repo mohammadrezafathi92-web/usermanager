@@ -1483,6 +1483,13 @@ export default function Settings() {
 
       {activeTab === "server" && (
         <>
+      {/* Design review item #6 (2026-09-10, user request): same 2-column
+          grid as General/Data, all the way down this tab - except
+          IpBansCard below, which stays full-width on its own (it's a
+          growing list of banned IPs, not a fixed-size settings form, so
+          pairing it with anything else would look wrong the moment the
+          list gets long). */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {isSuperadmin && <LicenseCard t={t} language={language} />}
       {/* Moved here from the "general" tab (2026-09-10 design pass, item
           #3 of the panel owner's requested review) - both are panel-wide
@@ -1671,6 +1678,7 @@ export default function Settings() {
           </div>
         </div>
       )}
+      </div>
 
       <IpBansCard t={t} language={language} />
         </>

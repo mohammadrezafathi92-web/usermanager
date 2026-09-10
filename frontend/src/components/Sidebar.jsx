@@ -8,50 +8,86 @@ import { useLanguage } from "../context/LanguageContext.jsx";
 // these is enough" (see AuthContext.jsx's canAny). "__admin_or_above__"
 // means superadmin or level-2 Admin only - a level-3 Seller never sees it.
 //
-// Menu audit (3-tier hierarchy): Nodes stays structurally Admin-tier-only
-// on the backend too (see routers/nodes.py's create_node/accessible_node_ids
-// - a Seller can never own or be granted a node) - so its sidebar entry is
-// gated accordingly instead of a permission checkbox that could never
-// actually grant a Seller anything real.
-// Packages, Discount codes, and Settings are real, useful, and already
-// internally Seller-aware pages (Packages.jsx hides create/edit/delete and
-// shows the Seller's own resale-price editor instead; DiscountCodes.jsx
-// lets a Seller manage their OWN codes and hides edit/delete on anything
-// they don't own - see routers/discount_codes.py's per-tier ownership,
-// confirmed with the panel owner 2026-07-19; Settings.jsx hides the
-// superadmin-only/Admin-only cards and shows only password + own-bot +
-// own-backup + own-payment for a Seller) - so their links are
-// unconditionally visible and each page does its own finer-grained gating
-// internally, exactly like Users/Dashboard already did.
-const allLinks = [
-  { to: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, end: true, perm: null },
-  { to: "/users", labelKey: "nav.users", icon: Users, perm: null },
-  { to: "/nodes", labelKey: "nav.nodes", icon: Server, perm: "__admin_or_above__" },
-  { to: "/packages", labelKey: "nav.packages", icon: Package, perm: null },
-  { to: "/tutorials", labelKey: "nav.tutorials", icon: GraduationCap, perm: "view_tutorials" },
-  { to: "/radius-logs", labelKey: "nav.radiusLogs", icon: ShieldAlert, perm: null },
-  // Gated on the SAME permission its router requires (routers/
-  // discount_codes.py gates the whole prefix on manage_discount_codes).
-  { to: "/discount-codes", labelKey: "nav.discountCodes", icon: Ticket, perm: "manage_discount_codes" },
-  // The backend scopes what each role's numbers cover (superadmin: whole
-  // panel; level-2 Admin: own tree; Seller: self) - but a Seller only gets
-  // in at all with view_accounting, which routers/accounting.py requires on
-  // the whole prefix.
-  //
-  // This used to be `perm: null`. The menu offered the section to every
-  // Seller while every one of its endpoints answered 403, so the page
-  // opened onto nothing - reported as "the accounting section hangs".
-  // canAny() waves superadmins and level-2 Admins through exactly as
-  // deps.require_permission does, so they are unaffected.
-  { to: "/accounting", labelKey: "nav.accounting", icon: Calculator, perm: "view_accounting" },
-  // One channel per admin - a level-3 Seller has neither a channel nor a
-  // bot of their own, so this is Admin-tier-only like Nodes.
-  { to: "/ads", labelKey: "nav.ads", icon: Megaphone, perm: "__admin_or_above__" },
-  { to: "/settings", labelKey: "nav.settings", icon: Settings, perm: null },
-  // Superadmins manage level-2 Admins here; level-2 Admins ALSO see this
-  // page (to manage their OWN level-3 Sellers - see routers/admins.py's
-  // require_admin_or_above) - only a level-3 Seller never sees it at all.
-  { to: "/admins", labelKey: "nav.admins", icon: ShieldCheck, perm: "__admin_or_above__" },
+// Grouped into sections (2026-09-10 design pass, item #1/#2 of the panel
+// owner's requested tab/nav review - see chat history) - the previous flat
+// list read top-to-bottom in whatever order pages were historically added
+// in (Nodes far from RadiusLogs, Ads stuck between Accounting and
+// Settings), with no visual cue that e.g. Dashboard and Admins carry very
+// different weight. Each group below is a real product grouping (what a
+// reseller sells vs. the infrastructure behind it vs. business/ops), and
+// Dashboard/Settings stay outside any group as clear start/end anchors.
+// `labelKey: null` on a group means "no header, just render its links" -
+// used for those two anchors.
+const linkGroups = [
+  {
+    labelKey: null,
+    links: [
+      { to: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, end: true, perm: null },
+    ],
+  },
+  {
+    labelKey: "nav.groupSales",
+    links: [
+      { to: "/users", labelKey: "nav.users", icon: Users, perm: null },
+      { to: "/packages", labelKey: "nav.packages", icon: Package, perm: null },
+      // Gated on the SAME permission its router requires (routers/
+      // discount_codes.py gates the whole prefix on manage_discount_codes).
+      { to: "/discount-codes", labelKey: "nav.discountCodes", icon: Ticket, perm: "manage_discount_codes" },
+      // One channel per admin - a level-3 Seller has neither a channel nor a
+      // bot of their own, so this is Admin-tier-only like Nodes.
+      { to: "/ads", labelKey: "nav.ads", icon: Megaphone, perm: "__admin_or_above__" },
+      { to: "/tutorials", labelKey: "nav.tutorials", icon: GraduationCap, perm: "view_tutorials" },
+    ],
+  },
+  {
+    labelKey: "nav.groupInfra",
+    links: [
+      // Nodes stays structurally Admin-tier-only on the backend too (see
+      // routers/nodes.py's create_node/accessible_node_ids - a Seller can
+      // never own or be granted a node) - so its sidebar entry is gated
+      // accordingly instead of a permission checkbox that could never
+      // actually grant a Seller anything real.
+      { to: "/nodes", labelKey: "nav.nodes", icon: Server, perm: "__admin_or_above__" },
+      { to: "/radius-logs", labelKey: "nav.radiusLogs", icon: ShieldAlert, perm: null },
+    ],
+  },
+  {
+    labelKey: "nav.groupBusiness",
+    links: [
+      // The backend scopes what each role's numbers cover (superadmin: whole
+      // panel; level-2 Admin: own tree; Seller: self) - but a Seller only gets
+      // in at all with view_accounting, which routers/accounting.py requires on
+      // the whole prefix.
+      //
+      // This used to be `perm: null`. The menu offered the section to every
+      // Seller while every one of its endpoints answered 403, so the page
+      // opened onto nothing - reported as "the accounting section hangs".
+      // canAny() waves superadmins and level-2 Admins through exactly as
+      // deps.require_permission does, so they are unaffected.
+      { to: "/accounting", labelKey: "nav.accounting", icon: Calculator, perm: "view_accounting" },
+      // Superadmins manage level-2 Admins here; level-2 Admins ALSO see this
+      // page (to manage their OWN level-3 Sellers - see routers/admins.py's
+      // require_admin_or_above) - only a level-3 Seller never sees it at all.
+      { to: "/admins", labelKey: "nav.admins", icon: ShieldCheck, perm: "__admin_or_above__" },
+    ],
+  },
+  {
+    labelKey: null,
+    links: [
+      // Packages, Discount codes, and Settings are real, useful, and already
+      // internally Seller-aware pages (Packages.jsx hides create/edit/delete
+      // and shows the Seller's own resale-price editor instead;
+      // DiscountCodes.jsx lets a Seller manage their OWN codes and hides
+      // edit/delete on anything they don't own - see routers/
+      // discount_codes.py's per-tier ownership, confirmed with the panel
+      // owner 2026-07-19; Settings.jsx hides the superadmin-only/Admin-only
+      // cards and shows only password + own-bot + own-backup + own-payment
+      // for a Seller) - so their links are unconditionally visible and each
+      // page does its own finer-grained gating internally, exactly like
+      // Users/Dashboard already did.
+      { to: "/settings", labelKey: "nav.settings", icon: Settings, perm: null },
+    ],
+  },
 ];
 
 const navItemClass = ({ isActive }) =>
@@ -105,12 +141,18 @@ export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
   // md: rule below reliably overrides them on desktop.
   const offCanvas = dir === "ltr" ? "-translate-x-full" : "translate-x-full";
 
-  const links = allLinks.filter((l) => {
+  const canSee = (l) => {
     if (l.perm === null) return true;
     if (l.perm === "__superadmin__") return isSuperadmin;
     if (l.perm === "__admin_or_above__") return isAdminOrAbove;
     return canAny(Array.isArray(l.perm) ? l.perm : [l.perm]);
-  });
+  };
+  // Filter within each group, then drop any group left with zero links (a
+  // Seller with no accounting permission and no admin-tier access would
+  // otherwise see an empty "مدیریت و حساب" header with nothing under it).
+  const groups = linkGroups
+    .map((g) => ({ ...g, links: g.links.filter(canSee) }))
+    .filter((g) => g.links.length > 0);
 
   return (
     <>
@@ -180,11 +222,22 @@ export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
         </div>
 
         <nav className="flex-1 px-3 space-y-1 mt-2 overflow-y-auto">
-          {links.map(({ to, labelKey, icon: Icon, end }) => (
-            <NavLink key={to} to={to} end={end} onClick={onClose} className={navItemClass}>
-              <Icon size={18} className="shrink-0" />
-              <span className="truncate">{t(labelKey)}</span>
-            </NavLink>
+          {groups.map((g, i) => (
+            <div key={g.labelKey || `group-${i}`} className={i === 0 ? "" : "pt-3"}>
+              {g.labelKey && (
+                <div className="px-3 pb-1 text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide">
+                  {t(g.labelKey)}
+                </div>
+              )}
+              <div className="space-y-1">
+                {g.links.map(({ to, labelKey, icon: Icon, end }) => (
+                  <NavLink key={to} to={to} end={end} onClick={onClose} className={navItemClass}>
+                    <Icon size={18} className="shrink-0" />
+                    <span className="truncate">{t(labelKey)}</span>
+                  </NavLink>
+                ))}
+              </div>
+            </div>
           ))}
         </nav>
 

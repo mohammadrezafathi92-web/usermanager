@@ -1490,7 +1490,46 @@ export default function Settings() {
           pairing it with anything else would look wrong the moment the
           list gets long). */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      {isSuperadmin && <LicenseCard t={t} language={language} />}
+      {/* License swapped with Panel Port (2026-09-10, user request) - pairs
+          the two tallest cards (License, HA) together in the second
+          column instead of License+Update / HA+Port, which left a lot of
+          empty space under the short Port card next to HA. */}
+      {isSuperadmin && (
+        <div className="card mb-4">
+          <div className="flex items-center gap-2 mb-4">
+            <Server size={18} className="text-brand-600" />
+            <h3 className="font-bold text-gray-700">{t("settings.panelPortTitle")}</h3>
+          </div>
+          <p className="text-xs text-gray-400 mb-4">
+            {t("settings.panelPortDescription1")} <b dir="ltr">{portForm.panel_web_port || 80}</b> {t("settings.panelPortDescription2")}
+          </p>
+
+          {portMsg && (
+            <div className={`text-sm rounded-lg px-3 py-2 mb-4 whitespace-pre-wrap ${portMsg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+              {portMsg.text}
+            </div>
+          )}
+
+          <div className="bg-gray-50 rounded-lg p-3 space-y-3">
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">{t("settings.newPort")}</label>
+              <input
+                type="number"
+                className="input"
+                dir="ltr"
+                value={newPort}
+                onChange={(e) => setNewPort(e.target.value)}
+              />
+            </div>
+            <button type="button" className="btn-primary w-full" disabled={changingPort} onClick={onChangePort}>
+              {changingPort ? t("settings.applyingPort") : t("settings.changePanelPort")}
+            </button>
+            {portForm.panel_port_changed_at && (
+              <div className="text-xs text-gray-400">{t("settings.lastPortChange", { value: formatDateTime(portForm.panel_port_changed_at, language) })}</div>
+            )}
+          </div>
+        </div>
+      )}
       {/* Moved here from the "general" tab (2026-09-10 design pass, item
           #3 of the panel owner's requested review) - both are panel-wide
           server/infrastructure concerns (what version is running, the
@@ -1642,42 +1681,7 @@ export default function Settings() {
         </div>
       )}
 
-      {isSuperadmin && (
-        <div className="card mb-4">
-          <div className="flex items-center gap-2 mb-4">
-            <Server size={18} className="text-brand-600" />
-            <h3 className="font-bold text-gray-700">{t("settings.panelPortTitle")}</h3>
-          </div>
-          <p className="text-xs text-gray-400 mb-4">
-            {t("settings.panelPortDescription1")} <b dir="ltr">{portForm.panel_web_port || 80}</b> {t("settings.panelPortDescription2")}
-          </p>
-
-          {portMsg && (
-            <div className={`text-sm rounded-lg px-3 py-2 mb-4 whitespace-pre-wrap ${portMsg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
-              {portMsg.text}
-            </div>
-          )}
-
-          <div className="bg-gray-50 rounded-lg p-3 space-y-3">
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">{t("settings.newPort")}</label>
-              <input
-                type="number"
-                className="input"
-                dir="ltr"
-                value={newPort}
-                onChange={(e) => setNewPort(e.target.value)}
-              />
-            </div>
-            <button type="button" className="btn-primary w-full" disabled={changingPort} onClick={onChangePort}>
-              {changingPort ? t("settings.applyingPort") : t("settings.changePanelPort")}
-            </button>
-            {portForm.panel_port_changed_at && (
-              <div className="text-xs text-gray-400">{t("settings.lastPortChange", { value: formatDateTime(portForm.panel_port_changed_at, language) })}</div>
-            )}
-          </div>
-        </div>
-      )}
+      {isSuperadmin && <LicenseCard t={t} language={language} />}
       </div>
 
       <IpBansCard t={t} language={language} />

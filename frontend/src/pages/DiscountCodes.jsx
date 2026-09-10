@@ -125,7 +125,8 @@ export default function DiscountCodes() {
       </div>
 
       <div className="card !p-0 overflow-hidden">
-        <div className="overflow-x-auto">
+        {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs text-gray-400 border-b border-gray-50">
@@ -197,13 +198,72 @@ export default function DiscountCodes() {
               ))}
               {!loading && codes.length === 0 && (
                 <tr>
-                  <td colSpan={showOwnerColumn ? 8 : 7} className="px-4 py-10 text-center text-gray-400">
+                  <td colSpan={showOwnerColumn ? 8 : 7} className="empty-state">
                     {t("discountCodes.empty")}
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
+        </div>
+
+        {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
+        <div className="md:hidden divide-y divide-gray-50">
+          {codes.map((c) => (
+            <div key={c.id} className="p-4">
+              <div className="flex items-start justify-between gap-2">
+                <span className="inline-flex items-center gap-1 font-mono font-medium text-gray-800">
+                  <Ticket size={14} className="text-brand-500" /> {c.code}
+                </span>
+                {isOwnRow(c) ? (
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <button onClick={() => openEdit(c)} className="text-gray-400 hover:text-brand-600">
+                      <Pencil size={16} />
+                    </button>
+                    <button onClick={() => remove(c)} className="text-gray-400 hover:text-red-500">
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ) : (
+                  <span className="text-xs text-gray-300">{t("discountCodes.readOnly")}</span>
+                )}
+              </div>
+
+              {showOwnerColumn && (
+                <div className="text-xs text-gray-500 mt-1">
+                  {isOwnRow(c) ? t("discountCodes.ownerMe") : (c.owner_admin_username || "-")}
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-gray-600">
+                <span>{c.kind === "percent" ? `${c.value}%` : `${formatToman(c.value, language)} ${t("discountCodes.toman")}`}</span>
+                <button
+                  type="button"
+                  onClick={() => openRedemptions(c)}
+                  className="inline-flex items-center gap-1.5 text-gray-500 hover:text-brand-600 transition-colors"
+                  title={t("discountCodes.viewRedemptions")}
+                >
+                  <Users size={14} className="text-gray-300" />
+                  {c.used_count}
+                  {c.max_uses ? ` / ${c.max_uses}` : ` / ${t("discountCodes.unlimited")}`}
+                </button>
+                <span>{c.expires_at ? formatDateTime(c.expires_at, language) : t("discountCodes.never")}</span>
+              </div>
+
+              <div className="flex items-center justify-between mt-2">
+                <button
+                  onClick={() => isOwnRow(c) && toggleEnabled(c)}
+                  disabled={!isOwnRow(c)}
+                  className={`badge ${c.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"} ${!isOwnRow(c) ? "cursor-default opacity-70" : ""}`}
+                >
+                  <Power size={12} className="inline ml-1" />
+                  {c.enabled ? t("discountCodes.enabled") : t("discountCodes.disabled")}
+                </button>
+                {c.note && <span className="text-gray-400 text-xs truncate max-w-[10rem]">{c.note}</span>}
+              </div>
+            </div>
+          ))}
+          {!loading && codes.length === 0 && <div className="empty-state">{t("discountCodes.empty")}</div>}
         </div>
       </div>
 

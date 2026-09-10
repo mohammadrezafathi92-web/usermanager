@@ -185,60 +185,103 @@ export default function Tutorials() {
       </div>
       )}
 
-      <div className="card !p-0 overflow-x-auto">
-        <table className="w-full text-sm min-w-[40rem]">
-          <thead className="bg-gray-50 text-gray-500 text-xs">
-            <tr>
-              <th className="text-right font-medium px-4 py-3">{t("tutorials.colTitle")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("tutorials.colMedia")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("tutorials.colOrder")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("tutorials.colStatus")}</th>
-              <th className="text-right font-medium px-4 py-3">{t("tutorials.colActions")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item) => (
-              <tr key={item.id} className="border-t border-gray-50 hover:bg-gray-50/60">
-                <td className="px-4 py-3">
-                  <div className="font-medium text-gray-800">{item.title}</div>
-                  {item.text && <div className="text-xs text-gray-400 truncate max-w-md">{item.text}</div>}
-                </td>
-                <td className="px-4 py-3 text-gray-500">{t("tutorials.fileCount", { count: item.media?.length || 0 })}</td>
-                <td className="px-4 py-3 text-gray-500">{item.sort_order}</td>
-                <td className="px-4 py-3">
-                  <span className={`badge ${item.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
-                    {item.enabled ? t("status.active") : t("status.disabled")}
-                  </span>
-                </td>
-                <td className="px-4 py-3">
-                  {isAdminOrAbove ? (
-                    <div className="flex items-center gap-2">
-                      <button title={item.enabled ? t("tutorials.disable") : t("tutorials.enable")} onClick={() => onToggle(item)} className="text-gray-400 hover:text-brand-600">
-                        <Power size={16} />
-                      </button>
-                      <button title={t("tutorials.editTitle")} onClick={() => openEdit(item)} className="text-gray-400 hover:text-brand-600">
-                        <Pencil size={16} />
-                      </button>
-                      <button title={t("tutorials.deleteTitle")} onClick={() => onDelete(item.id)} className="text-gray-400 hover:text-red-600">
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  ) : (
-                    <span className="text-gray-300">—</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {items.length === 0 && (
+      <div className="card !p-0">
+        {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
+        <div className="hidden md:block overflow-x-auto">
+          <table className="w-full text-sm min-w-[40rem]">
+            <thead className="bg-gray-50 text-gray-500 text-xs">
               <tr>
-                <td colSpan={5} className="empty-state">
-                  <GraduationCap size={28} className="mx-auto mb-2 text-gray-300" />
-                  {t("tutorials.empty")}
-                </td>
+                <th className="text-right font-medium px-4 py-3">{t("tutorials.colTitle")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("tutorials.colMedia")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("tutorials.colOrder")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("tutorials.colStatus")}</th>
+                <th className="text-right font-medium px-4 py-3">{t("tutorials.colActions")}</th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {items.map((item) => (
+                <tr key={item.id} className="border-t border-gray-50 hover:bg-gray-50/60">
+                  <td className="px-4 py-3">
+                    <div className="font-medium text-gray-800">{item.title}</div>
+                    {item.text && <div className="text-xs text-gray-400 truncate max-w-md">{item.text}</div>}
+                  </td>
+                  <td className="px-4 py-3 text-gray-500">{t("tutorials.fileCount", { count: item.media?.length || 0 })}</td>
+                  <td className="px-4 py-3 text-gray-500">{item.sort_order}</td>
+                  <td className="px-4 py-3">
+                    <span className={`badge ${item.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                      {item.enabled ? t("status.active") : t("status.disabled")}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    {isAdminOrAbove ? (
+                      <div className="flex items-center gap-2">
+                        <button title={item.enabled ? t("tutorials.disable") : t("tutorials.enable")} onClick={() => onToggle(item)} className="text-gray-400 hover:text-brand-600">
+                          <Power size={16} />
+                        </button>
+                        <button title={t("tutorials.editTitle")} onClick={() => openEdit(item)} className="text-gray-400 hover:text-brand-600">
+                          <Pencil size={16} />
+                        </button>
+                        <button title={t("tutorials.deleteTitle")} onClick={() => onDelete(item.id)} className="text-gray-400 hover:text-red-600">
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-gray-300">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {items.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="empty-state">
+                    <GraduationCap size={28} className="mx-auto mb-2 text-gray-300" />
+                    {t("tutorials.empty")}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
+        <div className="md:hidden divide-y divide-gray-50">
+          {items.map((item) => (
+            <div key={item.id} className="p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="font-medium text-gray-800">{item.title}</div>
+                  {item.text && <div className="text-xs text-gray-400 truncate">{item.text}</div>}
+                </div>
+                {isAdminOrAbove && (
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <button title={item.enabled ? t("tutorials.disable") : t("tutorials.enable")} onClick={() => onToggle(item)} className="text-gray-400 hover:text-brand-600">
+                      <Power size={16} />
+                    </button>
+                    <button title={t("tutorials.editTitle")} onClick={() => openEdit(item)} className="text-gray-400 hover:text-brand-600">
+                      <Pencil size={16} />
+                    </button>
+                    <button title={t("tutorials.deleteTitle")} onClick={() => onDelete(item.id)} className="text-gray-400 hover:text-red-600">
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center gap-2 mt-2">
+                <span className={`badge ${item.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                  {item.enabled ? t("status.active") : t("status.disabled")}
+                </span>
+                <span className="text-xs text-gray-500">{t("tutorials.fileCount", { count: item.media?.length || 0 })}</span>
+                <span className="text-xs text-gray-400">#{item.sort_order}</span>
+              </div>
+            </div>
+          ))}
+          {items.length === 0 && (
+            <div className="empty-state">
+              <GraduationCap size={28} className="mx-auto mb-2 text-gray-300" />
+              {t("tutorials.empty")}
+            </div>
+          )}
+        </div>
       </div>
 
       <Modal open={open} onClose={() => setOpen(false)} title={editingId ? t("tutorials.editModal") : t("tutorials.newModal")} width="max-w-2xl">

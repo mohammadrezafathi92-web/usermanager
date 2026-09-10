@@ -5,6 +5,7 @@ import JalaliDateInput from "../components/JalaliDateInput.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
+import ReferralLoyaltyCard from "../components/ReferralLoyaltyCard.jsx";
 import { fetchDiscountCodes, createDiscountCode, updateDiscountCode, deleteDiscountCode, fetchDiscountCodeRedemptions } from "../api/client.js";
 import { formatDateTime, formatToman } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
@@ -205,6 +206,8 @@ export default function DiscountCodes() {
           </table>
         </div>
       </div>
+
+      {isAdminOrAbove && <ReferralLoyaltyCard t={t} />}
 
       <Modal
         open={!!redemptionsFor}

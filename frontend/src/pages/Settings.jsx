@@ -293,9 +293,6 @@ export default function Settings() {
   const [payment, setPayment] = useState({
     payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "",
     support_contact_text: "", panel_public_url: "",
-    referral_referrer_reward_credit: 0, referral_referrer_reward_gb: 0,
-    referral_new_user_reward_credit: 0, referral_new_user_reward_gb: 0,
-    loyalty_purchase_threshold: 0, loyalty_reward_credit: 0, loyalty_reward_gb: 0,
   });
   const [paymentMsg, setPaymentMsg] = useState(null);
   const [savingPayment, setSavingPayment] = useState(false);
@@ -348,9 +345,6 @@ export default function Settings() {
       setPayment({
         payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "",
         support_contact_text: "",
-        referral_referrer_reward_credit: 0, referral_referrer_reward_gb: 0,
-        referral_new_user_reward_credit: 0, referral_new_user_reward_gb: 0,
-        loyalty_purchase_threshold: 0, loyalty_reward_credit: 0, loyalty_reward_gb: 0,
         ...res.data,
       });
       setHa((h) => ({ ...h, ...res.data }));
@@ -1059,69 +1053,6 @@ export default function Settings() {
               <p className="text-xs text-gray-400 mt-1">{t("settings.subLinkBaseUrlHint")}</p>
             </div>
           )}
-
-          <div className="md:col-span-2 border-t border-gray-100 dark:border-slate-800 pt-3 mt-1">
-            <p className="text-sm font-medium text-gray-600 mb-2">{t("settings.referralTitle")}</p>
-          </div>
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.referralReferrerCredit")}</label>
-            <MoneyInput
-              value={payment.referral_referrer_reward_credit ?? 0}
-              onChange={(v) => setPayment((p) => ({ ...p, referral_referrer_reward_credit: v === "" ? 0 : Number(v) }))}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.referralReferrerGb")}</label>
-            <input
-              type="number" min="0" step="0.1" className="input" dir="ltr"
-              value={payment.referral_referrer_reward_gb ?? 0}
-              onChange={(e) => setPayment((p) => ({ ...p, referral_referrer_reward_gb: Number(e.target.value) }))}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.referralNewUserCredit")}</label>
-            <MoneyInput
-              value={payment.referral_new_user_reward_credit ?? 0}
-              onChange={(v) => setPayment((p) => ({ ...p, referral_new_user_reward_credit: v === "" ? 0 : Number(v) }))}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.referralNewUserGb")}</label>
-            <input
-              type="number" min="0" step="0.1" className="input" dir="ltr"
-              value={payment.referral_new_user_reward_gb ?? 0}
-              onChange={(e) => setPayment((p) => ({ ...p, referral_new_user_reward_gb: Number(e.target.value) }))}
-            />
-          </div>
-
-          <div className="md:col-span-2 border-t border-gray-100 dark:border-slate-800 pt-3 mt-1">
-            <p className="text-sm font-medium text-gray-600 mb-2">{t("settings.loyaltyTitle")}</p>
-          </div>
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.loyaltyThreshold")}</label>
-            <input
-              type="number" min="0" className="input" dir="ltr"
-              placeholder={t("settings.loyaltyThresholdPlaceholder")}
-              value={payment.loyalty_purchase_threshold ?? 0}
-              onChange={(e) => setPayment((p) => ({ ...p, loyalty_purchase_threshold: Number(e.target.value) }))}
-            />
-          </div>
-          <div />
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.loyaltyRewardCredit")}</label>
-            <MoneyInput
-              value={payment.loyalty_reward_credit ?? 0}
-              onChange={(v) => setPayment((p) => ({ ...p, loyalty_reward_credit: v === "" ? 0 : Number(v) }))}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.loyaltyRewardGb")}</label>
-            <input
-              type="number" min="0" step="0.1" className="input" dir="ltr"
-              value={payment.loyalty_reward_gb ?? 0}
-              onChange={(e) => setPayment((p) => ({ ...p, loyalty_reward_gb: Number(e.target.value) }))}
-            />
-          </div>
 
           <div className="md:col-span-2">
             <button type="submit" disabled={savingPayment} className="btn-primary">

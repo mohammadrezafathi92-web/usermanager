@@ -15,10 +15,19 @@ match/mismatch, per node, printed to the terminal - so you can look them
 over and decide what to actually remove yourself, either by hand on the
 router/panel or by asking Claude to remove a specific, confirmed list.
 
-Usage (run on the panel server itself, same place you'd run any other
-backend/scripts/*.py):
+Usage - run it INSIDE the backend container, not on the host. The panel's
+Python dependencies (sqlalchemy, paramiko, ...) and its DATABASE_URL only
+exist in there; the host's bare python3 has none of them. The whole repo
+is bind-mounted into the container by docker-compose.yml, so a plain `git
+pull` is enough - no image rebuild needed to pick this file up:
 
-    cd backend && python3 scripts/report_orphan_connections.py
+    docker exec -it -w /app usermanager-backend \
+        python3 "$PWD/backend/scripts/report_orphan_connections.py"
+
+or, spelling the path out (adjust if your install isn't in /opt):
+
+    docker exec -it -w /app usermanager-backend \
+        python3 /opt/usermanager/backend/scripts/report_orphan_connections.py
 
 Only ever reads: MikroTik's /interface/wireguard/peers, the 3X-UI panel's
 inbound client list (or the SSH-managed xray config.json), and this
@@ -31,10 +40,26 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import models  # noqa: E402
-from app.database import SessionLocal  # noqa: E402
-from app.services.mikrotik_client import MikrotikClient, MikrotikError  # noqa: E402
-from app.services.xray_client import XrayError, client_for_node  # noqa: E402
+try:
+    from app import models  # noqa: E402
+    from app.database import SessionLocal  # noqa: E402
+    from app.services.mikrotik_client import MikrotikClient, MikrotikError  # noqa: E402
+    from app.services.xray_client import XrayError, client_for_node  # noqa: E402
+except ModuleNotFoundError as exc:
+    # Almost always "run on the host instead of inside the container" - the
+    # panel's dependencies live in the backend image, never on the host, so
+    # the very first import fails with a bare traceback that doesn't say
+    # why. Say why.
+    print(
+        f"\n[!] ماژول «{exc.name}» پیدا نشد.\n\n"
+        "این اسکریپت باید داخل کانتینر بک‌اند اجرا بشه، نه روی خود سرور -\n"
+        "کتابخونه‌های پایتون پنل فقط داخل کانتینرن.\n\n"
+        "دستور درست (از پوشه‌ی نصب پنل):\n\n"
+        "    docker exec -it -w /app usermanager-backend \\\n"
+        '        python3 "$PWD/backend/scripts/report_orphan_connections.py"\n',
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 
 def _check_mikrotik_node(db, node: models.Node) -> None:

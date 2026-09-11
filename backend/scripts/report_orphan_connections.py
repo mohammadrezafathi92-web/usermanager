@@ -119,22 +119,31 @@ def _check_mikrotik_node(db, node: models.Node) -> None:
             f"  {len(unnamed)} پیر روی روتر بدون comment هستند - این‌ها اصلاً قابل تطبیق نیستند "
             f"(احتمالاً دستی روی روتر ساخته شدن، نه از طریق پنل)."
         )
-    if missing:
-        # The opposite direction, and the one a customer actually feels: the
-        # panel thinks this service exists, but there is no peer on the
-        # router backing it, so it simply does not work.
+    # The opposite direction, and the one a customer actually feels: the
+    # panel thinks this service exists, but there is no peer on the router
+    # backing it, so it simply does not work. Only the ENABLED ones are a
+    # problem - a disabled connection isn't serving anyone either way, so
+    # warning about it every run just trains the reader to ignore the ⚠.
+    enabled_missing = [c for c in missing if c.enabled]
+    disabled_missing = [c for c in missing if not c.enabled]
+    if enabled_missing:
         print(
-            f"  ⚠ {len(missing)} کانکشن توی پنل هست که پیرش روی روتر پیدا نشد "
+            f"  ⚠ {len(enabled_missing)} کانکشن فعال توی پنل هست که پیرش روی روتر پیدا نشد "
             f"(یعنی سرویس عملاً کار نمی‌کنه):"
         )
-        for c in missing[:20]:
+        for c in enabled_missing[:20]:
             user = db.get(models.User, c.user_id)
             print(
                 f"    - connection #{c.id}  user={(user.username if user else '?')!r}  "
-                f"wg_peer_name={c.wg_peer_name!r}  enabled={c.enabled}"
+                f"wg_peer_name={c.wg_peer_name!r}"
             )
-        if len(missing) > 20:
-            print(f"    ... و {len(missing) - 20} مورد دیگر")
+        if len(enabled_missing) > 20:
+            print(f"    ... و {len(enabled_missing) - 20} مورد دیگر")
+    if disabled_missing:
+        print(
+            f"  ({len(disabled_missing)} کانکشن غیرفعال هم پیر روی روتر ندارن - "
+            f"چون غیرفعالن، مشکلی برای مشتری ایجاد نمی‌کنن.)"
+        )
 
 
 # Every xray client this panel creates itself is named

@@ -196,6 +196,20 @@ class ThreeXUIClient:
         if not obj:
             raise XrayError("اینباند با این شناسه در پنل 3X-UI پیدا نشد")
 
+    def list_client_emails(self, inbound_tag: str) -> list[str]:
+        """Every client email currently configured on this inbound - used
+        by scripts/report_orphan_connections.py to find clients with no
+        matching Connection row left in the panel's DB (2026-09).
+        inbound_tag is unused here (ThreeXUIClient is already scoped to one
+        inbound_id via __init__) - kept for interface parity with
+        XrayClient, which needs it."""
+        obj = self._get_inbound()
+        try:
+            clients = json.loads(obj.get("settings") or "{}").get("clients", [])
+        except (ValueError, TypeError):
+            clients = []
+        return [c.get("email") for c in clients if c.get("email")]
+
     def get_link_settings(self) -> dict:
         """Reads the real host/port/network/security/sni the configured
         inbound is actually listening on/with, straight from 3X-UI, so the
@@ -414,8 +428,19 @@ class ThreeXUIClient:
             return  # already gone
         self._post(f"/panel/api/inbounds/{self.inbound_id}/delClient/{client_uuid}", {})
 
-    def set_client_enabled(self, inbound_tag: str, email: str, uuid_: str, flow: str, enabled: bool):
+    def set_client_enabled(self, inbound_tag: str, email: str, uuid_: str, flow: str, enabled: bool) -> bool:
         """Toggles a client's `enable` flag WITHOUT ever deleting it.
+
+        Returns whether the change is confirmed to have actually applied -
+        callers (quota_manager.py's _set_connection_enabled) use this to
+        decide whether it's safe to record the connection as toggled in the
+        DB. Previously this returned nothing at all, so a caller had no way
+        to tell "the panel confirmed the change" apart from "every attempt
+        below failed and there was nothing left to try" - both looked like
+        a normal return, and the connection got marked toggled either way
+        even when nothing on the actual Xray panel had changed (2026-09 bug
+        report: WireGuard/V2Ray connections kept working past quota
+        exhaustion).
 
         This used to fall back to remove_client() on the classic API when
         disabling - a real delete, not a disable. That meant a client
@@ -430,7 +455,7 @@ class ThreeXUIClient:
         fields = self._client_fields(email, uuid_, flow, enabled=enabled)
         ok, _ = self._try_post(f"/panel/api/clients/update/{email}", fields)
         if ok:
-            return
+            return True
 
         # classic API: it has its own real single-client update endpoint -
         # use it to flip `enable` in place instead of deleting the client.
@@ -439,7 +464,7 @@ class ThreeXUIClient:
             {"id": self.inbound_id, "settings": json.dumps({"clients": [fields]})},
         )
         if ok:
-            return
+            return True
 
         # Last resort: the client doesn't exist on this panel at all (e.g.
         # it was deleted by the old buggy code path before this fix, or an
@@ -448,6 +473,8 @@ class ThreeXUIClient:
         # destructive behavior this fix removes.
         if enabled:
             self.add_client(inbound_tag, email, uuid_, flow)
+            return True
+        return False
 
     # ------------------------------------------------------------------
     def query_all_user_stats(self) -> dict[str, dict[str, int]]:

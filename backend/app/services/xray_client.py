@@ -186,11 +186,27 @@ class XrayClient:
         self.write_config(config)
         self.restart_service()
 
-    def set_client_enabled(self, inbound_tag: str, email: str, uuid_: str, flow: str, enabled: bool):
+    def list_client_emails(self, inbound_tag: str) -> list[str]:
+        """Every client email currently configured on this inbound - used
+        by scripts/report_orphan_connections.py to find clients with no
+        matching Connection row left in the panel's DB (2026-09)."""
+        config = self.read_config()
+        inbound = self._find_inbound(config, inbound_tag)
+        clients = inbound.get("settings", {}).get("clients", [])
+        return [c.get("email") for c in clients if c.get("email")]
+
+    def set_client_enabled(self, inbound_tag: str, email: str, uuid_: str, flow: str, enabled: bool) -> bool:
+        # Unlike ThreeXUIClient's multi-endpoint fallback chain, add_client/
+        # remove_client here either succeed or raise XrayError - there's no
+        # silent "nothing left to try" path, so reaching this line at all
+        # means the change was applied. Returns True (not None) to match
+        # ThreeXUIClient's interface - see its set_client_enabled docstring
+        # for why callers rely on this return value.
         if enabled:
             self.add_client(inbound_tag, email, uuid_, flow)
         else:
             self.remove_client(inbound_tag, email)
+        return True
 
     def get_online_emails(self) -> set[str]:
         """SSH-managed Xray installs have no equivalent to 3X-UI's

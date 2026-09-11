@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import ipaddress
+import logging
 import random
 import re
 import secrets
@@ -28,6 +29,9 @@ from .link_builder import (
     build_ikev2_info,
     build_sstp_info,
 )
+
+logger = logging.getLogger("user_ops")
+
 
 def gb_to_bytes(gb: float) -> int:
     return int(round((gb or 0) * 1024 ** 3))
@@ -1465,7 +1469,10 @@ def provision_connection(
 # ------------------------------------------------------------- deprovisioning
 def deprovision_connection(connection: models.Connection):
     """Removes the connection from the remote node (MikroTik/Xray). Does
-    NOT touch the database row - callers are expected to db.delete() after."""
+    NOT touch the database row - callers are expected to db.delete() after
+    (they always do, even when the comment lookup below finds nothing to
+    remove - see the warning log right after it for why that's still safe
+    to proceed on)."""
     node = connection.node
     try:
         if connection.type == models.ConnectionType.wireguard:
@@ -1474,6 +1481,22 @@ def deprovision_connection(connection: models.Connection):
                 match = next((p for p in peers if p.get("comment") == connection.wg_peer_name), None)
                 if match:
                     mt.remove_peer(match[".id"])
+                else:
+                    # Not necessarily a bug on its own - the peer may
+                    # genuinely already be gone (e.g. manually removed on
+                    # the router). But the DB row is about to be deleted
+                    # regardless, so if it ISN'T already gone (comment
+                    # mismatch, wrong node, etc.) this is exactly how a
+                    # permanently orphaned peer gets left behind on
+                    # MikroTik with nothing pointing back at it anymore -
+                    # logged so it's traceable instead of silent (2026-09
+                    # bug report: "یه عالمه کانکشن‌های وایرگارد بی‌صاحب
+                    # توی میکروتیک هست").
+                    logger.warning(
+                        "deprovision: wireguard peer not found on node %s for connection %s "
+                        "(wg_peer_name=%r) - nothing removed on the router; deleting the DB row anyway",
+                        node.id, connection.id, connection.wg_peer_name,
+                    )
                 # Harmless no-op if this connection never had a speed limit
                 # (see MikrotikClient.remove_simple_queue) - always attempted
                 # so a queue never outlives the peer it was limiting.

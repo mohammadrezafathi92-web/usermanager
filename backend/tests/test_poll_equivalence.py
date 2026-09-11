@@ -69,14 +69,29 @@ def build():
 
     def service(user, *, quota, used, days, status=models.UserStatus.active,
                 res_quota=None, res_days=None, legacy=False):
-        p = models.Purchase(
-            user_id=user.id, package_id=pkg.id, status=status,
-            quota_bytes=quota, used_bytes=used,
-            expire_at=(NOW + dt.timedelta(days=days)) if days is not None else None,
-            reserved_quota_bytes=res_quota, reserved_duration_days=res_days,
-        )
-        db.add(p)
-        db.flush()
+        # A genuinely legacy connection predates Purchase existing for this
+        # account at all (see services/purchase_migration.py) - no Purchase
+        # row is created for it here. This used to create one anyway (with
+        # purchase_id left off the Connection, so it was an orphaned,
+        # always-status=active placeholder Purchase with zero connections)
+        # purely as a side effect of sharing this helper with the
+        # non-legacy case. That accidentally satisfied _enforce_user_limits'
+        # 2026-09 mixed-account fix's "does this user have an active
+        # purchase?" check even though no such purchase actually exists in
+        # the case this helper is meant to model - masking exactly the bug
+        # that fix was for. See test_mixed_legacy_purchase_status.py for
+        # the real (Purchase WITH its own connection) mixed-account case.
+        if legacy:
+            p = None
+        else:
+            p = models.Purchase(
+                user_id=user.id, package_id=pkg.id, status=status,
+                quota_bytes=quota, used_bytes=used,
+                expire_at=(NOW + dt.timedelta(days=days)) if days is not None else None,
+                reserved_quota_bytes=res_quota, reserved_duration_days=res_days,
+            )
+            db.add(p)
+            db.flush()
         c = models.Connection(user_id=user.id, node_id=node.id, type="l2tp",
                               purchase_id=None if legacy else p.id,
                               ppp_username=f"{user.username}_c", ppp_password="x",

@@ -195,21 +195,57 @@ def _enforce_user_limits(db: Session, user: models.User):
         exceeded = user.total_quota_bytes and user.used_bytes >= user.total_quota_bytes
         expired = user.expire_at and user.expire_at < dt.datetime.utcnow()
 
+    # What the LEGACY connections themselves should do, based purely on the
+    # user's own combined quota/expiry - unaffected by any separate
+    # Purchase this same account might also have.
     if exceeded:
-        target_status = models.UserStatus.quota_exceeded
+        legacy_target = models.UserStatus.quota_exceeded
     elif expired:
-        target_status = models.UserStatus.expired
+        legacy_target = models.UserStatus.expired
     else:
-        target_status = models.UserStatus.active
+        legacy_target = models.UserStatus.active
 
-    if target_status == user.status:
-        return
+    # The ACCOUNT-LEVEL badge (user.status) shown in the panel and bot,
+    # though, must not say «اتمام حجم»/«منقضی‌شده» while a purchased
+    # package on the SAME account is still genuinely valid.
+    #
+    # BUG FIXED 2026-09 (reported: "account still has one valid package but
+    # shows اتمام حجم"): _user_status_from_purchases already handles this
+    # correctly for an account made ENTIRELY of Purchases (see its
+    # docstring and the early-return branch above), but a mixed account -
+    # one still carrying an old legacy connection (pre-migration, or added
+    # outside the package flow) ALONGSIDE a newer Purchase - fell through
+    # to this legacy-only branch instead, which used to set user.status
+    # from the frozen legacy fields alone and never even looked at
+    # user.purchases. A stale/exhausted legacy quota then overrode a
+    # perfectly valid purchase in what the customer and admin were shown,
+    # even though the purchase's own connections kept working fine
+    # (_enforce_purchase_limits governs those independently and correctly).
+    display_target = legacy_target
+    if display_target != models.UserStatus.active and user.purchases:
+        if _user_status_from_purchases(user) == models.UserStatus.active:
+            display_target = models.UserStatus.active
 
-    user.status = target_status
+    if display_target != user.status:
+        user.status = display_target
+
+    # Deliberately NOT gated behind "did the badge change" - a purchase
+    # masking the badge (display_target == user.status == active, unchanged)
+    # must never also mask a legacy connection that just went newly
+    # exhausted; that connection still needs disabling even though nothing
+    # about user.status moved. _set_connection_enabled already no-ops
+    # (skips the MikroTik/Xray call entirely) for any connection whose
+    # enabled flag already matches, so running this every time costs
+    # nothing extra for the common case - see its own early `if
+    # connection.enabled == enabled: return`.
     for conn in user.connections:
         if conn.purchase_id:
             continue  # governed independently by _enforce_purchase_limits
-        _apply_enabled_state(db, conn, target_status == models.UserStatus.active)
+        # Deliberately legacy_target here, NOT display_target - a purchase
+        # being valid must never re-enable (or keep enabled) a legacy
+        # connection whose OWN quota/expiry is genuinely exhausted; it only
+        # changes what the account-level badge says.
+        _apply_enabled_state(db, conn, legacy_target == models.UserStatus.active)
 
 
 def _purchase_ids_needing_enforcement(db: Session, now: dt.datetime) -> list[int]:
@@ -498,9 +534,42 @@ def enforce_concurrent_session_limits(db: Session) -> int:
 
 
 def _set_connection_enabled(db: Session, connection: models.Connection, enabled: bool):
+    """Pushes enabled/disabled to the actual node, and only records it in
+    `connection.enabled` if that push is known to have actually happened.
+
+    BUG FIXED 2026-09 (reported: WireGuard/V2Ray connections kept passing
+    traffic past their quota, and stayed connected even after the account
+    showed «اتمام حجم»): this used to set `connection.enabled = enabled`
+    unconditionally after the try block, regardless of whether the remote
+    call actually found and changed anything. Two ways that went wrong -
+
+    - wireguard: the peer is looked up by matching RouterOS's `comment`
+      field against `connection.wg_peer_name`. If that lookup found no
+      match (stale name after a manual router edit, a peer recreated with
+      a different comment, an import-time mismatch, etc.) the code used to
+      just skip `set_peer_disabled` silently - no error, no log - then
+      still mark the connection disabled in the DB one line later. The
+      panel and bot both then reported the service as cut off while the
+      real peer on the router was never touched and kept working exactly
+      as before.
+
+    - xray (3X-UI): ThreeXUIClient.set_client_enabled has its own internal
+      fallback chain and, when disabling, used to return normally even if
+      every attempt failed and there was nothing left to fall back to (see
+      its docstring) - again reported as "done" here with nothing actually
+      changed on the panel.
+
+    Now each branch reports back whether it actually applied the change;
+    `connection.enabled` (and therefore whether _enforce_purchase_limits/
+    _enforce_user_limits will ever try again - see their "only acts on a
+    status TRANSITION" docstrings) only moves when the node confirms it.
+    Anything that didn't apply is picked up again by
+    _reconcile_connection_enabled_state on the next poll cycle instead of
+    being silently forgotten forever."""
     if connection.enabled == enabled:
         return
     node: models.Node = connection.node
+    applied = True  # PPP has nothing to push to the node - the DB flag alone is the switch
     try:
         if connection.type == models.ConnectionType.wireguard:
             with MikrotikClient.for_node(node) as mt:
@@ -508,6 +577,14 @@ def _set_connection_enabled(db: Session, connection: models.Connection, enabled:
                 match = next((p for p in peers if p.get("comment") == connection.wg_peer_name), None)
                 if match:
                     mt.set_peer_disabled(match[".id"], disabled=not enabled)
+                else:
+                    applied = False
+                    logger.warning(
+                        "wireguard peer not found on node %s for connection %s (wg_peer_name=%r) - "
+                        "could not %s it; will retry next poll cycle",
+                        node.id, connection.id, connection.wg_peer_name,
+                        "enable" if enabled else "disable",
+                    )
         elif connection.type in PPP_TYPES:
             # Authenticated via RADIUS - the RADIUS auth handler checks
             # connection.enabled live on every Access-Request, so flipping
@@ -518,13 +595,102 @@ def _set_connection_enabled(db: Session, connection: models.Connection, enabled:
             pass
         elif connection.type == models.ConnectionType.xray:
             with client_for_node(node) as xc:
-                xc.set_client_enabled(
+                applied = xc.set_client_enabled(
                     node.xr_inbound_tag, connection.xr_email, connection.xr_uuid,
                     connection.xr_flow or "", enabled,
                 )
-        connection.enabled = enabled
+                if not applied:
+                    logger.warning(
+                        "xray client could not be %s on node %s for connection %s (xr_email=%r); "
+                        "will retry next poll cycle",
+                        "enabled" if enabled else "disabled", node.id, connection.id, connection.xr_email,
+                    )
+        if applied:
+            connection.enabled = enabled
     except (MikrotikError, XrayError) as exc:
         logger.warning("failed to toggle connection %s: %s", connection.id, exc)
+
+
+def _reconcile_connection_enabled_state(db: Session, now: dt.datetime) -> int:
+    """Every poll cycle, re-checks every WireGuard/Xray connection's
+    `enabled` flag against what its governing quota/expiry actually says
+    right now, and retries the toggle for any that disagree.
+
+    _enforce_purchase_limits/_enforce_user_limits only ever call
+    _set_connection_enabled ONCE, at the moment purchase.status/user.status
+    itself transitions (see their own docstrings) - they never revisit a
+    connection whose status hasn't changed since last cycle. Combined with
+    _set_connection_enabled's old silent-success bug (fixed 2026-09, see
+    its docstring), a toggle that failed right at that one moment - node
+    briefly unreachable, WireGuard peer not found by its stored comment,
+    an Xray panel update rejected - was never attempted again: the status
+    said "quota_exceeded" forever after, but the connection kept passing
+    traffic forever after too. This is what actually notices and corrects
+    that drift (both directions - stuck-on AND, less commonly, stuck-off
+    after a renewal), independent of whether a status transition happened
+    this cycle. session_limited connections are left alone here - see
+    _apply_enabled_state's docstring for why those must never be flipped
+    by anything except enforce_concurrent_session_limits' own re-check.
+
+    PPP (openvpn/l2tp/ikev2/sstp) needs none of this - it is gated live at
+    RADIUS Access-Request time, never has a node-side "enabled" push that
+    can fail out of sync with the DB.
+
+    Deliberately two lean queries (purchase-linked, then legacy) rather
+    than loading every connection as a full ORM graph - same reasoning as
+    poll_all's own _purchase_ids_needing_enforcement/
+    _user_ids_needing_enforcement helpers just above it."""
+    toggled = 0
+
+    purchase_rows = (
+        db.query(models.Connection.id, models.Purchase.quota_bytes, models.Purchase.used_bytes,
+                  models.Purchase.expire_at, models.Connection.enabled)
+        .join(models.Purchase, models.Connection.purchase_id == models.Purchase.id)
+        .filter(models.Connection.type.in_((models.ConnectionType.wireguard, models.ConnectionType.xray)))
+        .filter(models.Connection.session_limited.is_(False))
+        .filter(models.Purchase.status != models.UserStatus.disabled)
+        .all()
+    )
+    mismatched_ids = []
+    for conn_id, quota, used, expire_at, enabled in purchase_rows:
+        exceeded = bool(quota) and (used or 0) >= quota
+        expired = expire_at is not None and expire_at < now
+        should_be_active = not (exceeded or expired)
+        if enabled != should_be_active:
+            mismatched_ids.append((conn_id, should_be_active))
+
+    legacy_rows = (
+        db.query(models.Connection.id, models.User.total_quota_bytes, models.User.used_bytes,
+                  models.User.expire_at, models.Connection.enabled)
+        .join(models.User, models.Connection.user_id == models.User.id)
+        .filter(models.Connection.purchase_id.is_(None))
+        .filter(models.Connection.type.in_((models.ConnectionType.wireguard, models.ConnectionType.xray)))
+        .filter(models.Connection.session_limited.is_(False))
+        .filter(models.User.status != models.UserStatus.disabled)
+        .all()
+    )
+    for conn_id, quota, used, expire_at, enabled in legacy_rows:
+        exceeded = bool(quota) and (used or 0) >= quota
+        expired = expire_at is not None and expire_at < now
+        should_be_active = not (exceeded or expired)
+        if enabled != should_be_active:
+            mismatched_ids.append((conn_id, should_be_active))
+
+    if not mismatched_ids:
+        return 0
+
+    conns = {
+        c.id: c for c in db.query(models.Connection)
+        .filter(models.Connection.id.in_([cid for cid, _ in mismatched_ids]))
+        .all()
+    }
+    for conn_id, should_be_active in mismatched_ids:
+        conn = conns.get(conn_id)
+        if conn is None:
+            continue
+        _set_connection_enabled(db, conn, enabled=should_be_active)
+        toggled += 1
+    return toggled
 
 
 def _reconcile_ppp_sessions(db: Session, node: models.Node, mt: MikrotikClient) -> None:
@@ -759,10 +925,18 @@ def poll_all():
         # docstring for the full "why" (2026-09-06).
         session_limited_count = enforce_concurrent_session_limits(db)
 
-        if purchase_ids or user_ids or session_limited_count:
+        # Independent of everything above: catches any WireGuard/Xray
+        # connection whose enabled flag never actually caught up with its
+        # governing quota/expiry - see _reconcile_connection_enabled_state's
+        # own docstring for why this is needed even with the rest of this
+        # function working correctly (2026-09 bug report).
+        reconciled_count = _reconcile_connection_enabled_state(db, now)
+
+        if purchase_ids or user_ids or session_limited_count or reconciled_count:
             logger.info(
-                "poll_all: enforced %d purchase(s), %d account(s), %d concurrent-session toggle(s)",
-                len(purchase_ids), len(user_ids), session_limited_count,
+                "poll_all: enforced %d purchase(s), %d account(s), %d concurrent-session toggle(s), "
+                "%d reconciled connection(s)",
+                len(purchase_ids), len(user_ids), session_limited_count, reconciled_count,
             )
 
         db.commit()

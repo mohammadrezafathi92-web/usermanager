@@ -1040,7 +1040,18 @@ export default function Settings() {
 
       {!isSuperadmin && <OwnPaymentCard t={t} />}
 
-      {isAdminOrAbove && (
+      {/* The MAIN panel's own support contact - superadmin only. This box
+          writes the single shared PanelSettings row, and a level-2 Admin
+          used to see it too: they would type their own support id here
+          (it is the more prominent of the two boxes on this page) and it
+          landed on the main panel, where it stayed and became every other
+          reseller's fallback. Reported 2026-09-12. Every tier below
+          superadmin has this same field on their OWN account, in the
+          «پرداخت و پشتیبانی من» card just above, which their own bot
+          prefers - see routers/panel_settings.py's
+          SUPERADMIN_ONLY_SETTINGS_FIELDS, which now refuses the write as
+          well. */}
+      {isSuperadmin && (
       <div className="card mb-4">
         <div className="flex items-center gap-2 mb-4">
           <Info size={18} className="text-brand-600" />

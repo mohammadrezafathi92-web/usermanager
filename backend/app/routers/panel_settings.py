@@ -76,6 +76,44 @@ def _is_private_host(url: str) -> bool:
         return False
     return ip.is_private or ip.is_loopback or ip.is_link_local
 
+# Fields on the ONE shared PanelSettings row that a customer actually sees,
+# or that change how the whole panel behaves. A level-2 Admin reaches this
+# router (require_admin_or_above) because they legitimately need to read it -
+# it is their fallback for anything they have not set on their own account -
+# but writing it means writing the MAIN panel's own checkout screen and the
+# fallback every other reseller in the tree inherits.
+#
+# Reported 2026-09-12: "دیتای ایدی پشتیبان و اطلاعات پرداختش هی میاد میشینه
+# روی پنل اصلی" - a reseller's support id and payment details kept landing on
+# the main panel. They were saving the «پشتیبانی» box on the settings page,
+# which posted the whole loaded settings object straight back into the shared
+# row. Every tier below superadmin has its own copy of all of these
+# (AdminUser.own_support_contact_text / own_payment_* / their own card pool,
+# via my_payment_router below), which their own bot already prefers over the
+# shared row - so there is nothing here they need to write, only to read.
+SUPERADMIN_ONLY_SETTINGS_FIELDS = {
+    "payment_card_number",
+    "payment_card_holder",
+    "payment_instructions",
+    "topup_presets",
+    "payment_card_mode",
+    "active_payment_card_id",
+    "payment_card_switch_threshold",
+    "support_contact_text",
+    "panel_public_url",
+    "display_utc_offset_minutes",
+}
+
+
+def _require_superadmin_for_shared_row(admin: models.AdminUser) -> None:
+    if not admin.is_superadmin:
+        raise HTTPException(
+            403,
+            "اطلاعات پرداخت و پشتیبانیِ پنل اصلی فقط توسط ادمین اصلی قابل تغییر است - "
+            "شماره کارت و آیدی پشتیبانی خودتان را از بخش «پرداخت و پشتیبانی من» ثبت کنید.",
+        )
+
+
 @router.get("", response_model=schemas.PanelSettingsOut)
 def get_settings(db: Session = Depends(get_db)):
     return _settings_out(db, _get_or_create(db))
@@ -103,6 +141,7 @@ def update_settings(
     ha_fields = {k: v for k, v in data.items() if k.startswith("ha_")}
     if ha_fields and not admin.is_superadmin:
         raise HTTPException(403, "تنظیمات HA فقط توسط سوپرادمین قابل تغییر است")
+
 
     if data.get("ha_peer_url"):
         # Admins commonly type just "IP:8000" - requests then raises
@@ -135,6 +174,25 @@ def update_settings(
         # producing a doubled "//".
         url = (data["panel_public_url"] or "").strip()
         data["panel_public_url"] = url.rstrip("/") or None
+
+    # See SUPERADMIN_ONLY_SETTINGS_FIELDS above. Checked on the CHANGE, not
+    # merely on the field being present: the settings page loads the whole
+    # row and posts it all back on every save, so refusing just because a
+    # field appeared in the payload would block a level-2 Admin from saving
+    # the parts they do own - the same trap routers/admins.py hit with the
+    # balance field. Placed after the normalisation above so an unchanged
+    # value that gets rewritten on the way in (a trailing slash on
+    # panel_public_url) is not mistaken for an edit.
+    if not admin.is_superadmin:
+        for field in SUPERADMIN_ONLY_SETTINGS_FIELDS & set(data):
+            new, old = data[field], getattr(row, field, None)
+            if isinstance(new, str) or isinstance(old, str):
+                changed = (new or "").strip() != (old or "")
+            else:
+                changed = new != old
+            if changed:
+                _require_superadmin_for_shared_row(admin)
+
     for k, v in data.items():
         setattr(row, k, v)
     db.commit()
@@ -160,7 +218,8 @@ def list_payment_cards(db: Session = Depends(get_db)):
     return payment_cards_service.list_cards(db, None)
 
 
-@router.post("/payment-cards", response_model=schemas.PaymentCardOut)
+@router.post("/payment-cards", response_model=schemas.PaymentCardOut,
+             dependencies=[Depends(require_superadmin)])
 def create_payment_card(payload: schemas.PaymentCardCreate, db: Session = Depends(get_db)):
     was_empty = not payment_cards_service.list_cards(db, None)
     card = models.PaymentCard(owner_admin_id=None, **payload.model_dump())
@@ -179,7 +238,8 @@ def create_payment_card(payload: schemas.PaymentCardCreate, db: Session = Depend
     return card
 
 
-@router.put("/payment-cards/{card_id}", response_model=schemas.PaymentCardOut)
+@router.put("/payment-cards/{card_id}", response_model=schemas.PaymentCardOut,
+            dependencies=[Depends(require_superadmin)])
 def update_payment_card(card_id: int, payload: schemas.PaymentCardUpdate, db: Session = Depends(get_db)):
     card = db.get(models.PaymentCard, card_id)
     if not card or card.owner_admin_id is not None:
@@ -191,7 +251,7 @@ def update_payment_card(card_id: int, payload: schemas.PaymentCardUpdate, db: Se
     return card
 
 
-@router.delete("/payment-cards/{card_id}")
+@router.delete("/payment-cards/{card_id}", dependencies=[Depends(require_superadmin)])
 def delete_payment_card(card_id: int, db: Session = Depends(get_db), _confirm=Depends(require_confirm_password)):
     card = db.get(models.PaymentCard, card_id)
     if not card or card.owner_admin_id is not None:
@@ -209,7 +269,8 @@ def delete_payment_card(card_id: int, db: Session = Depends(get_db), _confirm=De
     return {"ok": True}
 
 
-@router.post("/payment-cards/{card_id}/activate", response_model=schemas.PanelSettingsOut)
+@router.post("/payment-cards/{card_id}/activate", response_model=schemas.PanelSettingsOut,
+             dependencies=[Depends(require_superadmin)])
 def activate_payment_card(card_id: int, db: Session = Depends(get_db)):
     """Manual card selection - sets card_id as the one shown to customers
     right now. Meaningful in "manual" and "threshold" mode; harmless

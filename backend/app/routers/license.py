@@ -2,25 +2,83 @@
 
 Small on purpose. The panel's licence is enforced from services/
 license_state.py; this router just lets the operator SEE the current state
-and paste a new key. Recovering a LOCKED panel is not done here (you cannot
-log in to a locked panel) - it is done on the vendor's side (un-revoke from
-the console, or a fresh key in .env). This page is for the healthy case:
-checking days remaining, entering the first key, reading the fingerprint to
-send to the vendor.
+and paste a new key.
+
+Two entry points, because a licence-locked panel refuses logins and the
+key form used to sit BEHIND that login - a fresh install with no licence
+had no way in at all, which is the opposite of what a first-run activation
+should be ("پنل رو هر بار بعد نصب باز کنه و بگه که لایسنس نداره و بتونه
+لایسنس رو وارد کنه", 2026-09):
+
+  * PUT /key       - the healthy case, needs a normal session.
+  * POST /activate - the locked case. Unauthenticated as a ROUTE, but it
+    takes the superadmin's own username and password in the body and
+    verifies them itself, so it grants exactly what a login would have -
+    no more. It is the only licence route that works while locked.
 """
 from __future__ import annotations
 
 import os
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
 
 from .. import models, schemas  # noqa: F401 - schemas kept for symmetry
 from ..config import settings
+from ..database import get_db
 from ..deps import require_superadmin
+from ..security import verify_password
 from ..services import license_state, licensing
 from ..services.local_deploy import HOST_PROJECT_DIR
 
 router = APIRouter(prefix="/api/license", tags=["license"], dependencies=[Depends(require_superadmin)])
+
+# Deliberately NOT under the router above: that one requires a session, and
+# the whole point of this one is that there is no way to get a session yet.
+public_router = APIRouter(prefix="/api/license", tags=["license"])
+
+
+@public_router.get("/state")
+def public_state():
+    """Whether this panel is licence-locked, and why - readable without a
+    session so the login screen can explain itself instead of just showing
+    a 403. Says nothing about WHO can log in; only about the licence."""
+    e = license_state.current_enforcement()
+    return {
+        "locked": e.lock_panel,
+        "reason": e.reason,
+        "message": e.message,
+        "fingerprint": licensing.hardware_fingerprint(),
+    }
+
+
+@public_router.post("/activate")
+def activate(body: dict, db: Session = Depends(get_db)):
+    """Install the first licence key on a panel that is locked for not
+    having one.
+
+    Requires the superadmin's username and password in the body - the same
+    credentials a login needs - so this opens nothing that logging in would
+    not have opened. It exists only because the licence lock sits on login
+    itself, which would otherwise make a fresh install unrecoverable from
+    the browser.
+    """
+    username = (body or {}).get("username", "").strip()
+    password = (body or {}).get("password", "")
+    token = (body or {}).get("key", "").strip()
+    if not username or not password:
+        raise HTTPException(400, "نام کاربری و رمز عبور لازم است")
+    if not token:
+        raise HTTPException(400, "کلید لایسنس خالی است")
+
+    admin = db.query(models.AdminUser).filter(models.AdminUser.username == username).first()
+    # Same answer for a wrong name and a wrong password, so this cannot be
+    # used to discover usernames.
+    if admin is None or not admin.is_superadmin or not verify_password(password, admin.hashed_password):
+        raise HTTPException(401, "نام کاربری یا رمز عبور اشتباه است")
+
+    _install_key(token)
+    return {"ok": True, **status()}
 
 
 @router.get("/status")
@@ -79,7 +137,14 @@ def set_key(body: dict):
     token = (body or {}).get("key", "").strip()
     if not token:
         raise HTTPException(400, "کلید لایسنس خالی است")
+    _install_key(token)
+    return status()
 
+
+def _install_key(token: str) -> None:
+    """Validate a pasted key and make it this panel's licence. Shared by the
+    logged-in PUT and the locked-panel activate, so the two can never drift
+    into accepting different things."""
     status_obj = licensing.verify(token, fingerprint=licensing.hardware_fingerprint())
     if status_obj.reason == licensing.REASON_BAD_SIGNATURE:
         raise HTTPException(400, "امضای این کلید معتبر نیست")
@@ -91,7 +156,6 @@ def set_key(body: dict):
     _persist_key_to_env(token)
     settings.license_key = token
     license_state.set_license_key(token)
-    return status()
 
 
 @router.delete("/key")

@@ -56,17 +56,40 @@ GRACE_DAYS = 7
 # .license-keys/netcip_license_private.key (gitignored - never in this
 # public repo, never on a customer server).
 #
-# Deliberately NOT hardcoded as a default here, unlike e.g. config.py's
-# master_recovery_password_hash. That comparison was considered and
-# rejected: verify() below fails OPEN when this is empty specifically so an
-# existing panel with no LICENSE_KEY yet never locks itself out (see its
-# own comment) - baking in a real key here would flip every panel that has
-# not yet been issued a licence to REASON_MISSING (locked) the moment it
-# updates, with no per-install action taken. Licensing is meant to be
-# switched on ONE panel at a time, deliberately, via
-# USERMANAGER_LICENSE_PUBKEY in that panel's own backend/.env - never
-# panel-wide by default.
-SIGNING_PUBLIC_KEY_B64 = os.environ.get("USERMANAGER_LICENSE_PUBKEY", "")
+# This used to be env-only and empty by default, on the reasoning that
+# baking a key in would lock every not-yet-licensed panel the moment it
+# updated. That reasoning was right about the consequence and wrong about
+# the goal: a build with no key says "این نسخه بدون کنترل لایسنس ساخته شده
+# است" and enforces nothing, so a customer install came up unlicensed and
+# stayed that way. The requirement (2026-09) is the opposite - a fresh
+# install should come up locked, say it has no licence, and offer the key
+# form (routers/license.py's /activate). So the key IS compiled in, and the
+# migration hazard is handled explicitly by LICENSE_MASTER_INSTALL below.
+#
+# The vendor's signing public key, compiled into the build.
+#
+# Empty means this build does not enforce licences AT ALL (verify() fails
+# open - see its first check). Filling it in is what turns licensing on for
+# every panel built from this source, which is the point: a customer's
+# install should come up licensed-or-locked on its own, not depend on an
+# env var they could simply delete.
+#
+# Safe to publish - it only VERIFIES signatures. The private key that mints
+# them never leaves the vendor's machine (see scripts/license_tool.py).
+#
+# Read this before filling it in: every existing panel that has no licence
+# key yet locks the moment it updates into a build with this set. That is
+# the intended behaviour for customers, but it also covers YOUR OWN panels
+# - set LICENSE_MASTER_INSTALL=true in their backend/.env (config.
+# license_master_install), which exempts an install completely, or issue
+# them keys first.
+BUILTIN_SIGNING_PUBLIC_KEY_B64 = ""
+
+# A per-install override, kept so a panel can be pointed at a different
+# signing key (a test key, a re-issued one) without a rebuild.
+SIGNING_PUBLIC_KEY_B64 = os.environ.get(
+    "USERMANAGER_LICENSE_PUBKEY", BUILTIN_SIGNING_PUBLIC_KEY_B64
+)
 
 TOKEN_PREFIX = "NETCIP1"
 

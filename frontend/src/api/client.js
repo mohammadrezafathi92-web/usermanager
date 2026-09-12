@@ -416,6 +416,11 @@ export const createAccountingExpense = (data) => client.post("/accounting/expens
 export const deleteAccountingExpense = (id) => client.delete(`/accounting/expenses/${id}`);
 // Reseller current account: what each owes (credit granted + metered
 // usage - payments received) and recording a payment actually collected.
+// Licence: these two work WITHOUT a session, because a panel locked for
+// having no licence cannot be logged into (see routers/license.py).
+export const fetchLicenseState = () => client.get("/license/state");
+export const activateLicense = (data) => client.post("/license/activate", data);
+
 export const fetchAccountingReceivables = (params = {}) => client.get("/accounting/receivables", { params });
 export const createAccountingPayment = (data) => client.post("/accounting/payments", data);
 // Starts the current-account from now. Deletes nothing - see

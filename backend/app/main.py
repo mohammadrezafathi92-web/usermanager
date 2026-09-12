@@ -157,6 +157,11 @@ app.include_router(subscription.router)
 app.include_router(accounting_router.router)
 app.include_router(ads_router.router)
 app.include_router(license_router.router)
+# The two licence routes that must work WITHOUT a session - a panel locked
+# for having no licence cannot be logged into, so first-run activation
+# would otherwise be impossible from the browser (see the router's own
+# module docstring).
+app.include_router(license_router.public_router)
 app.include_router(ip_bans_router.router)
 app.include_router(db_health_router.router)
 

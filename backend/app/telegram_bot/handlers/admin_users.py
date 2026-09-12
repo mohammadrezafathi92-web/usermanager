@@ -127,86 +127,66 @@ async def cmd_admin_list(message: Message, state: FSMContext, acting_scope: dict
     await _show_user_list(message, page=1, search=None, owner_admin_id=acting_scope["owner_admin_id"])
 
 
+# The package comes FIRST, and the servers come out of the package.
+#
+# The old order was username -> server -> protocol -> package, which asked
+# the admin to hand-pick one node and one protocol and then pick a package
+# anyway - so a package that bundles WireGuard + OpenVPN + Xray (perfectly
+# ordinary in «پکیج‌ها») produced a user with exactly ONE of them, whichever
+# the admin happened to tap, while the panel's own ساخت کاربر form and the
+# customer purchase flow both provisioned the whole bundle. Same panel, same
+# package, two different accounts depending on where it was created.
+# Reported 2026-09-12: "چرا ساخت کاربر در ادمین به این صورته؟ باید یه روند
+# درست مثل پنل داشته باشه و از پکیج‌ها استفاده بشه".
+#
+# Now it mirrors routers/users.py's create_user and customer.py's
+# pick_package exactly: pick the package, and if it bundles servers those
+# are what gets built. The node/protocol questions survive only as the
+# fallback for a "plain" package that bundles nothing - without them such a
+# package would create an account with no service at all.
 @router.message(AdminCreateUserStates.waiting_username)
-async def admin_create_username(message: Message, state: FSMContext) -> None:
+async def admin_create_username(message: Message, state: FSMContext, acting_scope: dict) -> None:
     username = (message.text or "").strip()
     if not username or " " in username:
         await message.answer("نام کاربری معتبر نیست (بدون فاصله بفرستید). دوباره تلاش کنید:")
         return
     try:
-        nodes = await api.list_nodes()
+        packages = await api.list_packages(owner_admin_id=acting_scope["owner_admin_id"])
     except ApiError as exc:
         await message.answer(f"خطا: {exc}", reply_markup=home_kb())
         await state.clear()
         return
-    if not nodes:
-        await message.answer("هیچ سروری (نودی) در پنل تعریف نشده است.", reply_markup=home_kb())
-        await state.clear()
-        return
-    await state.update_data(new_username=username, nodes={n["id"]: n for n in nodes})
-    await state.set_state(AdminCreateUserStates.picking_node)
-    await message.answer("این کاربر روی کدام سرور ساخته شود؟", reply_markup=nodes_kb(nodes))
-
-
-@router.callback_query(NodeCB.filter(), AdminCreateUserStates.picking_node)
-async def admin_pick_node(call: CallbackQuery, callback_data: NodeCB, state: FSMContext) -> None:
-    data = await state.get_data()
-    node = data["nodes"].get(callback_data.node_id) or data["nodes"].get(str(callback_data.node_id))
-    if not node:
-        await call.answer("سرور پیدا نشد", show_alert=True)
-        return
-    await state.update_data(node_id=node["id"], node_name=node["name"])
-    await state.set_state(AdminCreateUserStates.picking_protocol)
-    await call.message.edit_text(f"سرور: {node['name']}\nپروتکل را انتخاب کنید:", reply_markup=protocols_kb(node["type"]))
-    await call.answer()
-
-
-@router.callback_query(ProtocolCB.filter(), AdminCreateUserStates.picking_protocol)
-async def admin_pick_protocol(call: CallbackQuery, callback_data: ProtocolCB, state: FSMContext, acting_scope: dict) -> None:
-    # Package-only from here on (2026-09-08): the admin bot used to ask for
-    # a manual quota (GB) and then a manual duration (days) as two free-text
-    # prompts. Both are removed - the admin now always picks one of the
-    # panel's own packages, same as a customer would, so a user's quota/
-    # duration/price can never drift from what's actually configured there.
-    try:
-        packages = await api.list_packages(owner_admin_id=acting_scope["owner_admin_id"])
-    except ApiError as exc:
-        await call.message.edit_text(f"خطا: {exc}", reply_markup=home_kb())
-        await state.clear()
-        await call.answer()
-        return
     if not packages:
-        await call.message.edit_text("هیچ پکیجی تعریف نشده است - ابتدا از پنل یک پکیج بسازید.", reply_markup=home_kb())
+        await message.answer("هیچ پکیجی تعریف نشده است - ابتدا از پنل یک پکیج بسازید.", reply_markup=home_kb())
         await state.clear()
-        await call.answer()
         return
-    await state.update_data(protocol=callback_data.protocol)
+    await state.update_data(new_username=username, packages={str(p["id"]): p for p in packages})
     await state.set_state(AdminCreateUserStates.picking_package)
-    await call.message.edit_text("کدام پکیج برای این کاربر انتخاب شود؟", reply_markup=admin_create_packages_kb(packages))
-    await call.answer()
+    await message.answer(
+        f"کاربر «{username}» با کدام پکیج ساخته شود؟", reply_markup=admin_create_packages_kb(packages)
+    )
 
 
-@router.callback_query(AdminCreatePkgCB.filter(), AdminCreateUserStates.picking_package)
-async def admin_create_pick_package(call: CallbackQuery, callback_data: AdminCreatePkgCB, state: FSMContext, acting_scope: dict, bot) -> None:
+def _package_connection_specs(package: dict) -> list[dict]:
+    """The server+protocol combos the admin bundled into this package in
+    «پکیج‌ها» - the same list admin_pending.py builds when approving a
+    customer's receipt, so a user created by an admin and one bought by a
+    customer end up with identical services."""
+    return [
+        {"node_id": c["node_id"], "protocol": c["protocol"], "flow": c.get("flow") or ""}
+        for c in (package.get("connections") or [])
+    ]
+
+
+async def _finish_admin_create(call: CallbackQuery, state: FSMContext, acting_scope: dict, bot,
+                               package: dict, connections: list[dict]) -> None:
     data = await state.get_data()
-    await call.answer("در حال ساخت کاربر...")
-    try:
-        packages = await api.list_packages(owner_admin_id=acting_scope["owner_admin_id"])
-    except ApiError as exc:
-        await call.message.edit_text(f"خطا: {exc}", reply_markup=home_kb())
-        await state.clear()
-        return
-    package = next((p for p in packages if p["id"] == callback_data.package_id), None)
-    if not package:
-        await call.message.edit_text("این پکیج دیگر در دسترس نیست.", reply_markup=home_kb())
-        await state.clear()
-        return
     try:
         user = await api.create_user(
             username=data["new_username"],
             quota_gb=package.get("quota_gb") or 0,
             expire_days=package.get("duration_days") or None,
-            connections=[{"node_id": data["node_id"], "protocol": data["protocol"]}],
+            connections=connections,
             owner_admin_id=acting_scope["owner_admin_id"],
             package_id=package["id"],
             package_name=package.get("name"),
@@ -219,6 +199,81 @@ async def admin_create_pick_package(call: CallbackQuery, callback_data: AdminCre
     await call.message.edit_text("✅ کاربر ساخته شد:\n\n" + _user_detail_text(user), reply_markup=home_kb())
     if user.get("connections"):
         await send_connections(bot, call.from_user.id, user["connections"])
+
+
+@router.callback_query(AdminCreatePkgCB.filter(), AdminCreateUserStates.picking_package)
+async def admin_create_pick_package(call: CallbackQuery, callback_data: AdminCreatePkgCB, state: FSMContext, acting_scope: dict, bot) -> None:
+    data = await state.get_data()
+    packages = data.get("packages") or {}
+    package = packages.get(str(callback_data.package_id)) or packages.get(callback_data.package_id)
+    if not package:
+        await call.answer("این پکیج دیگر در دسترس نیست.", show_alert=True)
+        return
+    await state.update_data(package_id=package["id"])
+
+    specs = _package_connection_specs(package)
+    if specs:
+        await call.answer("در حال ساخت کاربر...")
+        await _finish_admin_create(call, state, acting_scope, bot, package, specs)
+        return
+
+    # Plain package, no bundled services - fall back to asking, same as
+    # customer.py's pick_package does for exactly this case.
+    try:
+        nodes = await api.list_nodes()
+    except ApiError as exc:
+        await call.message.edit_text(f"خطا: {exc}", reply_markup=home_kb())
+        await state.clear()
+        await call.answer()
+        return
+    if not nodes:
+        await call.message.edit_text(
+            "این پکیج هیچ سرویسی داخلش تعریف نشده و هیچ سروری هم در پنل نیست - "
+            "یا از «پکیج‌ها» سرویس‌های پکیج را مشخص کنید یا یک سرور اضافه کنید.",
+            reply_markup=home_kb(),
+        )
+        await state.clear()
+        await call.answer()
+        return
+    await state.update_data(nodes={str(n["id"]): n for n in nodes})
+    await state.set_state(AdminCreateUserStates.picking_node)
+    await call.message.edit_text(
+        f"پکیج: {package.get('name') or '-'}\n"
+        "این پکیج سرویس از پیش‌تعریف‌شده ندارد - روی کدام سرور ساخته شود؟",
+        reply_markup=nodes_kb(nodes),
+    )
+    await call.answer()
+
+
+@router.callback_query(NodeCB.filter(), AdminCreateUserStates.picking_node)
+async def admin_pick_node(call: CallbackQuery, callback_data: NodeCB, state: FSMContext) -> None:
+    data = await state.get_data()
+    nodes = data.get("nodes") or {}
+    node = nodes.get(str(callback_data.node_id)) or nodes.get(callback_data.node_id)
+    if not node:
+        await call.answer("سرور پیدا نشد", show_alert=True)
+        return
+    await state.update_data(node_id=node["id"], node_name=node["name"])
+    await state.set_state(AdminCreateUserStates.picking_protocol)
+    await call.message.edit_text(f"سرور: {node['name']}\nپروتکل را انتخاب کنید:", reply_markup=protocols_kb(node["type"]))
+    await call.answer()
+
+
+@router.callback_query(ProtocolCB.filter(), AdminCreateUserStates.picking_protocol)
+async def admin_pick_protocol(call: CallbackQuery, callback_data: ProtocolCB, state: FSMContext, acting_scope: dict, bot) -> None:
+    data = await state.get_data()
+    packages = data.get("packages") or {}
+    package = packages.get(str(data.get("package_id"))) or packages.get(data.get("package_id"))
+    if not package:
+        await call.message.edit_text("این پکیج دیگر در دسترس نیست.", reply_markup=home_kb())
+        await state.clear()
+        await call.answer()
+        return
+    await call.answer("در حال ساخت کاربر...")
+    await _finish_admin_create(
+        call, state, acting_scope, bot, package,
+        [{"node_id": data["node_id"], "protocol": callback_data.protocol}],
+    )
 
 
 # --------------------------------------------------------------- list/search

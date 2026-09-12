@@ -2,13 +2,19 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class AdminCreateUserStates(StatesGroup):
+    # Order: username -> package -> (only for a package with no bundled
+    # services) node -> protocol. The package comes first because it is
+    # what decides everything else, exactly as in the web panel's ساخت
+    # کاربر form - see the long comment above handlers/admin_users.py's
+    # admin_create_username for why it used to be the other way round and
+    # what that cost.
     waiting_username = State()
-    picking_node = State()      # NodeCB callback expected
-    picking_protocol = State()  # ProtocolCB callback expected
     # AdminCreatePkgCB callback expected - replaces the old waiting_quota/
     # waiting_days free-text prompts (2026-09-08): the admin bot's user
     # creation now only offers package selection, never manual GB/day entry.
     picking_package = State()
+    picking_node = State()      # NodeCB callback expected - fallback only
+    picking_protocol = State()  # ProtocolCB callback expected - fallback only
 
 
 class AdminSearchStates(StatesGroup):

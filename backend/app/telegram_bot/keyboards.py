@@ -211,10 +211,10 @@ def admin_packages_kb(username: str, packages: list[dict]) -> InlineKeyboardMark
 
 def admin_create_packages_kb(packages: list[dict]) -> InlineKeyboardMarkup:
     """Package picker shown while creating a BRAND NEW user via the bot's
-    admin «➕ ساخت کاربر» flow, right after node+protocol are picked -
-    replaces the old two free-text prompts (manual GB, then manual days).
-    Cancels back to the main menu since the user being created doesn't
-    exist yet to "view"."""
+    admin «➕ ساخت کاربر» flow - the FIRST question after the username, since
+    the package decides the quota, the duration, the price and (when it
+    bundles any) the servers themselves. Cancels back to the main menu since
+    the user being created doesn't exist yet to "view"."""
     kb = InlineKeyboardBuilder()
     for p in packages:
         kb.button(text=package_button_label(p), callback_data=AdminCreatePkgCB(package_id=p["id"]))

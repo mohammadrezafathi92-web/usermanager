@@ -418,6 +418,11 @@ export const deleteAccountingExpense = (id) => client.delete(`/accounting/expens
 // usage - payments received) and recording a payment actually collected.
 // Licence: these two work WITHOUT a session, because a panel locked for
 // having no licence cannot be logged into (see routers/license.py).
+// One-click import of the ready-made tutorials/adverts that ship with the
+// panel (backend app/data/defaults.py). Additive and idempotent by title.
+export const importDefaultTutorials = () => client.post("/tutorials/import-defaults");
+export const importDefaultAds = () => client.post("/ads/posts/import-defaults");
+
 export const fetchLicenseState = () => client.get("/license/state");
 export const activateLicense = (data) => client.post("/license/activate", data);
 

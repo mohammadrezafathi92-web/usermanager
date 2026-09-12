@@ -13,6 +13,7 @@ import {
   createTutorialSoftwareLink,
   uploadTutorialSoftwareFile,
   deleteTutorialSoftware,
+  importDefaultTutorials,
 } from "../api/client.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
@@ -48,8 +49,29 @@ export default function Tutorials() {
   const [uploadingSoftware, setUploadingSoftware] = useState(false);
   const [swName, setSwName] = useState("");
   const [swUrl, setSwUrl] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importMsg, setImportMsg] = useState("");
 
   const load = () => fetchTutorials().then((res) => setItems(res.data));
+
+  const doImportDefaults = async () => {
+    setImporting(true);
+    setImportMsg("");
+    try {
+      const res = await importDefaultTutorials();
+      const { added, skipped } = res.data;
+      setImportMsg(
+        added
+          ? t("tutorials.importDone", { added, skipped })
+          : t("tutorials.importNothingNew")
+      );
+      load();
+    } catch (err) {
+      setImportMsg(err?.response?.data?.detail || t("tutorials.saveError"));
+    } finally {
+      setImporting(false);
+    }
+  };
   useEffect(() => {
     load();
   }, []);
@@ -178,11 +200,19 @@ export default function Tutorials() {
       <Topbar title={t("tutorials.title")} subtitle={t("tutorials.subtitle")} />
 
       {isAdminOrAbove && (
-      <div className="flex justify-end mb-4">
+      <div className="flex justify-end mb-4 gap-2">
+        {/* Adds the ready-made set that ships with the panel. Safe to press
+            twice - anything already in the list by title is skipped. */}
+        <button className="btn-secondary" disabled={importing} onClick={doImportDefaults}>
+          <Download size={16} /> {importing ? t("common.loading") : t("tutorials.importDefaults")}
+        </button>
         <button className="btn-primary" onClick={openCreate}>
           <Plus size={16} /> {t("tutorials.newTutorial")}
         </button>
       </div>
+      )}
+      {importMsg && (
+        <div className="mb-4 text-sm text-emerald-700 bg-emerald-50 dark:bg-emerald-950 rounded-lg px-3 py-2">{importMsg}</div>
       )}
 
       <div className="card !p-0">

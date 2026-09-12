@@ -19,11 +19,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import models
 from ..database import get_db
 from ..deps import get_current_admin, require_ads_access, require_confirm_password
+from ..data.defaults import DEFAULT_ADS
 from ..services import ads
 
 router = APIRouter(prefix="/api/ads", tags=["ads"], dependencies=[Depends(require_ads_access)])
@@ -167,6 +169,56 @@ def create_post(payload: PostIn, db: Session = Depends(get_db), admin: models.Ad
     db.commit()
     db.refresh(post)
     return PostOut.model_validate(post)
+
+
+@router.post("/posts/import-defaults")
+def import_default_posts(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    """Adds the ready-made adverts that ship with the panel (see
+    app/data/defaults.py) to this account's own rotation.
+
+    Additive and idempotent by title, exactly like the tutorials import:
+    an advert whose title is already in this channel is skipped, so the
+    button is safe to press twice and an advert the admin has edited keeps
+    their edits. Deletions are not remembered - see that endpoint's
+    docstring for why re-importing brings a deleted one back.
+
+    They arrive DISABLED. An imported advert is a starting point, not
+    something to start broadcasting to a channel the moment a button is
+    pressed - and two of them ({package}/{code}) need a package or a
+    discount code attached before they render into anything sensible,
+    which is the admin's choice to make.
+    """
+    channel = _channel_for(db, admin)
+    existing = {
+        (p.title or "").strip()
+        for p in db.query(models.AdPost).filter(models.AdPost.channel_id == channel.id).all()
+    }
+    last = (
+        db.query(func.max(models.AdPost.sort_order))
+        .filter(models.AdPost.channel_id == channel.id)
+        .scalar()
+    ) or 0
+
+    added = 0
+    for item in DEFAULT_ADS:
+        title = (item.get("title") or "").strip()
+        if not title or title in existing:
+            continue
+        last += 1
+        db.add(models.AdPost(
+            channel_id=channel.id,
+            title=title,
+            body=item.get("body") or "",
+            enabled=False,
+            sort_order=last,
+        ))
+        added += 1
+    db.commit()
+    return {
+        "added": added,
+        "skipped": len(DEFAULT_ADS) - added,
+        "total_available": len(DEFAULT_ADS),
+    }
 
 
 @router.put("/posts/{post_id}", response_model=PostOut)

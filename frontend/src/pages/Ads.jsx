@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from "react";
-import { Megaphone, Plus, Pencil, Trash2, Send, Eye, Image as ImageIcon, X, Check, CalendarClock } from "lucide-react";
+import { Megaphone, Plus, Pencil, Trash2, Send, Eye, Image as ImageIcon, X, Check, CalendarClock, Download } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import {
   fetchAdChannel, updateAdChannel, fetchAdPlaceholders, fetchAdPosts, createAdPost,
   updateAdPost, deleteAdPost, previewAdPost, sendAdPostNow, uploadAdPostImage, deleteAdPostImage, fetchAdSchedule,
-  fetchPackages, fetchDiscountCodes,
+  fetchPackages, fetchDiscountCodes, importDefaultAds,
 } from "../api/client.js";
 import { formatDateTime } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
@@ -26,6 +26,7 @@ export default function Ads() {
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState("");
+  const [importing, setImporting] = useState(false);
   const [schedule, setSchedule] = useState(null);
 
   // The schedule is derived from the channel settings AND the posts, so it
@@ -33,6 +34,21 @@ export default function Ads() {
   // "next post at ..." is worse than none.
   const loadSchedule = () => fetchAdSchedule().then((r) => setSchedule(r.data)).catch(() => {});
   const loadPosts = () => fetchAdPosts().then((r) => setPosts(r.data)).then(loadSchedule);
+
+  const doImportDefaults = async () => {
+    setImporting(true);
+    setFlash("");
+    try {
+      const res = await importDefaultAds();
+      const { added, skipped } = res.data;
+      setFlash(added ? t("ads.importDone", { added, skipped }) : t("ads.importNothingNew"));
+      loadPosts();
+    } catch (err) {
+      setFlash(err?.response?.data?.detail || t("ads.saveError"));
+    } finally {
+      setImporting(false);
+    }
+  };
 
   useEffect(() => {
     fetchAdChannel().then((r) => setChannel(r.data));
@@ -232,9 +248,15 @@ export default function Ads() {
           <div className="section-title">{t("ads.postsTitle")}</div>
           <div className="hint">{t("ads.postsHint")}</div>
         </div>
-        <button className="btn-primary shrink-0" onClick={openNew}>
-          <Plus size={16} /> {t("ads.newPost")}
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Imported adverts arrive DISABLED - see the endpoint's docstring. */}
+          <button className="btn-secondary" disabled={importing} onClick={doImportDefaults}>
+            <Download size={16} /> {importing ? t("common.loading") : t("ads.importDefaults")}
+          </button>
+          <button className="btn-primary" onClick={openNew}>
+            <Plus size={16} /> {t("ads.newPost")}
+          </button>
+        </div>
       </div>
 
       {flash && <div className="mb-3 text-sm text-emerald-700 bg-emerald-50 dark:bg-emerald-950 rounded-lg px-3 py-2">{flash}</div>}

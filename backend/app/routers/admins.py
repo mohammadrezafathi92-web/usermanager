@@ -624,6 +624,19 @@ def topup_admin_balance(admin_id: int, payload: schemas.AdminTopupRequest, db: S
         # given.
         _transfer_balance(db, giver=current, receiver=admin, amount=payload.amount, note=note)
 
+    # "پولش رو همین الان گرفتم" - records the matching receipt in the same
+    # action, so the common paid-on-the-spot case doesn't need a second
+    # trip to the receivables list. Left off, the top-up stands as a
+    # receivable (طلب) until the money is actually recorded as collected -
+    # which is the real-world default here: credit is routinely handed over
+    # first and paid for later (panel owner, 2026-09).
+    if payload.paid and payload.amount > 0:
+        accounting.record(
+            db, accounting.PAYMENT_KIND, payload.amount,
+            admin_id=admin.id, actor_admin_id=current.id,
+            note=note or "دریافت همزمان با شارژ اعتبار",
+        )
+
     db.commit()
     db.refresh(admin)
     return _out(db, admin)

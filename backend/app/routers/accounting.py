@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
+from ..services import jalali
 from ..services.jalali import fmt_jalali
 from ..deps import get_current_admin, require_superadmin, require_confirm_password, require_permission
 from ..services import accounting, hierarchy
@@ -30,15 +31,27 @@ router = APIRouter(
 
 
 def _parse_date(value: Optional[str], end: bool = False) -> Optional[dt.datetime]:
-    """YYYY-MM-DD -> datetime; `end` dates become exclusive midnight-after
-    so a single-day range [d, d] covers that whole day."""
+    """YYYY-MM-DD (a LOCAL calendar day) -> the UTC instant it starts at;
+    `end` dates become exclusive midnight-after so a single-day range
+    [d, d] covers that whole day.
+
+    BUG FIXED 2026-09: the date picked in the panel is a local (Jalali)
+    day, but it used to be compared straight against created_at, which is
+    stored in UTC - so every boundary sat 3.5 hours off in Tehran and each
+    end of the range pulled in (or dropped) an evening's transactions.
+    routers/dashboard.py already converted local midnight back to UTC for
+    its today/this-month figures; the accounting filters simply never did,
+    which is why the two pages could disagree about the same day.
+    """
     if not value:
         return None
     try:
         parsed = dt.datetime.strptime(value, "%Y-%m-%d")
     except ValueError:
         raise HTTPException(400, "فرمت تاریخ باید YYYY-MM-DD باشد")
-    return parsed + dt.timedelta(days=1) if end else parsed
+    if end:
+        parsed += dt.timedelta(days=1)
+    return parsed - dt.timedelta(minutes=jalali.get_display_offset())
 
 
 @router.get("/summary")
@@ -149,14 +162,94 @@ def delete_expense(
     entry_id: int,
     db: Session = Depends(get_db),
     current: models.AdminUser = Depends(require_superadmin), _confirm=Depends(require_confirm_password)):
-    """Only manual expense rows are deletable - automatic sale/credit rows
-    are the books themselves and stay immutable."""
+    """Cancels a manual expense by posting a REVERSING entry, rather than
+    erasing the original.
+
+    Only manual expense rows can be cancelled at all - automatic
+    sale/credit rows are the books themselves and stay untouchable.
+
+    Changed 2026-09: this used to db.delete() the row. That silently
+    rewrote the profit of a period that had already been reported - the
+    expense simply vanished, with nothing left to say it had ever been
+    entered or who removed it. A reversing entry is what bookkeeping does
+    instead: both rows stay, they cancel out to zero, and the history of
+    the correction is itself part of the record.
+    """
     entry = db.get(models.LedgerEntry, entry_id)
     if not entry or entry.kind != "expense":
         raise HTTPException(404, "هزینه پیدا نشد")
-    db.delete(entry)
+    if (entry.amount or 0) < 0:
+        raise HTTPException(400, "این ردیف خودش یک ردیف اصلاحی است")
+    already = (
+        db.query(models.LedgerEntry)
+        .filter(models.LedgerEntry.kind == "expense", models.LedgerEntry.note.like(f"%#{entry.id})"))
+        .first()
+    )
+    if already is not None:
+        raise HTTPException(400, "این هزینه قبلاً برگشت خورده است")
+    accounting.record(
+        db, "expense", -abs(entry.amount or 0),
+        actor_admin_id=current.id,
+        category=entry.category,
+        note=f"برگشت هزینه (#{entry.id})",
+    )
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "reversed": True}
+
+
+@router.get("/receivables")
+def list_receivables(
+    date_to: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current: models.AdminUser = Depends(get_current_admin),
+):
+    """Per-reseller current account: what they were charged (credit granted
+    + metered usage), what they have paid, what is still owed. This is the
+    list the "ثبت دریافت" action below is used from."""
+    return {
+        "items": accounting.receivables_by_admin(db, current, date_to=_parse_date(date_to, end=True)),
+        "total": accounting.receivables_total(db, current, date_to=_parse_date(date_to, end=True)),
+    }
+
+
+@router.post("/payments", response_model=schemas.LedgerEntryOut)
+def record_payment(
+    payload: schemas.AdminPaymentCreate,
+    db: Session = Depends(get_db),
+    current: models.AdminUser = Depends(get_current_admin),
+):
+    """Records money actually COLLECTED from a reseller.
+
+    Granting credit is not income - it is routinely handed over before it
+    is paid for. This is the other half: the point at which the money
+    genuinely arrives, which is what the superadmin's net profit counts
+    (see services/accounting.py's summary).
+
+    Scoped like everything else here: you can only record a payment from
+    an account you can already see.
+    """
+    if payload.amount <= 0:
+        raise HTTPException(400, "مبلغ دریافتی باید بزرگ‌تر از صفر باشد")
+    target = db.get(models.AdminUser, payload.admin_id)
+    if target is None:
+        raise HTTPException(404, "نماینده پیدا نشد")
+    allowed = accounting.visible_admin_ids(db, current)
+    if allowed is not None and target.id not in allowed:
+        raise HTTPException(404, "نماینده پیدا نشد")
+    if target.id == current.id:
+        raise HTTPException(400, "نمی‌توانید از خودتان دریافت ثبت کنید")
+
+    entry = accounting.record(
+        db, accounting.PAYMENT_KIND, payload.amount,
+        admin_id=target.id,
+        actor_admin_id=current.id,
+        payment_method=(payload.payment_method or "").strip() or None,
+        note=(payload.note or "").strip() or None,
+        created_at=payload.created_at,
+    )
+    db.commit()
+    db.refresh(entry)
+    return schemas.LedgerEntryOut.model_validate(entry)
 
 
 @router.get("/export")

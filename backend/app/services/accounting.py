@@ -18,16 +18,26 @@ from __future__ import annotations
 import datetime as dt
 from typing import Optional
 
+import sqlalchemy as sa
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from .. import models
-from . import hierarchy
+from . import hierarchy, jalali
 
 SALE_KINDS = ("sale_new", "sale_renew")
 # Kinds a level-2 admin / seller is shown for their own tree. Expenses are
 # panel-wide superadmin costs, never part of a reseller's books.
-NON_SUPERADMIN_KINDS = ("sale_new", "sale_renew", "wallet_topup", "admin_credit_change", "admin_credit_spend", "admin_credit_refund")
+NON_SUPERADMIN_KINDS = (
+    "sale_new", "sale_renew", "wallet_topup",
+    "admin_credit_change", "admin_credit_spend", "admin_credit_refund",
+    "admin_usage_charge", "admin_payment",
+)
+
+# What a reseller owes moves by these kinds (see models.LedgerEntry's
+# docstring for why admin_credit_spend is deliberately absent).
+RECEIVABLE_DEBIT_KINDS = ("admin_credit_change", "admin_usage_charge")
+PAYMENT_KIND = "admin_payment"
 
 
 def record(
@@ -66,6 +76,9 @@ def record(
         user_id=user.id if user else None,
         username_snapshot=user.username if user else None,
         admin_id=admin_id,
+        # Survives the admin being deleted, unlike admin_id above - see
+        # models.LedgerEntry.owner_admin_id_snapshot.
+        owner_admin_id_snapshot=admin_id,
         admin_username_snapshot=admin_username,
         actor_admin_id=actor_admin_id,
         package_id=package.id if package else None,
@@ -82,6 +95,49 @@ def record(
         entry.created_at = created_at
     db.add(entry)
     return entry
+
+
+def record_panel_sale(
+    db: Session,
+    kind: str,
+    user: models.User,
+    package: Optional[models.Package],
+    *,
+    purchase_id: Optional[int] = None,
+    actor_admin_id: Optional[int] = None,
+) -> Optional[models.LedgerEntry]:
+    """Books the revenue side of a sale made from the WEB PANEL.
+
+    BUG FIXED 2026-09: sale_new/sale_renew were only ever recorded by
+    routers/bot.py. Selling the same package from the panel wrote the COST
+    side (the reseller's credit being debited, see
+    services/admin_billing.py) and no income at all - so "فروش", "سود
+    خالص", the chart and the per-admin breakdown silently excluded every
+    panel-made sale, and a reseller who works mostly from the panel was
+    shown a permanent loss: costs rising against zero revenue.
+
+    The panel never asks what the customer handed over, so the price is
+    taken from the package the same way a sale with no stated amount
+    already was for the bot (sale_fallback_price: the seller's own resale
+    price when they have set one, the list price otherwise).
+
+    payment_method is left NULL rather than guessed - the panel genuinely
+    does not know whether the customer paid cash, card or anything else.
+    """
+    if package is None:
+        return None  # a package-less admin-created user isn't a sale
+    amount = sale_fallback_price(db, package, user.owner_admin_id)
+    if amount <= 0:
+        return None
+    return record(
+        db, kind, amount,
+        user=user,
+        admin_id=user.owner_admin_id,
+        actor_admin_id=actor_admin_id,
+        package=package,
+        purchase_id=purchase_id,
+        note="فروش از پنل",
+    )
 
 
 def sale_fallback_price(db: Session, package: models.Package, owner_admin_id: Optional[int]) -> int:
@@ -123,11 +179,26 @@ def visible_admin_ids(db: Session, admin: models.AdminUser) -> Optional[list[Opt
     return [admin.id, *child_ids]
 
 
+def owner_column():
+    """Which column decides who a ledger row belongs to.
+
+    owner_admin_id_snapshot, not admin_id: the latter is a foreign key with
+    ondelete="SET NULL", and a NULL admin_id means "the superadmin's own
+    direct business" here - so deleting a reseller used to hand their whole
+    sales history to the superadmin and silently rewrite past reports (bug
+    found 2026-09). The snapshot is a plain integer nothing cascades over.
+
+    coalesce keeps rows written before that column existed working: they
+    have no snapshot, so their admin_id is used exactly as before.
+    """
+    return func.coalesce(models.LedgerEntry.owner_admin_id_snapshot, models.LedgerEntry.admin_id)
+
+
 def scoped_query(db: Session, admin: models.AdminUser):
     q = db.query(models.LedgerEntry)
     ids = visible_admin_ids(db, admin)
     if ids is not None:
-        q = q.filter(models.LedgerEntry.admin_id.in_(ids))
+        q = q.filter(owner_column().in_(ids))
         # Expenses are superadmin-only bookkeeping - even if one somehow
         # carried an admin_id, resellers have no business seeing costs.
         q = q.filter(models.LedgerEntry.kind != "expense")
@@ -155,6 +226,109 @@ def apply_filters(
     return q
 
 
+def _receivable_expr():
+    """A signed amount per row for the reseller current-account: debits
+    positive (credit granted, metered usage), payments negative."""
+    return sa.case(
+        (models.LedgerEntry.kind == PAYMENT_KIND, -models.LedgerEntry.amount),
+        else_=models.LedgerEntry.amount,
+    )
+
+
+def _receivable_base(db: Session, date_to=None):
+    q = db.query(models.LedgerEntry).filter(
+        models.LedgerEntry.kind.in_((*RECEIVABLE_DEBIT_KINDS, PAYMENT_KIND))
+    )
+    # A balance is a running total, so it is never bounded from BELOW by
+    # the report's date_from - what someone owes today includes what they
+    # already owed before the period started. Only an upper bound ("as of")
+    # makes sense here.
+    if date_to:
+        q = q.filter(models.LedgerEntry.created_at < date_to)
+    return q
+
+
+def receivables_for_admin(db: Session, admin_id: int, date_to=None) -> int:
+    """How much this one reseller still owes - see models.LedgerEntry's
+    docstring for the formula and why admin_credit_spend is excluded."""
+    total = (
+        _receivable_base(db, date_to)
+        .filter(owner_column() == admin_id)
+        .with_entities(func.sum(_receivable_expr()))
+        .scalar()
+    )
+    return int(total or 0)
+
+
+def receivables_total(db: Session, admin: models.AdminUser, date_to=None) -> int:
+    """Everything every visible reseller still owes, added up."""
+    q = _receivable_base(db, date_to)
+    ids = visible_admin_ids(db, admin)
+    if ids is not None:
+        q = q.filter(owner_column().in_(ids))
+    total = q.with_entities(func.sum(_receivable_expr())).scalar()
+    return int(total or 0)
+
+
+def receivables_by_admin(db: Session, admin: models.AdminUser, date_to=None) -> list[dict]:
+    """One row per reseller who has ever been granted credit or metered -
+    what they were charged, what they paid, what is left. Drives the
+    "طلب از نماینده‌ها" list, which is where payments get recorded."""
+    q = _receivable_base(db, date_to)
+    ids = visible_admin_ids(db, admin)
+    if ids is not None:
+        q = q.filter(owner_column().in_(ids))
+
+    rows = (
+        q.with_entities(
+            owner_column().label("owner_id"),
+            models.LedgerEntry.kind,
+            func.sum(models.LedgerEntry.amount),
+        )
+        .group_by(owner_column(), models.LedgerEntry.kind)
+        .all()
+    )
+    per: dict[int, dict] = {}
+    for owner_id, kind, total in rows:
+        if owner_id is None:
+            continue  # the superadmin's own business owes itself nothing
+        bucket = per.setdefault(owner_id, {"charged": 0, "paid": 0})
+        if kind == PAYMENT_KIND:
+            bucket["paid"] += int(total or 0)
+        else:
+            bucket["charged"] += int(total or 0)
+
+    if not per:
+        return []
+    admins = {
+        a.id: a for a in db.query(models.AdminUser).filter(models.AdminUser.id.in_(list(per))).all()
+    }
+    # A deleted reseller can still owe money, and their row must not vanish
+    # from the books - fall back to the username snapshot the ledger kept.
+    names = dict(
+        db.query(owner_column(), models.LedgerEntry.admin_username_snapshot)
+        .filter(owner_column().in_(list(per)))
+        .filter(models.LedgerEntry.admin_username_snapshot.isnot(None))
+        .all()
+    )
+
+    out = []
+    for owner_id, bucket in per.items():
+        row = admins.get(owner_id)
+        owed = bucket["charged"] - bucket["paid"]
+        out.append({
+            "admin_id": owner_id,
+            "username": row.username if row else (names.get(owner_id) or f"#{owner_id}"),
+            "deleted": row is None,
+            "charged_total": bucket["charged"],
+            "paid_total": bucket["paid"],
+            "owed": owed,
+            "billing_mode": (row.billing_mode or "flat") if row else None,
+        })
+    out.sort(key=lambda r: r["owed"], reverse=True)
+    return out
+
+
 def summary(db: Session, admin: models.AdminUser, date_from=None, date_to=None) -> dict:
     """Role-appropriate headline numbers + breakdowns, all computed off the
     same scoped/filtered base query so every number agrees with the
@@ -178,25 +352,72 @@ def summary(db: Session, admin: models.AdminUser, date_from=None, date_to=None) 
     if admin.is_superadmin:
         expenses_total = totals.get("expense", 0)
         out["expenses_total"] = expenses_total
-        out["net_profit"] = sales_total - expenses_total
+
+        # Whose sales are whose. sales_total above is every sale on the
+        # panel, which is NOT the superadmin's income: a reseller's retail
+        # sale is money that goes to the RESELLER. The superadmin earns
+        # from their own direct customers plus what resellers actually pay
+        # them (see below), so the two are reported separately instead of
+        # being added together into one misleading "فروش" figure
+        # (bug found 2026-09).
+        own_sales = int(
+            base.filter(
+                models.LedgerEntry.kind.in_(SALE_KINDS),
+                sa.or_(owner_column().is_(None), owner_column() == admin.id),
+            ).with_entities(func.sum(models.LedgerEntry.amount)).scalar() or 0
+        )
+        out["own_sales_total"] = own_sales
+        out["reseller_sales_total"] = sales_total - own_sales
+
+        # Cash actually collected FROM resellers - the superadmin's real
+        # income from the reseller side of the business. Granting credit is
+        # not income; it is frequently handed over before it is paid for.
+        payments_in = totals.get(PAYMENT_KIND, 0)
+        out["admin_payments_total"] = payments_in
+        out["net_profit"] = own_sales + payments_in - expenses_total
+
         # Cash actually received on cards: card-paid sales + card top-ups
         # (wallet-paid sales are spending money that already arrived).
+        #
+        # `!= "wallet"` alone silently dropped every row whose
+        # payment_method was never recorded (older bot builds, backfilled
+        # history): in SQL, NULL != 'wallet' is NULL, not true. Those rows
+        # are cash unless proven otherwise, so they are counted.
+        not_wallet = sa.or_(
+            models.LedgerEntry.payment_method.is_(None),
+            models.LedgerEntry.payment_method != "wallet",
+        )
         card_cash = (
-            base.filter(
-                models.LedgerEntry.kind.in_((*SALE_KINDS, "wallet_topup")),
-                models.LedgerEntry.payment_method != "wallet",
-            )
+            base.filter(models.LedgerEntry.kind.in_((*SALE_KINDS, "wallet_topup")), not_wallet)
             .with_entities(func.sum(models.LedgerEntry.amount))
             .scalar()
         )
         out["card_cash_total"] = int(card_cash or 0)
+        out["receivables_total"] = receivables_total(db, admin, date_to=date_to)
     else:
-        # A reseller's cost of goods is what their credit was debited at
-        # (cooperation price), minus rolled-back charges.
-        cost = totals.get("admin_credit_spend", 0) - totals.get("admin_credit_refund", 0)
+        # A reseller's cost of goods: credit debited at cooperation price
+        # (flat mode) or metered traffic priced per GB (usage mode), minus
+        # rolled-back charges.
+        cost = (
+            totals.get("admin_credit_spend", 0)
+            + totals.get("admin_usage_charge", 0)
+            - totals.get("admin_credit_refund", 0)
+        )
         out["credit_spent_total"] = cost
-        out["margin_total"] = sales_total - cost if sales_total else None
-        out["credit_balance"] = admin.balance or 0
+        # Showing nothing when sales are zero hid a real loss: an account
+        # that spent credit and sold nothing has a negative margin, not an
+        # unknown one. Only a completely empty period has no answer.
+        out["margin_total"] = None if (sales_total == 0 and cost == 0) else sales_total - cost
+        # A usage-billed reseller holds GB, not tomans - reporting
+        # admin.balance for them showed a flat 0 next to a real GB pool.
+        if (admin.billing_mode or "flat") == "usage":
+            out["billing_mode"] = "usage"
+            out["volume_balance_gb"] = admin.volume_balance_gb or 0
+            out["credit_balance"] = None
+        else:
+            out["billing_mode"] = "flat"
+            out["credit_balance"] = admin.balance or 0
+        out["owed_total"] = receivables_for_admin(db, admin.id, date_to=date_to)
 
     # Breakdown by admin (superadmin: every admin; level-2: their sellers).
     if not hierarchy.is_seller(admin):
@@ -250,28 +471,46 @@ def series(db: Session, admin: models.AdminUser, granularity: str = "day", date_
     formatting (see services/backup.py for the same
     keep-it-dialect-portable philosophy)."""
     if date_from is None:
-        date_from = dt.datetime.utcnow() - dt.timedelta(days=30 if granularity == "day" else 365)
+        # Anchored to date_to when one was given, not to "now": asking for
+        # everything up to the end of last month used to return an empty
+        # chart, because the default window started 30 days before TODAY,
+        # which is after the requested end.
+        anchor = date_to or dt.datetime.utcnow()
+        date_from = anchor - dt.timedelta(days=30 if granularity == "day" else 365)
     base = apply_filters(scoped_query(db, admin), date_from=date_from, date_to=date_to)
-    rows = (
-        base.with_entities(
-            func.date(models.LedgerEntry.created_at),
-            models.LedgerEntry.kind,
-            func.sum(models.LedgerEntry.amount),
-        )
-        .group_by(func.date(models.LedgerEntry.created_at), models.LedgerEntry.kind)
-        .all()
-    )
+    # Bucket by the LOCAL calendar day, not the UTC one. created_at is
+    # stored in UTC; at +03:30 everything sold after 20:30 UTC belongs to
+    # the next day in Tehran, so grouping on the raw timestamp put the
+    # evening's sales on the wrong bar (routers/dashboard.py already
+    # applies this same offset for its today/this-month figures - the
+    # chart simply never did).
+    #
+    # Bucketed in Python rather than with a shifted GROUP BY because
+    # timestamp arithmetic is exactly the kind of thing SQLite and MySQL
+    # spell differently (same reasoning as this function's original
+    # comment about avoiding dialect-specific date formatting). The window
+    # is always bounded - a month by default - so this reads a few
+    # thousand rows at most, not the whole ledger.
+    offset = dt.timedelta(minutes=jalali.get_display_offset())
+    rows = base.with_entities(
+        models.LedgerEntry.created_at,
+        models.LedgerEntry.kind,
+        models.LedgerEntry.amount,
+    ).all()
+
     buckets: dict[str, dict] = {}
-    for day, kind, total in rows:
-        day = str(day)
+    for created_at, kind, amount in rows:
+        if created_at is None:
+            continue
+        day = (created_at + offset).strftime("%Y-%m-%d")
         key = day[:7] if granularity == "month" else day
         b = buckets.setdefault(key, {"period": key, "sales": 0, "expenses": 0, "wallet_topup": 0})
         if kind in SALE_KINDS:
-            b["sales"] += int(total or 0)
+            b["sales"] += int(amount or 0)
         elif kind == "expense":
-            b["expenses"] += int(total or 0)
+            b["expenses"] += int(amount or 0)
         elif kind == "wallet_topup":
-            b["wallet_topup"] += int(total or 0)
+            b["wallet_topup"] += int(amount or 0)
     return [buckets[k] for k in sorted(buckets)]
 
 
@@ -314,48 +553,73 @@ def subtree_rollup(db: Session, admin: models.AdminUser, date_from=None, date_to
     if not children:
         return []
 
-    ids = [c.id for c in children]
+    # A ROLLUP row has to cover the whole branch under that account, not
+    # just the account itself.
+    #
+    # BUG FIXED 2026-09 ("تب زیرمجموعه‌های من درست کار نمی‌کنه"): every
+    # figure below was counted for the child alone. A level-2 Admin whose
+    # business actually runs through their own Sellers therefore showed
+    # near-zero customers and near-zero sales - the numbers were all real,
+    # they were just sitting one level further down where nothing looked.
+    # Each child now aggregates over itself PLUS its own children.
+    branch: dict[int, list[int]] = {}
+    for child in children:
+        own_children = [
+            row[0] for row in db.query(models.AdminUser.id)
+            .filter(models.AdminUser.parent_admin_id == child.id).all()
+        ]
+        branch[child.id] = [child.id, *own_children]
+    all_ids = sorted({aid for members in branch.values() for aid in members})
 
-    customers: dict[int, int] = {}
-    active: dict[int, int] = {}
+    per_admin_customers: dict[int, int] = {}
+    per_admin_active: dict[int, int] = {}
     for owner_id, status, count in (
         db.query(models.User.owner_admin_id, models.User.status, func.count(models.User.id))
-        .filter(models.User.owner_admin_id.in_(ids))
+        .filter(models.User.owner_admin_id.in_(all_ids))
         .group_by(models.User.owner_admin_id, models.User.status)
         .all()
     ):
-        customers[owner_id] = customers.get(owner_id, 0) + int(count or 0)
+        per_admin_customers[owner_id] = per_admin_customers.get(owner_id, 0) + int(count or 0)
         if status == models.UserStatus.active:
-            active[owner_id] = active.get(owner_id, 0) + int(count or 0)
+            per_admin_active[owner_id] = per_admin_active.get(owner_id, 0) + int(count or 0)
 
     sales_q = apply_filters(
         db.query(models.LedgerEntry).filter(
-            models.LedgerEntry.admin_id.in_(ids),
+            owner_column().in_(all_ids),
             models.LedgerEntry.kind.in_(SALE_KINDS),
         ),
         date_from=date_from, date_to=date_to,
     )
-    sales: dict[int, tuple[int, int]] = {
-        admin_id: (int(total or 0), int(count or 0))
-        for admin_id, total, count in sales_q.with_entities(
-            models.LedgerEntry.admin_id,
+    per_admin_sales: dict[int, tuple[int, int]] = {
+        owner_id: (int(total or 0), int(count or 0))
+        for owner_id, total, count in sales_q.with_entities(
+            owner_column(),
             func.sum(models.LedgerEntry.amount),
             func.count(models.LedgerEntry.id),
-        ).group_by(models.LedgerEntry.admin_id).all()
+        ).group_by(owner_column()).all()
     }
 
     out = []
     for child in sorted(children, key=lambda c: c.username.lower()):
-        total, count = sales.get(child.id, (0, 0))
+        members = branch[child.id]
+        customers = sum(per_admin_customers.get(i, 0) for i in members)
+        active = sum(per_admin_active.get(i, 0) for i in members)
+        total = sum(per_admin_sales.get(i, (0, 0))[0] for i in members)
+        count = sum(per_admin_sales.get(i, (0, 0))[1] for i in members)
         balance = child.balance or 0
         out.append({
             "id": child.id,
             "username": child.username,
             "role": hierarchy.role(child),
-            "customers": customers.get(child.id, 0),
-            "active_customers": active.get(child.id, 0),
+            "customers": customers,
+            "active_customers": active,
             "sales_total": total,
             "sales_count": count,
+            # How much of the branch is the child's own vs. their sellers' -
+            # without this the rollup hides whether an Admin sells at all.
+            "own_customers": per_admin_customers.get(child.id, 0),
+            "own_sales_total": per_admin_sales.get(child.id, (0, 0))[0],
+            "sub_accounts": len(members) - 1,
             "balance": balance,
             "credit_limit": child.credit_limit or 0,
             # Surfaced separately rather than left for the reader to notice
@@ -364,6 +628,10 @@ def subtree_rollup(db: Session, admin: models.AdminUser, date_from=None, date_to
             "in_debt": balance < 0,
             "volume_balance_gb": child.volume_balance_gb or 0,
             "billing_mode": child.billing_mode or "flat",
+            # What they owe YOU (granted credit + metered usage - payments
+            # received), which is a different question from the prepaid
+            # balance they still hold.
+            "owed": receivables_for_admin(db, child.id, date_to=date_to),
         })
     return out
 

@@ -190,6 +190,17 @@ class AdminUser(Base):
     # retroactively disabling already-provisioned users) - a superadmin
     # tops it up the same way as money, just in GB instead of tomans.
     volume_balance_gb = Column(Float, nullable=True, default=0)
+    # GB consumed by this usage-billed admin that has been metered but not
+    # yet turned into a priced ledger row. quota_manager._apply_delta adds
+    # to this on every poll (a cheap atomic increment, same as
+    # volume_balance_gb); services/usage_billing.py drains it once a day
+    # into ONE admin_usage_charge row priced at wholesale_price_per_gb.
+    #
+    # Rolled up rather than written per poll on purpose: at a 30s interval
+    # a single busy connection would otherwise produce ~2,880 ledger rows a
+    # day, which is the same mistake models.UsageLog already had to be
+    # rescued from (see USAGE_LOG_KEEP_DAYS).
+    unbilled_usage_gb = Column(Float, nullable=False, default=0)
 
     # ---------- Per-admin dedicated Telegram bot (3-tier hierarchy) ----------
     # A level-2 Admin's OR level-3 Seller's OWN separate bot (their own
@@ -1654,7 +1665,25 @@ class LedgerEntry(Base):
                           for creating/renewing their own customer
       admin_credit_refund cooperation-price charge rolled back after a
                           failed provision
+      admin_usage_charge  a usage-billed (billing_mode="usage") reseller's
+                          consumed traffic, priced in tomans - one rolled-up
+                          row per admin per day (see services/
+                          usage_billing.py), not one per poll cycle
+      admin_payment       money actually COLLECTED from a reseller
       expense             manual superadmin-entered cost (server rent, ...)
+
+    The reseller current-account (حساب جاری), added 2026-09 because credit
+    is routinely handed over before it is paid for ("بعضی وقتا من اعتبار
+    میدم ولی آخر سر پولش رو می‌گیرم" - panel owner):
+
+      what a reseller OWES  = admin_credit_change (signed)
+                            + admin_usage_charge
+                            - admin_payment
+
+    admin_credit_spend is deliberately NOT in that formula - it consumes
+    credit that was already granted (and therefore already owed), so
+    counting it again would double the debt. See services/accounting.py's
+    receivables().
 
     Note wallet mechanics: a wallet PAYMENT shows up as a sale_* row with
     payment_method="wallet" - the wallet debit itself is deliberately NOT
@@ -1695,6 +1724,19 @@ class LedgerEntry(Base):
     category = Column(String(100), nullable=True)  # expense rows only
     note = Column(Text, nullable=True)
     created_at = Column(DateTime, default=now, index=True)
+
+    # Plain copy of admin_id that is NOT a foreign key, so it survives the
+    # owner being deleted.
+    #
+    # BUG FIXED 2026-09: admin_id is ondelete="SET NULL", and a NULL
+    # admin_id means "the superadmin's own direct business" to every
+    # role-scoped query in services/accounting.py. Deleting a reseller
+    # therefore silently re-assigned their ENTIRE sales history to the
+    # superadmin - past months' reports changed retroactively, and the
+    # superadmin's own figures absorbed someone else's business. The
+    # username snapshot beside admin_id survived, but nothing queried it.
+    # Scoping now reads owner_admin_id_snapshot, which nothing cascades.
+    owner_admin_id_snapshot = Column(Integer, nullable=True, index=True)
 
     user = relationship("User", foreign_keys=[user_id])
     admin = relationship("AdminUser", foreign_keys=[admin_id])

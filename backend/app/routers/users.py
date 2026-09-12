@@ -464,6 +464,9 @@ def create_user(
         # 1:1, so nothing is double-counted.
         if result["created"]:
             user_ops.absorb_legacy_pool_into_purchase(db, user)
+        # Revenue side - see accounting.record_panel_sale for why this used
+        # to be missing entirely on every panel-made sale.
+        accounting.record_panel_sale(db, "sale_new", user, package, actor_admin_id=admin.id)
         db.commit()
         db.refresh(user)
 
@@ -822,6 +825,9 @@ def apply_package(
     except Exception:
         admin_billing.refund_for_package(db, admin, package, units=1)
         raise
+    # Revenue side - see accounting.record_panel_sale for why this used to
+    # be missing entirely on every panel-made sale.
+    accounting.record_panel_sale(db, "sale_new", user, package, actor_admin_id=admin.id)
     db.commit()
     db.refresh(user)
     return user
@@ -872,11 +878,22 @@ def renew_purchase_endpoint(
     # Charged BEFORE the renewal is applied, so an admin who cannot afford
     # it gets a refusal instead of a renewed service and a debt.
     admin_billing.charge_for_renewal(db, admin, package, payload.add_gb)
-    return user_ops.renew_purchase(
+    out = user_ops.renew_purchase(
         db, purchase,
         add_gb=payload.add_gb, add_days=payload.add_days,
         reset_usage=payload.reset_usage, package_id=payload.package_id,
     )
+    # Revenue side of a panel renewal (see accounting.record_panel_sale).
+    # Only a package-based renewal has a price to book - a raw add_gb/
+    # add_days top-up has no package and no list price to read, exactly as
+    # admin_billing.charge_for_renewal treats it on the cost side.
+    if package is not None:
+        accounting.record_panel_sale(
+            db, "sale_renew", user, package,
+            purchase_id=purchase.id, actor_admin_id=admin.id,
+        )
+        db.commit()
+    return out
 
 
 @router.delete("/{user_id}/purchases/{purchase_id}")

@@ -99,7 +99,16 @@ def _apply_delta(db: Session, connection: models.Connection, rx: int, tx: int):
         # one of an admin's users' connections, across both the scheduler
         # thread and the RADIUS thread, funnels delta events into this same
         # AdminUser row.
-        _atomic_increment(db, models.AdminUser, admin.id, "volume_balance_gb", -(delta / (1024 ** 3)))
+        gb = delta / (1024 ** 3)
+        _atomic_increment(db, models.AdminUser, admin.id, "volume_balance_gb", -gb)
+        # ...and the same GB onto the un-priced meter, which
+        # services/usage_billing.py drains once a day into a single priced
+        # admin_usage_charge ledger row. Depleting the GB pool alone (all
+        # this used to do) meant a usage-billed reseller's traffic never
+        # became money anywhere in the books - their cost of goods read as
+        # zero and every margin shown for them was 100% (bug found
+        # 2026-09).
+        _atomic_increment(db, models.AdminUser, admin.id, "unbilled_usage_gb", gb)
 
 
 # models.UsageLog gets ONE row per connection per poll cycle that moved any

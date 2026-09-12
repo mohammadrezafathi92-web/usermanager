@@ -14,6 +14,7 @@ from .database import Base, engine, SessionLocal
 from . import models
 from .security import hash_password
 from .services.quota_manager import poll_all, cleanup_old_usage_logs
+from .services.usage_billing import settle_usage_charges
 from .services import jalali
 from .services.ads import run_due_campaigns
 from .services.radius_server import start_radius_server_in_background, cleanup_stale_radius_sessions, cleanup_old_radius_limit_logs
@@ -838,6 +839,10 @@ def _start_full_services() -> None:
     # see services/quota_manager.py's cleanup_old_usage_logs docstring for
     # the unbounded-DB-growth problem it fixes.
     scheduler.add_job(cleanup_old_usage_logs, "cron", hour=3, minute=45, id="cleanup_old_usage_logs", replace_existing=True)
+    # Prices yesterday's metered traffic for usage-billed resellers into one
+    # ledger row each - see services/usage_billing.py for why this is a
+    # daily rollup rather than a row per poll cycle.
+    scheduler.add_job(settle_usage_charges, "cron", hour=4, minute=0, id="usage_billing", replace_existing=True)
     # Once a day - quota/expiry reminder messages via the sales bot
     # (best-effort no-op if the bot isn't running/configured).
     scheduler.add_job(run_daily_notify_job, "cron", hour=10, minute=0, id="daily_notify", replace_existing=True)

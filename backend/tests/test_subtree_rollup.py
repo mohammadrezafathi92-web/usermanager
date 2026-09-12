@@ -114,8 +114,20 @@ check("both the child Admin and the root Admin appear",
       sorted(r["username"] for r in rows), ["boss", "root"])
 check("the superadmin does not list itself", "super" in by_name(rows), False)
 r = by_name(rows)["boss"]
-check("an Admin's row counts only their OWN customers", r["customers"], 1)
-check("...and only their OWN sales", r["sales_total"], 90_000)
+# CHANGED 2026-09 ("تب زیرمجموعه‌های من درست کار نمی‌کنه"): these two used
+# to assert that an Admin's row counted only that Admin's OWN customers
+# and sales - so a level-2 Admin whose business runs through their Sellers
+# showed 1 customer and 90,000 here while their branch really carried 5
+# customers and 190,000. Nothing was missing from the database; the rollup
+# just wasn't rolling anything up. A row now covers the whole branch, with
+# the Admin's own share still available beside it.
+check("an Admin's row rolls up their Sellers' customers too", r["customers"], 5)
+check("...and their Sellers' sales", r["sales_total"], 190_000)
+check("the Admin's own share is still visible separately", r["own_customers"], 1)
+check("...for sales as well", r["own_sales_total"], 90_000)
+check("and how many accounts sit under them", r["sub_accounts"], 2)
+check("a root Admin with nothing under it rolls up to itself only",
+      by_name(rows)["root"]["sub_accounts"], 0)
 
 print("\n--- the date range is honoured ---")
 db = make_db()

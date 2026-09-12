@@ -1656,6 +1656,11 @@ class AdminTopupRequest(BaseModel):
     # Signed delta - positive to top up, negative for a manual correction.
     amount: int
     note: Optional[str] = None
+    # True = the money for this top-up was collected at the same time, so
+    # record the matching receipt too. False (the default) leaves it as a
+    # receivable until it is actually paid - see routers/admins.py's
+    # topup_admin_balance and models.LedgerEntry's current-account notes.
+    paid: bool = False
 
 
 class AdminBalanceLogOut(BaseModel):
@@ -1758,6 +1763,16 @@ class ExpenseCreate(BaseModel):
     note: Optional[str] = None
     # Optional historical date (e.g. entering last month's server invoice) -
     # defaults to "now" server-side when omitted.
+    created_at: Optional[dt.datetime] = None
+
+
+class AdminPaymentCreate(BaseModel):
+    """Money actually collected from a reseller - the credit side of the
+    reseller current account (see models.LedgerEntry's docstring)."""
+    admin_id: int
+    amount: int  # tomans, positive
+    payment_method: Optional[str] = None  # card | cash | ...
+    note: Optional[str] = None
     created_at: Optional[dt.datetime] = None
 
 

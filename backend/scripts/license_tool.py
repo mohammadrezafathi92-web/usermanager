@@ -97,6 +97,15 @@ def cmd_issue(args) -> int:
     elif args.until:
         expires_at = dt.datetime.fromisoformat(args.until)
 
+    # --install-days is the "starts when they install it" form: no date is
+    # baked in, the panel stamps the start the first time it sees the key.
+    # Cutting a key in advance, or a customer taking a week to set their
+    # server up, then costs nothing - with --days both of those come
+    # straight off what they paid for.
+    if args.install_days and args.days:
+        print("--days and --install-days are two different clocks - pick one.")
+        return 1
+
     payload = licensing.LicensePayload(
         license_id=args.id or f"lic_{uuid.uuid4().hex[:12]}",
         customer=args.customer,
@@ -106,6 +115,7 @@ def cmd_issue(args) -> int:
         max_customers=args.max_customers,
         features=args.feature or [],
         note=args.note or "",
+        valid_days=args.install_days,
     )
     body = json.dumps(payload.to_dict(), ensure_ascii=False,
                       separators=(",", ":"), sort_keys=True).encode("utf-8")
@@ -119,7 +129,10 @@ def cmd_issue(args) -> int:
     print(f"licence id : {payload.license_id}")
     print(f"customer   : {payload.customer}")
     print(f"machine    : {payload.fingerprint or '(any)'}")
-    print(f"expires    : {expires_at.date() if expires_at else '(never)'}")
+    if args.install_days:
+        print(f"expires    : {args.install_days} روز پس از نصب (شروع از اولین اجرا روی پنل)")
+    else:
+        print(f"expires    : {expires_at.date() if expires_at else '(never)'}")
     print()
     print(token)
     if args.out:
@@ -172,7 +185,10 @@ def main() -> int:
     p.add_argument("--key", required=True, help="path to the private key")
     p.add_argument("--customer", required=True)
     p.add_argument("--fingerprint", help="from `license_tool.py fingerprint` on their server")
-    p.add_argument("--days", type=int, help="valid for this many days")
+    p.add_argument("--days", type=int, help="valid for this many days FROM NOW")
+    p.add_argument("--install-days", type=int,
+                   help="valid for this many days FROM INSTALLATION - the clock "
+                        "starts the first time the panel sees the key, not now")
     p.add_argument("--until", help="valid until this date (YYYY-MM-DD)")
     p.add_argument("--max-customers", type=int, dest="max_customers")
     p.add_argument("--feature", action="append")

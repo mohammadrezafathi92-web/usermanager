@@ -12,6 +12,7 @@ second product.
 """
 from __future__ import annotations
 
+import datetime as dt
 import os
 import secrets
 
@@ -90,6 +91,14 @@ async def heartbeat(request: Request, db=Depends(get_db)):
     client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() \
         or (request.client.host if request.client else None)
 
+    activated_at = None
+    raw_activated = (body.get("activated_at") or "").strip() if isinstance(body.get("activated_at"), str) else None
+    if raw_activated:
+        try:
+            activated_at = dt.datetime.fromisoformat(raw_activated)
+        except ValueError:
+            activated_at = None  # a malformed date is ignored, never fatal
+
     _install, response = store.record_heartbeat(
         db,
         license_id=str(license_id),
@@ -97,6 +106,7 @@ async def heartbeat(request: Request, db=Depends(get_db)):
         ip=client_ip,
         panel_version=(body.get("panel_version") or None),
         reported_customers=body.get("customers"),
+        activated_at=activated_at,
     )
     return response
 

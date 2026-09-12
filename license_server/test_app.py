@@ -71,7 +71,12 @@ r = hb(panel_version="1.3.0", customers=42)
 check("200 OK", r.status_code, 200)
 check("told not revoked", r.json()["revoked"], False)
 check("told the default scope", r.json()["lock_scope"], "panel_only")
-check("exactly two fields", sorted(r.json().keys()), ["lock_scope", "revoked"])
+# Three, since 2026-09: activated_at joined them so an install-dated
+# licence can be anchored to the vendor's copy (see store.record_heartbeat).
+# Still an exact list - the reply is a contract, not a grab bag.
+check("exactly the three fields the install acts on",
+      sorted(r.json().keys()), ["activated_at", "lock_scope", "revoked"])
+check("no activation reported means none is returned", r.json()["activated_at"], None)
 
 print("\n--- a heartbeat without a license_id is refused ---")
 check("400", client.post("/heartbeat", json={"fingerprint": "x"}).status_code, 400)

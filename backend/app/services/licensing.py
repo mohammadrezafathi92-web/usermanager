@@ -237,10 +237,26 @@ class LicensePayload:
     customer: str
     fingerprint: str          # "" = not bound to a machine (a demo/dev key)
     issued_at: dt.datetime
-    expires_at: Optional[dt.datetime]   # None = perpetual
+    expires_at: Optional[dt.datetime]   # None = perpetual (or see valid_days)
     max_customers: Optional[int] = None
     features: list[str] = field(default_factory=list)
     note: str = ""
+    # Runs for this many days from the moment it is first ACTIVATED on a
+    # panel, rather than from a date fixed at issue time.
+    #
+    # A key with a baked-in `exp` starts burning the day it is minted, so a
+    # customer who installs a week later silently loses that week - and a
+    # key cut in advance for someone who has not set their server up yet can
+    # be half gone before it is ever used (panel owner, 2026-09: "کد لایسنس
+    # از زمان نصب فعال باشه"). With valid_days the clock starts when the
+    # panel first sees the key; see effective_expiry() and
+    # services/license_state.py, which is where the activation date is
+    # recorded and anchored.
+    #
+    # `exp` still wins when both are set, so an absolute deadline can always
+    # be imposed on top ("valid for 30 days from install, but never past
+    # Nowruz").
+    valid_days: Optional[int] = None
 
     def to_dict(self) -> dict:
         return {
@@ -253,6 +269,7 @@ class LicensePayload:
             "max_customers": self.max_customers,
             "features": self.features,
             "note": self.note,
+            "vd": self.valid_days,
         }
 
     @classmethod
@@ -269,7 +286,28 @@ class LicensePayload:
             max_customers=data.get("max_customers"),
             features=list(data.get("features") or []),
             note=data.get("note", ""),
+            valid_days=data.get("vd"),
         )
+
+
+def effective_expiry(
+    payload: "LicensePayload", activated_at: Optional[dt.datetime]
+) -> Optional[dt.datetime]:
+    """When this licence actually runs out. None = never.
+
+    An absolute `exp` always wins, so a hard deadline can be layered on top
+    of a duration. Otherwise a `valid_days` key expires that many days after
+    `activated_at` - the moment the panel first saw it.
+
+    A valid_days key that has NOT been activated yet has no expiry to report
+    (None): it has not started. The caller activates it, which is what puts
+    a date on the clock - see services/license_state.py.
+    """
+    if payload.expires_at is not None:
+        return payload.expires_at
+    if payload.valid_days and activated_at is not None:
+        return activated_at + dt.timedelta(days=int(payload.valid_days))
+    return None
 
 
 def parse_token(token: str) -> tuple[LicensePayload, bytes, bytes]:
@@ -349,6 +387,7 @@ def verify(
     revoked: bool = False,
     highest_seen_time: Optional[dt.datetime] = None,
     lock_after_silent_days: Optional[int] = None,
+    activated_at: Optional[dt.datetime] = None,
 ) -> LicenseStatus:
     """The whole decision, in one pure function.
 
@@ -374,6 +413,12 @@ def verify(
       * a number N: the old behaviour - if the panel has not reached the
         control server in N days it locks. Available if the operator ever
         wants it, but off by default for the reason above.
+
+    `activated_at` is when this install first saw this key, and only matters
+    for a licence issued with `valid_days` (one whose clock starts at
+    installation rather than at issue - see effective_expiry). Passing None
+    for such a key means "not started yet", which never expires here; the
+    caller is expected to stamp the activation and pass it in from then on.
     """
     now = now or dt.datetime.utcnow()
 
@@ -419,11 +464,12 @@ def verify(
                                  message=_MESSAGES[REASON_WRONG_MACHINE])
 
     days_left = None
-    if payload.expires_at:
-        if payload.expires_at <= now:
+    expires_at = effective_expiry(payload, activated_at)
+    if expires_at:
+        if expires_at <= now:
             return LicenseStatus(False, REASON_EXPIRED, payload=payload,
                                  message=_MESSAGES[REASON_EXPIRED])
-        days_left = (payload.expires_at - now).days
+        days_left = (expires_at - now).days
 
     # The licence itself is fine. Silence only matters if the operator has
     # explicitly opted into locking on it (lock_after_silent_days). By

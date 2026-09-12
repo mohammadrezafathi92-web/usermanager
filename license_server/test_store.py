@@ -89,10 +89,11 @@ try:
 except ValueError:
     check("an invalid scope is rejected", True, True)
 
-print("\n--- the response is ONLY the two fields the install acts on ---")
+print("\n--- the response is ONLY the fields the install acts on ---")
 db = fresh_db()
 _, resp = store.record_heartbeat(db, license_id="lic_d", fingerprint="x", now=NOW)
-check("exactly revoked + lock_scope, nothing else", sorted(resp.keys()), ["lock_scope", "revoked"])
+check("exactly revoked + lock_scope + activated_at, nothing else",
+      sorted(resp.keys()), ["activated_at", "lock_scope", "revoked"])
 
 print("\n--- labelling and notes ---")
 db = fresh_db()

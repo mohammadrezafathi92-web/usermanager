@@ -71,6 +71,46 @@ def _parse_dt(value) -> Optional[dt.datetime]:
         return None
 
 
+def _activation_for(state: dict, token: str, now: dt.datetime) -> Optional[dt.datetime]:
+    """When this install first saw this licence key, stamping it if this is
+    the first time. None if the key carries no activation-based duration.
+
+    Only keys issued with `valid_days` need this - one with a fixed `exp`
+    already knows when it ends. Recorded per licence id, so:
+
+      * re-entering the SAME key does not restart the clock;
+      * a genuinely NEW key (a renewal) starts its own, correctly.
+
+    The date lives in the same small JSON file as the rest of the licence
+    state. Deleting that file restarts the clock, which is why the heartbeat
+    anchors it against the control server's own record and keeps whichever
+    is EARLIER (see heartbeat below) - the vendor's copy is the one the
+    customer cannot edit.
+    """
+    if not token:
+        return None
+    try:
+        payload, _b, _s = licensing.parse_token(token)
+    except licensing.LicenseError:
+        return None
+    if not payload.valid_days:
+        return None
+
+    activations = state.get("activations")
+    if not isinstance(activations, dict):
+        activations = {}
+    existing = _parse_dt(activations.get(payload.license_id))
+    if existing is not None:
+        return existing
+
+    activations[payload.license_id] = now.replace(microsecond=0).isoformat()
+    state["activations"] = activations
+    _save_state(state)
+    logger.info("licence %s activated - its %d-day term starts now",
+                payload.license_id, payload.valid_days)
+    return now
+
+
 def _compute(now: Optional[dt.datetime] = None) -> licensing.Enforcement:
     """Recompute the verdict from the stored token + persisted facts."""
     now = now or dt.datetime.utcnow()
@@ -97,6 +137,7 @@ def _compute(now: Optional[dt.datetime] = None) -> licensing.Enforcement:
         revoked=bool(state.get("revoked", False)),
         highest_seen_time=highest,
         lock_after_silent_days=(settings.license_lock_after_silent_days or None),
+        activated_at=_activation_for(state, settings.license_key, now),
     )
     scope = state.get("lock_scope") or licensing.DEFAULT_LOCK_SCOPE
     return licensing.resolve_enforcement(status, scope)
@@ -145,10 +186,16 @@ def heartbeat(timeout: float = 10.0) -> None:
     if not license_id or not settings.license_server_url:
         return
 
+    state = _load_state()
+    activations = state.get("activations") if isinstance(state.get("activations"), dict) else {}
+
     payload = json.dumps({
         "license_id": license_id,
         "fingerprint": licensing.hardware_fingerprint(),
         "panel_version": get_build_info().get("version"),
+        # Ours for an activation-dated key, so the vendor's copy can be the
+        # anchor - see the reply handling below.
+        "activated_at": activations.get(license_id),
     }).encode("utf-8")
 
     url = settings.license_server_url.rstrip("/") + "/heartbeat"
@@ -171,6 +218,24 @@ def heartbeat(timeout: float = 10.0) -> None:
         scope = data.get("lock_scope")
         if scope in licensing.LOCK_SCOPES:
             state["lock_scope"] = scope
+
+        # Anchor an activation-dated licence against the vendor's own
+        # record. The local state file is the customer's to delete, and
+        # deleting it would otherwise hand them a fresh term; the control
+        # server's copy is not. Whichever is EARLIER wins, so the clock can
+        # only ever be corrected backwards - a later date (from a wrong
+        # server clock, or a replayed reply) can never extend the term.
+        server_activated = _parse_dt(data.get("activated_at"))
+        if server_activated is not None:
+            activations = state.get("activations")
+            if not isinstance(activations, dict):
+                activations = {}
+            local = _parse_dt(activations.get(license_id))
+            if local is None or server_activated < local:
+                activations[license_id] = server_activated.replace(microsecond=0).isoformat()
+                state["activations"] = activations
+                logger.info("licence %s activation anchored to %s from the control server",
+                            license_id, server_activated.date())
     _save_state(state)
     refresh()
 

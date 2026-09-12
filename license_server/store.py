@@ -69,6 +69,12 @@ class Install(Base):
     # Observed facts, updated every heartbeat - what the operator reads to
     # decide anything.
     first_seen = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
+    # When an activation-dated licence (one issued with valid_days, whose
+    # term starts at INSTALL rather than at issue) actually started on this
+    # install. The panel reports its own copy and we keep the earliest ever
+    # seen, so the vendor holds an anchor the customer cannot edit: wiping
+    # the panel's local state file would otherwise hand them a fresh term.
+    activated_at = Column(DateTime, nullable=True)
     last_seen = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
     last_ip = Column(String(64), nullable=True)
     fingerprint_changed_at = Column(DateTime, nullable=True)
@@ -113,6 +119,7 @@ def record_heartbeat(
     ip: Optional[str] = None,
     panel_version: Optional[str] = None,
     reported_customers: Optional[int] = None,
+    activated_at: Optional[dt.datetime] = None,
     now: Optional[dt.datetime] = None,
 ) -> tuple[Install, dict]:
     """Register-or-update an install, and return what to tell it.
@@ -120,7 +127,12 @@ def record_heartbeat(
     Returns (install_row, response_dict). The response is the ONLY thing the
     install acts on, so it is deliberately tiny and explicit:
 
-        {"revoked": bool, "lock_scope": str}
+        {"revoked": bool, "lock_scope": str, "activated_at": str | None}
+
+    `activated_at` is only meaningful for a licence issued with valid_days
+    (its term starts at installation, not at issue). We keep the earliest
+    date any install ever reported for that licence and hand it back, so the
+    panel can anchor to a copy the customer cannot edit.
 
     A brand-new install self-registers as allowed. That is on purpose: the
     common case is the vendor bringing a paying customer online, and making
@@ -142,6 +154,7 @@ def record_heartbeat(
             last_ip=ip,
             panel_version=panel_version,
             reported_customers=reported_customers,
+            activated_at=activated_at,
             heartbeat_count=1,
         )
         db.add(install)
@@ -160,12 +173,20 @@ def record_heartbeat(
         install.panel_version = panel_version or install.panel_version
         if reported_customers is not None:
             install.reported_customers = reported_customers
+        # Earliest wins, and it is never cleared: the term can only ever be
+        # corrected backwards, never extended by a later report.
+        if activated_at is not None and (
+            install.activated_at is None or activated_at < install.activated_at
+        ):
+            install.activated_at = activated_at
         install.heartbeat_count = (install.heartbeat_count or 0) + 1
 
     db.commit()
     return install, {
         "revoked": bool(install.revoked),
         "lock_scope": install.lock_scope or DEFAULT_LOCK_SCOPE,
+        # Handed back so the panel can anchor its own copy to ours.
+        "activated_at": install.activated_at.isoformat() if install.activated_at else None,
     }
 
 

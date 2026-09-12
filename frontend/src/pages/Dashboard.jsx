@@ -212,10 +212,27 @@ export default function Dashboard() {
                       <Database size={22} />
                     </div>
                     <div>
-                      <div className="text-2xl font-bold text-gray-800 dark:text-gray-100" dir="ltr">
+                      <div
+                        className={`text-2xl font-bold ${
+                          stats.admin_volume_balance_gb < 0 ? "text-red-500" : "text-gray-800 dark:text-gray-100"
+                        }`}
+                        dir="ltr"
+                      >
                         {formatGb(stats.admin_volume_balance_gb, language)} <span className="text-sm text-gray-400 font-normal">GB</span>
                       </div>
                       <div className="text-sm text-gray-400">{t("dashboard.yourBalance")}</div>
+                      {/* A negative pool is legitimate and was alarming
+                          precisely because nothing said so: traffic is
+                          deducted as it actually flows (quota_manager's
+                          _apply_delta) and is never blocked mid-session, so
+                          customers can consume past the end of the pool.
+                          It reads as debt, not as an error - and the
+                          deduction stays even if the customer who caused it
+                          is later deleted, which is why it can sit next to a
+                          usage figure of zero. */}
+                      {stats.admin_volume_balance_gb < 0 && (
+                        <div className="text-xs text-red-500 mt-1">{t("dashboard.volumeDebtHint")}</div>
+                      )}
                     </div>
                   </>
                 ) : (

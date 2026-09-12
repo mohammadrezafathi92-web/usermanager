@@ -808,6 +808,18 @@ export default function Admins() {
                     if (next === "admin" && form.parent_admin_id && Number(form.parent_admin_id) !== adminId) {
                       set("parent_admin_id", "");
                     }
+                    // Switching to Seller drops the "مستقل (بدون والد)" option
+                    // from the parent list, but the empty value stayed in
+                    // state - so the box LOOKED like it had the first option
+                    // picked while it still submitted no parent, and the
+                    // backend refused (a Seller must have one). Reported
+                    // 2026-09-12: "برای ساخت فروشنده سطح ۳ یه بار باید ادمین
+                    // لول دو بسازم بعد بکنمش فروشنده سطح ۳". Default it to
+                    // whatever the box is actually showing.
+                    if (next === "seller" && !form.parent_admin_id) {
+                      const firstAdmin = items.find((a) => a.role === "admin");
+                      set("parent_admin_id", String(adminId || firstAdmin?.id || ""));
+                    }
                   }}
                 >
                   <option value="admin">{t("admins.roleAdmin")}</option>
@@ -850,6 +862,12 @@ export default function Admins() {
                     // save with an error the user cannot act on.
                     if (next === "admin" && roleParentId && Number(roleParentId) !== adminId) {
                       setRoleParentId("");
+                    }
+                    // Same empty-state-behind-a-changed-option-list trap as
+                    // the create form above.
+                    if (next === "seller" && !roleParentId) {
+                      const firstAdmin = items.find((a) => a.role === "admin" && a.id !== editingId);
+                      setRoleParentId(String(adminId || firstAdmin?.id || ""));
                     }
                   }}
                 >

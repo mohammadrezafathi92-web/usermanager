@@ -8,6 +8,8 @@ Sellers, never another Admin's, and can never create/edit anyone but a
 Seller (their own tier). A Seller can never reach this router at all -
 require_admin_or_above rejects them outright, so they can never escalate
 their own or anyone else's access through the regular API."""
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -512,6 +514,7 @@ def update_admin(
         raise HTTPException(400, "دسترسی ادمین اصلی از این بخش قابل تغییر نیست")
     _scope_or_403(current, admin)
 
+    telegram_id_changed = False
     if payload.password is not None:
         if len(payload.password) < 6:
             raise HTTPException(400, "رمز عبور باید حداقل ۶ کاراکتر باشد")
@@ -538,6 +541,7 @@ def update_admin(
             ).first()
             if clash:
                 raise HTTPException(400, f"این آیدی تلگرام قبلا برای ادمین «{clash.username}» ثبت شده است")
+        telegram_id_changed = admin.telegram_id != tg_id
         admin.telegram_id = tg_id
     if payload.balance is not None:
         # Deprecated absolute-set path (predates the logged topup endpoint
@@ -597,6 +601,29 @@ def update_admin(
 
     db.commit()
     db.refresh(admin)
+
+    # A running dedicated bot holds its owner's Telegram id in a snapshot
+    # taken at start-up (runner.start_admin_bot -> config.admin_ids, which
+    # also feeds config.approval_targets()). Editing the id here without
+    # this restart leaves that snapshot stale: purchase receipts keep going
+    # to the old id, and - reported 2026-09-12 - the owner themself is shown
+    # the CUSTOMER menu on their own bot, because a bot started before their
+    # id was linked snapshotted `{0}`. admin_scope.py no longer decides the
+    # menu from that snapshot, but the notification targets still come from
+    # it, so the running instance has to be told.
+    if telegram_id_changed and admin.own_bot_token and admin.own_bot_enabled:
+        try:
+            from ..telegram_bot import runner as telegram_bot_runner
+
+            telegram_bot_runner.restart_admin_bot(
+                admin.id, admin.own_bot_token or "", admin.telegram_id, True
+            )
+        except Exception:
+            # Saving the admin must not fail because a bot thread misbehaved -
+            # the id is already committed, and the owner can restart the bot
+            # by hand from the ربات اختصاصی page.
+            logging.exception("restarting admin #%s's dedicated bot after a telegram_id change failed", admin.id)
+
     return _out(db, admin)
 
 

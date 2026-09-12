@@ -71,7 +71,25 @@ async def main():
     scope = await admin_scope.resolve_admin_scope(ADMIN_B_TG)
     check("admin B treated as a plain customer on A's bot", scope, None)
 
+    print("\n--- Admin A's own bot, admin_ids snapshot stale: the owner is STILL the owner ---")
+    # Reported 2026-09-12. config.admin_ids is frozen when the bot thread
+    # starts (runner.start_admin_bot), so a bot that started before its
+    # owner linked a Telegram id holds {0} forever - the owner failed their
+    # own check and got the CUSTOMER menu. The check now asks the panel's
+    # live answer who this is, not the snapshot.
+    config.admin_ids = {0}
+    scope = await admin_scope.resolve_admin_scope(ADMIN_A_TG)
+    check("owner allowed with an empty/placeholder snapshot",
+          scope is not None and scope["owner_admin_id"], ADMIN_A_ID)
+    config.admin_ids = {999000}  # an id the owner used to have
+    scope = await admin_scope.resolve_admin_scope(ADMIN_A_TG)
+    check("owner allowed after changing their linked id",
+          scope is not None and scope["owner_admin_id"], ADMIN_A_ID)
+    check("a stranger is still refused with the same stale snapshot",
+          await admin_scope.resolve_admin_scope(ADMIN_B_TG), None)
+
     print("\n--- Admin A's OWN dedicated bot: a random customer id is still just None, as before ---")
+    config.admin_ids = {ADMIN_A_TG}
     scope = await admin_scope.resolve_admin_scope(999999)
     check("unrelated customer", scope, None)
 

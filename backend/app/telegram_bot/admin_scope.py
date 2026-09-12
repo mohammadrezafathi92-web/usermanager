@@ -82,11 +82,23 @@ async def resolve_admin_scope(tg_id: int) -> Optional[AdminScope]:
     # exact one, even though they resolve to a perfectly real AdminUser
     # account elsewhere in the panel. Reported 2026-09-10: an Admin/Seller
     # linked to their OWN bot elsewhere still saw the full admin menu after
-    # messaging a DIFFERENT admin's dedicated bot - this id-in-admin_ids
-    # check is exactly what start_admin_bot already scoped config.admin_ids
-    # to, it just was never consulted here before falling through to a
-    # global, unscoped lookup.
-    if info and config.bot_owner_admin_id is not None and tg_id not in config.admin_ids:
+    # messaging a DIFFERENT admin's dedicated bot.
+    #
+    # The question asked here is "is this person the account this bot
+    # belongs to", and it is put to the PANEL's live answer (info["id"]),
+    # not to config.admin_ids. Reported 2026-09-12: an Admin who had once
+    # bought from the main admin's bot as a customer was still shown the
+    # CUSTOMER menu on their OWN dedicated bot after their numeric Telegram
+    # id was filled in on the ادمین‌ها page. config.admin_ids is a snapshot
+    # runner.start_admin_bot takes when the bot thread starts
+    # (`{telegram_id}`, or `{0}` when no id was linked yet) and nothing
+    # refreshed it afterwards - so linking or changing that id left the
+    # running bot comparing against a stale set, its own owner failed the
+    # check, and they fell through to the customer menu. routers/admins.py
+    # now restarts the bot on that edit too, but the identity test itself
+    # must not depend on a cached copy of a field the panel can change at
+    # any moment.
+    if info and config.bot_owner_admin_id is not None and info.get("id") != config.bot_owner_admin_id:
         info = None
 
     if info:

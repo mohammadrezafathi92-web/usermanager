@@ -101,18 +101,41 @@ def _user_detail_text(user: dict, purchases: list[dict] | None = None) -> str:
     return "\n".join(lines)
 
 
+async def _refuse_if_cannot_sell(target, acting_scope: dict) -> bool:
+    """True = refused, caller should stop.
+
+    A volume-billed reseller with an empty GB pool cannot sell (see
+    services/admin_billing.ensure_volume_available). Checked BEFORE the
+    flow starts rather than letting the create/renew call fail at the end:
+    the reason is the same either way, but asked here it arrives before the
+    admin has typed a username and picked a package.
+    """
+    reason = (acting_scope or {}).get("sell_block_reason")
+    if not reason:
+        return False
+    if isinstance(target, CallbackQuery):
+        await target.answer(reason, show_alert=True)
+    else:
+        await target.answer(reason, reply_markup=home_kb())
+    return True
+
+
 # ------------------------------------------------------------- create user
 @router.callback_query(MenuCB.filter(F.action == "admin_create"))
-async def cb_admin_create(call: CallbackQuery, state: FSMContext) -> None:
+async def cb_admin_create(call: CallbackQuery, state: FSMContext, acting_scope: dict) -> None:
+    if await _refuse_if_cannot_sell(call, acting_scope):
+        return
     await state.set_state(AdminCreateUserStates.waiting_username)
     await call.message.edit_text("نام کاربری برای حساب جدید را بفرستید:", reply_markup=cancel_kb())
     await call.answer()
 
 
 @router.message(Command("newuser"))
-async def cmd_admin_create(message: Message, state: FSMContext) -> None:
+async def cmd_admin_create(message: Message, state: FSMContext, acting_scope: dict) -> None:
     """Slash-command shortcut for "➕ ساخت کاربر"."""
     await state.clear()
+    if await _refuse_if_cannot_sell(message, acting_scope):
+        return
     await state.set_state(AdminCreateUserStates.waiting_username)
     await message.answer("نام کاربری برای حساب جدید را بفرستید:", reply_markup=cancel_kb())
 
@@ -409,6 +432,8 @@ async def cb_user_delete_confirm(call: CallbackQuery, callback_data: AdminUserCB
 # pool falls through to the old user-level renew.
 @router.callback_query(AdminUserCB.filter(F.action == "renew"))
 async def cb_user_renew_ask(call: CallbackQuery, callback_data: AdminUserCB, state: FSMContext, acting_scope: dict) -> None:
+    if await _refuse_if_cannot_sell(call, acting_scope):
+        return
     username = callback_data.username
     try:
         purchases = await api.list_purchases(username, owner_admin_id=acting_scope["owner_admin_id"])
@@ -429,6 +454,8 @@ async def cb_user_renew_ask(call: CallbackQuery, callback_data: AdminUserCB, sta
 
 @router.callback_query(AdminServiceCB.filter(F.action == "renew"))
 async def cb_service_renew_ask(call: CallbackQuery, callback_data: AdminServiceCB, state: FSMContext, acting_scope: dict) -> None:
+    if await _refuse_if_cannot_sell(call, acting_scope):
+        return
     await _ask_renew_package(call.message, state, callback_data.username, callback_data.purchase_id, acting_scope)
     await call.answer()
 
@@ -501,6 +528,8 @@ async def admin_renew_pick_package(call: CallbackQuery, callback_data: AdminRene
 # already have.
 @router.callback_query(AdminUserCB.filter(F.action == "addpkg"))
 async def cb_user_add_package(call: CallbackQuery, callback_data: AdminUserCB, acting_scope: dict) -> None:
+    if await _refuse_if_cannot_sell(call, acting_scope):
+        return
     try:
         packages = await api.list_packages(owner_admin_id=acting_scope["owner_admin_id"])
     except ApiError as exc:

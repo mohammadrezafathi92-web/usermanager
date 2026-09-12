@@ -288,6 +288,7 @@ def bulk_create_users(
     package = None
     if payload.package_id:
         package = _get_scoped_package(db, admin, payload.package_id)
+        admin_billing.ensure_volume_available(admin)
         # Reserve the worst case (every one of `count` succeeds) upfront -
         # refunded below for any that don't actually get created (fully, if
         # user_ops.bulk_create_users itself raises partway through).
@@ -339,6 +340,7 @@ def bulk_update_users(
     grants_something = bool(payload.add_gb or payload.add_days or payload.reset_usage)
     if grants_something:
         admin_billing.require_package_to_grant(admin, package)
+        admin_billing.ensure_volume_available(admin)
 
     units = len(payload.user_ids or [])
     if units and not admin.is_superadmin and admin.billing_mode != "usage":
@@ -427,6 +429,10 @@ def create_user(
     package = None
     if payload.package_id:
         package = _get_scoped_package(db, admin, payload.package_id)
+        # A volume-billed reseller with an empty pool is refused here - see
+        # admin_billing.ensure_volume_available. charge_for_package below is
+        # a no-op for them, which is exactly why this has to be its own call.
+        admin_billing.ensure_volume_available(admin)
         admin_billing.charge_for_package(db, admin, package, units=1)
         # the package's own quota/duration/concurrent-session cap win over
         # whatever was in the manual fields above
@@ -767,6 +773,7 @@ def reset_usage(
     user = _get_owned_user(db, admin, user_id)
     package = _get_scoped_package(db, admin, payload.package_id) if payload.package_id else None
     admin_billing.require_package_to_grant(admin, package)
+    admin_billing.ensure_volume_available(admin)
     if package is not None:
         admin_billing.charge_for_package(db, admin, package, units=1)
         accounting.record_panel_sale(db, "sale_renew", user, package, actor_admin_id=admin.id)
@@ -914,6 +921,7 @@ def apply_package(
     user = _get_owned_user(db, admin, user_id)
     package = _get_scoped_package(db, admin, payload.package_id)
 
+    admin_billing.ensure_volume_available(admin)
     admin_billing.charge_for_package(db, admin, package, units=1)
     # Same refund-on-failure guarantee as create_user's package path above -
     # without it, a provisioning failure here (node unreachable, VPN API
@@ -950,6 +958,7 @@ def reset_purchase_usage(
         raise HTTPException(404, "خرید پیدا نشد")
     package = _get_scoped_package(db, admin, payload.package_id) if payload.package_id else None
     admin_billing.require_package_to_grant(admin, package)
+    admin_billing.ensure_volume_available(admin)
     if package is not None:
         admin_billing.charge_for_package(db, admin, package, units=1)
         accounting.record_panel_sale(
@@ -987,6 +996,7 @@ def renew_purchase_endpoint(
     # resets are free, which made this the panel's largest revenue leak.
     # See admin_billing.require_package_to_grant.
     admin_billing.require_package_to_grant(admin, package)
+    admin_billing.ensure_volume_available(admin)
     # Charged BEFORE the renewal is applied, so an admin who cannot afford
     # it gets a refusal instead of a renewed service and a debt.
     admin_billing.charge_for_renewal(db, admin, package, payload.add_gb)

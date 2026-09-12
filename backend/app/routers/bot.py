@@ -648,10 +648,19 @@ def get_admin_by_telegram(tg_id: int, db: Session = Depends(get_db)):
     admin = db.query(models.AdminUser).filter(models.AdminUser.telegram_id == tg_id).first()
     if not admin:
         raise HTTPException(404, "ادمین پیدا نشد")
+    # Asked once, here, so the bot can refuse a sale BEFORE walking someone
+    # through a create/renew flow. Phrased as "why not" rather than a bool
+    # so the bot has something to say - see schemas.BotAdminInfo.
+    try:
+        admin_billing.ensure_volume_available(admin)
+        sell_block_reason = None
+    except HTTPException as exc:
+        sell_block_reason = str(exc.detail)
     return schemas.BotAdminInfo(
         id=admin.id,
         username=admin.username,
         is_superadmin=bool(admin.is_superadmin),
+        sell_block_reason=sell_block_reason,
         role=hierarchy.role(admin),
         owner_ids=sorted(hierarchy.owned_admin_ids(db, admin)),
         # Same rule as hierarchy.user_visibility_clause: ownerless rows

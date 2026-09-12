@@ -159,6 +159,53 @@ def debit_admin(
     db.commit()
 
 
+def ensure_volume_available(admin: models.AdminUser) -> None:
+    """A usage-billed reseller may not START a new sale with an empty pool.
+
+    Reported 2026-09-12: "نه اصلا بهش حجم ندادم ولی تونست پکیج بسازه" - a
+    reseller who had been given zero gigabytes could still sell, and their
+    customer's traffic then drove the pool to -5 GB.
+
+    There was simply no check. charge_for_package and charge_for_renewal
+    both return immediately for billing_mode "usage" - correctly, since such
+    an account is not charged a price at sale time - but "not charged here"
+    silently became "not checked anywhere". A flat-priced reseller is
+    refused the moment their balance cannot cover a sale (debit_admin's
+    conditional UPDATE); the volume-billed one had no equivalent, so the
+    whole point of handing out a GB pool was unenforced.
+
+    The rule is "you must have volume to sell", not "you must hold the
+    package's full size". Reserving the package size up front would turn
+    usage billing into pre-paid billing, which is the opposite of what it
+    is for - the reseller pays for what is CONSUMED, and how much of a
+    20GB package a customer actually uses is unknown at sale time.
+
+    What this deliberately does NOT do is cut off traffic already flowing.
+    A pool that runs out mid-month keeps going negative (see
+    AdminUser.volume_balance_gb and quota_manager._apply_delta) - that is
+    debt, the same as a money balance inside its overdraft, and it is the
+    superadmin's to collect. This only stops the reseller opening NEW
+    business while they are already in the red.
+    """
+    if admin.is_superadmin or admin.billing_mode != "usage":
+        return
+    remaining = float(admin.volume_balance_gb or 0)
+    if remaining > 0:
+        return
+    if remaining < 0:
+        detail = (
+            f"حجم شما تمام شده و {abs(remaining):g} گیگابایت هم بدهکار هستید - "
+            "تا شارژ شدن حجم، فروش سرویس جدید ممکن نیست."
+        )
+    else:
+        detail = (
+            "حجم شما صفر است - برای فروش سرویس جدید باید ابتدا حجم دریافت کنید. "
+            "حساب شما حجمی است، یعنی به‌جای کسر مبلغ در لحظه‌ی فروش، مصرف واقعی "
+            "مشتریان از حجم شما کم می‌شود."
+        )
+    raise HTTPException(400, detail)
+
+
 def require_package_to_grant(admin: models.AdminUser, package: Optional[models.Package]) -> None:
     """A reseller may only give a customer more quota or more time through a
     package. Refuses with the same message shape routers/users.py's

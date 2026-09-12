@@ -62,6 +62,8 @@ class AdminScope(TypedDict):
     # and so cannot ask the panel per query.
     owner_ids: Optional[set]
     include_unowned: bool
+    # None = may sell. Otherwise the Persian reason why not, to show as-is.
+    sell_block_reason: Optional[str]
 
 
 async def resolve_admin_scope(tg_id: int) -> Optional[AdminScope]:
@@ -123,6 +125,9 @@ async def resolve_admin_scope(tg_id: int) -> Optional[AdminScope]:
             # narrower, never wider.
             "owner_ids": set(info.get("owner_ids") or [info["id"]]),
             "include_unowned": bool(info.get("include_unowned")),
+            # Ready-to-show Persian reason this account cannot sell right
+            # now, or None - see schemas.BotAdminInfo.sell_block_reason.
+            "sell_block_reason": info.get("sell_block_reason"),
         }
 
     if config.is_admin(tg_id):
@@ -139,6 +144,7 @@ async def resolve_admin_scope(tg_id: int) -> Optional[AdminScope]:
             "username": None,
             "owner_ids": None,
             "include_unowned": True,
+            "sell_block_reason": None,
         }
 
     return None

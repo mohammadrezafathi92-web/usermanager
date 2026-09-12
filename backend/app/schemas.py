@@ -1448,6 +1448,14 @@ class BotAdminInfo(BaseModel):
     id: int
     username: str
     is_superadmin: bool
+    # Why this account cannot sell right now, in Persian, ready to show -
+    # or None when it can. Currently only "your GB pool is empty" (see
+    # services/admin_billing.ensure_volume_available); the bot shows it
+    # instead of starting a create/renew flow that the API would refuse at
+    # the end anyway. Answered on this existing call rather than behind a
+    # new endpoint for the same reason as owner_ids below: the bot already
+    # asks "who is this" on every admin message.
+    sell_block_reason: Optional[str] = None
     # Resolved through hierarchy.role() rather than read off the column, so
     # a row whose stored role is still NULL (predating the explicit-role
     # change) gets the derived answer instead of an empty string. The bot

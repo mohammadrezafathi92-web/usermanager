@@ -502,7 +502,7 @@ export default function Accounting() {
                       {summary.by_admin.map((row) => (
                         <tr key={row.admin_id ?? "self"} className="border-t border-gray-50">
                           <td className="px-4 py-2">{row.admin_username || t("accounting.mySales")}</td>
-                          <td className="px-4 py-2 font-medium" dir="ltr">{fmt(row.sales_total)}</td>
+                          <td className="px-4 py-2 font-medium text-right" dir="ltr">{fmt(row.sales_total)}</td>
                           <td className="px-4 py-2">{row.sales_count}</td>
                         </tr>
                       ))}
@@ -525,11 +525,11 @@ export default function Accounting() {
                     <tbody>
                       {summary.by_card.map((row) => (
                         <tr key={row.payment_card_id} className="border-t border-gray-50">
-                          <td className="px-4 py-2 font-mono" dir="ltr">
+                          <td className="px-4 py-2 font-mono text-right" dir="ltr">
                             {row.card_number || `#${row.payment_card_id}`}
                             {row.card_holder ? ` (${row.card_holder})` : ""}
                           </td>
-                          <td className="px-4 py-2 font-medium" dir="ltr">{fmt(row.total)}</td>
+                          <td className="px-4 py-2 font-medium text-right" dir="ltr">{fmt(row.total)}</td>
                           <td className="px-4 py-2">{row.count}</td>
                         </tr>
                       ))}
@@ -598,12 +598,12 @@ export default function Accounting() {
                     {tx.items.map((e) => (
                       <tr key={e.id} className="border-t border-gray-50 hover:bg-gray-50/60 dark:hover:bg-slate-800/40">
                         <td className="px-4 py-3"><KindBadge kind={e.kind} t={t} /></td>
-                        <td className="px-4 py-3 font-medium" dir="ltr">{fmt(e.amount)}</td>
+                        <td className="px-4 py-3 font-medium text-right" dir="ltr">{fmt(e.amount)}</td>
                         <td className="px-4 py-3">{e.username_snapshot || "-"}</td>
                         <td className="px-4 py-3">{e.admin_username_snapshot || "-"}</td>
                         <td className="px-4 py-3">{e.package_name_snapshot || e.category || "-"}</td>
                         <td className="px-4 py-3">{e.payment_method ? t(`accounting.method.${e.payment_method}`) : "-"}</td>
-                        <td className="px-4 py-3 text-gray-400 text-xs" dir="ltr">{formatDateTime(e.created_at, language)}</td>
+                        <td className="px-4 py-3 text-gray-400 text-xs text-right" dir="ltr">{formatDateTime(e.created_at, language)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -692,10 +692,10 @@ export default function Accounting() {
                   <tbody>
                     {expenses.items.map((e) => (
                       <tr key={e.id} className="border-t border-gray-50">
-                        <td className="px-4 py-3 font-medium" dir="ltr">{fmt(e.amount)}</td>
+                        <td className="px-4 py-3 font-medium text-right" dir="ltr">{fmt(e.amount)}</td>
                         <td className="px-4 py-3">{e.category || "-"}</td>
                         <td className="px-4 py-3 text-gray-500">{e.note || "-"}</td>
-                        <td className="px-4 py-3 text-gray-400 text-xs" dir="ltr">{language === "en" ? (e.created_at || "").slice(0, 10) : isoToJalali(e.created_at)}</td>
+                        <td className="px-4 py-3 text-gray-400 text-xs text-right" dir="ltr">{language === "en" ? (e.created_at || "").slice(0, 10) : isoToJalali(e.created_at)}</td>
                         <td className="px-4 py-3">
                           <button type="button" className="text-red-500 hover:text-red-700" onClick={() => removeExpense(e.id)} title={t("accounting.deleteExpense")}>
                             <Trash2 size={16} />
@@ -782,9 +782,9 @@ export default function Accounting() {
                             <div className="font-medium text-gray-700 dark:text-gray-200">{r.username}</div>
                             {r.deleted && <div className="text-xs text-gray-400">{t("accounting.deletedAdmin")}</div>}
                           </td>
-                          <td className="px-4 py-3 tabular-nums" dir="ltr">{fmt(r.charged_total)}</td>
-                          <td className="px-4 py-3 tabular-nums text-emerald-600" dir="ltr">{fmt(r.paid_total)}</td>
-                          <td className="px-4 py-3 tabular-nums font-medium" dir="ltr">
+                          <td className="px-4 py-3 tabular-nums text-right" dir="ltr">{fmt(r.charged_total)}</td>
+                          <td className="px-4 py-3 tabular-nums text-emerald-600 text-right" dir="ltr">{fmt(r.paid_total)}</td>
+                          <td className="px-4 py-3 tabular-nums font-medium text-right" dir="ltr">
                             <span className={r.owed > 0 ? "text-red-500" : "text-gray-500"}>{fmt(r.owed)}</span>
                           </td>
                           <td className="px-4 py-3">
@@ -811,9 +811,9 @@ export default function Accounting() {
                           {fmt(r.owed)}
                         </span>
                       </div>
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-gray-500" dir="ltr">
-                        <span>{t("accounting.charged")}: {fmt(r.charged_total)}</span>
-                        <span className="text-emerald-600">{t("accounting.paid")}: {fmt(r.paid_total)}</span>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-gray-500">
+                        <span>{t("accounting.charged")}: <span dir="ltr" className="tabular-nums">{fmt(r.charged_total)}</span></span>
+                        <span className="text-emerald-600">{t("accounting.paid")}: <span dir="ltr" className="tabular-nums">{fmt(r.paid_total)}</span></span>
                       </div>
                       <button type="button" className="btn-secondary mt-3" onClick={() => openPayment(r)}>
                         <Plus size={14} /> {t("accounting.recordPayment")}
@@ -932,13 +932,13 @@ export default function Accounting() {
                               {r.sub_accounts > 0 && ` · ${t("accounting.subAccounts", { count: r.sub_accounts })}`}
                             </div>
                           </td>
-                          <td className="px-4 py-3 tabular-nums" dir="ltr">
+                          <td className="px-4 py-3 tabular-nums text-right" dir="ltr">
                             {fmt(r.customers)}
                             {/* Active is the number that says whether those
                                 customers are still worth anything. */}
                             <span className="text-xs text-gray-400"> ({fmt(r.active_customers)})</span>
                           </td>
-                          <td className="px-4 py-3 tabular-nums" dir="ltr">
+                          <td className="px-4 py-3 tabular-nums text-right" dir="ltr">
                             {fmt(r.sales_total)}
                             <span className="text-xs text-gray-400"> ({fmt(r.sales_count)})</span>
                             {/* The branch total above includes this account's
@@ -952,10 +952,10 @@ export default function Accounting() {
                               </div>
                             )}
                           </td>
-                          <td className="px-4 py-3 tabular-nums" dir="ltr">
+                          <td className="px-4 py-3 tabular-nums text-right" dir="ltr">
                             <span className={r.owed > 0 ? "text-red-500 font-medium" : "text-gray-500"}>{fmt(r.owed)}</span>
                           </td>
-                          <td className="px-4 py-3 tabular-nums" dir="ltr">
+                          <td className="px-4 py-3 tabular-nums text-right" dir="ltr">
                             {/* A usage-billed account holds GB, not tomans. */}
                             {r.billing_mode === "usage" ? (
                               <span className={r.in_debt ? "text-red-500 font-medium" : "text-gray-700"}>
@@ -987,7 +987,7 @@ export default function Accounting() {
                         {r.role === "admin" ? t("admins.roleAdmin") : t("admins.roleSellerPlain")}
                         {r.sub_accounts > 0 && ` · ${t("accounting.subAccounts", { count: r.sub_accounts })}`}
                       </div>
-                      <div className="grid grid-cols-2 gap-2 text-xs" dir="ltr">
+                      <div className="grid grid-cols-2 gap-2 text-xs">
                         <div>
                           <div className="text-gray-400">{t("accounting.subtreeCustomers")}</div>
                           <div className="tabular-nums">{fmt(r.customers)} <span className="text-gray-400">({fmt(r.active_customers)})</span></div>
@@ -1076,7 +1076,7 @@ export default function Accounting() {
                               <div className="text-xs text-gray-400">{a.parent_admin_username}</div>
                             )}
                           </td>
-                          <td className="px-4 py-3 font-medium" dir="ltr">
+                          <td className="px-4 py-3 font-medium text-right" dir="ltr">
                             {usageMode
                               ? `${fmt(a.volume_balance_gb)} GB`
                               : `${fmt(a.balance)} ${t("accounting.toman")}`}

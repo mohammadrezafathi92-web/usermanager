@@ -22,7 +22,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_admin, require_superadmin
 from ..permissions import effective_permissions
-from ..services import hierarchy
+from ..services import hierarchy, telegram_ids
 from ..telegram_bot import runner
 from ..telegram_bot.config import parse_id_set
 
@@ -165,6 +165,24 @@ def update_settings(payload: schemas.BotSettingsUpdate, db: Session = Depends(ge
     data = payload.model_dump(exclude_unset=True)
     if "telegram_proxy_url" in data:
         data["telegram_proxy_url"] = _validate_proxy_url(data["telegram_proxy_url"]) or None
+    # A bot's own id in either list is the mistake described in
+    # services/telegram_ids.py - and both of these lists are notification
+    # TARGETS (config.approval_targets), so it lands as
+    # "Forbidden: the bot can't send messages to the bot" in the logs and
+    # as a receipt nobody ever saw in real life. The new token is
+    # considered too, not just the saved one, so pasting a token and its
+    # own number in the same save is still caught.
+    candidate_token = data.get("bot_token", row.bot_token)
+    for field, label in (("admin_ids", "آیدی عددی ادمین‌ها"), ("approval_chat_ids", "چت‌های تایید رسید")):
+        if field not in data:
+            continue
+        for tg_id in parse_id_set(data[field] or ""):
+            problem = telegram_ids.describe_if_bot(db, tg_id) or (
+                f"آیدی عددی {tg_id} خودِ همین رباتی است که دارید تنظیمش می‌کنید (بخش قبل از «:» در توکن)."
+                if tg_id == telegram_ids.id_from_token(candidate_token) else None
+            )
+            if problem:
+                raise HTTPException(400, f"{label}: {problem}")
     # Auto-approve values are clamped rather than rejected: an out-of-range
     # hour is a typo, and refusing the whole save would also throw away the
     # other settings the admin just edited. The clamp cannot widen the

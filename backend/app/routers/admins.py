@@ -17,7 +17,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..deps import require_admin_or_above, require_superadmin, require_confirm_password
 from ..security import hash_password
-from ..services import hierarchy, accounting
+from ..services import hierarchy, accounting, telegram_ids
 from ..permissions import PERMISSION_CHOICES, PERMISSION_GROUPS, parse_permissions, format_permissions, effective_permissions
 
 router = APIRouter(prefix="/api/admins", tags=["admins"], dependencies=[Depends(require_admin_or_above)])
@@ -417,10 +417,14 @@ def create_admin(
     slug = (payload.login_slug or "").strip() or None
     if slug and db.query(models.AdminUser).filter(models.AdminUser.login_slug == slug).first():
         raise HTTPException(400, "این لینک ورود قبلا برای ادمین دیگری استفاده شده است")
-    if payload.telegram_id is not None and db.query(models.AdminUser).filter(
-        models.AdminUser.telegram_id == payload.telegram_id
-    ).first():
-        raise HTTPException(400, "این آیدی تلگرام قبلا برای ادمین دیگری ثبت شده است")
+    if payload.telegram_id is not None:
+        problem = telegram_ids.describe_if_bot(db, payload.telegram_id)
+        if problem:
+            raise HTTPException(400, problem)
+        if db.query(models.AdminUser).filter(
+            models.AdminUser.telegram_id == payload.telegram_id
+        ).first():
+            raise HTTPException(400, "این آیدی تلگرام قبلا برای ادمین دیگری ثبت شده است")
     group_id = payload.group_id or None
     if group_id and not db.get(models.AdminPermissionGroup, group_id):
         raise HTTPException(400, "گروه انتخاب‌شده پیدا نشد")
@@ -536,6 +540,12 @@ def update_admin(
         # elsewhere, since 0 is never a real Telegram user id.
         tg_id = payload.telegram_id or None
         if tg_id:
+            # See services/telegram_ids.py - pasting the number from a bot
+            # token here is the one mistake that breaks both the admin menu
+            # and every notification, silently.
+            problem = telegram_ids.describe_if_bot(db, tg_id)
+            if problem:
+                raise HTTPException(400, problem)
             clash = db.query(models.AdminUser).filter(
                 models.AdminUser.telegram_id == tg_id, models.AdminUser.id != admin.id
             ).first()

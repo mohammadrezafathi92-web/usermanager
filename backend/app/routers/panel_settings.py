@@ -26,6 +26,7 @@ from ..services import backup as backup_service
 from ..services import local_deploy
 from ..services import hierarchy
 from ..services import payment_cards as payment_cards_service
+from ..services import telegram_ids
 
 # Panel-wide (single PanelSettings row, id=1) - payment/checkout info,
 # support contact, referral/loyalty config, panel port, HA config all
@@ -218,9 +219,20 @@ def list_payment_cards(db: Session = Depends(get_db)):
     return payment_cards_service.list_cards(db, None)
 
 
+def _reject_bot_approval_id(db: Session, payload) -> None:
+    """A payment card can name its own receipt watcher - and the same
+    paste-the-token-number mistake lands here too, where it is even harder
+    to notice: the card keeps working, only its approval notifications
+    vanish. See services/telegram_ids.py."""
+    problem = telegram_ids.describe_if_bot(db, getattr(payload, "approval_telegram_id", None))
+    if problem:
+        raise HTTPException(400, problem)
+
+
 @router.post("/payment-cards", response_model=schemas.PaymentCardOut,
              dependencies=[Depends(require_superadmin)])
 def create_payment_card(payload: schemas.PaymentCardCreate, db: Session = Depends(get_db)):
+    _reject_bot_approval_id(db, payload)
     was_empty = not payment_cards_service.list_cards(db, None)
     card = models.PaymentCard(owner_admin_id=None, **payload.model_dump())
     db.add(card)
@@ -241,6 +253,7 @@ def create_payment_card(payload: schemas.PaymentCardCreate, db: Session = Depend
 @router.put("/payment-cards/{card_id}", response_model=schemas.PaymentCardOut,
             dependencies=[Depends(require_superadmin)])
 def update_payment_card(card_id: int, payload: schemas.PaymentCardUpdate, db: Session = Depends(get_db)):
+    _reject_bot_approval_id(db, payload)
     card = db.get(models.PaymentCard, card_id)
     if not card or card.owner_admin_id is not None:
         raise HTTPException(404, "کارت پیدا نشد")
@@ -402,6 +415,7 @@ def create_my_payment_card(
     db: Session = Depends(get_db),
 ):
     _require_not_superadmin(admin)
+    _reject_bot_approval_id(db, payload)
     was_empty = not payment_cards_service.list_cards(db, admin.id)
     card = models.PaymentCard(owner_admin_id=admin.id, **payload.model_dump())
     db.add(card)
@@ -428,6 +442,7 @@ def update_my_payment_card(
     db: Session = Depends(get_db),
 ):
     _require_not_superadmin(admin)
+    _reject_bot_approval_id(db, payload)
     card = _get_own_card_or_404(db, admin, card_id)
     for k, v in payload.model_dump(exclude_unset=True).items():
         setattr(card, k, v)

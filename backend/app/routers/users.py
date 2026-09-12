@@ -748,8 +748,28 @@ def update_user(
 
 
 @router.post("/{user_id}/reset-usage", response_model=schemas.UserOut)
-def reset_usage(user_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_may_reset_usage):
+def reset_usage(
+    user_id: int,
+    payload: schemas.ResetUsageRequest = schemas.ResetUsageRequest(),
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+    _perm=_may_reset_usage,
+):
+    """Zeroes this customer's own usage counter.
+
+    Charged like a renewal for a reseller, because that is what it is:
+    handing back a used-up quota is selling it again. It was the last free
+    door left after the renewal ones were closed - see
+    admin_billing.require_package_to_grant and the panel owner's "اره اونم
+    پکیجی کن" (2026-09-12). The `reset_usage` permission still gates who
+    may do it at all; this decides what it costs.
+    """
     user = _get_owned_user(db, admin, user_id)
+    package = _get_scoped_package(db, admin, payload.package_id) if payload.package_id else None
+    admin_billing.require_package_to_grant(admin, package)
+    if package is not None:
+        admin_billing.charge_for_package(db, admin, package, units=1)
+        accounting.record_panel_sale(db, "sale_renew", user, package, actor_admin_id=admin.id)
     user.used_bytes = 0
     if user.status == models.UserStatus.quota_exceeded:
         # Quota being the reason shown doesn't mean expiry is fine too - a
@@ -916,16 +936,25 @@ def apply_package(
 def reset_purchase_usage(
     user_id: int,
     purchase_id: int,
+    payload: schemas.ResetUsageRequest = schemas.ResetUsageRequest(),
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
  _perm=_may_reset_usage):
     """Resets usage for ONE independent purchase (see models.Purchase) -
-    the per-purchase counterpart to reset_usage below, which only ever
-    touches the user's own combined fields."""
+    the per-purchase counterpart to reset_usage above, which only ever
+    touches the user's own combined fields. Priced the same way, and for
+    the same reason - see that endpoint's docstring."""
     user = _get_owned_user(db, admin, user_id)
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "خرید پیدا نشد")
+    package = _get_scoped_package(db, admin, payload.package_id) if payload.package_id else None
+    admin_billing.require_package_to_grant(admin, package)
+    if package is not None:
+        admin_billing.charge_for_package(db, admin, package, units=1)
+        accounting.record_panel_sale(
+            db, "sale_renew", user, package, purchase_id=purchase.id, actor_admin_id=admin.id,
+        )
     purchase.used_bytes = 0
     if purchase.status == models.UserStatus.quota_exceeded:
         # Same fix as reset_usage above - re-derive against expiry too

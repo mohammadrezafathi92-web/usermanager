@@ -7,6 +7,7 @@ import JalaliDateInput from "../components/JalaliDateInput.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
+import ResetUsageDialog from "../components/ResetUsageDialog.jsx";
 import QuotaBar from "../components/QuotaBar.jsx";
 import {
   fetchUser,
@@ -507,14 +508,17 @@ export default function UserDetail() {
     }
   };
 
-  const resetPurchase = async (purchase) => {
-    if (!confirm(t("userDetail.resetPurchaseConfirm"))) return;
-    setResettingPurchaseId(purchase.id);
+  // Zeroing a purchase's usage gives its whole quota back, so for a reseller
+  // it is a sale and needs a package to be charged against - see
+  // components/ResetUsageDialog.jsx. The bare confirm() this used to be is
+  // still what a superadmin gets, inside that same dialog.
+  const [resetTarget, setResetTarget] = useState(null); // the Purchase awaiting a reset
+  const resetPurchase = async (packageId) => {
+    if (!resetTarget) return;
+    setResettingPurchaseId(resetTarget.id);
     try {
-      await resetPurchaseUsage(user.id, purchase.id);
+      await resetPurchaseUsage(user.id, resetTarget.id, packageId);
       load();
-    } catch (err) {
-      setError(err?.response?.data?.detail || t("userDetail.saveError"));
     } finally {
       setResettingPurchaseId(null);
     }
@@ -986,7 +990,7 @@ export default function UserDetail() {
                   <button
                     className="btn-secondary flex-1"
                     disabled={resettingPurchaseId === purchase.id}
-                    onClick={() => resetPurchase(purchase)}
+                    onClick={() => setResetTarget(purchase)}
                   >
                     {resettingPurchaseId === purchase.id ? "..." : t("userDetail.resetPurchaseUsage")}
                   </button>
@@ -1533,6 +1537,14 @@ export default function UserDetail() {
           </div>
         </form>
       </Modal>
+
+      <ResetUsageDialog
+        open={!!resetTarget}
+        onClose={() => setResetTarget(null)}
+        onConfirm={resetPurchase}
+        packages={packages}
+        note={t("userDetail.resetPurchaseConfirm")}
+      />
 
       {/* Renew ONE independent purchase (see models.Purchase) - separate
           from the user-level renew modal above, doesn't touch anything else

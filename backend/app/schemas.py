@@ -245,6 +245,20 @@ class PurchaseCommentUpdate(BaseModel):
     comment: Optional[str] = None
 
 
+class ResetUsageRequest(BaseModel):
+    """Body for the two «بازنشانی مصرف» endpoints.
+
+    Zeroing a customer's usage gives their whole quota back, which is
+    selling it again - so a reseller has to name the package it is sold as,
+    and gets charged for it (see admin_billing.require_package_to_grant).
+    Optional on the wire, and a superadmin may leave it out: they are never
+    charged, and "clear this customer's usage, our meter was wrong" is the
+    panel owner's call. Optional also keeps every existing caller that
+    sends no body at all working.
+    """
+    package_id: Optional[int] = None
+
+
 class PurchaseRenewRequest(BaseModel):
     add_gb: float = 0
     add_days: int = 0

@@ -141,7 +141,11 @@ export const fetchUser = (id) => client.get(`/users/${id}`);
 export const createUser = (data) => client.post("/users", data);
 export const updateUser = (id, data) => client.put(`/users/${id}`, data);
 export const deleteUser = (id) => client.delete(`/users/${id}`);
-export const resetUsage = (id) => client.post(`/users/${id}/reset-usage`);
+// packageId is what the reset is SOLD as for a reseller (the backend
+// charges it - see admin_billing.require_package_to_grant); a superadmin
+// sends null and is charged nothing.
+export const resetUsage = (id, packageId = null) =>
+  client.post(`/users/${id}/reset-usage`, { package_id: packageId });
 export const bulkCreateUsers = (data) => client.post("/users/bulk", data);
 export const bulkUpdateUsers = (data) => client.put("/users/bulk", data);
 export const bulkDeleteUsers = (userIds) => client.delete("/users/bulk", { data: { user_ids: userIds } });
@@ -154,8 +158,8 @@ export const kickConnection = (userId, connectionId) =>
   client.post(`/users/${userId}/connections/${connectionId}/kick`);
 export const applyPackage = (userId, packageId) =>
   client.post(`/users/${userId}/apply-package`, { package_id: packageId });
-export const resetPurchaseUsage = (userId, purchaseId) =>
-  client.post(`/users/${userId}/purchases/${purchaseId}/reset-usage`);
+export const resetPurchaseUsage = (userId, purchaseId, packageId = null) =>
+  client.post(`/users/${userId}/purchases/${purchaseId}/reset-usage`, { package_id: packageId });
 export const renewPurchase = (userId, purchaseId, data) =>
   client.post(`/users/${userId}/purchases/${purchaseId}/renew`, data);
 

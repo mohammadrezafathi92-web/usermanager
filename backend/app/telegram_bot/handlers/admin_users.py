@@ -310,7 +310,20 @@ async def cb_admin_list_page(call: CallbackQuery, callback_data: AdminListPageCB
 
 
 # ------------------------------------------------------------- user detail
-async def _show_user_detail(target, username: str, owner_admin_id: int | None) -> None:
+
+def _is_panel_owner(acting_scope: dict) -> bool:
+    """Only the superadmin is never charged for anything - see
+    _show_user_detail's allow_reset."""
+    return (acting_scope or {}).get("role") == "superadmin"
+
+async def _show_user_detail(target, username: str, owner_admin_id: int | None,
+                            allow_reset: bool = False) -> None:
+    """allow_reset: show the «ریست مصرف» button. Off unless the caller is
+    the panel owner - zeroing a used-up quota hands the whole thing back,
+    which is selling it again, and the bot has no package picker on that
+    button to charge it against (the panel does - see
+    admin_billing.require_package_to_grant). A reseller uses «تمدید سرویس»
+    here instead, which has always required a package."""
     try:
         user = await api.get_user(username, owner_admin_id=owner_admin_id)
     except ApiError as exc:
@@ -320,7 +333,7 @@ async def _show_user_detail(target, username: str, owner_admin_id: int | None) -
         purchases = await api.list_purchases(username, owner_admin_id=owner_admin_id)
     except ApiError:
         purchases = []
-    kb = admin_user_detail_kb(username, user["status"] == "active")
+    kb = admin_user_detail_kb(username, user["status"] == "active", allow_reset=allow_reset)
     text = _user_detail_text(user, purchases)
     if isinstance(target, CallbackQuery):
         await target.message.edit_text(text, reply_markup=kb)
@@ -331,7 +344,7 @@ async def _show_user_detail(target, username: str, owner_admin_id: int | None) -
 @router.callback_query(AdminUserCB.filter(F.action == "view"))
 async def cb_user_view(call: CallbackQuery, callback_data: AdminUserCB, state: FSMContext, acting_scope: dict) -> None:
     await state.clear()
-    await _show_user_detail(call, callback_data.username, acting_scope["owner_admin_id"])
+    await _show_user_detail(call, callback_data.username, acting_scope["owner_admin_id"], allow_reset=_is_panel_owner(acting_scope))
     await call.answer()
 
 
@@ -344,19 +357,28 @@ async def cb_user_toggle(call: CallbackQuery, callback_data: AdminUserCB, acting
     except ApiError as exc:
         await call.answer(f"خطا: {exc}", show_alert=True)
         return
-    await _show_user_detail(call, callback_data.username, owner_admin_id)
+    await _show_user_detail(call, callback_data.username, owner_admin_id, allow_reset=_is_panel_owner(acting_scope))
     await call.answer("انجام شد")
 
 
 @router.callback_query(AdminUserCB.filter(F.action == "resetusage"))
 async def cb_user_reset(call: CallbackQuery, callback_data: AdminUserCB, acting_scope: dict) -> None:
     owner_admin_id = acting_scope["owner_admin_id"]
+    # Hiding the button is not enough - an old message still carries a live
+    # callback. See _show_user_detail's allow_reset for why this costs money.
+    if not _is_panel_owner(acting_scope):
+        await call.answer(
+            "صفر کردن مصرف یعنی دوباره دادن همان حجم، پس باید از «♻️ تمدید سرویس» "
+            "با انتخاب پکیج انجام شود تا هزینه‌اش حساب شود.",
+            show_alert=True,
+        )
+        return
     try:
         await api.reset_usage(callback_data.username, owner_admin_id=owner_admin_id)
     except ApiError as exc:
         await call.answer(f"خطا: {exc}", show_alert=True)
         return
-    await _show_user_detail(call, callback_data.username, owner_admin_id)
+    await _show_user_detail(call, callback_data.username, owner_admin_id, allow_reset=_is_panel_owner(acting_scope))
     await call.answer("مصرف ریست شد")
 
 
@@ -469,7 +491,7 @@ async def admin_renew_pick_package(call: CallbackQuery, callback_data: AdminRene
         return
     await state.clear()
     await call.message.edit_text("✅ سرویس تمدید شد.")
-    await _show_user_detail(call.message, username, acting_scope["owner_admin_id"])
+    await _show_user_detail(call.message, username, acting_scope["owner_admin_id"], allow_reset=_is_panel_owner(acting_scope))
 
 
 # ------------------------------------------------------- افزودن پکیج
@@ -510,7 +532,7 @@ async def cb_add_package_pick(call: CallbackQuery, callback_data: AdminPkgPickCB
     # thing they need in order to pass them on to the customer.
     if result.get("connections"):
         await send_connections(bot, call.from_user.id, result["connections"])
-    await _show_user_detail(call.message, callback_data.username, acting_scope["owner_admin_id"])
+    await _show_user_detail(call.message, callback_data.username, acting_scope["owner_admin_id"], allow_reset=_is_panel_owner(acting_scope))
 
 
 # ------------------------------------------------------- اعتبار کیف پول
@@ -551,7 +573,7 @@ async def admin_balance_amount(message: Message, state: FSMContext, acting_scope
         f"✅ {abs(amount):,} تومان {verb} کیف پول «{username}».\n"
         f"موجودی فعلی: {user.get('balance', 0):,} تومان"
     )
-    await _show_user_detail(message, username, acting_scope["owner_admin_id"])
+    await _show_user_detail(message, username, acting_scope["owner_admin_id"], allow_reset=_is_panel_owner(acting_scope))
 
 
 # ------------------------------------------------- ارسال مجدد کانفیگ

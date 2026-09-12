@@ -157,6 +157,44 @@ check("a bulk action that GRANTS nothing stays free",
       "payload.add_gb or payload.add_days or payload.reset_usage"
       in inspect.getsource(users_router.bulk_update_users), True)
 
+print("\n--- «بازنشانی مصرف» is a sale too, in the panel AND in the bot ---")
+# Reported 2026-09-12 ("اره اونم پکیجی کن"): zeroing a used-up quota hands
+# the whole thing back, and it was the last free door once the renewal ones
+# were closed.
+check("the user-level reset requires a package",
+      "require_package_to_grant" in inspect.getsource(users_router.reset_usage), True)
+check("...and charges it", "charge_for_package" in inspect.getsource(users_router.reset_usage), True)
+check("...and books the revenue", "record_panel_sale" in inspect.getsource(users_router.reset_usage), True)
+check("the per-purchase reset requires a package",
+      "require_package_to_grant" in inspect.getsource(users_router.reset_purchase_usage), True)
+check("...and charges it",
+      "charge_for_package" in inspect.getsource(users_router.reset_purchase_usage), True)
+
+from app.telegram_bot import keyboards  # noqa: E402
+from app.telegram_bot.handlers import admin_users as bot_admin_users  # noqa: E402
+
+
+def bot_buttons(allow_reset):
+    kb = keyboards.admin_user_detail_kb("someone", True, allow_reset=allow_reset)
+    return [b.text for row in kb.inline_keyboard for b in row]
+
+
+check("the bot hides the reset button from a reseller",
+      any("ریست مصرف" in b for b in bot_buttons(False)), False)
+check("...and still shows it to the panel owner",
+      any("ریست مصرف" in b for b in bot_buttons(True)), True)
+check("تمدید is still offered to a reseller - that is where they go instead",
+      any("تمدید" in b for b in bot_buttons(False)), True)
+# Hiding a button does not retract the callbacks already sitting in old
+# messages, so the handler has to refuse as well.
+check("the bot handler refuses it too, not just the keyboard",
+      "_is_panel_owner(acting_scope)" in inspect.getsource(bot_admin_users.cb_user_reset), True)
+check("only the superadmin counts as the panel owner",
+      bot_admin_users._is_panel_owner({"role": "superadmin"}), True)
+for role in ("admin", "seller", "config", None):
+    check(f"...not role={role!r}", bot_admin_users._is_panel_owner({"role": role}), False)
+check("an empty scope is not the panel owner", bot_admin_users._is_panel_owner({}), False)
+
 print("\n" + "=" * 60)
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))

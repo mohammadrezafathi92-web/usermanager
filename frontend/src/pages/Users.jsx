@@ -14,6 +14,7 @@ import Layout from "../components/Layout.jsx";
 import JalaliDateInput from "../components/JalaliDateInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
+import ResetUsageDialog from "../components/ResetUsageDialog.jsx";
 import QuotaBar from "../components/QuotaBar.jsx";
 import {
   fetchUsers,
@@ -330,8 +331,13 @@ export default function Users() {
     }
   };
 
-  const onReset = async (id) => {
-    await resetUsage(id);
+  // See components/ResetUsageDialog.jsx: a reseller has to name the package
+  // a usage reset is sold as, because handing back a used-up quota is
+  // selling it again. A superadmin still just confirms.
+  const [resetTargetId, setResetTargetId] = useState(null);
+  const onReset = async (packageId) => {
+    if (!resetTargetId) return;
+    await resetUsage(resetTargetId, packageId);
     load();
   };
 
@@ -762,7 +768,7 @@ export default function Users() {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
-                      <button title={t("users.resetUsage")} onClick={() => onReset(u.id)} className="text-gray-400 hover:text-brand-600">
+                      <button title={t("users.resetUsage")} onClick={() => setResetTargetId(u.id)} className="text-gray-400 hover:text-brand-600">
                         <RotateCcw size={16} />
                       </button>
                       <button title={t("common.delete")} onClick={() => onDelete(u.id)} className="text-gray-400 hover:text-red-600">
@@ -812,7 +818,7 @@ export default function Users() {
                   </span>
                 </label>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  <button title={t("users.resetUsage")} onClick={() => onReset(u.id)} className="text-gray-400 hover:text-brand-600">
+                  <button title={t("users.resetUsage")} onClick={() => setResetTargetId(u.id)} className="text-gray-400 hover:text-brand-600">
                     <RotateCcw size={16} />
                   </button>
                   <button title={t("common.delete")} onClick={() => onDelete(u.id)} className="text-gray-400 hover:text-red-600">
@@ -873,6 +879,14 @@ export default function Users() {
       </div>
 
       {/* Single create modal */}
+
+      <ResetUsageDialog
+        open={!!resetTargetId}
+        onClose={() => setResetTargetId(null)}
+        onConfirm={onReset}
+        packages={packages}
+      />
+
       <Modal open={open} onClose={() => setOpen(false)} title={t("users.newUserModalTitle")}>
         <form onSubmit={submit} className="space-y-4">
           <div>

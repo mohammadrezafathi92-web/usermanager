@@ -157,7 +157,7 @@ def admin_users_list_kb(items: list[dict], page: int, total: int, search: str | 
     return kb.as_markup()
 
 
-def admin_user_detail_kb(username: str, enabled_status: bool) -> InlineKeyboardMarkup:
+def admin_user_detail_kb(username: str, enabled_status: bool, allow_reset: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     toggle_text = "⛔️ غیرفعال‌سازی" if enabled_status else "✅ فعال‌سازی"
     kb.button(text=toggle_text, callback_data=AdminUserCB(action="toggle", username=username))
@@ -165,11 +165,13 @@ def admin_user_detail_kb(username: str, enabled_status: bool) -> InlineKeyboardM
     kb.button(text="📦 افزودن پکیج", callback_data=AdminUserCB(action="addpkg", username=username))
     kb.button(text="💰 اعتبار کیف پول", callback_data=AdminUserCB(action="balance", username=username))
     kb.button(text="📤 ارسال مجدد کانفیگ", callback_data=AdminUserCB(action="sendcfg", username=username))
-    kb.button(text="🔄 ریست مصرف", callback_data=AdminUserCB(action="resetusage", username=username))
+    # Superadmin only - see handlers/admin_users.py's _show_user_detail.
+    if allow_reset:
+        kb.button(text="🔄 ریست مصرف", callback_data=AdminUserCB(action="resetusage", username=username))
     kb.button(text="🗑 حذف کاربر", callback_data=AdminUserCB(action="delete", username=username))
     kb.button(text="🔃 بروزرسانی", callback_data=AdminUserCB(action="view", username=username))
     kb.button(text="🏠 منوی اصلی", callback_data=MenuCB(action="home"))
-    kb.adjust(2, 2, 1, 2, 1, 1)
+    kb.adjust(2, 2, 1, 2, 1, 1) if allow_reset else kb.adjust(2, 2, 1, 1, 1, 1)
     return kb.as_markup()
 
 

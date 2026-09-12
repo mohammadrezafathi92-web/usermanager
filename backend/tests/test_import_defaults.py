@@ -2,7 +2,7 @@
 
 Run:  python3 backend/tests/test_import_defaults.py
 
-The button ships content (app/data/defaults.py) into an account's own list.
+The button ships content (app/default_content.py) into an account's own list.
 Two properties make it safe to press, and both are easy to lose later:
 
   * idempotent by title - pressing twice adds nothing the second time;
@@ -26,7 +26,7 @@ from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker
 
 from app import models
-from app.data.defaults import DEFAULT_ADS, DEFAULT_TUTORIALS
+from app.default_content import DEFAULT_ADS, DEFAULT_TUTORIALS
 
 failures: list[str] = []
 

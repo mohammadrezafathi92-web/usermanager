@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session, joinedload
 from .. import models, schemas
 from ..database import get_db
 from ..deps import require_permission, require_admin_or_above, get_current_admin, require_confirm_password
-from ..data.defaults import DEFAULT_TUTORIALS
+from ..default_content import DEFAULT_TUTORIALS
 from ..services import hierarchy
 
 # Router-level gate is "view_tutorials" (every endpoint at minimum needs
@@ -103,7 +103,7 @@ def create_tutorial(payload: schemas.TutorialCreate, db: Session = Depends(get_d
 @router.post("/import-defaults")
 def import_default_tutorials(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
     """Adds the ready-made tutorials that ship with the panel (see
-    app/data/defaults.py) to this account's own list.
+    app/default_content.py) to this account's own list.
 
     Additive and idempotent by title: anything already present for this
     owner is skipped, so pressing the button twice adds nothing the second

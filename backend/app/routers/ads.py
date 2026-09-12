@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..database import get_db
 from ..deps import get_current_admin, require_ads_access, require_confirm_password
-from ..data.defaults import DEFAULT_ADS
+from ..default_content import DEFAULT_ADS
 from ..services import ads
 
 router = APIRouter(prefix="/api/ads", tags=["ads"], dependencies=[Depends(require_ads_access)])
@@ -174,7 +174,7 @@ def create_post(payload: PostIn, db: Session = Depends(get_db), admin: models.Ad
 @router.post("/posts/import-defaults")
 def import_default_posts(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     """Adds the ready-made adverts that ship with the panel (see
-    app/data/defaults.py) to this account's own rotation.
+    app/default_content.py) to this account's own rotation.
 
     Additive and idempotent by title, exactly like the tutorials import:
     an advert whose title is already in this channel is skipped, so the

@@ -149,6 +149,33 @@ print("\n--- an account with nothing under it ---")
 lonely = add(db, "lonely", parent=sa, role=hierarchy.ROLE_ADMIN)
 check("returns an empty list", accounting.subtree_rollup(db, lonely), [])
 
+print("\n--- a volume-billed Seller is judged by GB, not a stale toman balance ---")
+# Switching an account to حجمی leaves its old toman balance frozen on the
+# row. Reporting that number said an account with no credit at all still
+# held millions, and "in debt" was decided from a pool that no longer
+# governs anything (reported 2026-09). Its own database: adding a Seller
+# to the shared tree above would change every count asserted there.
+dbv = make_db()
+sav = add(dbv, "super", superadmin=True, role=hierarchy.ROLE_SUPERADMIN)
+bossv = add(dbv, "boss", parent=sav, role=hierarchy.ROLE_ADMIN)
+vol = add(dbv, "vol", parent=bossv, role=hierarchy.ROLE_SELLER, balance=9_250_000)
+vol.billing_mode = "usage"
+vol.volume_balance_gb = -12.5   # over-consumed
+dbv.commit()
+r = by_name(accounting.subtree_rollup(dbv, bossv))["vol"]
+check("the row says it is volume-billed", r["billing_mode"], "usage")
+check("its GB pool is reported", r["volume_balance_gb"], -12.5)
+check("over-consumed GB counts as being in debt", r["in_debt"], True)
+check("...and the leftover toman balance does not make it look healthy",
+      (r["balance"], r["in_debt"]), (9_250_000, True))
+
+flat = add(dbv, "flatone", parent=bossv, role=hierarchy.ROLE_SELLER, balance=-5_000)
+dbv.commit()
+rf = by_name(accounting.subtree_rollup(dbv, bossv))["flatone"]
+check("a flat account is still judged by its toman balance", rf["billing_mode"], "flat")
+check("...and a negative one is still flagged", rf["in_debt"], True)
+
+
 print("\n" + "=" * 60)
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))

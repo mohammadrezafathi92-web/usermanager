@@ -617,6 +617,8 @@ def subtree_rollup(db: Session, admin: models.AdminUser, date_from=None, date_to
         total = sum(per_admin_sales.get(i, (0, 0))[0] for i in members)
         count = sum(per_admin_sales.get(i, (0, 0))[1] for i in members)
         balance = child.balance or 0
+        volume_gb = child.volume_balance_gb or 0
+        usage = (child.billing_mode or "flat") == "usage"
         out.append({
             "id": child.id,
             "username": child.username,
@@ -635,9 +637,16 @@ def subtree_rollup(db: Session, admin: models.AdminUser, date_from=None, date_to
             # Surfaced separately rather than left for the reader to notice
             # from a minus sign - being in debt is the one thing on this row
             # that needs acting on.
-            "in_debt": balance < 0,
-            "volume_balance_gb": child.volume_balance_gb or 0,
-            "billing_mode": child.billing_mode or "flat",
+            #
+            # Read off whichever pool actually governs this account: a
+            # usage-billed reseller holds GB, and their toman balance is a
+            # frozen leftover from before they were switched over, so
+            # judging them by it reported a healthy credit for an account
+            # that has none and missed one that had over-consumed its GB
+            # (reported 2026-09).
+            "in_debt": (volume_gb < 0) if usage else (balance < 0),
+            "volume_balance_gb": volume_gb,
+            "billing_mode": "usage" if usage else "flat",
             # What they owe YOU (granted credit + metered usage - payments
             # received), which is a different question from the prepaid
             # balance they still hold.

@@ -882,11 +882,26 @@ export default function Accounting() {
                   label={t("accounting.subtreeTotalCustomers")}
                   value={fmt(subtree.reduce((a, r) => a + (r.customers || 0), 0))}
                 />
-                <StatCard
-                  icon={Coins}
-                  label={t("accounting.subtreeTotalCredit")}
-                  value={fmt(subtree.reduce((a, r) => a + (r.balance || 0), 0))}
-                />
+                {/* Whichever pool the accounts below actually hold. Summing
+                    `balance` across everyone reported a healthy toman credit
+                    for accounts that were switched to volume billing long
+                    ago and hold only GB - the toman figure is a frozen
+                    leftover (reported 2026-09). Each card only appears when
+                    there is an account of that kind. */}
+                {subtree.some((r) => r.billing_mode !== "usage") && (
+                  <StatCard
+                    icon={Coins}
+                    label={t("accounting.subtreeTotalCredit")}
+                    value={fmt(subtree.filter((r) => r.billing_mode !== "usage").reduce((a, r) => a + (r.balance || 0), 0))}
+                  />
+                )}
+                {subtree.some((r) => r.billing_mode === "usage") && (
+                  <StatCard
+                    icon={Coins}
+                    label={t("accounting.subtreeTotalVolume")}
+                    value={`${formatGb(subtree.filter((r) => r.billing_mode === "usage").reduce((a, r) => a + (r.volume_balance_gb || 0), 0))} GB`}
+                  />
+                )}
                 <StatCard
                   icon={TrendingDown}
                   label={t("accounting.subtreeInDebt")}
@@ -904,7 +919,7 @@ export default function Accounting() {
                         <th className="text-right font-medium px-4 py-3">{t("accounting.subtreeCustomers")}</th>
                         <th className="text-right font-medium px-4 py-3">{t("accounting.subtreeSales")}</th>
                         <th className="text-right font-medium px-4 py-3">{t("accounting.owed")}</th>
-                        <th className="text-right font-medium px-4 py-3">{t("accounting.creditBalance")}</th>
+                        <th className="text-right font-medium px-4 py-3">{t("accounting.subtreeBalanceCol")}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -941,11 +956,20 @@ export default function Accounting() {
                             <span className={r.owed > 0 ? "text-red-500 font-medium" : "text-gray-500"}>{fmt(r.owed)}</span>
                           </td>
                           <td className="px-4 py-3 tabular-nums" dir="ltr">
-                            <span className={r.in_debt ? "text-red-500 font-medium" : "text-gray-700"}>
-                              {fmt(r.balance)}
-                            </span>
-                            {r.credit_limit > 0 && (
-                              <span className="text-xs text-gray-400"> / -{fmt(r.credit_limit)}</span>
+                            {/* A usage-billed account holds GB, not tomans. */}
+                            {r.billing_mode === "usage" ? (
+                              <span className={r.in_debt ? "text-red-500 font-medium" : "text-gray-700"}>
+                                {formatGb(r.volume_balance_gb)} GB
+                              </span>
+                            ) : (
+                              <>
+                                <span className={r.in_debt ? "text-red-500 font-medium" : "text-gray-700"}>
+                                  {fmt(r.balance)}
+                                </span>
+                                {r.credit_limit > 0 && (
+                                  <span className="text-xs text-gray-400"> / -{fmt(r.credit_limit)}</span>
+                                )}
+                              </>
                             )}
                           </td>
                         </tr>
@@ -982,10 +1006,20 @@ export default function Accounting() {
                           </div>
                         </div>
                         <div>
-                          <div className="text-gray-400">{t("accounting.creditBalance")}</div>
+                          <div className="text-gray-400">
+                            {r.billing_mode === "usage" ? t("accounting.volumeBalance") : t("accounting.creditBalance")}
+                          </div>
                           <div className="tabular-nums">
-                            <span className={r.in_debt ? "text-red-500 font-medium" : "text-gray-700"}>{fmt(r.balance)}</span>
-                            {r.credit_limit > 0 && <span className="text-gray-400"> / -{fmt(r.credit_limit)}</span>}
+                            {r.billing_mode === "usage" ? (
+                              <span className={r.in_debt ? "text-red-500 font-medium" : "text-gray-700"}>
+                                {formatGb(r.volume_balance_gb)} GB
+                              </span>
+                            ) : (
+                              <>
+                                <span className={r.in_debt ? "text-red-500 font-medium" : "text-gray-700"}>{fmt(r.balance)}</span>
+                                {r.credit_limit > 0 && <span className="text-gray-400"> / -{fmt(r.credit_limit)}</span>}
+                              </>
+                            )}
                           </div>
                         </div>
                       </div>

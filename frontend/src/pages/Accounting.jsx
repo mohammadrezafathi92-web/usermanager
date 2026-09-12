@@ -19,6 +19,10 @@ import {
   exportAccounting,
   fetchAdmins,
   topupAdminBalance,
+  topupAdminVolume,
+  fetchAdminBalanceLogs,
+  fetchAdminVolumeLogs,
+  updateAdmin,
 } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
@@ -173,6 +177,73 @@ export default function Accounting() {
       setPayError(errorText(err, "خطا در ثبت دریافت"));
     } finally {
       setPaySaving(false);
+    }
+  };
+
+  // ---------------- per-admin money settings ----------------
+  // Everything about ONE reseller's money, in the section that owns money:
+  // their GB pool (usage mode), overdraft limit and per-GB rate, plus the
+  // top-up history. These used to be edited on the Admins page while the
+  // ledger lived here, so a single reseller's finances were split across
+  // two screens ("این نمیشه یه بخشی تو حسابداری باشه یه بخشی توی ادمین").
+  const [moneyFor, setMoneyFor] = useState(null);
+  const [moneyForm, setMoneyForm] = useState({ credit_limit: 0, wholesale_price_per_gb: 0 });
+  const [moneySaving, setMoneySaving] = useState(false);
+  const [moneyError, setMoneyError] = useState("");
+  const [moneyMsg, setMoneyMsg] = useState("");
+  const [volTopup, setVolTopup] = useState({ amount: "", note: "" });
+  const [volSaving, setVolSaving] = useState(false);
+  const [moneyLogs, setMoneyLogs] = useState(null);
+
+  const openMoney = (a) => {
+    setMoneyFor(a);
+    setMoneyForm({
+      credit_limit: a.credit_limit || 0,
+      wholesale_price_per_gb: a.wholesale_price_per_gb || 0,
+    });
+    setVolTopup({ amount: "", note: "" });
+    setMoneyError("");
+    setMoneyMsg("");
+    setMoneyLogs(null);
+    const load = (a.billing_mode === "usage" ? fetchAdminVolumeLogs : fetchAdminBalanceLogs)(a.id);
+    load.then((res) => setMoneyLogs(res.data)).catch(() => setMoneyLogs([]));
+  };
+
+  const saveMoneySettings = async () => {
+    if (!moneyFor) return;
+    setMoneySaving(true);
+    setMoneyError("");
+    setMoneyMsg("");
+    try {
+      await updateAdmin(moneyFor.id, {
+        credit_limit: Number(moneyForm.credit_limit) || 0,
+        wholesale_price_per_gb: Number(moneyForm.wholesale_price_per_gb) || 0,
+      });
+      setMoneyMsg(t("common.saved"));
+      loadAdmins();
+    } catch (err) {
+      setMoneyError(errorText(err, "خطا در ذخیره"));
+    } finally {
+      setMoneySaving(false);
+    }
+  };
+
+  const doVolumeTopup = async () => {
+    if (!moneyFor) return;
+    const amount = Number(volTopup.amount);
+    if (!amount) return;
+    setVolSaving(true);
+    setMoneyError("");
+    try {
+      const res = await topupAdminVolume(moneyFor.id, { amount_gb: amount, note: volTopup.note || null });
+      setMoneyFor((m) => ({ ...m, volume_balance_gb: res.data.volume_balance_gb }));
+      setVolTopup({ amount: "", note: "" });
+      loadAdmins();
+      fetchAdminVolumeLogs(moneyFor.id).then((r) => setMoneyLogs(r.data)).catch(() => {});
+    } catch (err) {
+      setMoneyError(errorText(err, "خطا در شارژ حجم"));
+    } finally {
+      setVolSaving(false);
     }
   };
 
@@ -948,7 +1019,9 @@ export default function Accounting() {
                           </td>
                           <td className="px-4 py-3">
                             {usageMode ? (
-                              <span className="text-xs text-gray-400">{t("accounting.usageModeHint")}</span>
+                              <button type="button" className="btn-secondary" onClick={() => openMoney(a)}>
+                                <Wallet size={14} /> {t("accounting.moneySettings")}
+                              </button>
                             ) : (
                               <div className="flex flex-wrap gap-2 items-center">
                                 {/* The one place a minus sign is meaningful: a
@@ -983,6 +1056,9 @@ export default function Accounting() {
                                 >
                                   {creditSaving === a.id ? "..." : t("accounting.apply")}
                                 </button>
+                                <button type="button" className="btn-ghost shrink-0" title={t("accounting.moneySettings")} onClick={() => openMoney(a)}>
+                                  <Wallet size={16} />
+                                </button>
                               </div>
                             )}
                           </td>
@@ -1012,7 +1088,9 @@ export default function Accounting() {
                         </span>
                       </div>
                       {usageMode ? (
-                        <div className="text-xs text-gray-400 mt-2">{t("accounting.usageModeHint")}</div>
+                        <button type="button" className="btn-secondary mt-2" onClick={() => openMoney(a)}>
+                          <Wallet size={14} /> {t("accounting.moneySettings")}
+                        </button>
                       ) : (
                         <div className="flex flex-col gap-2 mt-3">
                           <MoneyInput
@@ -1043,6 +1121,9 @@ export default function Accounting() {
                           >
                             {creditSaving === a.id ? "..." : t("accounting.apply")}
                           </button>
+                          <button type="button" className="btn-ghost" onClick={() => openMoney(a)}>
+                            <Wallet size={14} /> {t("accounting.moneySettings")}
+                          </button>
                         </div>
                       )}
                     </div>
@@ -1053,6 +1134,110 @@ export default function Accounting() {
               <div className="px-4 py-3 text-xs text-gray-400 border-t border-gray-50">{t("accounting.creditHint")}</div>
             </div>
           )}
+
+          {/* One reseller's money, all of it, in the section that owns
+              money - GB pool, overdraft, per-GB rate and the history. */}
+          <Modal
+            open={!!moneyFor}
+            onClose={() => setMoneyFor(null)}
+            title={t("accounting.moneySettingsFor", { name: moneyFor?.username || "" })}
+          >
+            {moneyFor && (
+              <div className="space-y-4">
+                {moneyFor.billing_mode === "usage" ? (
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("accounting.volumeBalance")}</label>
+                    <div className="bg-gray-50 rounded-xl px-3 py-2.5 font-medium text-gray-700" dir="ltr">
+                      {formatGb(moneyFor.volume_balance_gb)} GB
+                    </div>
+                    <div className="flex gap-2 mt-2">
+                      <input
+                        type="number"
+                        className="input flex-1"
+                        placeholder={t("accounting.volumeAmountPlaceholder")}
+                        value={volTopup.amount}
+                        onChange={(e) => setVolTopup((v) => ({ ...v, amount: e.target.value }))}
+                      />
+                      <input
+                        className="input flex-1"
+                        placeholder={t("accounting.expenseNote")}
+                        value={volTopup.note}
+                        onChange={(e) => setVolTopup((v) => ({ ...v, note: e.target.value }))}
+                      />
+                      <button type="button" className="btn-secondary shrink-0" disabled={volSaving || !Number(volTopup.amount)} onClick={doVolumeTopup}>
+                        {volSaving ? "..." : t("accounting.apply")}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("accounting.creditBalance")}</label>
+                    <div className="bg-gray-50 rounded-xl px-3 py-2.5 font-medium text-gray-700" dir="ltr">
+                      {fmt(moneyFor.balance)}
+                    </div>
+                  </div>
+                )}
+
+                {isSuperadmin && (
+                  <>
+                    <div>
+                      <label className="block text-sm text-gray-600 mb-1">{t("accounting.creditLimit")}</label>
+                      <MoneyInput
+                        value={moneyForm.credit_limit ?? 0}
+                        onChange={(v) => setMoneyForm((f) => ({ ...f, credit_limit: v === "" ? 0 : Number(v) }))}
+                      />
+                      <div className="hint">{t("accounting.creditLimitHint")}</div>
+                    </div>
+                    <div>
+                      <label className="block text-sm text-gray-600 mb-1">{t("accounting.perGbRate")}</label>
+                      <MoneyInput
+                        value={moneyForm.wholesale_price_per_gb ?? 0}
+                        onChange={(v) => setMoneyForm((f) => ({ ...f, wholesale_price_per_gb: v === "" ? 0 : Number(v) }))}
+                      />
+                      <div className="hint">
+                        {moneyFor.billing_mode === "usage" && !Number(moneyForm.wholesale_price_per_gb)
+                          ? t("accounting.perGbRateMissing")
+                          : t("accounting.perGbRateHint")}
+                      </div>
+                    </div>
+                    {moneyError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{moneyError}</div>}
+                    {moneyMsg && <div className="text-sm text-emerald-600 bg-emerald-50 rounded-lg px-3 py-2">{moneyMsg}</div>}
+                    <button type="button" className="btn-primary" disabled={moneySaving} onClick={saveMoneySettings}>
+                      {moneySaving ? "..." : t("common.save")}
+                    </button>
+                  </>
+                )}
+
+                <div>
+                  <div className="section-title mb-2">{t("accounting.changeHistory")}</div>
+                  {moneyLogs === null ? (
+                    <div className="text-xs text-gray-400 py-3">{t("common.loading")}</div>
+                  ) : moneyLogs.length === 0 ? (
+                    <div className="empty-state">{t("accounting.noChangesYet")}</div>
+                  ) : (
+                    <div className="max-h-56 overflow-y-auto divide-y divide-gray-50 border border-gray-100 rounded-xl">
+                      {moneyLogs.map((l) => {
+                        const gb = l.amount_gb !== undefined;
+                        const amount = gb ? l.amount_gb : l.amount;
+                        return (
+                          <div key={l.id} className="flex items-center justify-between px-3 py-2 text-xs">
+                            <div className="flex items-center gap-1.5">
+                              {amount > 0 ? <TrendingUp size={13} className="text-emerald-500" /> : <TrendingDown size={13} className="text-red-500" />}
+                              <span className={amount > 0 ? "text-emerald-600 font-medium" : "text-red-500 font-medium"} dir="ltr">
+                                {amount > 0 ? "+" : ""}{gb ? `${formatGb(amount)} GB` : fmt(amount)}
+                              </span>
+                              {l.note && <span className="text-gray-400">· {l.note}</span>}
+                            </div>
+                            <div className="text-gray-400" dir="ltr">{l.created_by_username || "—"}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </Modal>
         </>
       )}
 

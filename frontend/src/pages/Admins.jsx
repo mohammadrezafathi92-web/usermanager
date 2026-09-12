@@ -3,7 +3,6 @@ import { Plus, Pencil, Trash2, ShieldCheck, Users as UsersIcon, Link2, Wallet, S
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
-import MoneyInput from "../components/MoneyInput.jsx";
 import {
   fetchAdmins,
   fetchPermissionChoices,
@@ -15,11 +14,7 @@ import {
   createAdminGroup,
   updateAdminGroup,
   deleteAdminGroup,
-  topupAdminBalance,
-  fetchAdminBalanceLogs,
   fetchAdminLoginLogs,
-  topupAdminVolume,
-  fetchAdminVolumeLogs,
   fetchAvailableNodesForGrant,
   setAdminNodes,
   reparentAdmin,
@@ -55,15 +50,9 @@ const emptyForm = {
   password: "",
   permissions: [],
   login_slug: "",
-  balance: "",
   telegram_id: "",
   group_id: "",
-  initial_balance: "",
   billing_mode: "flat",
-  volume_balance_gb: 0,
-  credit_limit: 0,
-  wholesale_price_per_gb: 0,
-  initial_volume_gb: "",
   // Superadmin-only, CREATE time only. Two independent fields, matching the
   // backend: `role` says what the account is, `parent_admin_id` says whose
   // subtree it sits in. Existing-account changes go through the separate
@@ -117,23 +106,6 @@ export default function Admins() {
   const [groupError, setGroupError] = useState("");
   const [groupSaving, setGroupSaving] = useState(false);
 
-  // ---------- Balance top-up / audit log (مورد ۴ از لیست ویژگی‌ها) ----------
-  const [topupAmount, setTopupAmount] = useState("");
-  const [topupNote, setTopupNote] = useState("");
-  const [topupSaving, setTopupSaving] = useState(false);
-  const [topupError, setTopupError] = useState("");
-  const [showLogs, setShowLogs] = useState(false);
-  const [balanceLogs, setBalanceLogs] = useState([]);
-  const [logsLoading, setLogsLoading] = useState(false);
-
-  // ---------- Volume top-up / audit log (مورد ۶ - حالت حجمی) ----------
-  const [topupVolumeAmount, setTopupVolumeAmount] = useState("");
-  const [topupVolumeNote, setTopupVolumeNote] = useState("");
-  const [topupVolumeSaving, setTopupVolumeSaving] = useState(false);
-  const [topupVolumeError, setTopupVolumeError] = useState("");
-  const [showVolumeLogs, setShowVolumeLogs] = useState(false);
-  const [volumeLogs, setVolumeLogs] = useState([]);
-  const [volumeLogsLoading, setVolumeLogsLoading] = useState(false);
 
   // ---------- Admin login report (مورد ۵ از لیست ویژگی‌ها) ----------
   const [loginLogsOpen, setLoginLogsOpen] = useState(false);
@@ -199,19 +171,6 @@ export default function Admins() {
   const isTargetSeller = editingId ? editingRole === "seller" : !isSuperadmin || form.role === "seller";
   const visiblePermGroups = Object.entries(permGroups).filter(([groupKey]) => !(isTargetSeller && groupKey === "nodes"));
 
-  const resetTopupState = () => {
-    setTopupAmount("");
-    setTopupNote("");
-    setTopupError("");
-    setShowLogs(false);
-    setBalanceLogs([]);
-    setTopupVolumeAmount("");
-    setTopupVolumeNote("");
-    setTopupVolumeError("");
-    setShowVolumeLogs(false);
-    setVolumeLogs([]);
-  };
-
   const resetNodeAssignState = () => {
     setSelectedNodeIds([]);
     setNodesError("");
@@ -224,7 +183,6 @@ export default function Admins() {
     setForm(emptyForm);
     setError("");
     setShowPassword(false);
-    resetTopupState();
     resetNodeAssignState();
     setOpen(true);
   };
@@ -237,18 +195,11 @@ export default function Admins() {
       password: "",
       permissions: admin.permissions || [],
       login_slug: admin.login_slug || "",
-      balance: admin.balance || 0,
-      credit_limit: admin.credit_limit || 0,
-      wholesale_price_per_gb: admin.wholesale_price_per_gb || 0,
       telegram_id: admin.telegram_id || "",
       group_id: admin.group_id || "",
-      initial_balance: "",
       billing_mode: admin.billing_mode || "flat",
-      volume_balance_gb: admin.volume_balance_gb || 0,
-      initial_volume_gb: "",
     });
     setError("");
-    resetTopupState();
     resetNodeAssignState();
     // Node assignment only makes sense for a level-2 Admin, edited by a
     // superadmin (see routers/admins.py's set_admin_nodes) - a Seller never
@@ -315,75 +266,9 @@ export default function Admins() {
     }
   };
 
-  const doTopup = async () => {
-    const amount = Number(topupAmount);
-    if (!amount) {
-      setTopupError(t("admins.amountRequired"));
-      return;
-    }
-    setTopupSaving(true);
-    setTopupError("");
-    try {
-      const res = await topupAdminBalance(editingId, { amount, note: topupNote || null });
-      setForm((f) => ({ ...f, balance: res.data.balance }));
-      setTopupAmount("");
-      setTopupNote("");
-      load();
-      if (showLogs) loadLogs();
-    } catch (err) {
-      setTopupError(err?.response?.data?.detail || t("admins.balanceError"));
-    } finally {
-      setTopupSaving(false);
-    }
-  };
-
-  const loadLogs = () => {
-    setLogsLoading(true);
-    fetchAdminBalanceLogs(editingId)
-      .then((res) => setBalanceLogs(res.data))
-      .finally(() => setLogsLoading(false));
-  };
-
-  const toggleLogs = () => {
-    const next = !showLogs;
-    setShowLogs(next);
-    if (next) loadLogs();
-  };
-
-  const doVolumeTopup = async () => {
-    const amount = Number(topupVolumeAmount);
-    if (!amount) {
-      setTopupVolumeError(t("admins.volumeAmountRequired"));
-      return;
-    }
-    setTopupVolumeSaving(true);
-    setTopupVolumeError("");
-    try {
-      const res = await topupAdminVolume(editingId, { amount_gb: amount, note: topupVolumeNote || null });
-      setForm((f) => ({ ...f, volume_balance_gb: res.data.volume_balance_gb }));
-      setTopupVolumeAmount("");
-      setTopupVolumeNote("");
-      load();
-      if (showVolumeLogs) loadVolumeLogs();
-    } catch (err) {
-      setTopupVolumeError(err?.response?.data?.detail || t("admins.volumeError"));
-    } finally {
-      setTopupVolumeSaving(false);
-    }
-  };
-
-  const loadVolumeLogs = () => {
-    setVolumeLogsLoading(true);
-    fetchAdminVolumeLogs(editingId)
-      .then((res) => setVolumeLogs(res.data))
-      .finally(() => setVolumeLogsLoading(false));
-  };
-
-  const toggleVolumeLogs = () => {
-    const next = !showVolumeLogs;
-    setShowVolumeLogs(next);
-    if (next) loadVolumeLogs();
-  };
+  // Balance / GB top-ups and their history moved to the حساب‌داری
+  // section (2026-09) - all of a reseller's money now lives in one
+  // place instead of half here and half there.
 
   const submit = async (e) => {
     e.preventDefault();
@@ -398,17 +283,10 @@ export default function Admins() {
           group_id: form.group_id === "" ? 0 : Number(form.group_id),
           billing_mode: form.billing_mode,
         };
-        // The balance is READ-ONLY in this form for everyone - it is moved
-        // by the topup/transfer endpoints, which log it and deduct it from
-        // the giver. Sending it back untouched achieved nothing and got a
-        // level-2 Admin a 403 about credit transfer on every save, blocking
-        // edits that had nothing to do with money.
-        if (isSuperadmin) payload.balance = form.balance === "" ? null : Number(form.balance);
-        // Only a superadmin may set an overdraft, and the backend refuses
-        // it from anyone else - so it is not even sent, rather than sent
-        // and rejected with a 403 that would abort the whole save.
-        if (isSuperadmin) payload.credit_limit = Number(form.credit_limit) || 0;
-        if (isSuperadmin) payload.wholesale_price_per_gb = Number(form.wholesale_price_per_gb) || 0;
+        // No money field is sent from this form at all any more - balance,
+        // overdraft limit and the per-GB rate are all edited in the
+        // حساب‌داری section now (2026-09). Sending them from here was how
+        // the same numbers ended up editable in two places.
         if (form.password) payload.password = form.password;
         await updateAdmin(editingId, payload);
       } else {
@@ -419,11 +297,7 @@ export default function Admins() {
           login_slug: form.login_slug || null,
           telegram_id: form.telegram_id === "" ? null : Number(form.telegram_id),
           group_id: form.group_id === "" ? null : Number(form.group_id),
-          initial_balance: form.initial_balance === "" ? null : Number(form.initial_balance),
           billing_mode: form.billing_mode,
-          initial_volume_gb: form.initial_volume_gb === "" ? null : Number(form.initial_volume_gb),
-          // Ignored by the backend unless the creator is a superadmin.
-          wholesale_price_per_gb: Number(form.wholesale_price_per_gb) || 0,
           parent_admin_id: isSuperadmin && form.parent_admin_id ? Number(form.parent_admin_id) : null,
           // Ignored by the backend for a non-superadmin creator, who can
           // only ever make their own Sellers - sent unconditionally so the
@@ -1101,247 +975,19 @@ export default function Admins() {
             </div>
           </div>
 
-          {!editingId && form.billing_mode === "flat" && (
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("admins.fieldInitialBalance")}</label>
-              <input
-                type="number"
-                className="input"
-                placeholder={t("admins.initialBalancePlaceholder")}
-                value={form.initial_balance}
-                onChange={(e) => set("initial_balance", e.target.value)}
-              />
-              <div className="hint">
-                {t("admins.initialBalanceHint")}
-              </div>
-            </div>
-          )}
+          {/* Money lives in ONE place: the حساب‌داری section.
+              Initial credit, later top-ups, the GB pool, the overdraft
+              limit and the per-GB rate all used to be edited here, while
+              the ledger, receivables and payments lived in Accounting -
+              so managing one reseller's money meant two different pages
+              and neither told the whole story ("این نمیشه یه بخشی تو
+              حسابداری باشه یه بخشی توی ادمین" - panel owner, 2026-09).
+              This form now handles identity and access only. */}
+          <div className="card-muted">
+            <div className="text-sm text-gray-600">{t("admins.moneyMovedTitle")}</div>
+            <div className="hint">{t("admins.moneyMovedHint")}</div>
+          </div>
 
-          {!editingId && form.billing_mode === "usage" && (
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("admins.fieldInitialVolume")}</label>
-              <input
-                type="number"
-                className="input"
-                placeholder={t("admins.initialVolumePlaceholder")}
-                value={form.initial_volume_gb}
-                onChange={(e) => set("initial_volume_gb", e.target.value)}
-              />
-              <div className="hint">
-                {t("admins.initialVolumeHint")}
-              </div>
-              {/* Set at creation too, not only afterwards - an account
-                  created without a rate consumes traffic and owes nothing
-                  until someone notices. */}
-              {isSuperadmin && (
-                <div className="mt-3">
-                  <label className="block text-sm text-gray-600 mb-1">{t("admins.wholesalePerGb")}</label>
-                  <MoneyInput
-                    value={form.wholesale_price_per_gb ?? 0}
-                    onChange={(v) => set("wholesale_price_per_gb", v === "" ? 0 : Number(v))}
-                  />
-                  <div className="hint">
-                    {Number(form.wholesale_price_per_gb) > 0
-                      ? t("admins.usageRateActive", {
-                          example: formatToman(Number(form.wholesale_price_per_gb) * 50),
-                        })
-                      : t("admins.usageRateMissing")}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {editingId && form.billing_mode === "flat" && (
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("admins.currentBalance")}</label>
-              <div className="flex items-center justify-between bg-gray-50 rounded-xl px-3 py-2.5">
-                <span className="flex items-center gap-1.5 font-medium text-gray-700" dir="ltr">
-                  <Wallet size={14} className="text-gray-400" /> {formatToman(form.balance)} {t("admins.tomanUnit")}
-                </span>
-                <button type="button" className="text-xs text-brand-600 flex items-center gap-1" onClick={toggleLogs}>
-                  <History size={13} /> {showLogs ? t("admins.hideHistory") : t("admins.balanceHistory")}
-                </button>
-              </div>
-
-              {/* افزایش/کاهش اعتبار moved to the حساب‌داری section's
-                  "اعتبار ادمین‌ها" tab (per the panel owner, 2026-08-08) -
-                  the read-only balance + history stay here for context. */}
-              <div className="text-xs text-gray-400 mt-2">{t("admins.topupMovedHint")}</div>
-
-              {/* Sits directly under the balance because it only means
-                  anything in relation to it: this is how far past that
-                  number the account may go. Superadmin-only, matching the
-                  backend - an overdraft is trust being extended, so the
-                  person receiving it cannot grant it to themselves. */}
-              {isSuperadmin && (
-                <div className="mt-3">
-                  <label className="block text-sm text-gray-600 mb-1">{t("admins.creditLimit")}</label>
-                  <MoneyInput
-                    value={form.credit_limit ?? 0}
-                    onChange={(v) => set("credit_limit", v === "" ? 0 : Number(v))}
-                  />
-                  <div className="hint">
-                    {Number(form.credit_limit) > 0
-                      ? t("admins.creditLimitActive", {
-                          available: formatToman((Number(form.balance) || 0) + Number(form.credit_limit)),
-                        })
-                      : t("admins.creditLimitHint")}
-                  </div>
-
-                  {/* The rate that decides what this account owes upward.
-                      Sits with the balance because it is what consumes it.
-                      Superadmin-only, matching the backend - an account that
-                      could set its own buy price is the hole this closes.
-                      The usage-mode block further down renders the same
-                      field, because that mode has no balance section to
-                      hang it off and needs it even more. */}
-                  <div className="mt-3">
-                    <label className="block text-sm text-gray-600 mb-1">{t("admins.wholesalePerGb")}</label>
-                    <MoneyInput
-                      value={form.wholesale_price_per_gb ?? 0}
-                      onChange={(v) => set("wholesale_price_per_gb", v === "" ? 0 : Number(v))}
-                    />
-                    <div className="hint">
-                      {Number(form.wholesale_price_per_gb) > 0
-                        ? t("admins.wholesalePerGbActive", {
-                            example: formatToman(Number(form.wholesale_price_per_gb) * 50),
-                          })
-                        : t("admins.wholesalePerGbHint")}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-          {/* Usage mode's per-GB price.
-              BUG FIXED 2026-09 ("وقتی می‌ذاری روی حجمی نمی‌شه قیمت مصرف بر
-              اساس هر گیگ رو ثبت کرد"): this field only ever rendered inside
-              the FLAT-mode block above, so switching an account to حجمی hid
-              the one number that mode is built around. Without a rate, the
-              traffic is metered but never priced - services/usage_billing.py
-              drains the meter and deliberately writes no money row - so the
-              account consumed service and owed nothing. */}
-          {editingId && isSuperadmin && form.billing_mode === "usage" && (
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("admins.wholesalePerGb")}</label>
-              <MoneyInput
-                value={form.wholesale_price_per_gb ?? 0}
-                onChange={(v) => set("wholesale_price_per_gb", v === "" ? 0 : Number(v))}
-              />
-              <div className="hint">
-                {Number(form.wholesale_price_per_gb) > 0
-                  ? t("admins.usageRateActive", {
-                      example: formatToman(Number(form.wholesale_price_per_gb) * 50),
-                    })
-                  : t("admins.usageRateMissing")}
-              </div>
-            </div>
-          )}
-
-              {showLogs && (
-                <div className="mt-2 border border-gray-100 rounded-xl overflow-hidden">
-                  {logsLoading ? (
-                    <div className="text-xs text-gray-400 text-center py-4">{t("common.loading")}</div>
-                  ) : balanceLogs.length === 0 ? (
-                    <div className="text-xs text-gray-400 text-center py-4">{t("admins.noChangesYet")}</div>
-                  ) : (
-                    <div className="max-h-56 overflow-y-auto divide-y divide-gray-50">
-                      {balanceLogs.map((l) => (
-                        <div key={l.id} className="flex items-center justify-between px-3 py-2 text-xs">
-                          <div className="flex items-center gap-1.5">
-                            {l.amount > 0 ? (
-                              <TrendingUp size={13} className="text-emerald-500" />
-                            ) : (
-                              <TrendingDown size={13} className="text-red-500" />
-                            )}
-                            <span className={l.amount > 0 ? "text-emerald-600 font-medium" : "text-red-500 font-medium"} dir="ltr">
-                              {l.amount > 0 ? "+" : ""}
-                              {formatToman(l.amount)}
-                            </span>
-                            {l.note && <span className="text-gray-400">· {l.note}</span>}
-                          </div>
-                          <div className="text-gray-400 text-left" dir="ltr">
-                            <div>{t("admins.remaining", { value: formatToman(l.balance_after) })}</div>
-                            <div>{l.created_by_username || "—"}</div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {editingId && form.billing_mode === "usage" && (
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("admins.currentVolumeCap")}</label>
-              <div className="flex items-center justify-between bg-gray-50 rounded-xl px-3 py-2.5">
-                <span className="flex items-center gap-1.5 font-medium text-gray-700" dir="ltr">
-                  <Database size={14} className="text-violet-400" /> {formatGb(form.volume_balance_gb)} GB
-                </span>
-                <button type="button" className="text-xs text-brand-600 flex items-center gap-1" onClick={toggleVolumeLogs}>
-                  <History size={13} /> {showVolumeLogs ? t("admins.hideHistory") : t("admins.volumeHistory")}
-                </button>
-              </div>
-
-              <div className="flex gap-2 mt-2">
-                <input
-                  type="number"
-                  className="input flex-1"
-                  placeholder={t("admins.volumeAmountPlaceholder")}
-                  value={topupVolumeAmount}
-                  onChange={(e) => setTopupVolumeAmount(e.target.value)}
-                />
-                <input
-                  className="input flex-1"
-                  placeholder={t("admins.notePlaceholder")}
-                  value={topupVolumeNote}
-                  onChange={(e) => setTopupVolumeNote(e.target.value)}
-                />
-                <button type="button" className="btn-secondary shrink-0" disabled={topupVolumeSaving} onClick={doVolumeTopup}>
-                  {topupVolumeSaving ? "..." : t("admins.submit")}
-                </button>
-              </div>
-              {topupVolumeError && <div className="text-xs text-red-500 mt-1">{topupVolumeError}</div>}
-              <div className="hint">
-                {t("admins.volumeHint")}
-              </div>
-
-              {showVolumeLogs && (
-                <div className="mt-2 border border-gray-100 rounded-xl overflow-hidden">
-                  {volumeLogsLoading ? (
-                    <div className="text-xs text-gray-400 text-center py-4">{t("common.loading")}</div>
-                  ) : volumeLogs.length === 0 ? (
-                    <div className="text-xs text-gray-400 text-center py-4">{t("admins.noChangesYet")}</div>
-                  ) : (
-                    <div className="max-h-56 overflow-y-auto divide-y divide-gray-50">
-                      {volumeLogs.map((l) => (
-                        <div key={l.id} className="flex items-center justify-between px-3 py-2 text-xs">
-                          <div className="flex items-center gap-1.5">
-                            {l.amount_gb > 0 ? (
-                              <TrendingUp size={13} className="text-emerald-500" />
-                            ) : (
-                              <TrendingDown size={13} className="text-red-500" />
-                            )}
-                            <span className={l.amount_gb > 0 ? "text-emerald-600 font-medium" : "text-red-500 font-medium"} dir="ltr">
-                              {l.amount_gb > 0 ? "+" : ""}
-                              {formatGb(l.amount_gb)} GB
-                            </span>
-                            {l.note && <span className="text-gray-400">· {l.note}</span>}
-                          </div>
-                          <div className="text-gray-400 text-left" dir="ltr">
-                            <div>{t("admins.remainingGb", { value: formatGb(l.balance_after_gb) })}</div>
-                            <div>{l.created_by_username || "—"}</div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
 
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("admins.fieldTelegramId")}</label>

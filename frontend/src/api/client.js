@@ -411,7 +411,13 @@ export const fetchAccountingSeries = (params = {}) => client.get("/accounting/se
 export const fetchAccountingSubtree = (params = {}) => client.get("/accounting/subtree", { params });
 export const fetchAccountingTransactions = (params = {}) => client.get("/accounting/transactions", { params });
 export const createAccountingExpense = (data) => client.post("/accounting/expenses", data);
+// Posts a reversing entry rather than erasing the original - see
+// routers/accounting.py's delete_expense.
 export const deleteAccountingExpense = (id) => client.delete(`/accounting/expenses/${id}`);
+// Reseller current account: what each owes (credit granted + metered
+// usage - payments received) and recording a payment actually collected.
+export const fetchAccountingReceivables = (params = {}) => client.get("/accounting/receivables", { params });
+export const createAccountingPayment = (data) => client.post("/accounting/payments", data);
 export const exportAccounting = (params = {}) =>
   client.get("/accounting/export", { params, responseType: "blob" });
 

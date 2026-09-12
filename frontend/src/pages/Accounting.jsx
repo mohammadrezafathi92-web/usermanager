@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from "react";
 import { Wallet, TrendingUp, TrendingDown, CreditCard, PiggyBank, Coins, Trash2, Download, Plus } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
 import Layout from "../components/Layout.jsx";
+import Modal from "../components/Modal.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
 import JalaliDateInput from "../components/JalaliDateInput.jsx";
 import Topbar from "../components/Topbar.jsx";
@@ -13,13 +14,15 @@ import {
   fetchAccountingTransactions,
   createAccountingExpense,
   deleteAccountingExpense,
+  fetchAccountingReceivables,
+  createAccountingPayment,
   exportAccounting,
   fetchAdmins,
   topupAdminBalance,
 } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
-import { formatDateTime, isoToJalali, errorText, formatToman } from "../utils.js";
+import { formatDateTime, isoToJalali, errorText, formatToman, formatGb } from "../utils.js";
 
 // The «حساب‌داری» section - see backend routers/accounting.py +
 // services/accounting.py. The backend already scopes everything by role
@@ -127,6 +130,52 @@ export default function Accounting() {
       .catch((err) => { if (seq !== txSeq.current) return; setTx(null); fail("transactions")(err); });
   }, [txPage, txKind, dateFrom, dateTo]);
 
+  // ---------------- receivables (طلب از نماینده‌ها) ----------------
+  // Credit is routinely handed to a reseller before it is paid for, so
+  // "what they were given" and "what they actually paid" are tracked
+  // separately - this tab is where the payment gets recorded.
+  const receivablesSeq = useRef(0);
+  const [receivables, setReceivables] = useState(null);
+  const [payFor, setPayFor] = useState(null);       // the row being settled
+  const [payForm, setPayForm] = useState({ amount: "", note: "" });
+  const [paySaving, setPaySaving] = useState(false);
+  const [payError, setPayError] = useState("");
+  const loadReceivables = useCallback(() => {
+    const seq = ++receivablesSeq.current;
+    fetchAccountingReceivables({ date_to: dateTo || undefined })
+      .then((res) => { if (seq !== receivablesSeq.current) return; setReceivables(res.data); clearError("receivables"); })
+      .catch((err) => { if (seq !== receivablesSeq.current) return; setReceivables(null); fail("receivables")(err); });
+  }, [dateTo]);
+
+  const openPayment = (row) => {
+    setPayFor(row);
+    // Pre-filled with the full outstanding amount, which is the common
+    // case, but editable - partial payments are normal here.
+    setPayForm({ amount: row.owed > 0 ? String(row.owed) : "", note: "" });
+    setPayError("");
+  };
+
+  const submitPayment = async (e) => {
+    e.preventDefault();
+    if (!payFor) return;
+    setPaySaving(true);
+    setPayError("");
+    try {
+      await createAccountingPayment({
+        admin_id: payFor.admin_id,
+        amount: Number(payForm.amount),
+        note: payForm.note || undefined,
+      });
+      setPayFor(null);
+      loadReceivables();
+      loadSummary();
+    } catch (err) {
+      setPayError(errorText(err, "خطا در ثبت دریافت"));
+    } finally {
+      setPaySaving(false);
+    }
+  };
+
   // ---------------- expenses (superadmin) ----------------
   const [expenses, setExpenses] = useState(null);
   const [expForm, setExpForm] = useState({ amount: "", category: "", note: "", created_at: "" });
@@ -188,8 +237,12 @@ export default function Accounting() {
     setCreditSaving(adminId);
     setCreditError("");
     try {
-      await topupAdminBalance(adminId, { amount, note: f.note || null });
-      setCreditForm((c) => ({ ...c, [adminId]: { amount: "", note: "" } }));
+      // `paid` records the matching receipt in the same action. Left off,
+      // the top-up stands as a receivable until the money is actually
+      // collected - which is the normal case here (credit first, payment
+      // later), so it deliberately defaults to off.
+      await topupAdminBalance(adminId, { amount, note: f.note || null, paid: !!f.paid });
+      setCreditForm((c) => ({ ...c, [adminId]: { amount: "", note: "", paid: false } }));
       loadAdmins();
     } catch (err) {
       setCreditError(err?.response?.data?.detail || "خطا");
@@ -240,15 +293,17 @@ export default function Accounting() {
     else if (tab === "transactions") loadTx();
     else if (tab === "expenses") loadExpenses();
     else if (tab === "credit") loadAdmins();
+    else if (tab === "receivables") loadReceivables();
     else if (tab === "subtree") loadSubtree();
     else if (tab === "reports") loadSeries();
-  }, [tab, loadSummary, loadTx, loadExpenses, loadAdmins, loadSubtree, loadSeries]);
+  }, [tab, loadSummary, loadTx, loadExpenses, loadAdmins, loadReceivables, loadSubtree, loadSeries]);
 
   const tabs = [
     { id: "dashboard", label: t("accounting.tabDashboard") },
     { id: "transactions", label: t("accounting.tabTransactions") },
     ...(isSuperadmin ? [{ id: "expenses", label: t("accounting.tabExpenses") }] : []),
     ...(isAdminOrAbove ? [{ id: "credit", label: t("accounting.tabCredit") }] : []),
+    ...(isAdminOrAbove ? [{ id: "receivables", label: t("accounting.tabReceivables") }] : []),
     ...(isAdminOrAbove ? [{ id: "subtree", label: t("accounting.tabSubtree") }] : []),
     { id: "reports", label: t("accounting.tabReports") },
   ];
@@ -287,33 +342,61 @@ export default function Accounting() {
             errors.dashboard ? <LoadFailed message={errors.dashboard} onRetry={loadSummary} t={t} /> : <div className="text-gray-400">{t("common.loading")}</div>
           ) : (
             <>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-                <StatCard icon={TrendingUp} label={t("accounting.salesTotal")} value={`${fmt(summary.sales_total)}`} tone="emerald" />
-                <StatCard icon={Coins} label={t("accounting.walletTopups")} value={`${fmt(summary.wallet_topup_total)}`} tone="brand" />
-                {role === "superadmin" ? (
-                  <>
+              {role === "superadmin" ? (
+                <>
+                  {/* What is actually YOURS. A reseller's retail sale is the
+                      reseller's money, so it is reported separately below
+                      rather than added into one "فروش" figure. */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+                    <StatCard icon={TrendingUp} label={t("accounting.ownSales")} value={`${fmt(summary.own_sales_total)}`} tone="emerald" />
+                    <StatCard icon={Wallet} label={t("accounting.paymentsReceived")} value={`${fmt(summary.admin_payments_total)}`} tone="brand" />
                     <StatCard icon={TrendingDown} label={t("accounting.expensesTotal")} value={`${fmt(summary.expenses_total)}`} tone="red" />
                     <StatCard icon={PiggyBank} label={t("accounting.netProfit")} value={`${fmt(summary.net_profit)}`} tone={summary.net_profit >= 0 ? "emerald" : "red"} />
-                  </>
-                ) : (
-                  <>
-                    <StatCard icon={CreditCard} label={t("accounting.creditSpent")} value={`${fmt(summary.credit_spent_total)}`} tone="amber" />
+                  </div>
+                  <p className="hint mb-4">{t("accounting.netProfitHint")}</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                    <StatCard
+                      icon={Coins}
+                      label={t("accounting.receivables")}
+                      value={`${fmt(summary.receivables_total)}`}
+                      tone={summary.receivables_total > 0 ? "amber" : "emerald"}
+                    />
+                    <StatCard icon={TrendingUp} label={t("accounting.resellerTurnover")} value={`${fmt(summary.reseller_sales_total)}`} tone="brand" />
+                    <StatCard icon={CreditCard} label={t("accounting.cardCash")} value={`${fmt(summary.card_cash_total)}`} tone="brand" />
+                    <StatCard icon={Coins} label={t("accounting.walletTopups")} value={`${fmt(summary.wallet_topup_total)}`} tone="brand" />
+                  </div>
+                </>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                  <StatCard icon={TrendingUp} label={t("accounting.salesTotal")} value={`${fmt(summary.sales_total)}`} tone="emerald" />
+                  <StatCard icon={CreditCard} label={t("accounting.creditSpent")} value={`${fmt(summary.credit_spent_total)}`} tone="amber" />
+                  {/* Shown even when negative: spending credit and selling
+                      nothing is a real loss, not an unknown. */}
+                  {summary.margin_total !== null && summary.margin_total !== undefined && (
+                    <StatCard
+                      icon={PiggyBank}
+                      label={t("accounting.margin")}
+                      value={`${fmt(summary.margin_total)}`}
+                      tone={summary.margin_total >= 0 ? "emerald" : "red"}
+                    />
+                  )}
+                  {/* A usage-billed account holds GB, not tomans. */}
+                  {summary.billing_mode === "usage" ? (
+                    <StatCard icon={Wallet} label={t("accounting.volumeBalance")} value={`${formatGb(summary.volume_balance_gb)} GB`} tone="brand" />
+                  ) : (
                     <StatCard icon={Wallet} label={t("accounting.creditBalance")} value={`${fmt(summary.credit_balance)}`} tone="brand" />
-                  </>
-                )}
-              </div>
-
-              {role === "superadmin" && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
-                  <StatCard icon={CreditCard} label={t("accounting.cardCash")} value={`${fmt(summary.card_cash_total)}`} tone="brand" />
-                  {summary.margin_total !== undefined && (
-                    <StatCard icon={PiggyBank} label={t("accounting.margin")} value={`${fmt(summary.margin_total)}`} tone="emerald" />
                   )}
                 </div>
               )}
-              {role === "seller" && summary.margin_total !== null && summary.margin_total !== undefined && (
+
+              {role !== "superadmin" && !!summary.owed_total && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
-                  <StatCard icon={PiggyBank} label={t("accounting.margin")} value={`${fmt(summary.margin_total)}`} tone="emerald" />
+                  <StatCard
+                    icon={Coins}
+                    label={t("accounting.owedByMe")}
+                    value={`${fmt(summary.owed_total)}`}
+                    tone={summary.owed_total > 0 ? "amber" : "emerald"}
+                  />
                 </div>
               )}
 
@@ -393,7 +476,7 @@ export default function Accounting() {
               <label className="block text-xs text-gray-400 mb-1">{t("accounting.filterKind")}</label>
               <select className="input" value={txKind} onChange={(e) => { setTxKind(e.target.value); setTxPage(1); }}>
                 <option value="">{t("accounting.allKinds")}</option>
-                {["sale_new", "sale_renew", "wallet_topup", "admin_credit_change", "admin_credit_spend", "admin_credit_refund", ...(isSuperadmin ? ["expense"] : [])].map((k) => (
+                {["sale_new", "sale_renew", "wallet_topup", "admin_credit_change", "admin_credit_spend", "admin_credit_refund", "admin_usage_charge", "admin_payment", ...(isSuperadmin ? ["expense"] : [])].map((k) => (
                   <option key={k} value={k}>{t(`accounting.kind.${k}`)}</option>
                 ))}
               </select>
@@ -560,6 +643,115 @@ export default function Accounting() {
         </>
       )}
 
+      {/* ================= receivables / طلب از نماینده‌ها ================= */}
+      {tab === "receivables" && isAdminOrAbove && (
+        <>
+          <p className="hint mb-3">{t("accounting.receivablesHint")}</p>
+          {!receivables ? (
+            errors.receivables ? <LoadFailed message={errors.receivables} onRetry={loadReceivables} t={t} /> : <div className="text-gray-400">{t("common.loading")}</div>
+          ) : receivables.items.length === 0 ? (
+            <div className="card text-gray-400">{t("accounting.noReceivables")}</div>
+          ) : (
+            <>
+              <div className="stat-grid mb-4">
+                <StatCard
+                  icon={<Coins size={18} />}
+                  label={t("accounting.receivables")}
+                  value={fmt(receivables.total)}
+                />
+              </div>
+
+              <div className="card p-0">
+                {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
+                <div className="hidden md:block overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-xs text-gray-400 border-b border-gray-50">
+                        <th className="text-right font-medium px-4 py-3">{t("accounting.colAdmin")}</th>
+                        <th className="text-right font-medium px-4 py-3">{t("accounting.charged")}</th>
+                        <th className="text-right font-medium px-4 py-3">{t("accounting.paid")}</th>
+                        <th className="text-right font-medium px-4 py-3">{t("accounting.owed")}</th>
+                        <th className="text-right font-medium px-4 py-3"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {receivables.items.map((r) => (
+                        <tr key={r.admin_id} className="border-t border-gray-50">
+                          <td className="px-4 py-3">
+                            <div className="font-medium text-gray-700 dark:text-gray-200">{r.username}</div>
+                            {r.deleted && <div className="text-xs text-gray-400">{t("accounting.deletedAdmin")}</div>}
+                          </td>
+                          <td className="px-4 py-3 tabular-nums" dir="ltr">{fmt(r.charged_total)}</td>
+                          <td className="px-4 py-3 tabular-nums text-emerald-600" dir="ltr">{fmt(r.paid_total)}</td>
+                          <td className="px-4 py-3 tabular-nums font-medium" dir="ltr">
+                            <span className={r.owed > 0 ? "text-red-500" : "text-gray-500"}>{fmt(r.owed)}</span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <button type="button" className="btn-secondary" onClick={() => openPayment(r)}>
+                              <Plus size={14} /> {t("accounting.recordPayment")}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
+                <div className="md:hidden divide-y divide-gray-50">
+                  {receivables.items.map((r) => (
+                    <div key={r.admin_id} className="p-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <div className="font-medium text-gray-700 dark:text-gray-200">{r.username}</div>
+                          {r.deleted && <div className="text-xs text-gray-400">{t("accounting.deletedAdmin")}</div>}
+                        </div>
+                        <span className={`font-medium tabular-nums ${r.owed > 0 ? "text-red-500" : "text-gray-500"}`} dir="ltr">
+                          {fmt(r.owed)}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-gray-500" dir="ltr">
+                        <span>{t("accounting.charged")}: {fmt(r.charged_total)}</span>
+                        <span className="text-emerald-600">{t("accounting.paid")}: {fmt(r.paid_total)}</span>
+                      </div>
+                      <button type="button" className="btn-secondary mt-3" onClick={() => openPayment(r)}>
+                        <Plus size={14} /> {t("accounting.recordPayment")}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
+          <Modal
+            open={!!payFor}
+            onClose={() => setPayFor(null)}
+            title={t("accounting.recordPaymentFor", { name: payFor?.username || "" })}
+          >
+            <form onSubmit={submitPayment} className="space-y-4">
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">{t("accounting.paymentAmount")}</label>
+                <MoneyInput
+                  autoFocus
+                  value={payForm.amount}
+                  onChange={(v) => setPayForm((f) => ({ ...f, amount: v }))}
+                />
+                <div className="hint">{t("accounting.paymentAmountHint", { value: fmt(payFor?.owed || 0) })}</div>
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">{t("accounting.expenseNote")}</label>
+                <input className="input" value={payForm.note} onChange={(e) => setPayForm((f) => ({ ...f, note: e.target.value }))} />
+              </div>
+              {payError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{payError}</div>}
+              <button type="submit" disabled={paySaving || !Number(payForm.amount)} className="btn-primary">
+                {paySaving ? "..." : t("accounting.recordPayment")}
+              </button>
+            </form>
+          </Modal>
+        </>
+      )}
+
       {/* ================= subtree rollup (superadmin + level-2) ================= */}
       {tab === "subtree" && isAdminOrAbove && (
         <>
@@ -610,6 +802,7 @@ export default function Accounting() {
                         <th className="text-right font-medium px-4 py-3">{t("accounting.colAdmin")}</th>
                         <th className="text-right font-medium px-4 py-3">{t("accounting.subtreeCustomers")}</th>
                         <th className="text-right font-medium px-4 py-3">{t("accounting.subtreeSales")}</th>
+                        <th className="text-right font-medium px-4 py-3">{t("accounting.owed")}</th>
                         <th className="text-right font-medium px-4 py-3">{t("accounting.creditBalance")}</th>
                       </tr>
                     </thead>
@@ -620,6 +813,7 @@ export default function Accounting() {
                             <div className="font-medium text-gray-700">{r.username}</div>
                             <div className="text-xs text-gray-400">
                               {r.role === "admin" ? t("admins.roleAdmin") : t("admins.roleSellerPlain")}
+                              {r.sub_accounts > 0 && ` · ${t("accounting.subAccounts", { count: r.sub_accounts })}`}
                             </div>
                           </td>
                           <td className="px-4 py-3 tabular-nums" dir="ltr">
@@ -631,6 +825,19 @@ export default function Accounting() {
                           <td className="px-4 py-3 tabular-nums" dir="ltr">
                             {fmt(r.sales_total)}
                             <span className="text-xs text-gray-400"> ({fmt(r.sales_count)})</span>
+                            {/* The branch total above includes this account's
+                                sub-accounts; their own share is worth seeing
+                                beside it, otherwise a rolled-up row can't be
+                                told apart from one that sells everything
+                                itself. */}
+                            {r.sub_accounts > 0 && (
+                              <div className="text-xs text-gray-400">
+                                {t("accounting.ownShare", { value: fmt(r.own_sales_total) })}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 tabular-nums" dir="ltr">
+                            <span className={r.owed > 0 ? "text-red-500 font-medium" : "text-gray-500"}>{fmt(r.owed)}</span>
                           </td>
                           <td className="px-4 py-3 tabular-nums" dir="ltr">
                             <span className={r.in_debt ? "text-red-500 font-medium" : "text-gray-700"}>
@@ -653,8 +860,9 @@ export default function Accounting() {
                       <div className="font-medium text-gray-700">{r.username}</div>
                       <div className="text-xs text-gray-400 mb-2">
                         {r.role === "admin" ? t("admins.roleAdmin") : t("admins.roleSellerPlain")}
+                        {r.sub_accounts > 0 && ` · ${t("accounting.subAccounts", { count: r.sub_accounts })}`}
                       </div>
-                      <div className="grid grid-cols-3 gap-2 text-xs" dir="ltr">
+                      <div className="grid grid-cols-2 gap-2 text-xs" dir="ltr">
                         <div>
                           <div className="text-gray-400">{t("accounting.subtreeCustomers")}</div>
                           <div className="tabular-nums">{fmt(r.customers)} <span className="text-gray-400">({fmt(r.active_customers)})</span></div>
@@ -662,6 +870,15 @@ export default function Accounting() {
                         <div>
                           <div className="text-gray-400">{t("accounting.subtreeSales")}</div>
                           <div className="tabular-nums">{fmt(r.sales_total)} <span className="text-gray-400">({fmt(r.sales_count)})</span></div>
+                          {r.sub_accounts > 0 && (
+                            <div className="text-gray-400">{t("accounting.ownShare", { value: fmt(r.own_sales_total) })}</div>
+                          )}
+                        </div>
+                        <div>
+                          <div className="text-gray-400">{t("accounting.owed")}</div>
+                          <div className="tabular-nums">
+                            <span className={r.owed > 0 ? "text-red-500 font-medium" : "text-gray-700"}>{fmt(r.owed)}</span>
+                          </div>
                         </div>
                         <div>
                           <div className="text-gray-400">{t("accounting.creditBalance")}</div>
@@ -750,6 +967,14 @@ export default function Accounting() {
                                   value={f.note || ""}
                                   onChange={(e) => setCreditForm((c) => ({ ...c, [a.id]: { ...f, note: e.target.value } }))}
                                 />
+                                <label className="flex items-center gap-1.5 text-xs text-gray-600 whitespace-nowrap">
+                                  <input
+                                    type="checkbox"
+                                    checked={!!f.paid}
+                                    onChange={(e) => setCreditForm((c) => ({ ...c, [a.id]: { ...f, paid: e.target.checked } }))}
+                                  />
+                                  {t("accounting.paidNow")}
+                                </label>
                                 <button
                                   type="button"
                                   className="btn-secondary shrink-0"
@@ -802,6 +1027,14 @@ export default function Accounting() {
                             value={f.note || ""}
                             onChange={(e) => setCreditForm((c) => ({ ...c, [a.id]: { ...f, note: e.target.value } }))}
                           />
+                          <label className="flex items-center gap-1.5 text-xs text-gray-600">
+                            <input
+                              type="checkbox"
+                              checked={!!f.paid}
+                              onChange={(e) => setCreditForm((c) => ({ ...c, [a.id]: { ...f, paid: e.target.checked } }))}
+                            />
+                            {t("accounting.paidNow")}
+                          </label>
                           <button
                             type="button"
                             className="btn-secondary"

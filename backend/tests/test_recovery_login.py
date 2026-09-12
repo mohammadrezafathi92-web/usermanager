@@ -70,8 +70,19 @@ def login(db, username, password):
         return (exc.status_code, exc.detail)
 
 
-# No licence key configured + no public key => panel is unlocked (fail open).
+# This file is about the recovery login, not about licensing, so licensing
+# is explicitly switched OFF for the blocks below.
+#
+# It used to be enough to leave the licence key empty: no public key was
+# compiled into the build, so verify() failed open and nothing was locked.
+# That stopped being true in 2026-09 when the vendor's public key became a
+# build constant (licensing.BUILTIN_SIGNING_PUBLIC_KEY_B64) so that a fresh
+# customer install comes up locked and asks for a key. With enforcement on,
+# a panel with no licence refuses EVERY login - including the plain-password
+# one this block is checking - so the premise has to be stated rather than
+# inherited.
 license_state._cached = None
+licensing.SIGNING_PUBLIC_KEY_B64 = ""
 settings.license_key = ""
 settings.license_master_install = False
 

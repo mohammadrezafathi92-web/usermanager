@@ -83,7 +83,7 @@ GRACE_DAYS = 7
 # - set LICENSE_MASTER_INSTALL=true in their backend/.env (config.
 # license_master_install), which exempts an install completely, or issue
 # them keys first.
-BUILTIN_SIGNING_PUBLIC_KEY_B64 = ""
+BUILTIN_SIGNING_PUBLIC_KEY_B64 = "Hi1lrjIXiXrW99rkumI8dsh2eTbD8ou-3SmHri5kuLo"
 
 # A per-install override, kept so a panel can be pointed at a different
 # signing key (a test key, a re-issued one) without a rebuild.

@@ -110,6 +110,36 @@ check("...charged", rows[0]["charged_total"], 800_000)
 check("...paid", rows[0]["paid_total"], 500_000)
 check("...outstanding", rows[0]["owed"], 300_000)
 
+print("\n--- a deleted reseller drops off the collections list ---")
+db_del = make_db()
+su_d = add_admin(db_del, "super", superadmin=True, role=hierarchy.ROLE_SUPERADMIN)
+alive = add_admin(db_del, "alive", parent=su_d, role=hierarchy.ROLE_ADMIN)
+dead = add_admin(db_del, "dead", parent=su_d, role=hierarchy.ROLE_ADMIN)
+entry(db_del, "admin_credit_change", 700_000, admin=alive)
+entry(db_del, "admin_credit_change", 500_000, admin=dead)
+db_del.query(models.LedgerEntry).filter(models.LedgerEntry.admin_id == dead.id).update(
+    {"admin_id": None}, synchronize_session=False
+)
+db_del.delete(dead)
+db_del.commit()
+rows_d = accounting.receivables_by_admin(db_del, su_d)
+check("only the live account is listed", [r["username"] for r in rows_d], ["alive"])
+check("and the total matches the rows shown",
+      accounting.receivables_total(db_del, su_d), 700_000)
+
+print("\n--- resetting starts the account from now ---")
+settings = models.PanelSettings()
+db_del.add(settings)
+db_del.commit()
+settings.receivables_start_at = dt.datetime.utcnow()
+db_del.commit()
+check("everything owed before the line stops counting",
+      accounting.receivables_total(db_del, su_d), 0)
+entry(db_del, "admin_credit_change", 90_000, admin=alive,
+      when=dt.datetime.utcnow() + dt.timedelta(seconds=1))
+check("...and new credit after it counts normally",
+      accounting.receivables_for_admin(db_del, alive.id), 90_000)
+
 print("\n--- usage charges are debts too (حجمی) ---")
 db2 = make_db()
 su2 = add_admin(db2, "super", superadmin=True, role=hierarchy.ROLE_SUPERADMIN)

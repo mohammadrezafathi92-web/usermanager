@@ -16,6 +16,7 @@ import {
   deleteAccountingExpense,
   fetchAccountingReceivables,
   createAccountingPayment,
+  resetAccountingReceivables,
   exportAccounting,
   fetchAdmins,
   topupAdminBalance,
@@ -150,6 +151,21 @@ export default function Accounting() {
       .then((res) => { if (seq !== receivablesSeq.current) return; setReceivables(res.data); clearError("receivables"); })
       .catch((err) => { if (seq !== receivablesSeq.current) return; setReceivables(null); fail("receivables")(err); });
   }, [dateTo]);
+
+  const [resetting, setResetting] = useState(false);
+  const doResetReceivables = async () => {
+    if (!window.confirm(t("accounting.resetConfirm"))) return;
+    setResetting(true);
+    try {
+      await resetAccountingReceivables();
+      loadReceivables();
+      loadSummary();
+    } catch (err) {
+      fail("receivables")(err);
+    } finally {
+      setResetting(false);
+    }
+  };
 
   const openPayment = (row) => {
     setPayFor(row);
@@ -717,7 +733,21 @@ export default function Accounting() {
       {/* ================= receivables / طلب از نماینده‌ها ================= */}
       {tab === "receivables" && isAdminOrAbove && (
         <>
-          <p className="hint mb-3">{t("accounting.receivablesHint")}</p>
+          <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+            <div>
+              <p className="hint">{t("accounting.receivablesHint")}</p>
+              {receivables?.start_at && (
+                <p className="hint">
+                  {t("accounting.countingSince", { value: formatDateTime(receivables.start_at, language) })}
+                </p>
+              )}
+            </div>
+            {isSuperadmin && (
+              <button type="button" className="btn-secondary shrink-0" disabled={resetting} onClick={doResetReceivables}>
+                {resetting ? "..." : t("accounting.resetReceivables")}
+              </button>
+            )}
+          </div>
           {!receivables ? (
             errors.receivables ? <LoadFailed message={errors.receivables} onRetry={loadReceivables} t={t} /> : <div className="text-gray-400">{t("common.loading")}</div>
           ) : receivables.items.length === 0 ? (

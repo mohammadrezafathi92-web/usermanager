@@ -235,10 +235,22 @@ def _receivable_expr():
     )
 
 
+def receivables_start(db: Session):
+    """When the current-account started counting - see
+    models.PanelSettings.receivables_start_at."""
+    settings = db.query(models.PanelSettings).first()
+    return settings.receivables_start_at if settings else None
+
+
 def _receivable_base(db: Session, date_to=None):
     q = db.query(models.LedgerEntry).filter(
         models.LedgerEntry.kind.in_((*RECEIVABLE_DEBIT_KINDS, PAYMENT_KIND))
     )
+    # Everything before the line the panel owner drew is left in the ledger
+    # but not counted as outstanding.
+    start = receivables_start(db)
+    if start is not None:
+        q = q.filter(models.LedgerEntry.created_at >= start)
     # A balance is a running total, so it is never bounded from BELOW by
     # the report's date_from - what someone owes today includes what they
     # already owed before the period started. Only an upper bound ("as of")
@@ -261,13 +273,12 @@ def receivables_for_admin(db: Session, admin_id: int, date_to=None) -> int:
 
 
 def receivables_total(db: Session, admin: models.AdminUser, date_to=None) -> int:
-    """Everything every visible reseller still owes, added up."""
-    q = _receivable_base(db, date_to)
-    ids = visible_admin_ids(db, admin)
-    if ids is not None:
-        q = q.filter(owner_column().in_(ids))
-    total = q.with_entities(func.sum(_receivable_expr())).scalar()
-    return int(total or 0)
+    """Everything every visible reseller still owes, added up.
+
+    Derived from the same rows the list shows (deleted accounts excluded)
+    so the headline figure can never disagree with the rows under it.
+    """
+    return sum(r["owed"] for r in receivables_by_admin(db, admin, date_to=date_to))
 
 
 def receivables_by_admin(db: Session, admin: models.AdminUser, date_to=None) -> list[dict]:
@@ -303,27 +314,26 @@ def receivables_by_admin(db: Session, admin: models.AdminUser, date_to=None) -> 
     admins = {
         a.id: a for a in db.query(models.AdminUser).filter(models.AdminUser.id.in_(list(per))).all()
     }
-    # A deleted reseller can still owe money, and their row must not vanish
-    # from the books - fall back to the username snapshot the ledger kept.
-    names = dict(
-        db.query(owner_column(), models.LedgerEntry.admin_username_snapshot)
-        .filter(owner_column().in_(list(per)))
-        .filter(models.LedgerEntry.admin_username_snapshot.isnot(None))
-        .all()
-    )
 
     out = []
     for owner_id, bucket in per.items():
         row = admins.get(owner_id)
-        owed = bucket["charged"] - bucket["paid"]
+        # A deleted account is dropped rather than listed: there is nobody
+        # left to collect from, the "ثبت دریافت" action 404s against a
+        # missing admin anyway (so the row was a dead end), and a list full
+        # of closed accounts buries the ones that can actually be acted on.
+        # Their ledger rows stay exactly where they are - this only decides
+        # what the collections list shows.
+        if row is None:
+            continue
         out.append({
             "admin_id": owner_id,
-            "username": row.username if row else (names.get(owner_id) or f"#{owner_id}"),
-            "deleted": row is None,
+            "username": row.username,
+            "deleted": False,
             "charged_total": bucket["charged"],
             "paid_total": bucket["paid"],
-            "owed": owed,
-            "billing_mode": (row.billing_mode or "flat") if row else None,
+            "owed": bucket["charged"] - bucket["paid"],
+            "billing_mode": row.billing_mode or "flat",
         })
     out.sort(key=lambda r: r["owed"], reverse=True)
     return out

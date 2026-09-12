@@ -206,10 +206,39 @@ def list_receivables(
     """Per-reseller current account: what they were charged (credit granted
     + metered usage), what they have paid, what is still owed. This is the
     list the "ثبت دریافت" action below is used from."""
+    as_of = _parse_date(date_to, end=True)
+    start = accounting.receivables_start(db)
     return {
-        "items": accounting.receivables_by_admin(db, current, date_to=_parse_date(date_to, end=True)),
-        "total": accounting.receivables_total(db, current, date_to=_parse_date(date_to, end=True)),
+        "items": accounting.receivables_by_admin(db, current, date_to=as_of),
+        "total": accounting.receivables_total(db, current, date_to=as_of),
+        "start_at": start,
     }
+
+
+@router.post("/receivables/reset")
+def reset_receivables(
+    db: Session = Depends(get_db),
+    current: models.AdminUser = Depends(require_superadmin),
+):
+    """Draws a line under the reseller current-account: everything owed up
+    to right now stops counting, and collection starts fresh from here.
+
+    Nothing is deleted. The credit grants, usage charges and payments all
+    stay exactly where they are in the ledger - this only moves the point
+    the balance is measured from (see
+    models.PanelSettings.receivables_start_at), which is why it is safe and
+    why the old figures remain auditable in the transactions list.
+
+    Needed because the feature was introduced on top of years of existing
+    top-up history: read as debt, that history claimed every credit ever
+    granted was still outstanding.
+    """
+    settings = db.query(models.PanelSettings).first()
+    if settings is None:
+        raise HTTPException(400, "تنظیمات پنل پیدا نشد")
+    settings.receivables_start_at = dt.datetime.utcnow()
+    db.commit()
+    return {"ok": True, "start_at": settings.receivables_start_at}
 
 
 @router.post("/payments", response_model=schemas.LedgerEntryOut)

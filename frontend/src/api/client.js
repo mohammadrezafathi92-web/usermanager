@@ -418,6 +418,9 @@ export const deleteAccountingExpense = (id) => client.delete(`/accounting/expens
 // usage - payments received) and recording a payment actually collected.
 export const fetchAccountingReceivables = (params = {}) => client.get("/accounting/receivables", { params });
 export const createAccountingPayment = (data) => client.post("/accounting/payments", data);
+// Starts the current-account from now. Deletes nothing - see
+// routers/accounting.py's reset_receivables.
+export const resetAccountingReceivables = () => client.post("/accounting/receivables/reset");
 export const exportAccounting = (params = {}) =>
   client.get("/accounting/export", { params, responseType: "blob" });
 

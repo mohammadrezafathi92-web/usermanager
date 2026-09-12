@@ -1559,6 +1559,20 @@ class PanelSettings(Base):
 
     accounting_backfilled = Column(Boolean, nullable=False, default=False)
 
+    # Where the reseller current-account (طلب از نماینده‌ها) starts counting
+    # from. NULL = from the beginning of the ledger.
+    #
+    # The receivables feature was added in 2026-09 on top of years of
+    # existing admin_credit_change history, and reading that history as debt
+    # said every top-up ever granted was still owed - tens of millions of
+    # tomans of noise, including for accounts long since deleted. Rather
+    # than delete or rewrite those rows (they are the books), this marks the
+    # point the panel owner drew a line and started keeping this particular
+    # score: everything before it is left in the ledger and simply not
+    # counted as outstanding. Set from the "صفر کردن طلب‌ها" action in
+    # routers/accounting.py.
+    receivables_start_at = Column(DateTime, nullable=True)
+
     # Marks that the one-time grandfathering of the new granular Seller
     # permissions has run - see main.py's _grandfather_permissions.
     #

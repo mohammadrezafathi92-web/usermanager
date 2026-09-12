@@ -72,6 +72,45 @@ def require_admin_or_above(admin: models.AdminUser = Depends(get_current_admin))
     raise HTTPException(status.HTTP_403_FORBIDDEN, "این بخش برای شما در دسترس نیست")
 
 
+def has_own_bot(admin: models.AdminUser) -> bool:
+    """Whether this account runs its own dedicated Telegram bot (see
+    models.AdminUser.own_bot_token / runner.start_admin_bot)."""
+    return bool(getattr(admin, "own_bot_token", None)) and bool(getattr(admin, "own_bot_enabled", False))
+
+
+def require_ads_access(admin: models.AdminUser = Depends(get_current_admin)) -> models.AdminUser:
+    """Gate for the «تبلیغات» router.
+
+    Admin-tier as before, PLUS a level-3 Seller who has their own dedicated
+    bot. The section used to be admin-or-above on the reasoning that "a
+    level-3 Seller has neither a channel nor a bot of their own" - the
+    second half of that stopped being true once Sellers could be given their
+    own bot, and services/ads.py already sends through whichever bot the
+    channel's owner runs (_bot_for). So a Seller with a bot has everything
+    the feature needs and was being kept out by a stale assumption
+    (2026-09: "قسمت تبلیغات رو هم باید برای اونا که بات اختصاصی دارن بشه
+    فعال کرد").
+
+    A Seller WITHOUT a bot is still refused, and told why - the shared panel
+    bot is not theirs to advertise through.
+    """
+    if admin.is_superadmin or hierarchy.role(admin) == hierarchy.ROLE_ADMIN:
+        return admin
+    # Two conditions for a Seller, and they answer different questions:
+    # manage_ads is whether the superadmin GRANTED this, having their own bot
+    # is whether it can physically work.
+    if not has_own_bot(admin):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "برای استفاده از بخش تبلیغات باید ربات اختصاصی خودتان را فعال کرده باشید",
+        )
+    from .permissions import effective_permissions
+
+    if "manage_ads" not in effective_permissions(admin):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "این بخش برای شما در دسترس نیست")
+    return admin
+
+
 def get_bot_api_key(
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
     db: Session = Depends(get_db),

@@ -1559,6 +1559,19 @@ class PanelSettings(Base):
 
     accounting_backfilled = Column(Boolean, nullable=False, default=False)
 
+    # Which permission keys have already been granted to pre-existing
+    # accounts by main.py's _grandfather_permissions, comma-separated.
+    #
+    # permissions_grandfathered (the older boolean below) only records THAT
+    # the pass ran, so it ran once and never again - which was fine exactly
+    # once. Every permission added afterwards then landed on live panels as
+    # a restriction: a Seller who could export the customer list yesterday
+    # simply could not today, with no settings change anyone made. Tracking
+    # the keys instead means each deploy grandfathers whatever is NEW since
+    # the last one, and the "add a capability, never apply a restriction
+    # retroactively" rule keeps holding as the list grows (2026-09).
+    grandfathered_permissions = Column(Text, nullable=True)
+
     # Where the reseller current-account (طلب از نماینده‌ها) starts counting
     # from. NULL = from the beginning of the ledger.
     #

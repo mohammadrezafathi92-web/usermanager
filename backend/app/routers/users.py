@@ -22,13 +22,20 @@ router = APIRouter(prefix="/api/users", tags=["users"], dependencies=[Depends(ge
 # of them passes automatically for a superadmin and a level-2 Admin (see
 # deps.require_permission), so these only ever restrict a level-3 Seller.
 #
-# Creating and editing a customer are deliberately NOT gated - that is the
-# whole job of the account, and see permissions.py for why a checkbox nobody
-# could sensibly untick is worse than none.
+# Creating and editing a customer ARE gated as of 2026-09. They were left
+# open on the reasoning that selling is the whole job of the account - true
+# of a Seller, and false of the other shapes a reseller actually staffs: a
+# support account that should renew and answer questions but never create,
+# or a read-only one for whoever checks the figures. See permissions.py.
 _may_delete_users = Depends(require_permission("delete_users"))
 _may_bulk = Depends(require_permission("bulk_actions"))
 _may_export = Depends(require_permission("export_users"))
 _may_spend = Depends(require_permission("spend_credit"))
+_may_create = Depends(require_permission("create_users"))
+_may_edit = Depends(require_permission("edit_users"))
+_may_reset_usage = Depends(require_permission("reset_usage"))
+_may_manage_connections = Depends(require_permission("manage_connections"))
+_may_kick = Depends(require_permission("kick_unban"))
 
 # Same Persian labels as the panel's own frontend/src/utils.js STATUS_LABELS -
 # kept in sync manually since the export below is generated server-side.
@@ -383,7 +390,7 @@ def create_user(
     payload: schemas.UserCreate,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
-):
+ _perm=_may_create):
     if db.query(models.User).filter(models.User.username == payload.username).first():
         raise HTTPException(400, "این نام کاربری قبلا ثبت شده است")
 
@@ -596,7 +603,7 @@ def update_user(
     payload: schemas.UserUpdate,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
-):
+ _perm=_may_edit):
     user = _get_owned_user(db, admin, user_id)
 
     data = payload.model_dump(exclude_unset=True)
@@ -669,7 +676,7 @@ def update_user(
 
 
 @router.post("/{user_id}/reset-usage", response_model=schemas.UserOut)
-def reset_usage(user_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+def reset_usage(user_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_may_reset_usage):
     user = _get_owned_user(db, admin, user_id)
     user.used_bytes = 0
     if user.status == models.UserStatus.quota_exceeded:
@@ -724,7 +731,7 @@ def add_wireguard_connection(
     payload: schemas.ConnectionCreateWireguard,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
-):
+ _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
     return user_ops.provision_wireguard(db, user, node, max_concurrent_sessions=payload.max_concurrent_sessions)
 
@@ -735,7 +742,7 @@ def add_openvpn_connection(
     payload: schemas.ConnectionCreateOpenvpn,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
-):
+ _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
     return user_ops.provision_openvpn(db, user, node, payload.max_concurrent_sessions)
 
@@ -746,7 +753,7 @@ def add_l2tp_connection(
     payload: schemas.ConnectionCreateL2tp,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
-):
+ _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
     return user_ops.provision_l2tp(db, user, node, payload.max_concurrent_sessions)
 
@@ -757,7 +764,7 @@ def add_ikev2_connection(
     payload: schemas.ConnectionCreateIkev2,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
-):
+ _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
     return user_ops.provision_ikev2(db, user, node, payload.max_concurrent_sessions)
 
@@ -768,7 +775,7 @@ def add_sstp_connection(
     payload: schemas.ConnectionCreateSstp,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
-):
+ _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
     return user_ops.provision_sstp(db, user, node, payload.max_concurrent_sessions)
 
@@ -779,7 +786,7 @@ def add_xray_connection(
     payload: schemas.ConnectionCreateXray,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
-):
+ _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
     return user_ops.provision_xray(db, user, node, payload.flow or "")
 
@@ -839,7 +846,7 @@ def reset_purchase_usage(
     purchase_id: int,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
-):
+ _perm=_may_reset_usage):
     """Resets usage for ONE independent purchase (see models.Purchase) -
     the per-purchase counterpart to reset_usage below, which only ever
     touches the user's own combined fields."""
@@ -903,6 +910,9 @@ def delete_purchase(
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
     _confirm=Depends(require_confirm_password),
+    # Deliberately the DELETE permission, not manage_connections: removing a
+    # paid-for service is a deletion, and it was already gated this way.
+    # manage_connections covers adding/removing individual connections.
     _perm=_may_delete_users,
 ):
     """Deletes ONE of a customer's services: its connections are removed
@@ -1069,7 +1079,7 @@ def unban_connection(
     connection_id: int,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
-):
+ _perm=_may_kick):
     """Manual/instant unban - clears a connection's temporary ban right away,
     for cases where the admin doesn't want to wait for BAN_DURATION_MINUTES
     to elapse on its own (services/radius_server.py's _record_overlimit_attempt
@@ -1123,7 +1133,7 @@ def kick_connection_endpoint(
     connection_id: int,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
-):
+ _perm=_may_kick):
     """Manually force-closes whatever session is currently open on this one
     connection - see services/user_ops.kick_connection for exactly how each
     protocol is kicked. Does not disable the connection or touch its
@@ -1145,7 +1155,7 @@ def delete_connection(
     user_id: int,
     connection_id: int,
     db: Session = Depends(get_db),
-    admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password)):
+    admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password), _perm=_may_manage_connections):
     _get_owned_user(db, admin, user_id)
     conn = db.get(models.Connection, connection_id)
     if not conn or conn.user_id != user_id:

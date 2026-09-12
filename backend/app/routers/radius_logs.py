@@ -12,11 +12,17 @@ from fastapi import APIRouter, Depends
 from .. import models, schemas
 from ..database import get_db
 from ..services import hierarchy
-from ..deps import get_current_admin
+from ..deps import get_current_admin, require_permission
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-router = APIRouter(prefix="/api/radius-logs", tags=["radius-logs"], dependencies=[Depends(get_current_admin)])
+# Gated as of 2026-09: these logs name customers, their IPs and when they
+# connected. Every account could read them before, with no way to withhold
+# that from a Seller who has no business with it.
+router = APIRouter(
+    prefix="/api/radius-logs", tags=["radius-logs"],
+    dependencies=[Depends(get_current_admin), Depends(require_permission("view_radius_logs"))],
+)
 
 
 def _out(log: models.RadiusLimitEventLog) -> schemas.RadiusLimitEventLogOut:

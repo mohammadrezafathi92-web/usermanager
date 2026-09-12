@@ -29,9 +29,17 @@ def check(label, got, expected):
         print(f"FAIL  {label}\n        got:      {got!r}\n        expected: {expected!r}")
 
 
+# Expanded 2026-09 ("بخش دسترسی‌ها خیلی ناقص هست") - a Seller could create,
+# edit, reset usage, add/remove services, kick sessions, read every
+# connection log and take a full export of their own data with nothing
+# gating any of it.
 NEW_KEYS = {
-    "delete_users", "bulk_actions", "export_users", "spend_credit",
-    "view_accounting", "manage_discount_codes", "own_bot", "view_tutorials",
+    "create_users", "edit_users", "delete_users", "bulk_actions",
+    "export_users", "spend_credit", "reset_usage", "manage_connections",
+    "kick_unban",
+    "view_accounting", "manage_discount_codes",
+    "own_bot", "manage_ads", "own_backup", "view_radius_logs",
+    "view_tutorials",
 }
 
 print("--- the set itself ---")
@@ -41,10 +49,12 @@ check("every key belongs to exactly one group",
       len(permissions.PERMISSION_CHOICES))
 check("every key has a human label",
       all(v.strip() for v in permissions.PERMISSION_CHOICES.values()), True)
-# Creating/editing customers must stay ungated - a Seller who cannot do
-# that has no reason to exist.
-check("creating a customer is not a permission", "create_users" in permissions.PERMISSION_CHOICES, False)
-check("editing a customer is not a permission", "edit_users" in permissions.PERMISSION_CHOICES, False)
+# Creating/editing ARE grantable now. The old rule here was "a Seller who
+# cannot sell has no reason to exist", which is true of a Seller and false
+# of the other accounts a reseller staffs - a support person who renews but
+# never creates, or a read-only account for checking figures.
+check("creating a customer is grantable", "create_users" in permissions.PERMISSION_CHOICES, True)
+check("editing a customer is grantable", "edit_users" in permissions.PERMISSION_CHOICES, True)
 
 print("\n--- who the gates apply to ---")
 from app.deps import require_permission

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..security import verify_password, create_access_token, hash_password
+from .. import deps
 from ..deps import get_current_admin
 from ..permissions import effective_permissions
 from ..services import hierarchy, jalali
@@ -206,6 +207,12 @@ def me(admin: models.AdminUser = Depends(get_current_admin)):
         "credit_limit": admin.credit_limit or 0,
         "volume_balance_gb": admin.volume_balance_gb or 0,
         "wholesale_price_per_gb": admin.wholesale_price_per_gb or 0,
+        # Whether this account runs its own dedicated Telegram bot. Drives
+        # the «تبلیغات» nav entry: a level-3 Seller with a bot of their own
+        # can advertise in their own channel (see deps.require_ads_access),
+        # and one without cannot - the shared panel bot is not theirs to
+        # advertise through.
+        "has_own_bot": deps.has_own_bot(admin),
         # True = this account can still be logged into with the password
         # published in the repository. The panel shows an unmissable banner
         # rather than trusting a startup log line nobody reads.

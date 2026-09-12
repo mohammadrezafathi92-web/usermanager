@@ -43,6 +43,21 @@ function AdminOrAboveOnly({ children }) {
   return children;
 }
 
+function AdsRoute({ children }) {
+  // Mirrors backend deps.require_ads_access: admin-tier always, plus a
+  // level-3 Seller who both runs their own bot (without one there is no bot
+  // to post through) and has been granted manage_ads.
+  const { token, loading, isAdminOrAbove, hasOwnBot, canAny } = useAuth();
+  const { t } = useLanguage();
+  if (loading) {
+    return <div className="min-h-screen flex items-center justify-center text-gray-400">{t("common.loading")}</div>;
+  }
+  if (!token) return <Navigate to="/login" replace />;
+  if (!isAdminOrAbove && !(hasOwnBot && canAny(["manage_ads"]))) return <Navigate to="/" replace />;
+  return children;
+}
+
+
 function PermRoute({ perm, children }) {
   // `perm` may be a single permission string or an array - an array means
   // "any one of these is enough" (used by pages made of several
@@ -133,12 +148,15 @@ export default function App() {
           </AdminOrAboveOnly>
         }
       />
+      {/* view_radius_logs, because these logs name customers and their IPs -
+          routers/radius_logs.py answers 403 without it, so the route has to
+          agree or the page just renders errors. */}
       <Route
         path="/radius-logs"
         element={
-          <Protected>
+          <PermRoute perm="view_radius_logs">
             <RadiusLogs />
-          </Protected>
+          </PermRoute>
         }
       />
       <Route
@@ -168,9 +186,9 @@ export default function App() {
       <Route
         path="/ads"
         element={
-          <AdminOrAboveOnly>
+          <AdsRoute>
             <Ads />
-          </AdminOrAboveOnly>
+          </AdsRoute>
         }
       />
       {/* Public customer subscription panel - no auth, gated only by the

@@ -92,14 +92,25 @@ PERMISSION_GROUPS: dict[str, dict] = {
     "customers": {
         "label": "مدیریت مشتریان",
         "perms": {
-            # Deliberately NOT here: creating and editing customers. That is
-            # a Seller's entire job, and an account that cannot do it has no
-            # reason to exist - a checkbox nobody could ever sensibly untick
-            # is the kind that made this list useless the first time.
+            # create/edit are grantable (2026-09). They were left out on the
+            # reasoning that "selling is a Seller's entire job, so nobody
+            # would untick them" - which is true of a Seller and false of
+            # the other shapes of account a reseller actually needs: a
+            # support person who should renew and answer questions but never
+            # create, or a read-only account for someone checking figures.
+            # An account that can do nothing is the superadmin's mistake to
+            # make, not a reason to withhold the switch.
+            "create_users": "ساخت مشتری جدید",
+            "edit_users": "ویرایش مشتری (سهمیه، تاریخ، وضعیت)",
             "delete_users": "حذف مشتری",
             "bulk_actions": "عملیات گروهی (ساخت/تغییر/حذف دسته‌جمعی و پیام انبوه)",
             "export_users": "خروجی گرفتن از لیست مشتریان",
             "spend_credit": "تمدید و اعمال بسته (خرج کردن اعتبار)",
+            # Resetting usage hands back traffic that was paid for, so it is
+            # as real a financial action as spending credit.
+            "reset_usage": "ریست مصرف مشتری",
+            "manage_connections": "افزودن/حذف سرویس روی مشتری",
+            "kick_unban": "قطع اتصال و رفع مسدودی",
         },
     },
     "money": {
@@ -113,6 +124,12 @@ PERMISSION_GROUPS: dict[str, dict] = {
         "label": "ابزارها",
         "perms": {
             "own_bot": "ربات تلگرام اختصاصی",
+            # Reachable by a Seller since 2026-09, but only one running
+            # their own bot - the shared panel bot is not theirs to
+            # advertise through (see deps.require_ads_access).
+            "manage_ads": "تبلیغات در کانال خودم",
+            "own_backup": "پشتیبان‌گیری از داده‌های خودم",
+            "view_radius_logs": "مشاهده لاگ اتصال‌ها",
             "view_tutorials": "مشاهده آموزش‌ها",
         },
     },

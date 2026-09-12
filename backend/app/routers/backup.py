@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from ..database import get_db
-from ..deps import get_current_admin, require_superadmin
+from ..deps import get_current_admin, require_permission, require_superadmin
 from ..services import backup as backup_service
 
 router = APIRouter(prefix="/api/backup", tags=["backup"], dependencies=[Depends(require_superadmin)])
@@ -88,7 +88,12 @@ async def restore_backup(file: UploadFile = File(...)):
 # Separate sub-router: NOT gated by require_superadmin like the router
 # above - any logged-in admin (Admin or Seller) can pull a backup of
 # exactly their own tree (see services/backup.py's create_admin_scoped_backup).
-my_router = APIRouter(prefix="/api/backup/my-backup", tags=["backup"], dependencies=[Depends(get_current_admin)])
+# Gated as of 2026-09: an own-data backup is the account's whole customer
+# list in a file. Available to everyone before, with no way to withhold it.
+my_router = APIRouter(
+    prefix="/api/backup/my-backup", tags=["backup"],
+    dependencies=[Depends(get_current_admin), Depends(require_permission("own_backup"))],
+)
 
 
 @my_router.post("/run")

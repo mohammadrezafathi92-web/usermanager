@@ -521,6 +521,14 @@ def _backfill_roles_and_paths() -> None:
 
 
 
+# What the original one-shot pass covered. Used only to decide what an
+# install that ran it already counts as "done" - see _grandfather_permissions.
+_PERMISSIONS_GRANDFATHERED_BY_THE_OLD_ONE_SHOT_PASS = (
+    "delete_users", "bulk_actions", "export_users", "spend_credit",
+    "view_accounting", "manage_discount_codes", "own_bot", "view_tutorials",
+)
+
+
 def _grandfather_permissions() -> None:
     """Grants every newly-introduced permission to accounts that predate it.
 
@@ -534,8 +542,17 @@ def _grandfather_permissions() -> None:
     than applying a restriction retroactively. The superadmin then unticks
     what they actually want to withhold.
 
-    Runs once, guarded by PanelSettings.permissions_grandfathered. Only
-    grants; never removes anything already stored.
+    Runs on EVERY startup, but only ever acts on permission keys it has not
+    granted before (PanelSettings.grandfathered_permissions).
+
+    It used to run exactly once, guarded by a boolean. That worked for the
+    batch it shipped with and quietly failed every batch after: a permission
+    added later was never grandfathered, so on the next deploy every
+    existing Seller lost that ability with no settings change anyone made -
+    the precise thing this function exists to prevent. Tracking the keys
+    instead makes the guarantee hold as the list grows.
+
+    Only grants; never removes anything already stored.
     """
     from .permissions import PERMISSION_CHOICES, format_permissions, parse_permissions
 
@@ -549,10 +566,20 @@ def _grandfather_permissions() -> None:
             settings_row = models.PanelSettings(id=1)
             db.add(settings_row)
             db.flush()
-        if settings_row.permissions_grandfathered:
+        already = parse_permissions(settings_row.grandfathered_permissions or "")
+        # An install that predates the key-tracking column but already ran
+        # the old one-shot pass: everything that existed AT THAT TIME was
+        # granted, so treat the keys it knew about as done rather than
+        # re-granting them (harmless either way, but it keeps the log quiet
+        # and the intent honest).
+        if not already and settings_row.permissions_grandfathered:
+            already = set(_PERMISSIONS_GRANDFATHERED_BY_THE_OLD_ONE_SHOT_PASS)
+
+        new_keys = set(PERMISSION_CHOICES) - already
+        if not new_keys:
             return
 
-        everything = set(PERMISSION_CHOICES)
+        everything = new_keys
         touched = 0
 
         # Groups first: an account IN a group reads its permissions from the
@@ -569,9 +596,11 @@ def _grandfather_permissions() -> None:
             touched += 1
 
         settings_row.permissions_grandfathered = True
+        settings_row.grandfathered_permissions = format_permissions(set(PERMISSION_CHOICES))
         db.commit()
         logging.info(
-            "permissions: %d حساب/گروه موجود همه‌ی مجوزهای جدید را گرفتند تا رفتارشان عوض نشود", touched
+            "permissions: %d حساب/گروه موجود مجوزهای جدید (%s) را گرفتند تا رفتارشان عوض نشود",
+            touched, "، ".join(sorted(new_keys)),
         )
     except Exception:
         db.rollback()

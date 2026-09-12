@@ -6,6 +6,11 @@ own AdChannel and only ever touches posts belonging to it. There is no
 "see everyone's adverts" view even for a superadmin, for the same reason
 their dashboard doesn't show other admins' customers - an Admin's channel,
 audience and pricing are their own.
+
+Who gets in is deps.require_ads_access: admin-tier, plus a level-3 Seller
+running their own dedicated bot - services/ads.py already posts through
+whichever bot the channel's owner has (_bot_for), so such a Seller can
+advertise in their own channel exactly like an Admin does.
 """
 import datetime as dt
 import os
@@ -18,10 +23,10 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from ..database import get_db
-from ..deps import get_current_admin, require_admin_or_above, require_confirm_password
+from ..deps import get_current_admin, require_ads_access, require_confirm_password
 from ..services import ads
 
-router = APIRouter(prefix="/api/ads", tags=["ads"], dependencies=[Depends(require_admin_or_above)])
+router = APIRouter(prefix="/api/ads", tags=["ads"], dependencies=[Depends(require_ads_access)])
 
 # Same volume as tutorial media (see routers/tutorials.py) - the /app/data
 # bind mount, so uploads survive a container rebuild.

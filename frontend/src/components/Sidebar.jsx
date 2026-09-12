@@ -33,9 +33,13 @@ const linkGroups = [
       // Gated on the SAME permission its router requires (routers/
       // discount_codes.py gates the whole prefix on manage_discount_codes).
       { to: "/discount-codes", labelKey: "nav.discountCodes", icon: Ticket, perm: "manage_discount_codes" },
-      // One channel per admin - a level-3 Seller has neither a channel nor a
-      // bot of their own, so this is Admin-tier-only like Nodes.
-      { to: "/ads", labelKey: "nav.ads", icon: Megaphone, perm: "__admin_or_above__" },
+      // One channel per admin. Admin-tier, PLUS a level-3 Seller who runs
+      // their own dedicated bot: the second half of the old reasoning here
+      // ("a Seller has neither a channel nor a bot of their own") stopped
+      // being true once Sellers could be given a bot, and services/ads.py
+      // already posts through whichever bot the channel's owner has. Same
+      // rule as the backend's deps.require_ads_access.
+      { to: "/ads", labelKey: "nav.ads", icon: Megaphone, perm: "__ads__" },
       { to: "/tutorials", labelKey: "nav.tutorials", icon: GraduationCap, perm: "view_tutorials" },
     ],
   },
@@ -48,7 +52,7 @@ const linkGroups = [
       // accordingly instead of a permission checkbox that could never
       // actually grant a Seller anything real.
       { to: "/nodes", labelKey: "nav.nodes", icon: Server, perm: "__admin_or_above__" },
-      { to: "/radius-logs", labelKey: "nav.radiusLogs", icon: ShieldAlert, perm: null },
+      { to: "/radius-logs", labelKey: "nav.radiusLogs", icon: ShieldAlert, perm: "view_radius_logs" },
     ],
   },
   {
@@ -98,7 +102,7 @@ const navItemClass = ({ isActive }) =>
   }`;
 
 export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
-  const { canAny, isSuperadmin, isAdminOrAbove, build } = useAuth();
+  const { canAny, isSuperadmin, isAdminOrAbove, hasOwnBot, build } = useAuth();
   const { t, toggleLanguage, dir } = useLanguage();
   const panelRef = useRef(null);
   const [dark, setDark] = useState(() => {
@@ -145,6 +149,7 @@ export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
     if (l.perm === null) return true;
     if (l.perm === "__superadmin__") return isSuperadmin;
     if (l.perm === "__admin_or_above__") return isAdminOrAbove;
+    if (l.perm === "__ads__") return isAdminOrAbove || (hasOwnBot && canAny(["manage_ads"]));
     return canAny(Array.isArray(l.perm) ? l.perm : [l.perm]);
   };
   // Filter within each group, then drop any group left with zero links (a

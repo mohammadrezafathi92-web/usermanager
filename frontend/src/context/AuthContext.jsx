@@ -29,6 +29,7 @@ export function AuthProvider({ children }) {
   const [wallet, setWallet] = useState({ balance: 0, credit_limit: 0, volume_balance_gb: 0 });
   // True = this account still uses the password published in the repo.
   const [passwordIsDefault, setPasswordIsDefault] = useState(false);
+  const [hasOwnBot, setHasOwnBot] = useState(false);
   const [loading, setLoading] = useState(true);
   // Licence status from /me's own `license` block (backend routers/auth.py's
   // _license_block) - null until the first /me response arrives. A fresh
@@ -53,6 +54,7 @@ export function AuthProvider({ children }) {
     setPermissions(data.permissions || []);
     setBuild({ version: data.app_version || null, commit: data.app_commit || null });
     setPasswordIsDefault(!!data.password_is_default);
+    setHasOwnBot(!!data.has_own_bot);
     setLicense(data.license || null);
     setWallet({
       balance: data.balance || 0,
@@ -109,13 +111,20 @@ export function AuthProvider({ children }) {
     setIsSuperadmin(false);
     setRole("seller");
     setPermissions([]);
+    setHasOwnBot(false);
     setLicense(null);
   };
 
+  // A level-3 Seller running their own dedicated bot can advertise in their
+  // own channel (see backend deps.require_ads_access) - state, not derived,
+  // because it comes straight from /me like the rest.
+  //
   // A level-2 Admin gets the same unconditional "yes" a superadmin does -
   // see backend deps.py's require_permission docstring for why (full panel
   // access within their own tree is the whole point of this tier).
   const isAdminOrAbove = isSuperadmin || role === "admin";
+  // A level-3 Seller running their own dedicated bot can advertise in their
+  // own channel (see backend deps.require_ads_access).
 
   // true if this admin can see/use a given panel section - superadmins and
   // level-2 Admins can always do everything; a section not in
@@ -136,7 +145,7 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider
-      value={{ build, wallet, passwordIsDefault, license, refreshMe, token, adminId, username, telegramId, isSuperadmin, role, isAdminOrAbove, permissions, can, canAny, loading, login, logout }}
+      value={{ build, wallet, passwordIsDefault, license, refreshMe, token, adminId, username, telegramId, isSuperadmin, role, isAdminOrAbove, hasOwnBot, permissions, can, canAny, loading, login, logout }}
     >
       {children}
     </AuthContext.Provider>

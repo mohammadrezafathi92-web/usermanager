@@ -159,6 +159,44 @@ def debit_admin(
     db.commit()
 
 
+def require_package_to_grant(admin: models.AdminUser, package: Optional[models.Package]) -> None:
+    """A reseller may only give a customer more quota or more time through a
+    package. Refuses with the same message shape routers/users.py's
+    create_user already uses for the same rule.
+
+    Reported 2026-09-12: "وقتی یه یوزر یه یوزر میگیره می‌تونه اینجوری تمدید
+    بزنه بدون هیچ گونه هزینه اضافی" - the panel's «تمدید این خرید» dialog
+    asks for raw gigabytes and days with no package anywhere in it, so a
+    reseller could extend a customer indefinitely for nothing. Three
+    separate ways, all in that one dialog:
+
+      * no package means charge_for_renewal below falls back to the
+        account's per-GB rate, and an account with no rate set (the normal
+        case for a flat-priced reseller) is charged zero;
+      * add_days was never priced at all, at any rate - a year of extra
+        time cost nothing even when a rate WAS set;
+      * "مصرف قبلی صفر شود" hands back the whole quota, which is selling it
+        again, and nothing looked at that checkbox on the cost side.
+
+    Requiring a package closes all three at once and needs no new pricing
+    rule, because a package already has a price for exactly this. It is the
+    rule create_user has enforced since the credit system existed - a
+    reseller creating a customer must pick a package - and a renewal is the
+    same sale to the same customer.
+
+    A superadmin is never charged for anything and keeps the raw fields:
+    "give this customer three free days" is the panel owner's call to make.
+    """
+    if admin.is_superadmin or package is not None:
+        return
+    raise HTTPException(
+        400,
+        "تمدید بدون پکیج مجاز نیست - یک پکیج انتخاب کنید. "
+        "حجم و روزِ دستی قیمتی ندارد که از اعتبار شما کم شود، "
+        "پس تمدید باید از یکی از پکیج‌های تعریف‌شده انجام شود.",
+    )
+
+
 def charge_for_renewal(
     db: Session, admin: models.AdminUser, package: Optional[models.Package], add_gb: float,
 ) -> None:

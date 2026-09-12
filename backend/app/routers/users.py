@@ -332,6 +332,14 @@ def bulk_update_users(
     # Charged as one debit for the whole batch rather than per user, so it
     # cannot half-succeed - the admin either affords the operation or it
     # does not happen.
+    # Same rule as the single-purchase renewal: a reseller can only GRANT
+    # through a package. Only when the batch actually grants something -
+    # a bulk "غیرفعال کن" or a concurrent-session change gives the customer
+    # nothing and stays free. See admin_billing.require_package_to_grant.
+    grants_something = bool(payload.add_gb or payload.add_days or payload.reset_usage)
+    if grants_something:
+        admin_billing.require_package_to_grant(admin, package)
+
     units = len(payload.user_ids or [])
     if units and not admin.is_superadmin and admin.billing_mode != "usage":
         if package is not None:
@@ -597,6 +605,57 @@ def get_user(user_id: int, db: Session = Depends(get_db), admin: models.AdminUse
     return out
 
 
+# ~10.7 MB - twice the worst-case error of the edit form's two-decimal
+# gigabyte round-trip, and far too small to be anyone's idea of a renewal.
+_QUOTA_ROUNDING_SLACK_BYTES = 1024 ** 3 // 100
+
+_GRANT_REFUSAL = (
+    "افزایش حجم یا تاریخ انقضا از این فرم مجاز نیست - برای دادن حجم یا زمانِ بیشتر "
+    "از «تمدید» با انتخاب پکیج استفاده کنید تا هزینه‌اش از اعتبار شما کم شود. "
+    "کم کردن حجم یا جلو آوردن تاریخ انقضا همچنان از همین‌جا ممکن است."
+)
+
+
+def _refuse_free_grant(data: dict, user: models.User) -> None:
+    """Raises if `data` would give this customer more quota or more time
+    than they already have. Called only for a non-superadmin.
+
+    The two "no limit" encodings are what make this worth a function rather
+    than a pair of `>` comparisons: total_quota_bytes == 0 means UNLIMITED,
+    and expire_at is None means NEVER EXPIRES - so in both cases the value
+    that looks smallest is the largest possible grant.
+    """
+    if "total_quota_bytes" in data:
+        new, old = int(data["total_quota_bytes"] or 0), int(user.total_quota_bytes or 0)
+        # 0 = unlimited, so going TO 0 is the biggest increase there is, and
+        # coming FROM 0 is always a reduction.
+        if new == 0 and old != 0:
+            raise HTTPException(400, _GRANT_REFUSAL)
+        # The tolerance is not slack, it is the form's own rounding: the edit
+        # dialog shows gigabytes to two decimals (utils.js bytesToGb) and
+        # converts back on save, so resubmitting an untouched field can land
+        # up to ~5MB either side of the stored byte count. Refusing that
+        # would mean a reseller cannot save a customer's name.
+        if old != 0 and new > old + _QUOTA_ROUNDING_SLACK_BYTES:
+            raise HTTPException(400, _GRANT_REFUSAL)
+
+    if "expire_at" in data:
+        new_at, old_at = data["expire_at"], user.expire_at
+        # None = never expires - same inversion as unlimited quota above.
+        if new_at is None and old_at is not None:
+            raise HTTPException(400, _GRANT_REFUSAL)
+        if old_at is not None and new_at is not None and new_at > old_at:
+            raise HTTPException(400, _GRANT_REFUSAL)
+
+    # A fresh "count N days from first use" window is time the customer did
+    # not have, whether or not they have a fixed date right now.
+    if data.get("expire_days_after_first_use"):
+        new_days = int(data["expire_days_after_first_use"])
+        old_days = int(user.expire_days_after_first_use or 0)
+        if new_days > old_days:
+            raise HTTPException(400, _GRANT_REFUSAL)
+
+
 @router.put("/{user_id}", response_model=schemas.UserOut)
 def update_user(
     user_id: int,
@@ -607,6 +666,19 @@ def update_user(
     user = _get_owned_user(db, admin, user_id)
 
     data = payload.model_dump(exclude_unset=True)
+
+    # The edit form is the other door into the free-renewal hole (see
+    # admin_billing.require_package_to_grant): typing a bigger number into
+    # «حجم» or a later date into «تاریخ انقضا» gives the customer exactly
+    # what a renewal gives them, and nothing here ever charged for it.
+    #
+    # Only INCREASES are refused. Taking quota or time away is a correction
+    # a reseller must stay able to make, and the form posts both fields back
+    # untouched on every save - refusing merely because they were sent would
+    # stop a reseller editing a customer's name (the same trap the balance
+    # field had in routers/admins.py).
+    if not admin.is_superadmin:
+        _refuse_free_grant(data, user)
 
     # Not a real column on User - handled specially below.
     clear_trigger = data.pop("clear_expire_days_trigger", None)
@@ -882,6 +954,10 @@ def renew_purchase_endpoint(
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "خرید پیدا نشد")
     package = _get_scoped_package(db, admin, payload.package_id) if payload.package_id else None
+    # A reseller has to renew from a package - raw gigabytes/days/usage
+    # resets are free, which made this the panel's largest revenue leak.
+    # See admin_billing.require_package_to_grant.
+    admin_billing.require_package_to_grant(admin, package)
     # Charged BEFORE the renewal is applied, so an admin who cannot afford
     # it gets a refusal instead of a renewed service and a debt.
     admin_billing.charge_for_renewal(db, admin, package, payload.add_gb)

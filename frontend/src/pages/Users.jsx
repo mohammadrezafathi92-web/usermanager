@@ -506,6 +506,16 @@ export default function Users() {
 
   const submitBulkEdit = async (e) => {
     e.preventDefault();
+    // Mirrors the backend's admin_billing.require_package_to_grant: giving
+    // quota, days or a usage reset to a batch of customers is a sale, and a
+    // reseller has no priced way to do it except through a package. Checked
+    // here too so the refusal arrives before the request, next to the
+    // dropdown that fixes it.
+    const grantsSomething = Boolean(bulkEditForm.add_gb || bulkEditForm.add_days || bulkEditForm.reset_usage);
+    if (!isSuperadmin && grantsSomething && !bulkEditForm.package_id) {
+      setBulkEditError(t("users.bulkEditPackageRequired"));
+      return;
+    }
     setSaving(true);
     setBulkEditError("");
     try {

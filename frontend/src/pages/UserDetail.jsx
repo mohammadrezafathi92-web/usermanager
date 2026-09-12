@@ -114,7 +114,7 @@ export default function UserDetail() {
   const [admins, setAdmins] = useState([]);
   const [editOpen, setEditOpen] = useState(false);
   const [renewOpen, setRenewOpen] = useState(false);
-  const [renewForm, setRenewForm] = useState({ add_gb: "", add_days: "", reset_usage: true });
+  const [renewForm, setRenewForm] = useState({ add_gb: "", add_days: "", reset_usage: true, package_id: "" });
   const [renewSaving, setRenewSaving] = useState(false);
   const [renewError, setRenewError] = useState("");
   const [addConnOpen, setAddConnOpen] = useState(false);
@@ -263,7 +263,7 @@ export default function UserDetail() {
   const [resettingPurchaseId, setResettingPurchaseId] = useState(null);
   const [kickingId, setKickingId] = useState(null);
   const [purchaseRenewTarget, setPurchaseRenewTarget] = useState(null); // the Purchase object being renewed
-  const [purchaseRenewForm, setPurchaseRenewForm] = useState({ add_gb: "", add_days: "", reset_usage: true });
+  const [purchaseRenewForm, setPurchaseRenewForm] = useState({ add_gb: "", add_days: "", reset_usage: true, package_id: "" });
   const [purchaseRenewSaving, setPurchaseRenewSaving] = useState(false);
   const [purchaseRenewError, setPurchaseRenewError] = useState("");
 
@@ -373,11 +373,36 @@ export default function UserDetail() {
   // پیش‌فرض‌ها را با سهمیه فعلی کاربر پر می‌کنیم (همون منطق پکیج فعلی) - ادمین
   // می‌تواند قبل از تایید تغییرشان بدهد. تعداد روز پیش‌فرض خالی می‌ماند چون
   // مدت زمان پلن اصلی جایی ذخیره نشده و باید توسط ادمین وارد شود.
+
+  // Renewing from a package is now the rule for a reseller, not a
+  // convenience: raw gigabytes and days have no price to charge against
+  // their credit, so the panel used to hand out unlimited free renewals
+  // (see backend admin_billing.require_package_to_grant). The numbers are
+  // still SENT - user_ops.renew_purchase/bulk_update_users apply add_gb and
+  // add_days, and treat package_id only as the label - so picking a package
+  // fills them in from the package itself, and a reseller cannot then edit
+  // them into something the package did not cost.
+  const packageMustBePicked = !isSuperadmin;
+  const applyRenewPackage = (setter) => (packageId) => {
+    const pkg = packages.find((p) => String(p.id) === String(packageId));
+    setter((f) => ({
+      ...f,
+      package_id: packageId,
+      add_gb: pkg ? String(pkg.quota_gb || 0) : f.add_gb,
+      add_days: pkg ? String(pkg.duration_days || 0) : f.add_days,
+    }));
+  };
+  const renewPackageLabel = (p) =>
+    `${p.name} — ${p.quota_gb ? `${p.quota_gb}GB` : t("userDetail.unlimited")} / ${
+      p.duration_days ? t("users.daysUnit", { days: p.duration_days }) : t("userDetail.noExpiry")
+    }`;
+
   const openRenew = () => {
     setRenewForm({
       add_gb: user.total_quota_bytes ? String(bytesToGb(user.total_quota_bytes)) : "",
       add_days: "",
       reset_usage: true,
+      package_id: "",
     });
     setRenewError("");
     setRenewOpen(true);
@@ -385,6 +410,10 @@ export default function UserDetail() {
 
   const submitRenew = async (e) => {
     e.preventDefault();
+    if (packageMustBePicked && !renewForm.package_id) {
+      setRenewError(t("userDetail.renewPackageRequired"));
+      return;
+    }
     if (!renewForm.add_gb && !renewForm.add_days) {
       setRenewError(t("userDetail.renewMissingFields"));
       return;
@@ -399,6 +428,7 @@ export default function UserDetail() {
         reset_usage: renewForm.reset_usage,
         status: "active",
         max_concurrent_sessions: null,
+        package_id: renewForm.package_id ? Number(renewForm.package_id) : null,
       });
       setRenewOpen(false);
       load();
@@ -496,6 +526,7 @@ export default function UserDetail() {
       add_gb: purchase.quota_bytes ? String(bytesToGb(purchase.quota_bytes)) : "",
       add_days: "",
       reset_usage: true,
+      package_id: "",
     });
     setPurchaseRenewError("");
   };
@@ -503,6 +534,10 @@ export default function UserDetail() {
   const submitRenewPurchase = async (e) => {
     e.preventDefault();
     if (!purchaseRenewTarget) return;
+    if (packageMustBePicked && !purchaseRenewForm.package_id) {
+      setPurchaseRenewError(t("userDetail.renewPackageRequired"));
+      return;
+    }
     if (!purchaseRenewForm.add_gb && !purchaseRenewForm.add_days) {
       setPurchaseRenewError(t("userDetail.renewMissingFields"));
       return;
@@ -514,6 +549,7 @@ export default function UserDetail() {
         add_gb: purchaseRenewForm.add_gb ? Number(purchaseRenewForm.add_gb) : 0,
         add_days: purchaseRenewForm.add_days ? Number(purchaseRenewForm.add_days) : 0,
         reset_usage: purchaseRenewForm.reset_usage,
+        package_id: purchaseRenewForm.package_id ? Number(purchaseRenewForm.package_id) : null,
       });
       setPurchaseRenewTarget(null);
       load();
@@ -1429,6 +1465,26 @@ export default function UserDetail() {
           <p className="text-xs text-gray-400">
             {t("userDetail.renewNote")}
           </p>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">
+              {t("userDetail.fieldPackage")}{packageMustBePicked ? " *" : ""}
+            </label>
+            <select
+              className="input"
+              value={renewForm.package_id}
+              onChange={(e) => applyRenewPackage(setRenewForm)(e.target.value)}
+            >
+              <option value="">
+                {packageMustBePicked ? t("userDetail.selectPlaceholder") : t("userDetail.renewNoPackage")}
+              </option>
+              {packages.map((p) => (
+                <option key={p.id} value={p.id}>{renewPackageLabel(p)}</option>
+              ))}
+            </select>
+            <div className="hint">
+              {packageMustBePicked ? t("userDetail.renewPackageHint") : t("userDetail.renewPackageHintOwner")}
+            </div>
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldAddGb")}</label>
@@ -1437,6 +1493,7 @@ export default function UserDetail() {
                 type="number"
                 min="0"
                 step="any"
+                readOnly={packageMustBePicked}
                 value={renewForm.add_gb}
                 onChange={(e) => setRenewForm((f) => ({ ...f, add_gb: e.target.value }))}
               />
@@ -1447,6 +1504,7 @@ export default function UserDetail() {
                 className="input"
                 type="number"
                 min="0"
+                readOnly={packageMustBePicked}
                 placeholder={t("userDetail.daysPlaceholder")}
                 value={renewForm.add_days}
                 onChange={(e) => setRenewForm((f) => ({ ...f, add_days: e.target.value }))}
@@ -1482,6 +1540,26 @@ export default function UserDetail() {
       <Modal open={!!purchaseRenewTarget} onClose={() => setPurchaseRenewTarget(null)} title={t("userDetail.renewPurchaseModalTitle")}>
         <form onSubmit={submitRenewPurchase} className="space-y-4">
           <p className="text-xs text-gray-400">{t("userDetail.renewPurchaseNote")}</p>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">
+              {t("userDetail.fieldPackage")}{packageMustBePicked ? " *" : ""}
+            </label>
+            <select
+              className="input"
+              value={purchaseRenewForm.package_id}
+              onChange={(e) => applyRenewPackage(setPurchaseRenewForm)(e.target.value)}
+            >
+              <option value="">
+                {packageMustBePicked ? t("userDetail.selectPlaceholder") : t("userDetail.renewNoPackage")}
+              </option>
+              {packages.map((p) => (
+                <option key={p.id} value={p.id}>{renewPackageLabel(p)}</option>
+              ))}
+            </select>
+            <div className="hint">
+              {packageMustBePicked ? t("userDetail.renewPackageHint") : t("userDetail.renewPackageHintOwner")}
+            </div>
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldAddGb")}</label>
@@ -1490,6 +1568,7 @@ export default function UserDetail() {
                 type="number"
                 min="0"
                 step="any"
+                readOnly={packageMustBePicked}
                 value={purchaseRenewForm.add_gb}
                 onChange={(e) => setPurchaseRenewForm((f) => ({ ...f, add_gb: e.target.value }))}
               />
@@ -1500,6 +1579,7 @@ export default function UserDetail() {
                 className="input"
                 type="number"
                 min="0"
+                readOnly={packageMustBePicked}
                 placeholder={t("userDetail.daysPlaceholder")}
                 value={purchaseRenewForm.add_days}
                 onChange={(e) => setPurchaseRenewForm((f) => ({ ...f, add_days: e.target.value }))}

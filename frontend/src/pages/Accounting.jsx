@@ -655,7 +655,7 @@ export default function Accounting() {
             <>
               <div className="stat-grid mb-4">
                 <StatCard
-                  icon={<Coins size={18} />}
+                  icon={Coins}
                   label={t("accounting.receivables")}
                   value={fmt(receivables.total)}
                 />
@@ -772,22 +772,22 @@ export default function Accounting() {
                   read saves adding a column up by eye. */}
               <div className="stat-grid mb-4">
                 <StatCard
-                  icon={<TrendingUp size={18} />}
+                  icon={TrendingUp}
                   label={t("accounting.subtreeTotalSales")}
                   value={fmt(subtree.reduce((a, r) => a + (r.sales_total || 0), 0))}
                 />
                 <StatCard
-                  icon={<Wallet size={18} />}
+                  icon={Wallet}
                   label={t("accounting.subtreeTotalCustomers")}
                   value={fmt(subtree.reduce((a, r) => a + (r.customers || 0), 0))}
                 />
                 <StatCard
-                  icon={<Coins size={18} />}
+                  icon={Coins}
                   label={t("accounting.subtreeTotalCredit")}
                   value={fmt(subtree.reduce((a, r) => a + (r.balance || 0), 0))}
                 />
                 <StatCard
-                  icon={<TrendingDown size={18} />}
+                  icon={TrendingDown}
                   label={t("accounting.subtreeInDebt")}
                   value={fmt(subtree.filter((r) => r.in_debt).length)}
                 />

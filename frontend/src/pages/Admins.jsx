@@ -422,6 +422,8 @@ export default function Admins() {
           initial_balance: form.initial_balance === "" ? null : Number(form.initial_balance),
           billing_mode: form.billing_mode,
           initial_volume_gb: form.initial_volume_gb === "" ? null : Number(form.initial_volume_gb),
+          // Ignored by the backend unless the creator is a superadmin.
+          wholesale_price_per_gb: Number(form.wholesale_price_per_gb) || 0,
           parent_admin_id: isSuperadmin && form.parent_admin_id ? Number(form.parent_admin_id) : null,
           // Ignored by the backend for a non-superadmin creator, who can
           // only ever make their own Sellers - sent unconditionally so the
@@ -1128,6 +1130,25 @@ export default function Admins() {
               <div className="hint">
                 {t("admins.initialVolumeHint")}
               </div>
+              {/* Set at creation too, not only afterwards - an account
+                  created without a rate consumes traffic and owes nothing
+                  until someone notices. */}
+              {isSuperadmin && (
+                <div className="mt-3">
+                  <label className="block text-sm text-gray-600 mb-1">{t("admins.wholesalePerGb")}</label>
+                  <MoneyInput
+                    value={form.wholesale_price_per_gb ?? 0}
+                    onChange={(v) => set("wholesale_price_per_gb", v === "" ? 0 : Number(v))}
+                  />
+                  <div className="hint">
+                    {Number(form.wholesale_price_per_gb) > 0
+                      ? t("admins.usageRateActive", {
+                          example: formatToman(Number(form.wholesale_price_per_gb) * 50),
+                        })
+                      : t("admins.usageRateMissing")}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1171,7 +1192,10 @@ export default function Admins() {
                   {/* The rate that decides what this account owes upward.
                       Sits with the balance because it is what consumes it.
                       Superadmin-only, matching the backend - an account that
-                      could set its own buy price is the hole this closes. */}
+                      could set its own buy price is the hole this closes.
+                      The usage-mode block further down renders the same
+                      field, because that mode has no balance section to
+                      hang it off and needs it even more. */}
                   <div className="mt-3">
                     <label className="block text-sm text-gray-600 mb-1">{t("admins.wholesalePerGb")}</label>
                     <MoneyInput
@@ -1188,6 +1212,31 @@ export default function Admins() {
                   </div>
                 </div>
               )}
+
+          {/* Usage mode's per-GB price.
+              BUG FIXED 2026-09 ("وقتی می‌ذاری روی حجمی نمی‌شه قیمت مصرف بر
+              اساس هر گیگ رو ثبت کرد"): this field only ever rendered inside
+              the FLAT-mode block above, so switching an account to حجمی hid
+              the one number that mode is built around. Without a rate, the
+              traffic is metered but never priced - services/usage_billing.py
+              drains the meter and deliberately writes no money row - so the
+              account consumed service and owed nothing. */}
+          {editingId && isSuperadmin && form.billing_mode === "usage" && (
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">{t("admins.wholesalePerGb")}</label>
+              <MoneyInput
+                value={form.wholesale_price_per_gb ?? 0}
+                onChange={(v) => set("wholesale_price_per_gb", v === "" ? 0 : Number(v))}
+              />
+              <div className="hint">
+                {Number(form.wholesale_price_per_gb) > 0
+                  ? t("admins.usageRateActive", {
+                      example: formatToman(Number(form.wholesale_price_per_gb) * 50),
+                    })
+                  : t("admins.usageRateMissing")}
+              </div>
+            </div>
+          )}
 
               {showLogs && (
                 <div className="mt-2 border border-gray-100 rounded-xl overflow-hidden">

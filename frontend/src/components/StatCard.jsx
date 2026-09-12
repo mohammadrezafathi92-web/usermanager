@@ -25,7 +25,15 @@ export default function StatCard({ icon: Icon, label, value, tone = "brand", hin
       }`}
     >
       <div className={`w-11 h-11 sm:w-12 sm:h-12 rounded-2xl flex items-center justify-center shrink-0 ${tones[tone]}`}>
-        <Icon size={22} />
+        {/* Accepts either the icon COMPONENT (icon={Wallet}, the usual
+            form) or an already-built element (icon={<Wallet size={18} />}).
+            It used to accept only the first: passing an element made React
+            try to call it as a component, which throws during render - and
+            a throw here takes the ENTIRE page down to a blank white screen,
+            not just this one tile. That is exactly what happened to the
+            accounting section's "زیرمجموعه‌های من" and "طلب از نماینده‌ها"
+            tabs (2026-09). Both call styles now work. */}
+        {React.isValidElement(Icon) ? Icon : Icon ? <Icon size={22} /> : null}
       </div>
       <div className="min-w-0">
         <div className="text-xl sm:text-2xl font-bold text-gray-800 dark:text-gray-100 tnum truncate">{value}</div>

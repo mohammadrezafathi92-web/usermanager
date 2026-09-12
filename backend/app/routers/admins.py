@@ -451,6 +451,14 @@ def create_admin(
         telegram_id=payload.telegram_id,
         group_id=group_id,
         billing_mode=billing_mode,
+        # Superadmin-only, same rule as editing it later (see update_admin):
+        # an account that could set its own buy price would owe whatever it
+        # chose. Without it a usage-billed account starts at a rate of zero,
+        # which means metered-but-never-charged (see
+        # services/usage_billing.py).
+        wholesale_price_per_gb=(
+            int(payload.wholesale_price_per_gb or 0) if current.is_superadmin else 0
+        ),
     )
     db.add(admin)
     db.flush()  # assigns admin.id, needed for the balance/volume log FKs below

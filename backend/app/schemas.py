@@ -1539,6 +1539,11 @@ class AdminCreate(BaseModel):
     # Recorded as the first AdminVolumeLog entry, same pattern as
     # initial_balance above.
     initial_volume_gb: Optional[float] = None
+    # Superadmin-only. What one GB costs this account - the number
+    # services/usage_billing.py prices their metered traffic at. Settable
+    # at creation so a usage-billed account isn't born with a rate of zero
+    # (metered but never charged) until someone remembers to edit it.
+    wholesale_price_per_gb: Optional[int] = None
     # Superadmin-only (silently ignored for a level-2 Admin creating their
     # own Seller, who has no say in this - see routers/admins.py's
     # create_admin): lets a superadmin create a brand-new account directly

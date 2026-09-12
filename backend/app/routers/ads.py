@@ -25,8 +25,8 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..database import get_db
 from ..deps import get_current_admin, require_ads_access, require_confirm_password
-from ..default_content import DEFAULT_ADS
 from ..services import ads
+from ..services import content_defaults
 
 router = APIRouter(prefix="/api/ads", tags=["ads"], dependencies=[Depends(require_ads_access)])
 
@@ -173,8 +173,12 @@ def create_post(payload: PostIn, db: Session = Depends(get_db), admin: models.Ad
 
 @router.post("/posts/import-defaults")
 def import_default_posts(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
-    """Adds the ready-made adverts that ship with the panel (see
-    app/default_content.py) to this account's own rotation.
+    """Adds the panel's ready-made adverts to this account's own rotation.
+
+    For anyone but the superadmin that means a copy of THE PANEL OWNER's
+    own adverts - written in the voice this product is actually sold in -
+    and only the texts shipped in app/default_content.py when the owner has
+    none either (a fresh install). See services/content_defaults.py.
 
     Additive and idempotent by title, exactly like the tutorials import:
     an advert whose title is already in this channel is skipped, so the
@@ -188,6 +192,7 @@ def import_default_posts(db: Session = Depends(get_db), admin: models.AdminUser 
     discount code attached before they render into anything sensible,
     which is the admin's choice to make.
     """
+    items, source = content_defaults.ads_source(db, admin)
     channel = _channel_for(db, admin)
     existing = {
         (p.title or "").strip()
@@ -200,10 +205,11 @@ def import_default_posts(db: Session = Depends(get_db), admin: models.AdminUser 
     ) or 0
 
     added = 0
-    for item in DEFAULT_ADS:
+    for item in items:
         title = (item.get("title") or "").strip()
         if not title or title in existing:
             continue
+        existing.add(title)  # the source list may repeat a title
         last += 1
         db.add(models.AdPost(
             channel_id=channel.id,
@@ -216,8 +222,9 @@ def import_default_posts(db: Session = Depends(get_db), admin: models.AdminUser 
     db.commit()
     return {
         "added": added,
-        "skipped": len(DEFAULT_ADS) - added,
-        "total_available": len(DEFAULT_ADS),
+        "skipped": len(items) - added,
+        "total_available": len(items),
+        "source": source,
     }
 
 

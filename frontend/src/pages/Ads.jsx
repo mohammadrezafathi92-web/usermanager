@@ -40,8 +40,11 @@ export default function Ads() {
     setFlash("");
     try {
       const res = await importDefaultAds();
-      const { added, skipped } = res.data;
-      setFlash(added ? t("ads.importDone", { added, skipped }) : t("ads.importNothingNew"));
+      const { added, skipped, source } = res.data;
+      // See Tutorials.jsx's matching comment - for a reseller these are
+      // the panel owner's own adverts, which is worth saying out loud.
+      const from = t(source === "panel_owner" ? "ads.importSourceOwner" : "ads.importSourceBuiltin");
+      setFlash(added ? `${t("ads.importDone", { added, skipped })} ${from}` : t("ads.importNothingNew"));
       loadPosts();
     } catch (err) {
       setFlash(err?.response?.data?.detail || t("ads.saveError"));

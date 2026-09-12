@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session, joinedload
 from .. import models, schemas
 from ..database import get_db
 from ..deps import require_permission, require_admin_or_above, get_current_admin, require_confirm_password
-from ..default_content import DEFAULT_TUTORIALS
+from ..services import content_defaults
 from ..services import hierarchy
 
 # Router-level gate is "view_tutorials" (every endpoint at minimum needs
@@ -102,8 +102,12 @@ def create_tutorial(payload: schemas.TutorialCreate, db: Session = Depends(get_d
 
 @router.post("/import-defaults")
 def import_default_tutorials(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _perm=_edit):
-    """Adds the ready-made tutorials that ship with the panel (see
-    app/default_content.py) to this account's own list.
+    """Adds the panel's ready-made tutorials to this account's own list.
+
+    For anyone but the superadmin that means a copy of THE PANEL OWNER's
+    own tutorials - the ones written for this actual product - and only
+    the texts shipped in app/default_content.py when the owner's list is
+    empty too (a fresh install). See services/content_defaults.py.
 
     Additive and idempotent by title: anything already present for this
     owner is skipped, so pressing the button twice adds nothing the second
@@ -119,6 +123,7 @@ def import_default_tutorials(db: Session = Depends(get_db), admin: models.AdminU
     Deliberately a button rather than something seeded at startup - this is
     content, and content that reappears after you delete it is a bug.
     """
+    items, source = content_defaults.tutorials_source(db, admin)
     owner_id = None if admin.is_superadmin else admin.id
     existing = {
         (t.title or "").strip()
@@ -132,10 +137,11 @@ def import_default_tutorials(db: Session = Depends(get_db), admin: models.AdminU
     ) or 0
 
     added = 0
-    for item in DEFAULT_TUTORIALS:
+    for item in items:
         title = (item.get("title") or "").strip()
         if not title or title in existing:
             continue
+        existing.add(title)  # the source list may repeat a title
         last += 1
         db.add(models.Tutorial(
             title=title,
@@ -148,8 +154,9 @@ def import_default_tutorials(db: Session = Depends(get_db), admin: models.AdminU
     db.commit()
     return {
         "added": added,
-        "skipped": len(DEFAULT_TUTORIALS) - added,
-        "total_available": len(DEFAULT_TUTORIALS),
+        "skipped": len(items) - added,
+        "total_available": len(items),
+        "source": source,
     }
 
 

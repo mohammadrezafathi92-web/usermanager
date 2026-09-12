@@ -156,6 +156,97 @@ for d in DEFAULT_ADS:
 check("no advert references an unknown placeholder", sorted(used - set(PLACEHOLDERS)), [])
 
 
+# ---------------------------------------------------------------------------
+# Where the content comes from (services/content_defaults.py). Feedback
+# 2026-09-12: "پکیج‌ها و آموزش‌های من خیلی بهتر از این دیفالتایی که ساختی" -
+# a reseller pressing this button wants the house content, so the shipped
+# texts are only the floor for a panel that has none of its own yet.
+print("\n--- a reseller copies the PANEL OWNER's list, not the shipped texts ---")
+from app.services import content_defaults  # noqa: E402
+
+superadmin = models.AdminUser(id=1, username="root", hashed_password="x", is_superadmin=True)
+reseller = models.AdminUser(id=2, username="reseller", hashed_password="x", is_superadmin=False)
+
+db4 = make_db()
+db4.add_all([
+    models.Tutorial(title="اتصال با V2Ray روی اندروید", text="متن واقعیِ صاحب پنل",
+                    enabled=True, sort_order=1, owner_admin_id=None),
+    models.Tutorial(title="چرا سرعتم کم شده؟", text="متن دوم", enabled=True, sort_order=2, owner_admin_id=None),
+    models.Tutorial(title="یک پیش‌نویس نیمه‌کاره", text="...", enabled=False, sort_order=3, owner_admin_id=None),
+])
+db4.commit()
+
+items, source = content_defaults.tutorials_source(db4, reseller)
+check("the source is the panel owner", source, content_defaults.SOURCE_PANEL_OWNER)
+check("...and it is their real tutorials",
+      [i["title"] for i in items], ["اتصال با V2Ray روی اندروید", "چرا سرعتم کم شده؟"])
+check("a tutorial the owner switched OFF is not pushed down the tree",
+      any("پیش‌نویس" in i["title"] for i in items), False)
+check("the text comes across, not just the title", items[0]["text"], "متن واقعیِ صاحب پنل")
+
+items_sa, source_sa = content_defaults.tutorials_source(db4, superadmin)
+check("the panel owner themself still gets the shipped texts", source_sa, content_defaults.SOURCE_BUILTIN)
+check("...all of them", len(items_sa), len(DEFAULT_TUTORIALS))
+
+print("\n--- a fresh panel, where the owner has written nothing yet ---")
+db5 = make_db()
+items5, source5 = content_defaults.tutorials_source(db5, reseller)
+check("falls back to the shipped texts", source5, content_defaults.SOURCE_BUILTIN)
+check("...all of them", len(items5), len(DEFAULT_TUTORIALS))
+
+print("\n--- adverts follow the same rule, but copy the owner's OFF ones too ---")
+db6 = make_db()
+db6.add(superadmin)
+db6.commit()
+owner_channel = models.AdChannel(owner_admin_id=superadmin.id)
+db6.add(owner_channel)
+db6.commit()
+db6.add_all([
+    models.AdPost(channel_id=owner_channel.id, title="معرفی ساده", body="متن آگهی صاحب پنل",
+                  enabled=True, sort_order=1),
+    models.AdPost(channel_id=owner_channel.id, title="پیشنهاد هفته", body="آگهی دوم",
+                  enabled=False, sort_order=2),
+])
+db6.commit()
+ads_items, ads_source = content_defaults.ads_source(db6, reseller)
+check("the source is the panel owner", ads_source, content_defaults.SOURCE_PANEL_OWNER)
+check("an advert the owner has not switched on is still worth handing over",
+      [i["title"] for i in ads_items], ["معرفی ساده", "پیشنهاد هفته"])
+check("the owner themself gets the shipped adverts",
+      content_defaults.ads_source(db6, superadmin)[1], content_defaults.SOURCE_BUILTIN)
+
+print("\n--- importing the owner's list is still idempotent by title ---")
+db7 = make_db()
+db7.add(models.Tutorial(title="اتصال با V2Ray روی اندروید", text="خانه", enabled=True,
+                        sort_order=1, owner_admin_id=None))
+db7.commit()
+src, _ = content_defaults.tutorials_source(db7, reseller)
+
+
+def import_items(db, owner_id, items):
+    existing = {
+        (t.title or "").strip()
+        for t in db.query(models.Tutorial).filter(models.Tutorial.owner_admin_id == owner_id).all()
+    }
+    added = 0
+    for item in items:
+        title = (item.get("title") or "").strip()
+        if not title or title in existing:
+            continue
+        existing.add(title)
+        db.add(models.Tutorial(title=title, text=item.get("text") or "", enabled=True,
+                               sort_order=added + 1, owner_admin_id=owner_id))
+        added += 1
+    db.commit()
+    return added
+
+
+check("first import takes the owner's one tutorial", import_items(db7, reseller.id, src), 1)
+check("second adds nothing", import_items(db7, reseller.id, src), 0)
+check("the owner's own copy is untouched",
+      db7.query(models.Tutorial).filter(models.Tutorial.owner_admin_id.is_(None)).count(), 1)
+
+
 print("\n" + "=" * 60)
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))

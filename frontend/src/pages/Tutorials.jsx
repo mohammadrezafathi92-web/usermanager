@@ -59,10 +59,14 @@ export default function Tutorials() {
     setImportMsg("");
     try {
       const res = await importDefaultTutorials();
-      const { added, skipped } = res.data;
+      const { added, skipped, source } = res.data;
+      // Saying WHERE they came from matters here: for anyone but the panel
+      // owner these are the owner's own tutorials, not stock text, and that
+      // is the whole reason to press the button.
+      const from = t(source === "panel_owner" ? "tutorials.importSourceOwner" : "tutorials.importSourceBuiltin");
       setImportMsg(
         added
-          ? t("tutorials.importDone", { added, skipped })
+          ? `${t("tutorials.importDone", { added, skipped })} ${from}`
           : t("tutorials.importNothingNew")
       );
       load();

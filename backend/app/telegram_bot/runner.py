@@ -356,6 +356,47 @@ def _make_bot(token: str) -> Bot:
     return Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML), session=session)
 
 
+def _run_off_loop(coro_factory):
+    """asyncio.run, but safe on a thread that already has a running loop.
+
+    Every send_*_sync below is documented for callers running OUTSIDE the
+    bot's event loop, and for a long time every caller was one: APScheduler
+    jobs and ordinary `def` FastAPI endpoints, both of which FastAPI runs on
+    a worker thread with no loop of its own. Then the Mini App's receipt
+    upload arrived. It has to `await photo.read()`, so its endpoint is
+    `async def`, so it runs ON the loop - and asyncio.run() raises
+    "cannot be called from a running event loop" there.
+
+    That raise was caught by each sender's own `except Exception` and turned
+    into a single warning line, so the symptom was not an error anywhere: a
+    customer's receipt was accepted, filed, and then silently shown to
+    nobody. Reported as «رسیدی که از مینی اپ ارسال میشه تو بات ادمین نمیاد».
+
+    Fixed here, once, rather than at seven call sites: if a loop is already
+    running, the coroutine gets a thread of its own with a fresh loop, and
+    exceptions still surface to the caller unchanged.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro_factory())  # the ordinary case - no loop here
+
+    outcome: dict = {}
+
+    def _worker():
+        try:
+            outcome["value"] = asyncio.run(coro_factory())
+        except BaseException as exc:  # re-raised below, on the caller's thread
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=_worker, name="tg-send-off-loop", daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome.get("value")
+
+
 def send_message_sync(
     chat_id: int, text: str, timeout: float = 10.0, token: str | None = None, parse_mode: str | object = _UNSET,
 ) -> bool:
@@ -402,7 +443,7 @@ def send_message_sync(
             await bot.session.close()
 
     try:
-        asyncio.run(_send())
+        _run_off_loop(_send)
         return True
     except Exception as exc:
         # Used to fail 100% silently - a customer blocking the bot (routine,
@@ -447,7 +488,7 @@ def send_message_sync_detailed(
             await bot.session.close()
 
     try:
-        asyncio.run(_send())
+        _run_off_loop(_send)
         return True, None
     except asyncio.TimeoutError:
         return False, f"تلگرام در {timeout:.0f} ثانیه جواب نداد - دسترسی سرور به تلگرام را بررسی کنید"
@@ -539,7 +580,7 @@ def send_many_sync(
             await bot.session.close()
 
     try:
-        asyncio.run(_run())
+        _run_off_loop(_run)
     except Exception as exc:  # noqa: BLE001 - e.g. the session could not be built at all
         detail = str(exc).strip() or type(exc).__name__
         logger.warning("send_many_sync failed wholesale: %s", detail)
@@ -603,7 +644,7 @@ def send_post_sync(
             await bot.session.close()
 
     try:
-        asyncio.run(_send())
+        _run_off_loop(_send)
         return True, result.get("message_id"), None
     except Exception as exc:
         logger.warning("send_post_sync to %s failed: %s: %s", chat_id, type(exc).__name__, exc)
@@ -626,7 +667,7 @@ def delete_message_sync(chat_id: str | int, message_id: int, token: str | None =
             await bot.session.close()
 
     try:
-        asyncio.run(_delete())
+        _run_off_loop(_delete)
         return True
     except Exception as exc:
         logger.debug("delete_message_sync(%s, %s) failed: %s", chat_id, message_id, exc)
@@ -658,7 +699,7 @@ def send_document_sync(chat_id: int, file_path: str, caption: str = "", timeout:
             await bot.session.close()
 
     try:
-        asyncio.run(_send())
+        _run_off_loop(_send)
         return True
     except Exception as exc:
         # See send_message_sync's matching comment - but at warning level
@@ -715,7 +756,7 @@ def send_photo_sync(
             await bot.session.close()
 
     try:
-        asyncio.run(_send())
+        _run_off_loop(_send)
         return True
     except Exception as exc:
         # Warning, not debug: this is money arriving. An owner who is never

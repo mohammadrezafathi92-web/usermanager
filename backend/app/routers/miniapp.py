@@ -20,6 +20,7 @@ there.
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 
@@ -484,7 +485,11 @@ async def checkout_receipt(
         owner_admin_id=owner,
     )
 
-    _notify_receipt(db, storage.get_pending(request_id), request_id, image)
+    # On a thread, not on the loop. Uploading a photo to Telegram over a
+    # proxy takes seconds, and this endpoint is `async def` (it has to
+    # await the upload) - so doing it inline would hold the whole event
+    # loop, and every other request with it, for the duration.
+    await asyncio.to_thread(_notify_receipt, db, storage.get_pending(request_id), request_id, image)
     return {
         "status": "pending",
         "request_id": request_id,

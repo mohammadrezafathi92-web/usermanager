@@ -308,6 +308,70 @@ check("...telling them where to start", "ربات" in str(refusal), True)
 
 
 # --------------------------------------------------------------------------
+print("\n--- the sender survives being called from inside the event loop ---")
+# The bug this catches, reported as «رسیدی که از مینی اپ ارسال میشه تو بات
+# ادمین نمیاد برای تایید»: checkout_receipt is `async def` (it must await the
+# upload), so it runs ON the event loop, and send_photo_sync used
+# asyncio.run(), which raises "cannot be called from a running event loop"
+# there. The raise was caught and logged, so a receipt was accepted, filed,
+# and then shown to nobody.
+#
+# The earlier test above could never have caught it: it replaces
+# send_photo_sync itself. This one replaces only the TRANSPORT - the aiogram
+# Bot - and exercises the real sender, from the real place.
+uploaded: list = []
+
+
+class _FakeSession:
+    async def close(self):
+        return None
+
+
+class _FakeBot:
+    def __init__(self):
+        self.session = _FakeSession()
+
+    async def send_photo(self, chat_id, photo, caption=None, reply_markup=None):
+        uploaded.append(chat_id)
+        return True
+
+    async def send_message(self, chat_id, text, **kw):
+        uploaded.append(chat_id)
+        return True
+
+
+original_make_bot = runner._make_bot
+runner._make_bot = lambda token: _FakeBot()
+try:
+    check("off the loop, as it always worked",
+          runner.send_photo_sync(1, b"x", token="1:AA"), True)
+
+    async def from_inside_the_loop():
+        return runner.send_photo_sync(2, b"x", token="1:AA")
+
+    check("ON the loop - where an `async def` endpoint calls from",
+          asyncio.run(from_inside_the_loop()), True)
+    check("both actually reached the transport", uploaded, [1, 2])
+
+    # And end to end: the real endpoint, the real sender, no stub between
+    # them. This is the exact path a customer's receipt takes.
+    db = make_db()
+    storage.init_db()
+    uploaded.clear()
+    out = asyncio.run(
+        miniapp.checkout_receipt(
+            package_id=10, account=None, comment=None,
+            photo=FakeUpload(b"jpeg"), visitor=visitor(db), db=db,
+        )
+    )
+    check("a receipt sent through the whole real path reaches the owner",
+          uploaded, [111])
+    check("...and is still filed", bool(storage.get_pending(out["request_id"])), True)
+finally:
+    runner._make_bot = original_make_bot
+
+
+# --------------------------------------------------------------------------
 print("\n--- the shape of the code, not just its behaviour ---")
 src = inspect.getsource(miniapp)
 check("the receipt's owner is passed explicitly, never defaulted",
@@ -317,6 +381,10 @@ check("the wallet is debited before provisioning",
 check("there is a refund path", "refund" in src.lower(), True)
 check("no second approval queue was invented - it reuses the bot's storage",
       "storage.create_pending" in src, True)
+check("the notification is pushed off the event loop, not run on it",
+      "asyncio.to_thread(_notify_receipt" in src, True)
+check("and the sender itself no longer calls asyncio.run blindly",
+      "asyncio.run(" in inspect.getsource(runner.send_photo_sync), False)
 
 print("\n" + "=" * 60)
 if failures:

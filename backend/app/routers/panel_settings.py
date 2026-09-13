@@ -300,6 +300,21 @@ def activate_payment_card(card_id: int, db: Session = Depends(get_db)):
 
 
 # ---------------------------------------------------------------------------
+# Deliberately OUTSIDE `router`, so it needs no session: the whole point is
+# that the panel can be reached over a candidate hostname from the public
+# internet and identify itself, which is the same question ACME is about to
+# ask. It answers one random per-install string and nothing else - not a
+# credential, and it reveals nothing that the login page at the same address
+# does not already reveal. See services/panel_tls.reaches_this_panel.
+tls_echo_router = APIRouter(tags=["settings"])
+
+
+@tls_echo_router.get("/api/tls-echo")
+def tls_echo():
+    return {"token": panel_tls.instance_token()}
+
+
+# ---------------------------------------------------------------------------
 # دامنه و SSL. Superadmin-only, and for the same reason the port change is:
 # it takes the panel offline for a moment and moves the address everyone
 # reaches it on. See services/panel_tls.py for why a panel needs its own

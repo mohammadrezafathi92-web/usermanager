@@ -170,6 +170,11 @@ export default function PanelTlsCard() {
           {!dns.ok && <AlertTriangle size={16} className="shrink-0 mt-0.5" />}
           <div className="space-y-1">
             <div>{dns.reason}</div>
+            {dns.ports?.length > 0 && (
+              <div className="font-medium">
+                {t("settings.tlsPortsBusy", { ports: dns.ports.join("، ") })}
+              </div>
+            )}
             {/* The addresses get their own left-to-right rows rather than
                 sitting inside the Persian sentence. An IPv4 address embedded
                 in RTL text is reordered by the bidi algorithm, so "points at
@@ -177,7 +182,7 @@ export default function PanelTlsCard() {
                 swapped - and telling the two apart is the entire purpose of
                 this message. Getting it backwards means pointing DNS at the
                 wrong server. */}
-            {(dns.resolved?.length > 0 || dns.public_ip) && (
+            {dns.resolved?.length > 0 && (
               <div className="grid grid-cols-[auto,1fr] gap-x-2 gap-y-0.5 text-xs pt-1">
                 {dns.resolved?.length > 0 && (
                   <>
@@ -185,12 +190,7 @@ export default function PanelTlsCard() {
                     <span dir="ltr" className="font-mono text-start">{dns.resolved.join("، ")}</span>
                   </>
                 )}
-                {dns.public_ip && (
-                  <>
-                    <span className="opacity-70">{t("settings.tlsThisServer")}</span>
-                    <span dir="ltr" className="font-mono text-start">{dns.public_ip}</span>
-                  </>
-                )}
+
               </div>
             )}
           </div>
@@ -231,7 +231,7 @@ export default function PanelTlsCard() {
         {/* Only offered once the check has actually disagreed - an override
             you can reach without first being told why you might need it is
             just a second button people press at random. */}
-        {dns && !dns.ok && (
+        {dns && !dns.ok && !(dns.ports?.length > 0) && (
           <button type="button" className="btn-secondary" disabled={saving} onClick={() => submit(true)}>
             {t("settings.tlsForce")}
           </button>

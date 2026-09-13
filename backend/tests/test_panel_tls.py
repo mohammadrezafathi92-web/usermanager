@@ -20,6 +20,7 @@ The parts worth pinning down are the ones that bite in production:
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
 import tempfile
 from unittest.mock import patch
@@ -65,41 +66,47 @@ for bad, why in [("", "empty"), ("localhost", "no dot - not publicly resolvable"
                  ("spaces here.com", "a space")]:
     check(f"refused: {why}", norm(bad).startswith("REFUSED"), True)
 
-print("\n--- the DNS check, which is what stops a rate-limited failure ---")
+print("\n--- readiness is decided END-TO-END, not by comparing IPs ---")
+# Reported 2026-09-13: the check announced "this server is 31.171.101.237",
+# an address the operator had never seen, and refused a correctly-pointed
+# domain. A minute later it said 88.218.18.156 and agreed. Both came from
+# asking an outside service "what is my IP" - and the backend container runs
+# its own WireGuard tunnel to reach Telegram, so the answer is whichever
+# route happened to be up. A value that changes minute to minute cannot
+# decide anything.
 with patch.object(panel_tls, "resolve", return_value=["5.6.7.8"]), \
-     patch.object(panel_tls, "server_public_ip", return_value="5.6.7.8"):
+     patch.object(panel_tls, "reaches_this_panel", return_value=(True, "ok")), \
+     patch.object(panel_tls, "ports_in_use", return_value=[]):
     r = panel_tls.check_dns("panel.example.com")
-    check("pointing here is ok", r["ok"], True)
+    check("reaching ourselves over the name is what makes it ok", r["ok"], True)
+    check("...and no IP comparison is involved at all", r["public_ip"], None)
 
-with patch.object(panel_tls, "resolve", return_value=["1.1.1.1"]), \
-     patch.object(panel_tls, "server_public_ip", return_value="5.6.7.8"):
+with patch.object(panel_tls, "resolve", return_value=["5.6.7.8"]), \
+     patch.object(panel_tls, "reaches_this_panel", return_value=(False, "another server")), \
+     patch.object(panel_tls, "ports_in_use", return_value=[]):
     r = panel_tls.check_dns("panel.example.com")
-    check("pointing somewhere else is not", r["ok"], False)
-    # Both addresses come back as STRUCTURED fields, never interpolated into
-    # the Persian sentence: an IPv4 address inside RTL prose is reordered by
-    # the bidi algorithm, so "points at A but this server is B" can render
-    # with A and B visually swapped - and reading that backwards means
-    # pointing DNS at the wrong server. The panel lays them out on their own
-    # ltr rows instead.
-    check("the address it points at is reported", r["resolved"], ["1.1.1.1"])
-    check("...and this server's own", r["public_ip"], "5.6.7.8")
-    check("...and neither is buried in the sentence",
-          "1.1.1.1" in r["reason"] or "5.6.7.8" in r["reason"], False)
-    check("the sentence says what to DO instead",
-          "رکورد A" in r["reason"] or "زیردامنه" in r["reason"], True)
+    check("landing on someone else is not ok", r["ok"], False)
+    check("...and that is a definite no, not a doubt", r["unknown"], False)
+
+with patch.object(panel_tls, "resolve", return_value=["5.6.7.8"]), \
+     patch.object(panel_tls, "reaches_this_panel", return_value=(None, "no answer")), \
+     patch.object(panel_tls, "ports_in_use", return_value=[]):
+    r = panel_tls.check_dns("panel.example.com")
+    check("no answer is a DOUBT, not a refusal", (r["ok"], r["unknown"]), (False, True))
 
 with patch.object(panel_tls, "resolve", return_value=[]), \
-     patch.object(panel_tls, "server_public_ip", return_value="5.6.7.8"):
+     patch.object(panel_tls, "reaches_this_panel", return_value=(None, "no answer")), \
+     patch.object(panel_tls, "ports_in_use", return_value=[]):
     r = panel_tls.check_dns("panel.example.com")
-    check("a record that does not exist is not ok", r["ok"], False)
+    check("a record that does not exist is a definite no", (r["ok"], r["unknown"]), (False, False))
     check("...and the message says to create one", "رکورد A" in r["reason"], True)
-    check("...with this server's address available to show separately",
-          r["public_ip"], "5.6.7.8")
 
-with patch.object(panel_tls, "resolve", return_value=["5.6.7.8"]), \
-     patch.object(panel_tls, "server_public_ip", return_value=None):
-    r = panel_tls.check_dns("panel.example.com")
-    check("not knowing our own IP is not treated as success", r["ok"], False)
+print("\n--- the panel can prove it is itself ---")
+check("the token is stable across calls", panel_tls.instance_token(), panel_tls.instance_token())
+check("...and long enough not to be guessed", len(panel_tls.instance_token()) >= 16, True)
+from app.routers import panel_settings as ps_router  # noqa: E402
+check("it is served without a session, since the point is to be reached from outside",
+      ps_router.tls_echo_router.routes[0].path, "/api/tls-echo")
 
 print("\n--- enable() refuses before spending an issuance ---")
 with tempfile.TemporaryDirectory() as tmp:
@@ -109,7 +116,8 @@ with tempfile.TemporaryDirectory() as tmp:
          patch.object(panel_tls, "verify_host_path", return_value=tmp), \
          patch.object(panel_tls, "HOST_PROJECT_DIR", tmp), \
          patch.object(panel_tls, "resolve", return_value=["1.1.1.1"]), \
-         patch.object(panel_tls, "server_public_ip", return_value="5.6.7.8"):
+         patch.object(panel_tls, "ports_in_use", return_value=[]), \
+         patch.object(panel_tls, "reaches_this_panel", return_value=(False, "another server")):
         try:
             panel_tls.enable("panel.example.com")
             outcome = "went ahead"
@@ -218,6 +226,42 @@ from app.routers import panel_settings as ps  # noqa: E402
 check("there is an endpoint for the log", hasattr(ps, "get_tls_log"), True)
 check("...which reads the file the sibling wrote",
       "read_log" in inspect.getsource(ps.get_tls_log), True)
+
+print("\n--- a port clash is refused BEFORE anything is written ---")
+# Reported 2026-09-13 on the vendor's own server, which serves
+# license.netcip.ir on 443: the profile got written, Caddy could not bind,
+# and from then on EVERY `docker compose up` aborted on it - so an ordinary
+# `bash update.sh` could not bring the panel up at all. One failed switch
+# took out the whole stack.
+with tempfile.TemporaryDirectory() as tmp:
+    env_path = os.path.join(tmp, ".env")
+    _write_env_var(env_path, "COMPOSE_PROFILES", "license-server")
+    with patch.object(panel_tls, "_root_env_path", return_value=env_path), \
+         patch.object(panel_tls, "verify_host_path", return_value=tmp), \
+         patch.object(panel_tls, "HOST_PROJECT_DIR", tmp), \
+         patch.object(panel_tls, "ports_in_use", return_value=["443 (nginx)"]):
+        pathlib.Path(tmp, "docker-compose.yml").write_text("services: {}\n")
+        try:
+            panel_tls.enable("panel.example.com")
+            outcome = "went ahead"
+        except DeployError as exc:
+            outcome = "refused"
+            detail = str(exc)
+        check("a taken port is refused", outcome, "refused")
+        check("...naming the port and what holds it", "443" in detail and "nginx" in detail, True)
+        check("...and nothing was written, so `up` still works",
+              _read_env_var(env_path, "PANEL_DOMAIN"), None)
+        check("...and the tls profile was never added",
+              _read_env_var(env_path, "COMPOSE_PROFILES"), "license-server")
+
+        # force is for overriding a DNS doubt. It cannot conjure a free port,
+        # so it must not be able to skip this one.
+        try:
+            panel_tls.enable("panel.example.com", skip_dns_check=True)
+            forced = "went ahead"
+        except DeployError:
+            forced = "refused"
+        check("and «به‌هرحال ادامه بده» cannot override a port clash", forced, "refused")
 
 print("\n" + "=" * 60)
 if failures:

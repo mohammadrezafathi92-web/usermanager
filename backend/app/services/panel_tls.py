@@ -23,24 +23,39 @@ always a way back in by IP if DNS or the certificate ever breaks - locking
 the operator out of the panel while debugging the panel's own TLS would be
 a spectacular way to fail.
 
-The DNS check before any of that is the important part. Let's Encrypt's
-failure for a hostname that does not point here is a rate-limited, opaque
-"challenge failed", and five of those in a week locks the hostname out
-entirely. Asking DNS ourselves first turns the overwhelmingly common
-mistake - record not made, or still propagating - into a sentence the
-operator can act on, and costs one lookup.
+Two pre-flight checks, both learned the hard way on 2026-09-13.
+
+The readiness check asks the question END-TO-END: it fetches
+http://<hostname>/api/tls-echo and looks for this install's own token. That
+is the same question ACME is about to ask, asked the same way. The first
+version compared the hostname's A record against "our public IP" as reported
+by an outside service - which on this product is not a fixed value at all,
+because the backend container runs its own WireGuard tunnel to reach
+Telegram, so the answer is whichever route happens to be up. It refused a
+correctly-pointed domain while naming an address the operator had never
+seen. Getting this right matters because a failed issuance is rate-limited
+to five per hostname per week, with an error that says nothing about why.
+
+The port check refuses if another container already publishes 80 or 443.
+That is not a nicety: on the vendor's own server, which also serves
+license.netcip.ir on 443, enabling wrote the compose profile, Caddy could
+not bind, and from then on EVERY `docker compose up` aborted on it - so
+`bash update.sh` could no longer bring the panel up at all. One failed
+switch took out the whole stack.
 """
 from __future__ import annotations
 
 import logging
 import os
 import re
+import secrets
 import socket
 
 import requests
 
 from .local_deploy import (
     DeployError,
+    _docker_api,
     HOST_PROJECT_DIR,
     _read_env_var,
     _root_env_path,
@@ -60,6 +75,10 @@ FALLBACK_HTTP_PORT = 8080
 # it finishes there is no request left to return it to - see _apply().
 LOG_PATH = os.path.join(HOST_PROJECT_DIR, "backend", "data", ".panel_tls.log")
 _LOG_IN_CONTAINER = os.path.join(os.environ.get("APP_DATA_DIR", "/app/data"), ".panel_tls.log")
+
+# See instance_token(): stable for this process even when the data
+# directory cannot be written.
+_token_cache: str | None = None
 
 _HOSTNAME_RE = re.compile(
     r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$"
@@ -89,13 +108,58 @@ def normalise_domain(raw: str) -> str:
     return value
 
 
-def server_public_ip() -> str | None:
-    """This server's address as the rest of the internet sees it.
+def instance_token() -> str:
+    """A random string this install answers with, and no other does.
 
-    Read from outside rather than from a local interface on purpose: the
-    panel runs in a container behind Docker's NAT, so every address it can
-    see locally is a private one, and comparing a DNS record against
-    172.18.0.3 would fail for every correctly-configured install.
+    Written once to the persistent data volume. Not a secret and not a
+    credential - it proves only "the thing you just reached is this panel",
+    which is the entire question check_dns needs answered.
+    """
+    global _token_cache
+    if _token_cache:
+        return _token_cache
+
+    path = os.path.join(os.environ.get("APP_DATA_DIR", "/app/data"), ".panel_tls_token")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            token = fh.read().strip()
+            if token:
+                _token_cache = token
+                return token
+    except OSError:
+        pass
+
+    token = secrets.token_urlsafe(16)
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(token)
+    except OSError:
+        # A data directory that cannot be written must not make this return a
+        # DIFFERENT token each time - the check compares what came back over
+        # the network against this, so an unstable value would report "this
+        # hostname reaches a different panel" about the panel itself. Held in
+        # memory instead: good for this process's lifetime, which is all the
+        # check needs.
+        logger.warning("panel_tls: شناسه‌ی نمونه ذخیره نشد (%s) - تا ری‌استارت بعدی در حافظه می‌ماند", path)
+    _token_cache = token
+    return token
+
+
+def server_public_ip() -> str | None:
+    """This server's address as the internet sees it - INFORMATIONAL ONLY.
+
+    Deliberately no longer what decides anything. Reported 2026-09-13: the
+    check announced this server was 31.171.101.237, an address the operator
+    had never seen, and a minute later agreed it was 88.218.18.156. Both
+    answers came from here, and both were "true": the backend container
+    brings up its own WireGuard tunnel to reach Telegram (see
+    docker-compose.yml's NET_ADMIN/tun mounts and services/wg_tunnel.py), so
+    a request asking "what is my IP" leaves by whichever route happens to be
+    up and gets told the tunnel's exit address or the host's.
+
+    An answer that changes minute to minute cannot be the basis of "does
+    this hostname point at us" - it produced a flat refusal for a correctly
+    configured domain. check_dns asks the question end-to-end instead.
     """
     for url in ("https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com"):
         try:
@@ -109,6 +173,37 @@ def server_public_ip() -> str | None:
     return None
 
 
+def reaches_this_panel(domain: str) -> tuple[bool | None, str]:
+    """Does http://<domain>/ actually land on THIS panel?
+
+    The same question ACME is about to ask, asked the same way - from
+    outside, over the name, on the port the challenge will use. Immune to
+    every reason the IP comparison was not: NAT, a tunnel inside the
+    container, a CDN in front, several A records, IPv6.
+
+    Returns (True | False | None, reason). None means "could not tell" -
+    nothing answered - which is treated as a warning rather than a refusal,
+    since a panel whose own outbound traffic is restricted should still be
+    able to proceed.
+    """
+    url = f"http://{domain}/api/tls-echo"
+    try:
+        resp = requests.get(url, timeout=8, allow_redirects=False)
+    except requests.RequestException:
+        return None, "پاسخی از این دامنه روی پورت ۸۰ نیامد - یا هنوز پخش نشده، یا پورت ۸۰ سرور از بیرون بسته است."
+    if resp.status_code in (301, 302, 307, 308):
+        return None, "این دامنه به جای دیگری ریدایرکت می‌شود - احتمالاً یک CDN یا پروکسی جلوی آن است."
+    try:
+        token = (resp.json() or {}).get("token")
+    except ValueError:
+        token = None
+    if not token:
+        return False, "این دامنه به یک وب‌سرور دیگر می‌رسد، نه به این پنل."
+    if token != instance_token():
+        return False, "این دامنه به یک پنل دیگر می‌رسد، نه به این یکی."
+    return True, "این دامنه از بیرون به همین پنل می‌رسد - آماده‌ی گرفتن گواهی است."
+
+
 def resolve(domain: str) -> list[str]:
     try:
         return sorted({info[4][0] for info in socket.getaddrinfo(domain, None, socket.AF_INET)})
@@ -117,32 +212,61 @@ def resolve(domain: str) -> list[str]:
 
 
 def check_dns(domain: str) -> dict:
-    """What DNS says about this hostname, versus where we actually are.
+    """Is this hostname ready for a certificate?
 
-    Returns a dict rather than raising so the settings page can show the
-    situation while the operator is still editing - "points at 1.2.3.4, this
-    server is 5.6.7.8" is a far more useful screen than a refusal.
+    Decided by reaching the panel over the name (reaches_this_panel), not by
+    comparing IP addresses - see server_public_ip for why that comparison
+    was wrong here. The resolved addresses are still reported, because they
+    are what the operator edits, but they no longer decide.
     """
     resolved = resolve(domain)
-    public_ip = server_public_ip()
-    ok = bool(resolved) and bool(public_ip) and public_ip in resolved
+    reachable, reason = reaches_this_panel(domain)
 
-    # The addresses are deliberately NOT interpolated into this sentence.
-    # An IPv4 address inside right-to-left prose is reordered by the bidi
-    # algorithm, so "points at A but this server is B" can render with A and
-    # B in the opposite visual order - and the whole point of this message is
-    # to say which is which. The panel shows them on their own left-to-right
-    # lines instead (components/PanelTlsCard.jsx); the text only has to say
-    # what to DO about it.
     if not resolved:
+        reachable = False
         reason = "این دامنه به هیچ آدرسی اشاره نمی‌کند. یک رکورد A بسازید که به آی‌پی این سرور اشاره کند و چند دقیقه صبر کنید."
-    elif not public_ip:
-        reason = "آی‌پی عمومی این سرور خوانده نشد - دسترسی خروجی سرور را بررسی کنید."
-    elif not ok:
-        reason = "این دامنه به سرور دیگری اشاره می‌کند. یا رکورد A را به این سرور تغییر دهید، یا برای این پنل یک زیردامنه‌ی دیگر بسازید."
-    else:
-        reason = "درست به این سرور اشاره می‌کند - آماده‌ی گرفتن گواهی است."
-    return {"ok": ok, "domain": domain, "resolved": resolved, "public_ip": public_ip, "reason": reason}
+
+    return {
+        # None ("could not tell") is not a refusal - see reaches_this_panel.
+        "ok": reachable is True,
+        "unknown": reachable is None,
+        "domain": domain,
+        "resolved": resolved,
+        # Informational only now, and labelled as such in the panel.
+        "public_ip": None,
+        "reason": reason,
+        "ports": ports_in_use(),
+    }
+
+
+def ports_in_use() -> list[str]:
+    """Which of the ports Caddy needs are already published by some OTHER
+    container.
+
+    Reported 2026-09-13 on the vendor's own server, which also hosts
+    license.netcip.ir on 443: enabling TLS wrote the compose profile, the
+    Caddy container then failed to bind 443 - and from that moment every
+    `docker compose up` aborted on it, so an ordinary `bash update.sh`
+    could not bring the panel up at all. The conflict is knowable in
+    advance, so it is now checked in advance.
+
+    Only docker-published ports are visible from here; something listening
+    on the host outside docker is not. That is why the failure path below
+    still has to be survivable rather than merely unlikely.
+    """
+    busy: list[str] = []
+    containers = _docker_api("/containers/json") or []
+    if isinstance(containers, dict):
+        return busy
+    for container in containers:
+        names = [n.lstrip("/") for n in (container.get("Names") or [])]
+        if "usermanager-caddy" in names:
+            continue  # our own, from a previous attempt
+        for port in container.get("Ports") or []:
+            public = port.get("PublicPort")
+            if public in (80, 443):
+                busy.append(f"{public} ({names[0] if names else '?'})")
+    return sorted(set(busy))
 
 
 def current_state() -> dict:
@@ -242,6 +366,23 @@ def enable(domain: str, email: str = "", *, skip_dns_check: bool = False) -> str
     if not os.path.isfile(compose_path):
         raise DeployError(f"فایل docker-compose.yml در مسیر {compose_path} پیدا نشد.", "\n".join(log_lines))
 
+    # Checked before anything is written, and NOT skippable by `force` -
+    # forcing past a DNS doubt is a judgement call, but forcing Caddy onto a
+    # port another container already holds simply cannot work. Reported
+    # 2026-09-13 on the vendor's own server, which serves license.netcip.ir
+    # on 443: the profile got written, Caddy could not bind, and from then on
+    # every `docker compose up` aborted on it - so `bash update.sh` could no
+    # longer bring the panel up at all. One failed switch took out the whole
+    # stack, which is a far worse outcome than refusing.
+    busy = ports_in_use()
+    if busy:
+        raise DeployError(
+            "پورت " + " و ".join(busy) + " روی این سرور در اختیار سرویس دیگری است. "
+            "Caddy برای گرفتن گواهی به پورت‌های ۸۰ و ۴۴۳ نیاز دارد. "
+            "یا آن سرویس را جابه‌جا کنید، یا پنل را روی سروری بالا بیاورید که این پورت‌ها آزادند.",
+            "\n".join(log_lines),
+        )
+
     if not skip_dns_check:
         dns = check_dns(domain)
         log(dns["reason"])
@@ -249,9 +390,10 @@ def enable(domain: str, email: str = "", *, skip_dns_check: bool = False) -> str
         # Persian text to reorder them against - see check_dns.
         if dns["resolved"]:
             log("دامنه به: " + " ".join(dns["resolved"]))
-        if dns["public_ip"]:
-            log("این سرور: " + dns["public_ip"])
-        if not dns["ok"]:
+        # "Could not tell" is not "no". A panel whose own outbound traffic
+        # is restricted cannot reach itself over its own hostname, and
+        # refusing on that would block a perfectly good setup.
+        if not dns["ok"] and not dns["unknown"]:
             # Refused rather than attempted: five failed issuances in a week
             # locks this hostname out of Let's Encrypt entirely, and the
             # operator would be none the wiser until the sixth.

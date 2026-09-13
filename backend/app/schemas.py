@@ -1095,10 +1095,22 @@ class PanelTlsRequest(BaseModel):
 
 class PanelTlsDnsCheck(BaseModel):
     ok: bool
+    # True = "could not tell" - nothing answered over the hostname. A warning,
+    # not a refusal: a panel whose outbound traffic is restricted cannot reach
+    # itself, and that must not block a correct setup.
+    unknown: bool = False
     domain: str
     resolved: List[str] = []
+    # Informational only, and often wrong on this product: the backend
+    # container runs its own WireGuard tunnel, so "what is my public IP"
+    # answers with the tunnel's exit address as readily as the host's. See
+    # services/panel_tls.server_public_ip.
     public_ip: Optional[str] = None
     reason: str
+    # Ports 80/443 already published by another container, which would stop
+    # Caddy binding - and, before this was checked, took the whole compose
+    # stack down with it.
+    ports: List[str] = []
 
 
 class PanelTlsState(BaseModel):

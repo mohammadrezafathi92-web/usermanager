@@ -229,86 +229,132 @@ function ReferralCard({ code, payment, botUsername }) {
 }
 
 /**
- * A plan.
+ * Every plan in ONE card.
  *
- * `featured` is the FIRST card in the list, which is not arbitrary: the
- * packages arrive in the order the admin arranged them (Package.sort_order -
- * see routers/bot.py's list_packages), so "first" is already the reseller's
- * own answer to which plan they want pushed. Highlighting it needs no new
- * field and no guess.
+ * The names run along the top as a row of chips and the body below shows
+ * whichever is selected - rather than a column of near-identical cards the
+ * customer has to scroll through and hold in their head to compare. Asked
+ * for in exactly those terms: «همه اینا یه کارت بشه و اسم پکیج ها کنار هم
+ * باشه و با زدن روی هر کدوم توضیحات کارت عوض بشه».
+ *
+ * It is also the honest shape for this data. The plans differ in three
+ * numbers and a sentence; showing one at a time with the numbers in a fixed
+ * position means switching between them moves only what actually differs.
+ *
+ * Selection is kept as an ID and resolved against the current list on every
+ * render, never as an index. The list changes underneath it - the seat
+ * filter above, a reload after a purchase - and an index would then point at
+ * a different plan than the one whose name is highlighted, which is the
+ * quiet version of selling someone the wrong thing.
  */
-function PackageCard({ pkg, featured, onBuy }) {
+function PackagePicker({ packages, onBuy }) {
+  const [selectedId, setSelectedId] = useState(null);
+  const pkg = packages.find((p) => p.id === selectedId) || packages[0];
+  if (!pkg) return null;
+
   const protocols = [...new Set((pkg.connections || []).map((c) => c.protocol))];
   // A package the admin never gave a services bundle needs a node and a
   // protocol chosen by hand, which the bot asks over several questions and
-  // this screen does not ask yet. Saying so on the card is better than a
-  // button that fails after it is pressed.
+  // this screen does not ask yet. Saying so is better than a button that
+  // fails after it is pressed.
   const buyable = protocols.length > 0;
   const seats = pkg.max_concurrent_sessions || 0;
+  // First in the list is the reseller's own answer to which plan they want
+  // pushed: the packages arrive in Package.sort_order, which the admin
+  // arranges by hand (routers/bot.py's list_packages). No new field, no guess.
+  const recommended = packages[0];
 
   return (
-    <div
-      className={`rounded-2xl p-4 mb-3 border ${
-        featured
-          ? "bg-emerald-500/[0.07] border-emerald-500/25"
-          : "bg-white/[0.04] border-white/[0.07]"
-      }`}
-    >
-      <div className="flex items-start gap-3">
-        <IconTile icon={Globe} tone={featured ? "emerald" : "sky"} />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-2">
-            <div className="font-bold text-[15px] truncate">{pkg.name}</div>
-            {featured && <Badge>پیشنهاد ما</Badge>}
-          </div>
-          <div className="text-xs opacity-50 mt-1">
-            {pkg.quota_gb ? `${fa(pkg.quota_gb)} گیگابایت` : "حجم نامحدود"}
-            {" · "}
-            {pkg.duration_days ? `${fa(pkg.duration_days)} روز` : "بدون انقضا"}
-            {seats > 0 ? ` · ${fa(seats)} کاربر همزمان` : ""}
-          </div>
-        </div>
+    <div className={`rounded-2xl border ${CARD} overflow-hidden`}>
+      {/* The names. Horizontally scrollable rather than wrapped: a wrapping
+          row changes height as the selection moves, which makes the whole
+          card jump under the thumb that just tapped it. */}
+      <div className="flex gap-2 overflow-x-auto p-3 pb-3 border-b border-white/[0.07]">
+        {packages.map((p) => {
+          const active = p.id === pkg.id;
+          return (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => setSelectedId(p.id)}
+              className={`shrink-0 px-3.5 py-2 rounded-xl text-xs font-medium whitespace-nowrap transition-colors ${
+                active ? "bg-sky-500 text-white" : "bg-white/[0.05] opacity-60"
+              }`}
+            >
+              {p.name}
+              {p.id === recommended.id && !active && (
+                <span className="ms-1.5 inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 align-middle" />
+              )}
+            </button>
+          );
+        })}
       </div>
 
-      {pkg.description && (
-        <p className="text-xs opacity-45 mt-3 leading-relaxed">{pkg.description}</p>
-      )}
+      <div className="p-4">
+        <div className="flex items-start gap-3">
+          <IconTile icon={Globe} tone={pkg.id === recommended.id ? "emerald" : "sky"} />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-2">
+              <div className="font-bold text-[15px] truncate">{pkg.name}</div>
+              {pkg.id === recommended.id && <Badge>پیشنهاد ما</Badge>}
+            </div>
+            <div className="text-xs opacity-50 mt-1">
+              {pkg.quota_gb ? `${fa(pkg.quota_gb)} گیگابایت` : "حجم نامحدود"}
+              {" · "}
+              {pkg.duration_days ? `${fa(pkg.duration_days)} روز` : "بدون انقضا"}
+              {seats > 0 ? ` · ${fa(seats)} کاربر همزمان` : ""}
+            </div>
+          </div>
+        </div>
 
-      {protocols.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 mt-3">
-          {protocols.map((protocol) => (
-            <span
-              key={protocol}
-              className="text-[10px] px-2 py-1 rounded-lg bg-white/[0.06] opacity-70"
-              dir="ltr"
-            >
-              {protocol}
+        {/* A fixed minimum height. Plans have descriptions of wildly
+            different lengths, and without this the buy button slides up and
+            down the screen as the customer taps between names - so the place
+            they are aiming for is never where it was a moment ago. */}
+        <div className="min-h-[3.5rem] mt-3">
+          {pkg.description && (
+            <p className="text-xs opacity-45 leading-relaxed">{pkg.description}</p>
+          )}
+        </div>
+
+        {protocols.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mt-1">
+            {protocols.map((protocol) => (
+              <span
+                key={protocol}
+                className="text-[10px] px-2 py-1 rounded-lg bg-white/[0.06] opacity-70"
+                dir="ltr"
+              >
+                {protocol}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* The price sits INSIDE the button, on the far side. The eye looks
+            for the number and the thumb looks for the button; putting them in
+            one shape means it only has to find one thing. */}
+        {buyable ? (
+          <button
+            type="button"
+            onClick={() => onBuy(pkg)}
+            className={`w-full mt-4 rounded-xl flex items-center justify-between gap-2 p-1 pe-4 text-sm font-medium text-white ${
+              pkg.id === recommended.id
+                ? "bg-emerald-500 active:bg-emerald-600"
+                : "bg-sky-500 active:bg-sky-600"
+            }`}
+          >
+            <span className="bg-black/20 rounded-lg px-3 py-2 text-xs">
+              {formatToman(pkg.price, "fa")} تومان
             </span>
-          ))}
-        </div>
-      )}
-
-      {/* The price sits INSIDE the button, on the far side. The eye looks
-          for the number and the thumb looks for the button; putting them in
-          one shape means it only has to find one thing. */}
-      {buyable ? (
-        <button
-          type="button"
-          onClick={() => onBuy(pkg)}
-          className={`w-full mt-4 rounded-xl flex items-center justify-between gap-2 p-1 pe-4 text-sm font-medium text-white ${
-            featured ? "bg-emerald-500 active:bg-emerald-600" : "bg-sky-500 active:bg-sky-600"
-          }`}
-        >
-          <span className="bg-black/20 rounded-lg px-3 py-2 text-xs" dir="rtl">
-            {formatToman(pkg.price, "fa")} تومان
-          </span>
-          <span className="flex-1 text-center">خرید</span>
-        </button>
-      ) : (
-        <div className="text-xs opacity-40 mt-4 text-center py-2">
-          خرید این پلن فعلاً از داخل خود ربات انجام می‌شود.
-        </div>
-      )}
+            <span className="flex-1 text-center">خرید</span>
+          </button>
+        ) : (
+          <div className="text-xs opacity-40 mt-4 text-center py-3">
+            خرید این پلن فعلاً از داخل خود ربات انجام می‌شود.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -755,14 +801,20 @@ export default function MiniApp() {
               </div>
             )}
 
-            {visiblePackages.length === 0 && (
+            {visiblePackages.length === 0 ? (
               <Card className="text-center text-sm opacity-50 py-8">
                 پلنی در این دسته موجود نیست.
               </Card>
+            ) : (
+              // Keyed by the group, so switching «۱ کاربره» ⇄ «۲ کاربره»
+              // starts on that group's own first plan instead of keeping a
+              // selection made in the previous one.
+              <PackagePicker
+                key={activeSeats ?? "all"}
+                packages={visiblePackages}
+                onBuy={setBuying}
+              />
             )}
-            {visiblePackages.map((pkg, index) => (
-              <PackageCard key={pkg.id} pkg={pkg} featured={index === 0} onBuy={setBuying} />
-            ))}
           </>
         )}
 

@@ -267,6 +267,14 @@ export default function UserDetail() {
   const [purchaseRenewForm, setPurchaseRenewForm] = useState({ add_gb: "", add_days: "", reset_usage: true, package_id: "" });
   const [purchaseRenewSaving, setPurchaseRenewSaving] = useState(false);
   const [purchaseRenewError, setPurchaseRenewError] = useState("");
+  // MUST live up here with the other hooks, not next to the handler that
+  // uses it: there is an `if (!user) return <loading/>` below, so a hook
+  // declared after it runs on some renders and not others. React counts
+  // hooks per render, so that is not a subtle bug - it throws "rendered
+  // more hooks than during the previous render" the moment the user
+  // finishes loading, and every customer's page went white. Reported
+  // 2026-09-13, and the same shape as the StatCard white page before it.
+  const [resetTarget, setResetTarget] = useState(null); // the Purchase awaiting a reset
 
   const load = () => fetchUser(id).then((res) => {
     setUser(res.data);
@@ -512,7 +520,6 @@ export default function UserDetail() {
   // it is a sale and needs a package to be charged against - see
   // components/ResetUsageDialog.jsx. The bare confirm() this used to be is
   // still what a superadmin gets, inside that same dialog.
-  const [resetTarget, setResetTarget] = useState(null); // the Purchase awaiting a reset
   const resetPurchase = async (packageId) => {
     if (!resetTarget) return;
     setResettingPurchaseId(resetTarget.id);

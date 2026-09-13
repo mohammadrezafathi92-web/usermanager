@@ -18,6 +18,7 @@ import Ads from "./pages/Ads.jsx";
 import ConfirmPasswordGate from "./components/ConfirmPasswordGate.jsx";
 import LicenseLockOverlay from "./components/LicenseLockOverlay.jsx";
 import Subscription from "./pages/Subscription.jsx";
+import MiniApp from "./pages/MiniApp.jsx";
 
 function Protected({ children }) {
   const { token, loading } = useAuth();
@@ -195,6 +196,13 @@ export default function App() {
           unguessable token in the URL (see routers/subscription.py). Must
           stay OUTSIDE Protected/AdminOrAboveOnly/PermRoute. */}
       <Route path="/s/:token" element={<Subscription />} />
+      {/* The Telegram Mini App. Also outside every guard, and for a stronger
+          reason: there is no session here at all. The page is opened inside
+          Telegram, which hands it a signed initData blob, and that blob is
+          the only credential - checked server-side against every bot this
+          panel runs, which is also what decides whose shop to show. One URL
+          serves every reseller on this install. See pages/MiniApp.jsx. */}
+      <Route path="/app" element={<MiniApp />} />
       <Route path="/a/:slug" element={<Navigate to="/login" replace />} />
       <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

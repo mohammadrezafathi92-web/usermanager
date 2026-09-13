@@ -20,7 +20,7 @@ from .services.ads import run_due_campaigns
 from .services.radius_server import start_radius_server_in_background, cleanup_stale_radius_sessions, cleanup_old_radius_limit_logs
 from .services.notify import run_daily_notify_job
 from .services.backup import run_scheduled_backup, ha_healthcheck, ha_pull_and_apply, notify_admins_text
-from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, telegram_proxy, tg_tunnel, tutorials, backup, remote_bot, admins, radius_logs, discount_codes, subscription, accounting as accounting_router, ads as ads_router, license as license_router, ip_bans as ip_bans_router, db_health as db_health_router
+from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, panel_settings, telegram_bot_settings, telegram_proxy, tg_tunnel, tutorials, backup, remote_bot, admins, radius_logs, discount_codes, subscription, accounting as accounting_router, ads as ads_router, license as license_router, ip_bans as ip_bans_router, db_health as db_health_router, miniapp
 from .services import accounting as accounting_service
 from .services import purchase_migration
 from .services import ip_guard
@@ -154,6 +154,7 @@ app.include_router(discount_codes.router)
 app.include_router(panel_settings.my_payment_router)
 app.include_router(panel_settings.ha_router)
 app.include_router(panel_settings.tls_echo_router)
+app.include_router(miniapp.router)
 app.include_router(subscription.router)
 app.include_router(accounting_router.router)
 app.include_router(ads_router.router)

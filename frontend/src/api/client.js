@@ -513,3 +513,12 @@ export const disableTls = () => client.post("/settings/tls/disable");
 // Enabling recreates the nginx that answers this API, so the work runs in a
 // helper container that outlives the request - this is how it reports back.
 export const fetchTlsLog = () => client.get("/settings/tls/log");
+
+// The Telegram Mini App. Deliberately NOT using `client` above: that
+// instance attaches the admin JWT and would drag the confirm-password
+// interceptor and the 401-redirect-to-login behaviour into a page that has
+// no session and no login to go back to. The only credential here is the
+// initData blob Telegram hands the page, which is verified server-side
+// against every bot this panel runs (see backend services/telegram_webapp.py).
+export const fetchMiniAppHome = (initData) =>
+  axios.get("/api/miniapp/home", { headers: { "X-Telegram-InitData": initData } });

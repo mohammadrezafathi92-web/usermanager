@@ -518,3 +518,21 @@ export const fetchTlsLog = () => client.get("/settings/tls/log");
 // against every bot this panel runs (see backend services/telegram_webapp.py).
 export const fetchMiniAppHome = (initData) =>
   axios.get("/api/miniapp/home", { headers: { "X-Telegram-InitData": initData } });
+
+// Pay from the wallet - provisions immediately, no approval.
+export const miniAppCheckout = (initData, body) =>
+  axios.post("/api/miniapp/checkout", body, { headers: { "X-Telegram-InitData": initData } });
+
+// Card-to-card - uploads the receipt photo and joins the bot's existing
+// «درخواست‌های در انتظار» queue. multipart, so no explicit Content-Type:
+// the browser has to set it itself, boundary and all.
+export const miniAppCheckoutReceipt = (initData, { packageId, account, comment, file }) => {
+  const form = new FormData();
+  form.append("package_id", packageId);
+  if (account) form.append("account", account);
+  if (comment) form.append("comment", comment);
+  form.append("photo", file);
+  return axios.post("/api/miniapp/checkout/receipt", form, {
+    headers: { "X-Telegram-InitData": initData },
+  });
+};

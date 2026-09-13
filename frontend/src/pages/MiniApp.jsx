@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
-import { Package, Wallet, Layers, AlertTriangle } from "lucide-react";
-import { fetchMiniAppHome } from "../api/client.js";
+import React, { useEffect, useRef, useState } from "react";
+import { Package, Wallet, Layers, AlertTriangle, Check, Upload, X, Loader2 } from "lucide-react";
+import { fetchMiniAppHome, miniAppCheckout, miniAppCheckoutReceipt } from "../api/client.js";
 import { formatBytes, formatToman } from "../utils.js";
 
 /** Persian digits. Latin numerals beside Persian text render in a
@@ -112,8 +112,13 @@ function Card({ children, className = "" }) {
   );
 }
 
-function PackageCard({ pkg }) {
+function PackageCard({ pkg, onBuy }) {
   const services = [...new Set((pkg.connections || []).map((c) => c.protocol))];
+  // A package the admin never gave a services bundle needs a node and a
+  // protocol chosen by hand, which the bot asks over several questions and
+  // this screen does not ask yet. Saying so on the card is better than a
+  // button that fails after it is pressed.
+  const buyable = services.length > 0;
   return (
     <Card className="mb-3">
       <div className="font-bold">{pkg.name}</div>
@@ -149,7 +154,171 @@ function PackageCard({ pkg }) {
         <span className="text-xs opacity-50">قیمت</span>
         <span className="font-bold">{formatToman(pkg.price, "fa")} تومان</span>
       </div>
+
+      {buyable ? (
+        <button
+          type="button"
+          onClick={() => onBuy(pkg)}
+          className="w-full mt-3 py-2.5 rounded-xl bg-sky-500 active:bg-sky-600 text-white text-sm font-medium"
+        >
+          خرید
+        </button>
+      ) : (
+        <div className="text-xs opacity-50 mt-3 text-center">
+          برای خرید این پلن، از منوی خود ربات اقدام کنید.
+        </div>
+      )}
     </Card>
+  );
+}
+
+/**
+ * Checkout. One package, one sheet, two ways to pay - the two the bot
+ * already offers, so a sale made here lands in exactly the same places.
+ *
+ * The wallet button is only offered when the balance actually covers the
+ * price. An enabled button that answers «موجودی کافی نیست» is a worse way
+ * of saying the same thing, one tap later.
+ */
+function CheckoutSheet({ pkg, wallet, account, payment, initData, onClose, onDone }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [file, setFile] = useState(null);
+  const fileInput = useRef(null);
+  const price = pkg.price || 0;
+  const canPayFromWallet = wallet >= price && Boolean(account);
+
+  const fail = (err) =>
+    setError(err?.response?.data?.detail || "انجام نشد. دوباره تلاش کنید.");
+
+  const payFromWallet = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await miniAppCheckout(initData, { package_id: pkg.id, account });
+      onDone(res.data.message);
+    } catch (err) {
+      fail(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sendReceipt = async () => {
+    if (!file) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await miniAppCheckoutReceipt(initData, {
+        packageId: pkg.id,
+        account,
+        file,
+      });
+      onDone(res.data.message);
+    } catch (err) {
+      fail(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end" dir="rtl">
+      <div className="absolute inset-0 bg-black/60" onClick={busy ? undefined : onClose} />
+      <div className="relative w-full max-w-lg mx-auto rounded-t-3xl bg-[var(--tg-theme-secondary-bg-color,#232e3c)] text-[var(--tg-theme-text-color,#fff)] p-5 pb-8 max-h-[88vh] overflow-y-auto">
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div className="min-w-0">
+            <div className="font-bold truncate">{pkg.name}</div>
+            <div className="text-xs opacity-60 mt-0.5">
+              {formatToman(price, "fa")} تومان
+            </div>
+          </div>
+          <button type="button" onClick={onClose} disabled={busy} className="opacity-60 p-1 -m-1">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="rounded-xl bg-white/5 px-3 py-2.5 text-xs flex items-center justify-between mb-4">
+          <span className="opacity-60">موجودی کیف پول</span>
+          <span dir="ltr">{formatToman(wallet, "fa")}</span>
+        </div>
+
+        {canPayFromWallet && (
+          <button
+            type="button"
+            onClick={payFromWallet}
+            disabled={busy}
+            className="w-full py-3 rounded-xl bg-emerald-500 active:bg-emerald-600 disabled:opacity-50 text-white text-sm font-medium flex items-center justify-center gap-2"
+          >
+            {busy ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
+            پرداخت از کیف پول
+          </button>
+        )}
+
+        <div className="mt-5 pt-4 border-t border-white/10">
+          <div className="text-sm font-medium mb-2">
+            {canPayFromWallet ? "یا کارت‌به‌کارت" : "پرداخت کارت‌به‌کارت"}
+          </div>
+          {!canPayFromWallet && wallet > 0 && (
+            <div className="text-xs text-amber-400 mb-2">
+              موجودی کیف پول برای این پلن کافی نیست.
+            </div>
+          )}
+
+          {payment?.payment_card_number ? (
+            <div className="rounded-xl bg-white/5 p-3 text-sm space-y-1 mb-3">
+              <div className="text-xs opacity-60">
+                مبلغ {formatToman(price, "fa")} تومان را به این کارت واریز کنید:
+              </div>
+              <div dir="ltr" className="font-mono select-all">{payment.payment_card_number}</div>
+              {payment.payment_card_holder && (
+                <div className="opacity-70 text-xs">{payment.payment_card_holder}</div>
+              )}
+            </div>
+          ) : (
+            <div className="text-xs opacity-60 mb-3">
+              هنوز شماره کارتی ثبت نشده - با پشتیبانی تماس بگیرید.
+            </div>
+          )}
+
+          {/* A plain file input is unstyleable and, in Telegram's webview,
+              easy to miss entirely. The button drives it instead. */}
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              setFile(e.target.files?.[0] || null);
+              setError("");
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => fileInput.current?.click()}
+            disabled={busy}
+            className="w-full py-2.5 rounded-xl border border-white/15 text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+          >
+            <Upload size={15} />
+            {file ? "عکس رسید انتخاب شد ✓" : "انتخاب عکس رسید"}
+          </button>
+
+          <button
+            type="button"
+            onClick={sendReceipt}
+            disabled={busy || !file}
+            className="w-full mt-2 py-3 rounded-xl bg-sky-500 active:bg-sky-600 disabled:opacity-40 text-white text-sm font-medium flex items-center justify-center gap-2"
+          >
+            {busy ? <Loader2 size={16} className="animate-spin" /> : null}
+            ارسال رسید
+          </button>
+        </div>
+
+        {error && (
+          <div className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2 mt-4">{error}</div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -222,6 +391,8 @@ export default function MiniApp() {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [tab, setTab] = useState("shop");
+  const [buying, setBuying] = useState(null);
+  const [done, setDone] = useState("");
 
   // Read once, from the URL, and kept for the retry button. Not derived
   // from webApp: see initDataFromUrl on why the page must not wait for
@@ -360,7 +531,7 @@ export default function MiniApp() {
               <Card className="text-center text-sm opacity-60">هنوز پلنی برای فروش تعریف نشده.</Card>
             )}
             {data.shop.packages.map((pkg) => (
-              <PackageCard key={pkg.id} pkg={pkg} />
+              <PackageCard key={pkg.id} pkg={pkg} onBuy={setBuying} />
             ))}
           </>
         )}
@@ -414,6 +585,43 @@ export default function MiniApp() {
           ))}
         </div>
       </div>
+
+      {buying && (
+        <CheckoutSheet
+          pkg={buying}
+          wallet={data.me.wallet}
+          account={data.me.accounts?.[0]?.username || ""}
+          payment={data.payment}
+          initData={initData || webApp?.initData || ""}
+          onClose={() => setBuying(null)}
+          onDone={(message) => {
+            setBuying(null);
+            setDone(message);
+            // Refetch rather than patch the state by hand: the wallet, the
+            // services list and the one-time-package rules all moved, and
+            // guessing which is how a screen ends up disagreeing with the
+            // server about what the customer owns.
+            load(initData || webApp?.initData || "");
+          }}
+        />
+      )}
+
+      {done && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6" dir="rtl">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setDone("")} />
+          <Card className="relative bg-[var(--tg-theme-secondary-bg-color,#232e3c)] text-center max-w-xs">
+            <Check className="mx-auto mb-3 text-emerald-400" size={30} />
+            <div className="text-sm leading-relaxed">{done}</div>
+            <button
+              type="button"
+              className="mt-4 w-full py-2.5 rounded-xl bg-sky-500 text-white text-sm"
+              onClick={() => setDone("")}
+            >
+              باشه
+            </button>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }

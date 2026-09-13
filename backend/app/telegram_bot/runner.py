@@ -33,8 +33,8 @@ from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
-    BotCommand, BotCommandScopeChat, BotCommandScopeDefault, CallbackQuery, FSInputFile,
-    InlineKeyboardButton, InlineKeyboardMarkup,
+    BotCommand, BotCommandScopeChat, BotCommandScopeDefault, BufferedInputFile, CallbackQuery,
+    FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup,
 )
 
 from .config import config
@@ -670,6 +670,58 @@ def send_document_sync(chat_id: int, file_path: str, caption: str = "", timeout:
         logger.warning(
             "send_document_sync to %s failed (%s): %s: %s", chat_id, file_path, type(exc).__name__, exc
         )
+        return False
+
+
+def send_photo_sync(
+    chat_id: int,
+    image: bytes,
+    caption: str = "",
+    reply_markup=None,
+    timeout: float = 60.0,
+    token: str | None = None,
+    filename: str = "receipt.jpg",
+) -> bool:
+    """send_message_sync's sibling for an image held in memory.
+
+    Exists for the Mini App's card-to-card checkout: a receipt photographed
+    in a web page arrives as BYTES, not as a Telegram file_id, so the
+    approval prompt that the bot's own receipt flow sends with
+    `bot.send_photo(admin_id, file_id, ...)` cannot be reused as-is. This
+    uploads the bytes once per recipient instead.
+
+    `reply_markup` is passed straight through so the admin gets the very
+    same Approve/Reject keyboard (keyboards.approval_kb) as a receipt sent
+    in chat - the whole point being that, from the owner's side, a Mini App
+    receipt is just a receipt.
+    """
+    token = token or _lookup_bot_token()
+    if not token:
+        return False
+
+    async def _send():
+        bot = _make_bot(token)
+        try:
+            await asyncio.wait_for(
+                bot.send_photo(
+                    chat_id,
+                    BufferedInputFile(image, filename=filename),
+                    caption=caption or None,
+                    reply_markup=reply_markup,
+                ),
+                timeout=timeout,
+            )
+        finally:
+            await bot.session.close()
+
+    try:
+        asyncio.run(_send())
+        return True
+    except Exception as exc:
+        # Warning, not debug: this is money arriving. An owner who is never
+        # shown the receipt cannot approve it, and the customer is left
+        # waiting on a purchase that looks, to them, like it went through.
+        logger.warning("send_photo_sync to %s failed: %s: %s", chat_id, type(exc).__name__, exc)
         return False
 
 

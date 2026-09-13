@@ -1,6 +1,8 @@
 from aiogram import Router
 
-from . import start, admin_users, admin_pending, admin_broadcast, customer, tutorials
+from . import (
+    start, admin_users, admin_pending, admin_broadcast, customer, persistent_menu, tutorials,
+)
 
 
 def _detach(router: Router) -> None:
@@ -24,7 +26,14 @@ def build_router() -> Router:
     root = Router(name="root")
     for r in (
         start.router, admin_users.router, admin_pending.router, admin_pending.approval_router,
-        admin_broadcast.router, customer.router, tutorials.router,
+        admin_broadcast.router,
+        # Before customer.router on purpose: the bottom menu bar has to work
+        # even when the customer is mid-flow, and customer.router's FSM
+        # state handlers would otherwise eat the tap as if it were the
+        # username/amount they were being asked for. See the module
+        # docstring in persistent_menu.py.
+        persistent_menu.router,
+        customer.router, tutorials.router,
     ):
         _detach(r)
         root.include_router(r)

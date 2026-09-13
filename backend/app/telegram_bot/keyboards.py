@@ -1,4 +1,9 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from .utils import fmt_date_jalali
@@ -110,6 +115,38 @@ async def main_menu_kb(scope: dict | None) -> InlineKeyboardMarkup:
             rows.append(1)
         kb.adjust(*(rows or [1]))
     return kb.as_markup()
+
+
+async def persistent_menu_kb() -> ReplyKeyboardMarkup | None:
+    """The bar pinned under the text box in a customer's chat.
+
+    Same items, same order and the same «منوی مشتری» on/off switches as the
+    inline menu above - deliberately ONE list (CUSTOMER_MENU_ITEMS), because
+    two lists of shop buttons would drift apart the first time someone added
+    a feature. See handlers/persistent_menu.py for how a tap gets routed.
+
+    None when the panel owner has switched every item off: an empty bar is
+    worse than none, and Telegram will not accept one anyway.
+    """
+    from .panel_bridge import api, ApiError
+
+    try:
+        disabled = set(await api.get_customer_menu_disabled_items())
+    except ApiError:
+        disabled = set()
+    labels = [label for action, label in CUSTOMER_MENU_ITEMS if action not in disabled]
+    if not labels:
+        return None
+    rows = [
+        [KeyboardButton(text=label) for label in labels[i:i + 2]]
+        for i in range(0, len(labels), 2)
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
+        resize_keyboard=True,   # without this Telegram gives it half the screen
+        is_persistent=True,     # stays open instead of collapsing behind an icon
+        input_field_placeholder="از منوی پایین انتخاب کنید…",
+    )
 
 
 def cancel_kb() -> InlineKeyboardMarkup:

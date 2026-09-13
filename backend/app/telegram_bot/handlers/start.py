@@ -67,6 +67,15 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     scope = await resolve_admin_scope(message.from_user.id)
     text = await _welcome_text(message.from_user, scope)
     await message.answer(text, reply_markup=await main_menu_kb(scope))
+    if scope is None:
+        # Customers also get the bar pinned under the text box, so the shop
+        # is reachable from anywhere in the chat rather than only from this
+        # one message. Sent as its own message because Telegram will not
+        # carry an inline keyboard and a reply keyboard on the same one.
+        # See handlers/persistent_menu.py.
+        from .persistent_menu import send_menu_bar
+
+        await send_menu_bar(message)
 
 
 @router.message(Command("help"))

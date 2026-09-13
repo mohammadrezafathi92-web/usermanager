@@ -23,7 +23,7 @@ from ..keyboards import (
     cancel_kb,
 )
 from ..states import AdminCreateUserStates, AdminRenewStates, AdminSearchStates, AdminBalanceStates
-from ..utils import fmt_bytes, fmt_date, STATUS_LABELS
+from ..utils import fmt_bytes, fmt_date, packages_message, STATUS_LABELS
 from ..connection_sender import send_connections
 
 router = Router(name="admin_users")
@@ -186,7 +186,8 @@ async def admin_create_username(message: Message, state: FSMContext, acting_scop
     await state.update_data(new_username=username, packages={str(p["id"]): p for p in packages})
     await state.set_state(AdminCreateUserStates.picking_package)
     await message.answer(
-        f"کاربر «{username}» با کدام پکیج ساخته شود؟", reply_markup=admin_create_packages_kb(packages)
+        packages_message(packages, title=f"🛍 <b>کاربر «{username}» با کدام پکیج ساخته شود؟</b>"),
+        reply_markup=admin_create_packages_kb(packages),
     )
 
 
@@ -477,7 +478,7 @@ async def _ask_renew_package(target_message, state: FSMContext, username: str, p
     await state.set_state(AdminRenewStates.picking_package)
     await state.update_data(username=username, purchase_id=purchase_id)
     await target_message.edit_text(
-        "کدام پکیج برای تمدید این سرویس اضافه شود؟",
+        packages_message(packages, title="🔄 <b>کدام پکیج برای تمدید این سرویس اضافه شود؟</b>"),
         reply_markup=admin_renew_packages_kb(packages, username),
     )
 
@@ -539,7 +540,7 @@ async def cb_user_add_package(call: CallbackQuery, callback_data: AdminUserCB, a
         await call.answer("پکیجی تعریف نشده است", show_alert=True)
         return
     await call.message.edit_text(
-        f"کدام پکیج به «{callback_data.username}» اضافه شود؟",
+        packages_message(packages, title=f"📦 <b>کدام پکیج به «{callback_data.username}» اضافه شود؟</b>"),
         reply_markup=admin_packages_kb(callback_data.username, packages),
     )
     await call.answer()

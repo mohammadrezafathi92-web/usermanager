@@ -106,18 +106,25 @@ async def run():
     await tap.message.edit_text("سلام")
     check("an edit becomes a new message, since there is nothing to edit",
           msg.answers[-1][0], "سلام")
-    await tap.answer()  # the silent toast
-    check("a silent call.answer() says nothing", len(msg.answers), 1)
+    await tap.answer()  # the bare acknowledgement
+    check("a wordless call.answer() says nothing", len(msg.answers), 1)
     await tap.answer("خطا", show_alert=True)
-    check("but an ALERT has to become a real message or it is lost",
-          msg.answers[-1][0], "خطا")
+    check("an ALERT becomes a real message or it is lost", msg.answers[-1][0], "خطا")
+    # customer.py's _resolve_account checks isinstance(target, CallbackQuery)
+    # and, finding this is not one, calls answer() in the MESSAGE sense.
+    # Swallowing that made the multi-account picker disappear.
+    await tap.answer("کدام حساب؟", reply_markup="KB")
+    check("...and so does a message-style answer with a keyboard",
+          msg.answers[-1], ("کدام حساب؟", "KB"))
 
-    print("\n--- an admin's chat is left alone ---")
-    persistent_menu.resolve_admin_scope = AsyncMock(return_value={"role": "admin"})
+    print("\n--- an admin tapping it gets the customer screen, never silence ---")
+    # Reported the day the bar shipped: "این دکمه ها کار نمیکنه". The first
+    # version returned early for anyone with an admin scope, so every tap
+    # vanished with no reply. The bar is pinned to a CHAT, not a role, so
+    # whoever has it must get an answer from it.
     called.clear()
     await persistent_menu.on_menu_tap(FakeMessage("🛒 خرید اکانت جدید"), state=AsyncMock(), bot=object())
-    check("the bar does not hijack an admin", called, {})
-    persistent_menu.resolve_admin_scope = AsyncMock(return_value=None)
+    check("an admin gets the same handler, not nothing", "buy" in called, True)
 
     print("\n--- a disabled item cannot be reached by typing its label ---")
     panel_bridge.api.get_customer_menu_disabled_items = AsyncMock(return_value=["cust_buy"])
@@ -146,7 +153,56 @@ from app.telegram_bot.handlers import start as start_handlers  # noqa: E402
 
 src = inspect.getsource(start_handlers.cmd_start)
 check("/start sends it", "send_menu_bar" in src, True)
-check("...only to customers", "scope is None" in src, True)
+# Deliberately NOT gated on role any more: the bar belongs to a chat, so
+# restricting who receives it only creates chats where it is present and
+# does nothing.
+check("...to everyone, so nobody ends up with a bar that does nothing",
+      "scope is None" in src, False)
+
+print("\n--- the plan cards ---")
+# "کارت پلن با آیکون و توضیح و لیست تخفیف‌ها، و پیام‌های مرتب‌تر" - the picker
+# used to be a bare "یک پکیج انتخاب کنید:" over buttons reading "name ·
+# price", so everything needed to CHOOSE was either crammed into the name or
+# missing.
+from app.telegram_bot.utils import fmt_gb, fmt_toman, fmt_days, package_card, packages_message  # noqa: E402
+
+check("prices are in Persian digits", fmt_toman(100000), "۱۰۰,۰۰۰ تومان")
+check("free is said, not printed as zero", fmt_toman(0), "رایگان")
+check("gigabytes", fmt_gb(20), "۲۰ گیگابایت")
+check("a sub-gigabyte package reads as megabytes, not 0.2", fmt_gb(0.2), "۲۰۵ مگابایت")
+check("no quota means unlimited, not zero", fmt_gb(0), "نامحدود")
+check("days", fmt_days(30), "۳۰ روز")
+check("no duration says so", fmt_days(0), "بدون انقضا")
+
+rich = {"name": "پریمیوم", "price": 250000, "quota_gb": 50, "duration_days": 30,
+        "max_concurrent_sessions": 2, "one_time_per_user": False,
+        "connections": [{"protocol": "wireguard"}, {"protocol": "xray"}, {"protocol": "wireguard"}],
+        "description": "مناسب تماس تصویری."}
+card = package_card(rich, index=1)
+for label, needle in [("the name", "پریمیوم"), ("the price", "۲۵۰,۰۰۰"),
+                      ("the quota", "۵۰ گیگابایت"), ("the duration", "۳۰ روز"),
+                      ("how many devices", "کاربر همزمان"),
+                      ("what they actually get", "WireGuard"),
+                      ("the admin's own description", "مناسب تماس تصویری.")]:
+    check(f"the card shows {label}", needle in card, True)
+check("a protocol bundled twice is listed once", card.count("WireGuard"), 1)
+
+bare = package_card({"name": "ساده", "price": 50000})
+check("an empty description adds no empty line", bare.strip().endswith("بدون انقضا"), True)
+check("no session line when the admin did not set one", "کاربر همزمان" in bare, False)
+check("a one-time package says so",
+      "فقط یک‌بار" in package_card({"name": "تست", "one_time_per_user": True}), True)
+
+msg = packages_message([rich, {"name": "ساده", "price": 50000}])
+check("cards are numbered to match the buttons", "۱." in msg and "۲." in msg, True)
+from app.telegram_bot.utils import CARD_SEPARATOR  # noqa: E402
+check("two cards get exactly one divider between them",
+      msg.count(CARD_SEPARATOR), 1)
+
+from app.telegram_bot.keyboards import packages_kb  # noqa: E402
+kb = packages_kb([dict(rich, id=1), {"id": 2, "name": "ساده", "price": 50000}], "new")
+labels = [b.text for row in kb.inline_keyboard for b in row]
+check("the buttons carry the same numbers", labels[0].startswith("۱."), True)
 
 print("\n" + "=" * 60)
 if failures:

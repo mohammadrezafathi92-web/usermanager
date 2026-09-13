@@ -346,10 +346,14 @@ def package_button_label(p: dict) -> str:
 
 
 def packages_kb(packages: list[dict], kind: str) -> InlineKeyboardMarkup:
+    """Numbered to match the cards in the message above (see
+    utils.packages_message) - with the detail now in the text, the button
+    is just "which of the ones I read about", and a bare name repeated out
+    of order is harder to match up than a number."""
     kb = InlineKeyboardBuilder()
-    for p in packages:
+    for i, p in enumerate(packages, start=1):
         kb.button(
-            text=package_button_label(p),
+            text=f"{_fa_digits(i)}. {package_button_label(p)}",
             callback_data=PackageCB(kind=kind, package_id=p["id"]),
         )
     kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))

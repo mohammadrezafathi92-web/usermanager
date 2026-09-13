@@ -67,15 +67,18 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     scope = await resolve_admin_scope(message.from_user.id)
     text = await _welcome_text(message.from_user, scope)
     await message.answer(text, reply_markup=await main_menu_kb(scope))
-    if scope is None:
-        # Customers also get the bar pinned under the text box, so the shop
-        # is reachable from anywhere in the chat rather than only from this
-        # one message. Sent as its own message because Telegram will not
-        # carry an inline keyboard and a reply keyboard on the same one.
-        # See handlers/persistent_menu.py.
-        from .persistent_menu import send_menu_bar
+    # The shop bar goes under the text box for EVERYONE, admins included.
+    # It is pinned to a chat, not to a role, so restricting who receives it
+    # does not stop anyone having it - it only creates chats where the bar
+    # is present and does nothing, which is how the buttons came to be
+    # reported as broken the day they shipped. An admin sees their admin
+    # menu in the message and the shop underneath, which is also exactly
+    # what they need to test their own shop.
+    # Sent as its own message because Telegram will not carry an inline
+    # keyboard and a reply keyboard on the same one.
+    from .persistent_menu import send_menu_bar
 
-        await send_menu_bar(message)
+    await send_menu_bar(message)
 
 
 @router.message(Command("help"))

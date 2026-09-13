@@ -26,7 +26,9 @@ from ..keyboards import (
     account_picker_kb,
 )
 from ..states import CustomerLinkStates, CustomerPurchaseStates, CustomerTopupStates
-from ..utils import fmt_bytes, fmt_date, fmt_date_jalali, STATUS_LABELS
+from ..utils import (
+    fmt_bytes, fmt_date, fmt_date_jalali, packages_message, STATUS_LABELS,
+)
 from .. import storage
 from ..connection_sender import send_connection, send_connections
 
@@ -427,7 +429,7 @@ async def cmd_buy(message: Message, state: FSMContext) -> None:
         await message.answer("چند کاربره می‌خواهید؟", reply_markup=session_count_kb(counts, "new"))
         return
     await state.set_state(CustomerPurchaseStates.picking_package)
-    await message.answer("یک پکیج انتخاب کنید:", reply_markup=packages_kb(packages, "new"))
+    await message.answer(packages_message(packages), reply_markup=packages_kb(packages, "new"))
 
 
 @router.message(Command("topup"))
@@ -782,7 +784,7 @@ async def _start_package_picker(call: CallbackQuery, state: FSMContext, kind: st
         await call.answer()
         return
     await state.set_state(CustomerPurchaseStates.picking_package)
-    await call.message.edit_text("یک پکیج انتخاب کنید:", reply_markup=packages_kb(packages, kind))
+    await call.message.edit_text(packages_message(packages), reply_markup=packages_kb(packages, kind))
     await call.answer()
 
 
@@ -795,7 +797,7 @@ async def pick_session_count(call: CallbackQuery, callback_data: SessionCountCB,
         await call.answer("پکیجی با این تعداد کاربر پیدا نشد", show_alert=True)
         return
     await state.set_state(CustomerPurchaseStates.picking_package)
-    await call.message.edit_text("یک پکیج انتخاب کنید:", reply_markup=packages_kb(filtered, callback_data.kind))
+    await call.message.edit_text(packages_message(filtered), reply_markup=packages_kb(filtered, callback_data.kind))
     await call.answer()
 
 

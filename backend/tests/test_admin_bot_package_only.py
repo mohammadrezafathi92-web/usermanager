@@ -123,7 +123,16 @@ async def run():
     check("moved straight to picking_package", await state.get_state(), states.AdminCreateUserStates.picking_package.state)
     check("the prompt asks for a پکیج", "پکیج" in msg.answers[-1][0], True)
     check("...and never asks which سرور first", "سرور" in msg.answers[-1][0], False)
-    check("...nor for a حجم (GB)", "حجم" in msg.answers[-1][0], False)
+    # The prompt now renders a card per package (utils.packages_message), so
+    # it DOES contain the word حجم - as a fact about each package, which is
+    # the opposite of the old "type a quota" free-text prompt this test was
+    # written to keep out. What must stay gone is being asked to type one.
+    prompt = msg.answers[-1][0]
+    check("...nor is the admin asked to type a quota",
+          "چند گیگ" in prompt or "حجم را بفرستید" in prompt, False)
+    check("each package is shown with its own quota and price",
+          prompt.count("📊 حجم:"), len(PACKAGES))
+    check("...and its price", "💰" in prompt, True)
     check("no server list was even fetched", admin_users.api.list_nodes.await_count, 0)
 
     print("\n--- a package that bundles services builds ALL of them, with no further questions ---")

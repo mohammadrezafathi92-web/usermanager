@@ -75,15 +75,26 @@ with patch.object(panel_tls, "resolve", return_value=["1.1.1.1"]), \
      patch.object(panel_tls, "server_public_ip", return_value="5.6.7.8"):
     r = panel_tls.check_dns("panel.example.com")
     check("pointing somewhere else is not", r["ok"], False)
-    check("...and the message names BOTH addresses, so it can be acted on",
-          "1.1.1.1" in r["reason"] and "5.6.7.8" in r["reason"], True)
+    # Both addresses come back as STRUCTURED fields, never interpolated into
+    # the Persian sentence: an IPv4 address inside RTL prose is reordered by
+    # the bidi algorithm, so "points at A but this server is B" can render
+    # with A and B visually swapped - and reading that backwards means
+    # pointing DNS at the wrong server. The panel lays them out on their own
+    # ltr rows instead.
+    check("the address it points at is reported", r["resolved"], ["1.1.1.1"])
+    check("...and this server's own", r["public_ip"], "5.6.7.8")
+    check("...and neither is buried in the sentence",
+          "1.1.1.1" in r["reason"] or "5.6.7.8" in r["reason"], False)
+    check("the sentence says what to DO instead",
+          "رکورد A" in r["reason"] or "زیردامنه" in r["reason"], True)
 
 with patch.object(panel_tls, "resolve", return_value=[]), \
      patch.object(panel_tls, "server_public_ip", return_value="5.6.7.8"):
     r = panel_tls.check_dns("panel.example.com")
     check("a record that does not exist is not ok", r["ok"], False)
-    check("...and the message says to create one pointing here",
-          "رکورد A" in r["reason"] and "5.6.7.8" in r["reason"], True)
+    check("...and the message says to create one", "رکورد A" in r["reason"], True)
+    check("...with this server's address available to show separately",
+          r["public_ip"], "5.6.7.8")
 
 with patch.object(panel_tls, "resolve", return_value=["5.6.7.8"]), \
      patch.object(panel_tls, "server_public_ip", return_value=None):

@@ -121,23 +121,22 @@ def check_dns(domain: str) -> dict:
     resolved = resolve(domain)
     public_ip = server_public_ip()
     ok = bool(resolved) and bool(public_ip) and public_ip in resolved
+
+    # The addresses are deliberately NOT interpolated into this sentence.
+    # An IPv4 address inside right-to-left prose is reordered by the bidi
+    # algorithm, so "points at A but this server is B" can render with A and
+    # B in the opposite visual order - and the whole point of this message is
+    # to say which is which. The panel shows them on their own left-to-right
+    # lines instead (components/PanelTlsCard.jsx); the text only has to say
+    # what to DO about it.
     if not resolved:
-        reason = (
-            f"«{domain}» به هیچ آدرسی اشاره نمی‌کند. یک رکورد A بسازید که به "
-            f"{public_ip or 'آی‌پی این سرور'} اشاره کند و چند دقیقه صبر کنید."
-        )
+        reason = "این دامنه به هیچ آدرسی اشاره نمی‌کند. یک رکورد A بسازید که به آی‌پی این سرور اشاره کند و چند دقیقه صبر کنید."
     elif not public_ip:
-        reason = (
-            "آی‌پی عمومی این سرور خوانده نشد (دسترسی خروجی سرور را بررسی کنید). "
-            f"دامنه در حال حاضر به {', '.join(resolved)} اشاره می‌کند."
-        )
+        reason = "آی‌پی عمومی این سرور خوانده نشد - دسترسی خروجی سرور را بررسی کنید."
     elif not ok:
-        reason = (
-            f"«{domain}» به {', '.join(resolved)} اشاره می‌کند، ولی این سرور {public_ip} است. "
-            "تا وقتی رکورد A اصلاح نشود، صدور گواهی شکست می‌خورد."
-        )
+        reason = "این دامنه به سرور دیگری اشاره می‌کند. یا رکورد A را به این سرور تغییر دهید، یا برای این پنل یک زیردامنه‌ی دیگر بسازید."
     else:
-        reason = f"«{domain}» درست به این سرور ({public_ip}) اشاره می‌کند."
+        reason = "درست به این سرور اشاره می‌کند - آماده‌ی گرفتن گواهی است."
     return {"ok": ok, "domain": domain, "resolved": resolved, "public_ip": public_ip, "reason": reason}
 
 
@@ -188,6 +187,12 @@ def enable(domain: str, email: str = "", *, skip_dns_check: bool = False) -> str
     if not skip_dns_check:
         dns = check_dns(domain)
         log(dns["reason"])
+        # Each on its own line, so the bidi algorithm has no surrounding
+        # Persian text to reorder them against - see check_dns.
+        if dns["resolved"]:
+            log("دامنه به: " + " ".join(dns["resolved"]))
+        if dns["public_ip"]:
+            log("این سرور: " + dns["public_ip"])
         if not dns["ok"]:
             # Refused rather than attempted: five failed issuances in a week
             # locks this hostname out of Let's Encrypt entirely, and the

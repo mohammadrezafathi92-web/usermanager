@@ -129,12 +129,41 @@ def home(visitor: dict = Depends(current_visitor), db: Session = Depends(get_db)
     # (see models.User.telegram_id) - the bot shows a picker. Here they are
     # simply listed together, which is what a screen can do and a chat
     # cannot.
+    #
+    # PURCHASES, not connections. The first version listed every Connection,
+    # which gave the customer a row per protocol saying "xray / فعال" and
+    # nothing else - repeated, because one service bundles several - with no
+    # quota, no usage and no expiry, since a Connection carries none of
+    # those. What a customer means by "my services" is what they bought:
+    # models.Purchase, which is exactly what the bot's «اکانت من» shows.
     services = []
     wallet = 0
     for account in accounts:
         wallet += getattr(account, "balance", 0) or 0
-        for conn in getattr(account, "connections", []) or []:
-            services.append(conn)
+        username = getattr(account, "username", None)
+        if not username:
+            continue
+        for purchase in bot_router.list_user_purchases(username, db=db, owner_admin_id=owner):
+            services.append({
+                "id": purchase.id,
+                # The package's name as it was WHEN BOUGHT - renaming or
+                # deleting the package later must not rewrite what someone
+                # already paid for.
+                "name": purchase.package_name_snapshot or "سرویس",
+                "quota_bytes": purchase.quota_bytes,
+                "used_bytes": purchase.used_bytes,
+                "expire_at": purchase.expire_at,
+                "status": purchase.status,
+                "connection_count": purchase.connection_count,
+                # A renewal already paid for but not yet started, because the
+                # current one still has quota or days left (see
+                # user_ops.renew_purchase's reservation queue). Worth showing:
+                # otherwise a customer who has just renewed sees no change at
+                # all and buys again.
+                "reserved_quota_bytes": purchase.reserved_quota_bytes,
+                "reserved_duration_days": purchase.reserved_duration_days,
+                "account": username,
+            })
 
     return {
         "shop": {

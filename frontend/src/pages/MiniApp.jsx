@@ -3,6 +3,11 @@ import { Package, Wallet, Layers, AlertTriangle } from "lucide-react";
 import { fetchMiniAppHome } from "../api/client.js";
 import { formatBytes, formatToman } from "../utils.js";
 
+/** Persian digits. Latin numerals beside Persian text render in a
+ *  different face on most phones, which is what made the first
+ *  version look unfinished next to a competitor's. */
+const fa = (value) => String(value).replace(/[0-9]/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+
 /**
  * The Telegram Mini App - the shop, seen from inside Telegram.
  *
@@ -111,49 +116,102 @@ function PackageCard({ pkg }) {
   const services = [...new Set((pkg.connections || []).map((c) => c.protocol))];
   return (
     <Card className="mb-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="font-bold truncate">{pkg.name}</div>
-          <div className="text-xs opacity-60 mt-1 space-y-0.5">
-            <div>{pkg.quota_gb ? `${pkg.quota_gb} گیگابایت` : "نامحدود"}</div>
-            <div>{pkg.duration_days ? `${pkg.duration_days} روز` : "بدون انقضا"}</div>
-            {pkg.max_concurrent_sessions > 0 && <div>{pkg.max_concurrent_sessions} کاربر همزمان</div>}
-            {services.length > 0 && <div className="uppercase tracking-wide">{services.join(" · ")}</div>}
-          </div>
-          {pkg.description && <p className="text-xs opacity-70 mt-2">{pkg.description}</p>}
+      <div className="font-bold">{pkg.name}</div>
+
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs opacity-60 mt-2">
+        <span>{pkg.quota_gb ? `${fa(pkg.quota_gb)} گیگابایت` : "نامحدود"}</span>
+        <span>·</span>
+        <span>{pkg.duration_days ? `${fa(pkg.duration_days)} روز` : "بدون انقضا"}</span>
+        {pkg.max_concurrent_sessions > 0 && (
+          <>
+            <span>·</span>
+            <span>{fa(pkg.max_concurrent_sessions)} کاربر همزمان</span>
+          </>
+        )}
+      </div>
+
+      {services.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          {services.map((protocol) => (
+            <span key={protocol} className="text-[10px] px-2 py-0.5 rounded-full bg-white/10 opacity-80">
+              {protocol}
+            </span>
+          ))}
         </div>
-        <div className="shrink-0 text-end">
-          <div className="font-bold" dir="ltr">{formatToman(pkg.price, "fa")}</div>
-        </div>
+      )}
+
+      {pkg.description && <p className="text-xs opacity-70 mt-2 leading-relaxed">{pkg.description}</p>}
+
+      {/* Its own row rather than squeezed beside the name. The name is the
+          long part and the price is what the eye looks for; on a phone, in
+          RTL, the two fought each other for the same line. */}
+      <div className="flex items-baseline justify-between gap-2 mt-3 pt-3 border-t border-white/10">
+        <span className="text-xs opacity-50">قیمت</span>
+        <span className="font-bold">{formatToman(pkg.price, "fa")} تومان</span>
       </div>
     </Card>
   );
 }
 
+function fmtDate(value) {
+  if (!value) return "بدون انقضا";
+  try {
+    return new Intl.DateTimeFormat("fa-IR", { dateStyle: "medium" }).format(new Date(value));
+  } catch {
+    return "-";
+  }
+}
+
+const STATUS = {
+  active: ["فعال", "text-emerald-400"],
+  disabled: ["غیرفعال", "text-red-400"],
+  quota_exceeded: ["اتمام حجم", "text-amber-400"],
+  expired: ["منقضی", "text-gray-400"],
+};
+
 function ServiceCard({ service }) {
   const used = service.used_bytes || 0;
   const total = service.quota_bytes || 0;
   const pct = total ? Math.min(100, Math.round((used / total) * 100)) : 0;
+  const [label, colour] = STATUS[service.status] || [service.status, "text-gray-400"];
+  const reserved = (service.reserved_quota_bytes || 0) + (service.reserved_duration_days || 0);
+
   return (
     <Card className="mb-3">
-      <div className="flex items-center justify-between gap-2">
-        <div className="font-medium truncate">{service.type || "سرویس"}</div>
-        <div className={`text-xs ${service.enabled ? "text-emerald-400" : "text-red-400"}`}>
-          {service.enabled ? "فعال" : "غیرفعال"}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="font-bold truncate">{service.name}</div>
+          <div className="text-xs opacity-60 mt-0.5">انقضا: {fmtDate(service.expire_at)}</div>
+        </div>
+        <div className={`text-xs shrink-0 ${colour}`}>{label}</div>
+      </div>
+
+      <div className="mt-3">
+        <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+          <div
+            className={`h-full ${pct > 90 ? "bg-red-400" : pct > 70 ? "bg-amber-400" : "bg-sky-400"}`}
+            style={{ width: total ? `${pct}%` : "100%" }}
+          />
+        </div>
+        <div className="flex items-center justify-between text-xs opacity-60 mt-1.5">
+          <span dir="ltr">{total ? `${formatBytes(used)} / ${formatBytes(total)}` : formatBytes(used)}</span>
+          <span>{total ? `${fa(pct)}٪` : "نامحدود"}</span>
         </div>
       </div>
-      {total > 0 && (
-        <>
-          <div className="h-1.5 rounded-full bg-white/10 mt-3 overflow-hidden">
-            <div
-              className={`h-full ${pct > 90 ? "bg-red-400" : "bg-sky-400"}`}
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-          <div className="text-xs opacity-60 mt-1.5" dir="ltr">
-            {formatBytes(used)} / {formatBytes(total)}
-          </div>
-        </>
+
+      {/* A renewal already paid for, waiting for this one to run out. Without
+          it, a customer who has just renewed sees nothing change and buys
+          again. */}
+      {reserved > 0 && (
+        <div className="text-xs text-sky-400 mt-2">
+          ⏳ تمدید رزروشده
+          {service.reserved_quota_bytes ? ` · ${formatBytes(service.reserved_quota_bytes)}` : ""}
+          {service.reserved_duration_days ? ` · ${fa(service.reserved_duration_days)} روز` : ""}
+        </div>
+      )}
+
+      {service.connection_count > 0 && (
+        <div className="text-xs opacity-40 mt-2">{fa(service.connection_count)} اتصال</div>
       )}
     </Card>
   );
@@ -176,6 +234,16 @@ export default function MiniApp() {
     if (!settled) return;
     webApp?.ready?.();
     webApp?.expand?.();
+
+    // The panel's own stylesheet gives <body> a light background, which
+    // showed as a pale strip down the side of the dark app wherever our
+    // container did not reach. Painted on the document itself, and only on
+    // this route.
+    const previous = document.body.style.background;
+    document.body.style.background = "var(--tg-theme-bg-color, #17212b)";
+    return () => {
+      document.body.style.background = previous;
+    };
 
     const credential = initData || webApp?.initData || "";
     if (!credential) {

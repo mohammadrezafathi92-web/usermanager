@@ -206,6 +206,24 @@ check("it reports what it found", "جزئیات فنی" in page, True)
 check("...lengths, never the signature itself",
       "initData.length" in page and "{initData}" not in page, True)
 
+print("\n--- «سرویس‌های من» lists what was BOUGHT, not every connection ---")
+# First version listed every Connection, so a customer saw "xray / فعال"
+# repeated once per protocol, with no quota, no usage and no expiry - a
+# Connection carries none of those. What someone means by "my services" is
+# models.Purchase, which is what the bot's «اکانت من» has always shown.
+home_src = inspect.getsource(miniapp.home)
+check("purchases are what the tab is built from",
+      "list_user_purchases" in home_src, True)
+check("...with the quota and usage a progress bar needs",
+      "quota_bytes" in home_src and "used_bytes" in home_src, True)
+check("...and the expiry", "expire_at" in home_src, True)
+check("the package name is the snapshot taken at purchase time",
+      "package_name_snapshot" in home_src, True)
+check("a reserved renewal is surfaced, so nobody pays twice",
+      "reserved_quota_bytes" in home_src, True)
+check("connections are no longer flattened into the list",
+      'getattr(account, "connections"' in home_src, False)
+
 print("\n" + "=" * 60)
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))

@@ -185,6 +185,12 @@ class PanelBridge:
         row = await _call(bot_router.get_customer_menu_config)
         return bool(row.get("customer_bot_enabled", True))
 
+    async def get_miniapp_button_text(self) -> str:
+        """See models.BotSettings.miniapp_button_text - "" means use
+        runner.MINIAPP_BUTTON_TEXT."""
+        row = await _call(bot_router.get_miniapp_button_text)
+        return (row or {}).get("text") or ""
+
     async def get_panel_public_url(self) -> str:
         """This panel's own https address, or "" when none is configured.
         runner.py needs it to point each bot's Menu button at the Mini App

@@ -119,6 +119,10 @@ class RemoteBridge:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         return await self._call("GET", "/sales-stats", params=params) or {}
 
+    async def get_miniapp_button_text(self) -> str:
+        row = await self._call("GET", "/miniapp-button-text")
+        return (row or {}).get("text") or ""
+
     async def get_panel_public_url(self) -> str:
         """Mirrors PanelBridge.get_panel_public_url. A bot deployed to a
         second server has no PanelSettings row of its own, so this is the

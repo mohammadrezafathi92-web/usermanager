@@ -1172,6 +1172,9 @@ class BotSettingsOut(BaseModel):
     auto_approve_to_hour: Optional[int] = 23
     auto_approve_max_amount: Optional[int] = 0
     auto_approve_returning_only: Optional[bool] = True
+    # Label on the Mini App launcher beside the text box. Empty = the
+    # default below (see telegram_bot/runner.py's MINIAPP_BUTTON_TEXT).
+    miniapp_button_text: Optional[str] = ""
 
 
 class BotSettingsUpdate(BaseModel):
@@ -1192,6 +1195,9 @@ class BotSettingsUpdate(BaseModel):
     auto_approve_to_hour: Optional[int] = 23
     auto_approve_max_amount: Optional[int] = 0
     auto_approve_returning_only: Optional[bool] = True
+    # Label on the Mini App launcher beside the text box. Empty = the
+    # default below (see telegram_bot/runner.py's MINIAPP_BUTTON_TEXT).
+    miniapp_button_text: Optional[str] = ""
 
 
 # ---------- Per-admin dedicated bot (3-tier hierarchy - see AdminUser.own_bot_token) ----------

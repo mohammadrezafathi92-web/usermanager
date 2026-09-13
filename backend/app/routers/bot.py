@@ -1016,6 +1016,15 @@ def get_bot_subscription_link(username: str, db: Session = Depends(get_db), owne
     return schemas.BotSubscriptionLinkOut(web_url=f"{base}/s/{token}", app_url=f"{base}/api/subscribe/{token}")
 
 
+@router.get("/miniapp-button-text")
+def get_miniapp_button_text(db: Session = Depends(get_db)):
+    """Label for the Mini App launcher beside the text box, for every bot
+    this panel runs - see models.BotSettings.miniapp_button_text and
+    telegram_bot/runner.py's _set_menu_button."""
+    row = db.get(models.BotSettings, 1)
+    return {"text": ((row.miniapp_button_text or "").strip() if row else "")}
+
+
 @router.get("/panel-public-url")
 def get_panel_public_url(db: Session = Depends(get_db)):
     """PanelSettings.panel_public_url, for callers that need to build an

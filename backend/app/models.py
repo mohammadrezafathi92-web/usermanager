@@ -1873,6 +1873,15 @@ class BotSettings(Base):
     # item, to avoid a wide migration every time a menu item is added later.
     customer_menu_disabled_items = Column(Text, nullable=True, default="")
 
+    # What the button next to the text box says, for every bot this panel
+    # runs. Tapping it opens the Mini App directly (MenuButtonWebApp - see
+    # telegram_bot/runner.py's _set_menu_button), so calling it "Menu" - the
+    # Telegram default - describes neither what it does nor where it goes.
+    # Kept here rather than left to @BotFather because every reseller has
+    # their own bot and doing it by hand for each is a support burden with
+    # no end; asked for 2026-09-13 ("میخوام همون دکمه منو بشه دکمه اوپن اپ").
+    miniapp_button_text = Column(String(32), nullable=True, default="")
+
     # Optional base URL of a self-hosted reverse proxy that every bot
     # instance - this shared one AND every level-2 Admin/level-3 Seller's
     # own dedicated bot (see AdminUser.own_bot_token) - routes its Telegram

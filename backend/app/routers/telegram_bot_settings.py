@@ -151,6 +151,7 @@ def _response(row: models.BotSettings, db: Session | None = None) -> schemas.Bot
         auto_approve_to_hour=row.auto_approve_to_hour if row.auto_approve_to_hour is not None else 23,
         auto_approve_max_amount=row.auto_approve_max_amount or 0,
         auto_approve_returning_only=row.auto_approve_returning_only if row.auto_approve_returning_only is not None else True,
+        miniapp_button_text=row.miniapp_button_text or "",
     )
 
 
@@ -192,11 +193,26 @@ def update_settings(payload: schemas.BotSettingsUpdate, db: Session = Depends(ge
             data[key] = max(0, min(int(data[key]), 23))
     if data.get("auto_approve_max_amount") is not None:
         data["auto_approve_max_amount"] = max(0, int(data["auto_approve_max_amount"]))
+    if "miniapp_button_text" in data:
+        # Telegram caps the label; a longer one is rejected at set time with
+        # an error nobody would connect to this field.
+        data["miniapp_button_text"] = (data["miniapp_button_text"] or "").strip()[:32]
+    label_changed = (
+        "miniapp_button_text" in data
+        and (data["miniapp_button_text"] or "") != (row.miniapp_button_text or "")
+    )
+
     for k, v in data.items():
         setattr(row, k, v)
     row.last_error = None
     db.commit()
     db.refresh(row)
+
+    if label_changed:
+        # Applied to every running bot in place. Restarting them all for a
+        # label would mean a dozen brief outages on a panel with a dozen
+        # resellers, for a cosmetic change.
+        runner.refresh_menu_buttons()
 
     # If the interactive bot is currently running on a remote server
     # (see routers/remote_bot.py), never start a second local poller -

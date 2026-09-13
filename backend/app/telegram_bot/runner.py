@@ -45,6 +45,11 @@ logger = logging.getLogger("telegram_bot")
 
 MAINTENANCE_TEXT = "🔧 ربات موقتاً در دسترس نیست، لطفاً بعداً دوباره تلاش کنید."
 
+# What the launcher beside the text box says when nobody has chosen
+# otherwise. "Menu" is Telegram's own default and describes neither what the
+# button does nor where it goes - it opens the shop.
+MINIAPP_BUTTON_TEXT = "🛍 فروشگاه"
+
 # Distinguishes "no parse_mode override given" from "explicitly override to
 # None" in send_message_sync below - None is a real, meaningful value
 # there (plain text, no HTML parsing), so it can't double as the "not
@@ -200,10 +205,14 @@ async def _set_menu_button(bot) -> None:
         )
         return
     try:
+        label = (await api.get_miniapp_button_text()) or MINIAPP_BUTTON_TEXT
+    except ApiError:
+        label = MINIAPP_BUTTON_TEXT
+    try:
         await bot.set_chat_menu_button(
-            menu_button=MenuButtonWebApp(text="🛍 فروشگاه", web_app=WebAppInfo(url=f"{public_url}/app"))
+            menu_button=MenuButtonWebApp(text=label, web_app=WebAppInfo(url=f"{public_url}/app"))
         )
-        logger.info("دکمه‌ی مینی‌اپ روی %s/app تنظیم شد", public_url)
+        logger.info("دکمه‌ی مینی‌اپ («%s») روی %s/app تنظیم شد", label, public_url)
     except Exception:
         # Best-effort, exactly like the commands menu above: a transient
         # Telegram error must not stop the bot from starting.
@@ -790,6 +799,32 @@ def stop_bot(timeout: float = 10.0, instance_key=_MAIN) -> None:
     if thread:
         thread.join(timeout=timeout)
     inst.status.update(running=False)
+
+
+def refresh_menu_buttons() -> int:
+    """Re-applies the Mini App launcher to every bot that is running RIGHT
+    NOW, without restarting any of them.
+
+    Changing the button's label or the panel's public address should not
+    cost a round of bot restarts - each restart drops the poll for a few
+    seconds, and on a panel with a dozen resellers' bots that is a dozen
+    small outages for a cosmetic change. Each instance keeps its own aiogram
+    Bot and its own event loop (see _Instance), so the call is scheduled
+    onto that loop rather than made from here.
+
+    Returns how many bots were asked, for the panel to report.
+    """
+    asked = 0
+    for inst in list(_instances.values()):
+        bot, loop = inst.bot, inst.loop
+        if bot is None or loop is None or not loop.is_running():
+            continue
+        try:
+            asyncio.run_coroutine_threadsafe(_set_menu_button(bot), loop)
+            asked += 1
+        except Exception:
+            logger.warning("تنظیم مجدد دکمه‌ی مینی‌اپ برای یکی از ربات‌ها ناموفق بود", exc_info=True)
+    return asked
 
 
 def restart_bot(

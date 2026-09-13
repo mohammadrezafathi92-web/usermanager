@@ -1253,6 +1253,22 @@ export default function Settings() {
               {t("settings.customerBotEnabledLabel")}
             </label>
           </div>
+          {/* The launcher beside the text box. Tapping it opens the Mini App
+              directly - it is not a menu - so "Menu", Telegram's default,
+              describes neither what it does nor where it goes. Set here
+              rather than in @BotFather because it applies to EVERY bot this
+              panel runs, and doing it by hand per reseller never ends. */}
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("settings.miniappButtonLabel")}</label>
+            <input
+              className="input"
+              maxLength={32}
+              placeholder="🛍 فروشگاه"
+              value={botForm.miniapp_button_text || ""}
+              onChange={(e) => setBotForm((f) => ({ ...f, miniapp_button_text: e.target.value }))}
+            />
+            <div className="hint">{t("settings.miniappButtonHint")}</div>
+          </div>
           <div className="md:col-span-2">
             <div className="text-sm text-gray-600 mb-2">{t("settings.customerMenuItemsLabel")}</div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

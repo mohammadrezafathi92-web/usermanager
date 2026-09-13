@@ -131,6 +131,9 @@ print("\n--- the bot points its own Menu button at the Mini App ---")
 # changed or a URL that moved).
 from app.telegram_bot import runner  # noqa: E402
 
+from app.telegram_bot.panel_bridge import PanelBridge  # noqa: E402
+from app.telegram_bot.remote_bridge import RemoteBridge  # noqa: E402
+
 menu_src = inspect.getsource(runner._set_menu_button)
 check("it is a web_app button, not a link", "MenuButtonWebApp" in menu_src, True)
 check("...pointing at /app", '/app"' in menu_src, True)
@@ -139,12 +142,38 @@ check("refuses anything but https - Telegram will not open a Mini App over http"
 check("a failure cannot stop the bot starting", "except Exception" in menu_src, True)
 check("...and it runs on every start", "_set_menu_button(bot)" in inspect.getsource(runner._main), True)
 
+# The label is a panel setting, not a code constant and not a BotFather
+# errand: it applies to EVERY bot this panel runs, and doing it by hand per
+# reseller never ends. Asked for 2026-09-13 ("میخوام همون دکمه منو بشه دکمه
+# اوپن اپ").
+check("the label comes from settings", "get_miniapp_button_text" in menu_src, True)
+check("...with a default when unset", "MINIAPP_BUTTON_TEXT" in menu_src, True)
+check("both bridges can answer it",
+      hasattr(RemoteBridge, "get_miniapp_button_text") and hasattr(PanelBridge, "get_miniapp_button_text"),
+      True)
+
+# Changing a label must not cost a round of bot restarts - each one drops
+# the poll for a few seconds, and a panel with a dozen resellers' bots would
+# take a dozen small outages for a cosmetic change.
+from app.routers import telegram_bot_settings as bot_settings  # noqa: E402
+
+save_src = inspect.getsource(bot_settings.update_settings)
+check("saving a new label re-applies it in place", "refresh_menu_buttons" in save_src, True)
+check("...only when it actually changed", "label_changed" in save_src, True)
+check("...and it is capped to what Telegram accepts", "[:32]" in save_src, True)
+# The word "restart" appears in its docstring explaining why it does not,
+# so check for the CALLS rather than the word.
+refresh_src = inspect.getsource(runner.refresh_menu_buttons)
+check("the refresh calls no restart function",
+      any(call in refresh_src for call in ("restart_bot(", "restart_admin_bot(", "stop_bot(")), False)
+check("...it schedules the set onto each running bot's own loop",
+      "run_coroutine_threadsafe" in refresh_src, True)
+check("...and skips a bot whose loop is not running",
+      "loop.is_running()" in refresh_src, True)
+
 # A bot deployed to a second server talks to the panel over HTTP instead of
 # in-process. The two bridges must offer the same surface or that bot dies
 # on a method only one of them has.
-from app.telegram_bot.panel_bridge import PanelBridge  # noqa: E402
-from app.telegram_bot.remote_bridge import RemoteBridge  # noqa: E402
-
 check("the remote bridge can answer it too",
       hasattr(RemoteBridge, "get_panel_public_url") and hasattr(PanelBridge, "get_panel_public_url"),
       True)

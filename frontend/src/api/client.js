@@ -24,6 +24,12 @@ export const forgetConfirmPassword = () => {
   _cachedAt = 0;
 };
 
+// The backend's own words when it wants the password (deps.py's
+// require_confirm_password). Matching on it is what lets ANY endpoint ask,
+// without this file having to keep a list in step with the backend - see
+// the response interceptor below.
+const CONFIRM_PASSWORD_DETAIL = "رمز عبور خودتان را وارد کنید";
+
 const needsConfirmPassword = (config) => {
   const method = (config.method || "").toLowerCase();
   if (method === "delete") return true;
@@ -32,11 +38,16 @@ const needsConfirmPassword = (config) => {
   return method === "post" && (config.url || "").includes("/bulk-delete");
 };
 
+const isConfirmPasswordChallenge = (err) =>
+  err.response
+  && err.response.status === 403
+  && String(err.response.data?.detail || "").includes(CONFIRM_PASSWORD_DETAIL);
+
 client.interceptors.request.use(async (config) => {
   const token = localStorage.getItem("um_token");
   if (token) config.headers.Authorization = `Bearer ${token}`;
 
-  if (needsConfirmPassword(config) && !config.headers["X-Confirm-Password"]) {
+  if ((needsConfirmPassword(config) || config._pwForce) && !config.headers["X-Confirm-Password"]) {
     const fresh = _cachedPassword && Date.now() - _cachedAt < PASSWORD_TTL_MS;
     if (fresh) {
       config.headers["X-Confirm-Password"] = _cachedPassword;
@@ -54,12 +65,27 @@ client.interceptors.request.use(async (config) => {
 client.interceptors.response.use(
   (res) => res,
   async (err) => {
+    // Two cases, one handler.
+    //
     // A rejected confirm-password means the admin typed it wrong - drop the
     // cached value and ask again once, instead of surfacing a bare 403.
-    if (err.response && err.response.status === 403 && err.config && !err.config._pwRetry
-        && needsConfirmPassword(err.config)) {
+    //
+    // And an endpoint the request interceptor did NOT know needs a password
+    // says so here, in the 403 itself. That case used to be a dead button:
+    // needsConfirmPassword only recognised DELETE and /bulk-delete, so a new
+    // POST that the backend guards (تنظیمات > دامنه و SSL was the first)
+    // never got a prompt, never sent the header, and the admin was told to
+    // enter a password with nowhere to enter it. Keeping a second list in
+    // this file would just move the drift; asking the backend is what stops
+    // it recurring.
+    const wantsPassword = isConfirmPasswordChallenge(err);
+    if (err.config && !err.config._pwRetry
+        && (wantsPassword || (err.response?.status === 403 && needsConfirmPassword(err.config)))) {
       forgetConfirmPassword();
       err.config._pwRetry = true;
+      // The retry has to go through the request interceptor's prompt even
+      // for a URL it does not recognise, so it is marked here.
+      err.config._pwForce = true;
       delete err.config.headers["X-Confirm-Password"];
       try {
         return await client.request(err.config);

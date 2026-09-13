@@ -160,6 +160,28 @@ check("certificates live on a named volume, not a rebuildable layer",
 check("the frontend's own port is still configurable, so it can move aside",
       "${PANEL_WEB_PORT:-80}:80" in str(compose["services"]["frontend"]["ports"]), True)
 
+print("\n--- the panel can actually ASK for the password these endpoints want ---")
+# Reported while testing: pressing «فعال‌سازی https» answered "enter your
+# password" with nowhere to enter it. The frontend interceptor only knew
+# DELETE and /bulk-delete needed one, so a guarded POST never got a prompt
+# and never sent the header - a dead button. The fix is to recognise the
+# backend's own 403 rather than keep a second list in the frontend, which
+# would only move the drift.
+client_js = (pathlib.Path(__file__).resolve().parents[2]
+             / "frontend" / "src" / "api" / "client.js").read_text()
+check("the frontend matches on the backend's own wording",
+      "CONFIRM_PASSWORD_DETAIL" in client_js, True)
+check("...and that wording is what the backend actually sends",
+      "رمز عبور خودتان را وارد کنید" in client_js, True)
+
+deps_py = (pathlib.Path(__file__).resolve().parents[1]
+           / "app" / "deps.py").read_text()
+phrase = "رمز عبور خودتان را وارد کنید"
+check("the two sides really do use the same sentence",
+      phrase in deps_py and phrase in client_js, True)
+check("a challenged request is retried with a prompt, whatever its URL",
+      "_pwForce" in client_js, True)
+
 print("\n" + "=" * 60)
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))

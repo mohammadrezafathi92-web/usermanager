@@ -141,8 +141,15 @@ check("the frontend keeps a published port rather than none",
       panel_tls.FALLBACK_HTTP_PORT != 80 and panel_tls.FALLBACK_HTTP_PORT > 0, True)
 import inspect  # noqa: E402
 src = inspect.getsource(panel_tls.enable)
-check("...and enable() rolls everything back if compose fails",
-      src.count("rollback()") >= 3, True)
+# The rollback only covers what can still be undone. Once the helper
+# container has been handed the job it runs on its own, past the end of this
+# request, so a failure THERE cannot be unwound from here - which is exactly
+# what the fallback port above is for, and why the log is readable
+# afterwards rather than returned.
+check("the .env is put back if the helper cannot even be started",
+      "rollback()" in src and "except DeployError" in src, True)
+check("...and the operator is told where to find the panel if it goes wrong",
+      "FALLBACK_HTTP_PORT" in src, True)
 
 print("\n--- the compose file really has the service the code drives ---")
 import pathlib  # noqa: E402
@@ -181,6 +188,36 @@ check("the two sides really do use the same sentence",
       phrase in deps_py and phrase in client_js, True)
 check("a challenged request is retried with a prompt, whatever its URL",
       "_pwForce" in client_js, True)
+
+print("\n--- the compose work must OUTLIVE the request that starts it ---")
+# Reported while testing, as a bare "خطا در ذخیره" with no detail at all:
+# enabling recreates the frontend container, which is the nginx proxying the
+# very request asking for it. Run as an ordinary subprocess it kills its own
+# connection half-way through, so the browser gets no response - not even an
+# error to show - and whether it completed is anyone's guess.
+src_apply = inspect.getsource(panel_tls._apply)
+check("it is handed to a sibling container", "spawn_sibling_container" in src_apply, True)
+check("...and nothing is run as a plain subprocess any more",
+      "_run(" in inspect.getsource(panel_tls), False)
+check("enable() goes through it", "_apply(" in inspect.getsource(panel_tls.enable), True)
+check("disable() too - it recreates the frontend as well",
+      "_apply(" in inspect.getsource(panel_tls.disable), True)
+
+# The sibling mounts only the project directory, so the compose binary has
+# to be named by its path under THAT mount - /app/data/... exists in this
+# container and nowhere in the sibling.
+check("the compose binary is addressed by its host path, not /app/data",
+      "backend" in src_apply and '".docker-cli"' in src_apply, True)
+check("...and the log is written somewhere readable afterwards",
+      "log_path=LOG_PATH" in src_apply, True)
+check("turning off stops caddy BEFORE the frontend wants port 80 back",
+      src_apply.index("steps.insert(0") < src_apply.index("steps.append("), True)
+
+print("\n--- and the panel can read what it did ---")
+from app.routers import panel_settings as ps  # noqa: E402
+check("there is an endpoint for the log", hasattr(ps, "get_tls_log"), True)
+check("...which reads the file the sibling wrote",
+      "read_log" in inspect.getsource(ps.get_tls_log), True)
 
 print("\n" + "=" * 60)
 if failures:

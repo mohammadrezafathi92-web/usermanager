@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Lock, ShieldCheck, AlertTriangle } from "lucide-react";
-import { fetchTlsState, checkTlsDns, enableTls, disableTls } from "../api/client.js";
+import { fetchTlsState, checkTlsDns, enableTls, disableTls, fetchTlsLog } from "../api/client.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
 /**
@@ -28,6 +28,11 @@ export default function PanelTlsCard() {
   const [checking, setChecking] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState(null);
+  // The compose work happens in a helper container that outlives this
+  // request (the frontend nginx is one of the things being recreated), so
+  // the only way to see how it went is to read what it wrote.
+  const [log, setLog] = useState("");
+  const [watching, setWatching] = useState(false);
 
   const load = () =>
     fetchTlsState()
@@ -56,13 +61,37 @@ export default function PanelTlsCard() {
     }
   };
 
+  // Polled for a couple of minutes after the switch. The panel may well go
+  // unreachable on this address part-way through - that is the point of the
+  // change - so a failure here is expected and is not surfaced as an error.
+  const watchLog = () => {
+    setWatching(true);
+    let left = 40;
+    const tick = async () => {
+      try {
+        const res = await fetchTlsLog();
+        setLog(res.data.log || "");
+      } catch {
+        /* the address we are on is probably moving; keep trying */
+      }
+      if (--left > 0) {
+        setTimeout(tick, 3000);
+      } else {
+        setWatching(false);
+      }
+    };
+    tick();
+  };
+
   const submit = async (force) => {
     setSaving(true);
     setMsg(null);
+    setLog("");
     try {
       const res = await enableTls(domain, email, force);
       setMsg({ type: "ok", text: res.data.message });
       load();
+      watchLog();
     } catch (err) {
       setMsg({ type: "err", text: err?.response?.data?.detail || t("settings.msgSaveError") });
     } finally {
@@ -78,6 +107,7 @@ export default function PanelTlsCard() {
       const res = await disableTls();
       setMsg({ type: "ok", text: res.data.message });
       load();
+      watchLog();
     } catch (err) {
       setMsg({ type: "err", text: err?.response?.data?.detail || t("settings.msgSaveError") });
     } finally {
@@ -177,6 +207,15 @@ export default function PanelTlsCard() {
         </div>
       )}
 
+      {log && (
+        <pre
+          dir="ltr"
+          className="text-[11px] leading-relaxed bg-gray-900 text-gray-200 rounded-lg p-3 mt-4 max-h-56 overflow-auto whitespace-pre-wrap"
+        >
+          {log}
+        </pre>
+      )}
+
       <div className="flex flex-wrap gap-2 mt-4">
         <button type="button" className="btn-secondary" disabled={!domain || checking} onClick={runCheck}>
           {checking ? t("common.loading") : t("settings.tlsCheckDns")}
@@ -187,7 +226,7 @@ export default function PanelTlsCard() {
           disabled={!domain || saving}
           onClick={() => submit(false)}
         >
-          {saving ? t("settings.saving") : t("settings.tlsEnable")}
+          {saving || watching ? t("settings.saving") : t("settings.tlsEnable")}
         </button>
         {/* Only offered once the check has actually disagreed - an override
             you can reach without first being told why you might need it is

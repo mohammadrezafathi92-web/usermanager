@@ -510,3 +510,6 @@ export const checkTlsDns = (domain) => client.post("/settings/tls/check-dns", { 
 export const enableTls = (domain, email, force = false) =>
   client.post("/settings/tls/enable", { domain, email, force });
 export const disableTls = () => client.post("/settings/tls/disable");
+// Enabling recreates the nginx that answers this API, so the work runs in a
+// helper container that outlives the request - this is how it reports back.
+export const fetchTlsLog = () => client.get("/settings/tls/log");

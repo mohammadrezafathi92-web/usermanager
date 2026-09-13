@@ -327,6 +327,15 @@ def check_tls_dns(payload: schemas.PanelTlsRequest):
     return schemas.PanelTlsDnsCheck(**panel_tls.check_dns(domain))
 
 
+@router.get("/tls/log", dependencies=[Depends(require_superadmin)])
+def get_tls_log():
+    """The helper container's own output. Enabling TLS recreates the very
+    nginx that answers this API, so the work is handed to a container that
+    outlives the request (services/panel_tls._apply) - this is how anyone
+    finds out whether it worked."""
+    return {"log": panel_tls.read_log()}
+
+
 @router.post("/tls/enable", response_model=schemas.PanelPortChangeResult, dependencies=[Depends(require_superadmin)])
 def enable_tls(payload: schemas.PanelTlsRequest, _confirm=Depends(require_confirm_password)):
     try:

@@ -46,7 +46,7 @@ from .local_deploy import (
     _root_env_path,
     _write_env_var,
     ensure_docker_compose_cli,
-    _run,
+    spawn_sibling_container,
     verify_host_path,
 )
 
@@ -55,6 +55,11 @@ logger = logging.getLogger("panel_tls")
 # Where the frontend goes when Caddy takes 80. Deliberately still published:
 # see the module docstring on not locking the operator out.
 FALLBACK_HTTP_PORT = 8080
+
+# The compose work is logged here rather than returned, because by the time
+# it finishes there is no request left to return it to - see _apply().
+LOG_PATH = os.path.join(HOST_PROJECT_DIR, "backend", "data", ".panel_tls.log")
+_LOG_IN_CONTAINER = os.path.join(os.environ.get("APP_DATA_DIR", "/app/data"), ".panel_tls.log")
 
 _HOSTNAME_RE = re.compile(
     r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$"
@@ -169,6 +174,59 @@ def _set_profile(env_path: str, name: str, on: bool) -> None:
     _write_env_var(env_path, "COMPOSE_PROFILES", ",".join(profiles))
 
 
+def _apply(compose_path: str, *, stop_caddy: bool = False) -> None:
+    """Runs the compose work in a THROWAWAY SIBLING CONTAINER, not here.
+
+    Reported while testing, as a bare "خطا در ذخیره": this recreates the
+    frontend container, and the frontend container is the nginx currently
+    proxying the very request that asked for it. Run as an ordinary
+    subprocess, it kills its own connection half-way through - the browser
+    gets no response at all, so there is not even an error message to show,
+    and whether the change actually completed is anyone's guess.
+
+    A sibling container is not part of the compose project being recreated,
+    so it survives and finishes the job. Exactly the same reasoning (and the
+    same helper) as services/self_update.py's final restart step.
+
+    The command is a single /bin/sh -c so the two compose calls run in
+    order; the sibling has no panel to report back to by the time it
+    finishes, which is why everything goes to LOG_PATH instead.
+    """
+    # Downloads/caches the binary and returns the path AS SEEN FROM THIS
+    # container (/app/data/...). The sibling only mounts the project
+    # directory, so the same file has to be named by its path under that
+    # mount - which is where docker-compose.yml's ./backend/data:/app/data
+    # bind puts it on the host.
+    ensure_docker_compose_cli()
+    compose_bin = os.path.join(HOST_PROJECT_DIR, "backend", "data", ".docker-cli", "docker-compose")
+
+    steps = [f'"{compose_bin}" -f "{compose_path}" up -d frontend']
+    if stop_caddy:
+        # Stopped BEFORE the frontend moves back, so port 80 is free by the
+        # time the frontend wants it again.
+        steps.insert(0, f'"{compose_bin}" -f "{compose_path}" --profile tls rm -sf caddy')
+    else:
+        steps.append(f'"{compose_bin}" -f "{compose_path}" --profile tls up -d caddy')
+
+    spawn_sibling_container(
+        ["/bin/sh", "-c", "set -x; " + "; ".join(steps)],
+        log_path=LOG_PATH,
+    )
+    logger.info("panel_tls: کانتینر کمکی برای اعمال تغییرات شروع شد")
+
+
+def read_log() -> str:
+    """What the sibling container has printed so far - the only way to find
+    out how it went, since it outlives the request that started it."""
+    for path in (_LOG_IN_CONTAINER, LOG_PATH):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                return fh.read()[-8000:]
+        except OSError:
+            continue
+    return ""
+
+
 def enable(domain: str, email: str = "", *, skip_dns_check: bool = False) -> str:
     """Points this panel at `domain` over https. Returns a log to show."""
     verify_host_path()
@@ -222,28 +280,14 @@ def enable(domain: str, email: str = "", *, skip_dns_check: bool = False) -> str
             pass
 
     try:
-        compose_bin = ensure_docker_compose_cli()
+        _apply(compose_path)
     except DeployError:
         rollback()
         raise
 
-    log("در حال جابه‌جا کردن پنل از پورت ۸۰ ...")
-    code, out, err = _run([compose_bin, "-f", compose_path, "up", "-d", "frontend"], timeout=180)
-    if code != 0:
-        rollback()
-        raise DeployError(f"بازسازی کانتینر frontend ناموفق بود:\n{err or out}", "\n".join(log_lines))
-
-    log("در حال بالا آوردن Caddy و گرفتن گواهی ...")
-    code, out, err = _run(
-        [compose_bin, "-f", compose_path, "--profile", "tls", "up", "-d", "caddy"], timeout=300
-    )
-    if code != 0:
-        rollback()
-        _run([compose_bin, "-f", compose_path, "up", "-d", "frontend"], timeout=180)
-        raise DeployError(f"بالا آوردن Caddy ناموفق بود:\n{err or out}", "\n".join(log_lines))
-
-    log(f"انجام شد. پنل از این پس روی https://{domain} در دسترس است.")
-    log("صدور گواهی چند ثانیه طول می‌کشد؛ اگر بار اول خطا دید، یک دقیقه بعد دوباره باز کنید.")
+    log("در حال جابه‌جا کردن پنل از پورت ۸۰ و بالا آوردن Caddy ...")
+    log(f"یک دقیقه صبر کنید و بعد https://{domain} را باز کنید.")
+    log(f"اگر مشکلی پیش آمد، پنل روی http://<آی‌پی سرور>:{FALLBACK_HTTP_PORT} باقی می‌ماند.")
     return "\n".join(log_lines)
 
 
@@ -260,16 +304,10 @@ def disable() -> str:
         log_lines.append(line)
         logger.info(line)
 
-    compose_bin = ensure_docker_compose_cli()
-    _run([compose_bin, "-f", compose_path, "--profile", "tls", "stop", "caddy"], timeout=120)
-    _run([compose_bin, "-f", compose_path, "--profile", "tls", "rm", "-f", "caddy"], timeout=120)
-    log("Caddy متوقف شد.")
-
     _set_profile(env_path, "tls", False)
     _write_env_var(env_path, "PANEL_WEB_PORT", "80")
-    code, out, err = _run([compose_bin, "-f", compose_path, "up", "-d", "frontend"], timeout=180)
-    if code != 0:
-        raise DeployError(f"بازگرداندن پنل به پورت ۸۰ ناموفق بود:\n{err or out}", "\n".join(log_lines))
-    log("پنل دوباره روی پورت ۸۰ (بدون https) در دسترس است.")
+    _apply(compose_path, stop_caddy=True)
+    log("در حال متوقف کردن Caddy و بازگرداندن پنل به پورت ۸۰ ...")
+    log("یک دقیقه صبر کنید و بعد پنل را با آی‌پی سرور باز کنید.")
     log("گواهی پاک نشد - اگر دوباره فعالش کنید، صدور مجدد لازم نیست.")
     return "\n".join(log_lines)

@@ -1268,6 +1268,16 @@ export default function Settings() {
               onChange={(e) => setBotForm((f) => ({ ...f, miniapp_button_text: e.target.value }))}
             />
             <div className="hint">{t("settings.miniappButtonHint")}</div>
+            {/* The single reason this silently does nothing. Telegram will
+                not open a Mini App over http or on a bare IP, so the button
+                is deliberately not set at all without an https address -
+                and a log line inside a container is, in practice, nowhere.
+                Reported as "app رو نیاورد". */}
+            {!(payment.panel_public_url || "").startsWith("https://") && (
+              <div className="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2 mt-2">
+                {t("settings.miniappNeedsPublicUrl")}
+              </div>
+            )}
           </div>
           <div className="md:col-span-2">
             <div className="text-sm text-gray-600 mb-2">{t("settings.customerMenuItemsLabel")}</div>

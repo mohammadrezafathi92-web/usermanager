@@ -25,28 +25,66 @@ import { formatBytes, formatToman } from "../utils.js";
  */
 const TELEGRAM_SCRIPT = "https://telegram.org/js/telegram-web-app.js";
 
+/**
+ * The initData blob, from the URL rather than from Telegram's script.
+ *
+ * Telegram puts it in the page's fragment as tgWebAppData when it opens a
+ * Mini App, so it is already there before any script runs. Reading it here
+ * matters more than it looks: telegram.org is exactly the kind of host that
+ * is slow or blocked on the networks this product is sold into, and the
+ * first version made the whole page depend on that file arriving. When it
+ * did not, `window.Telegram` never appeared, the effect that loads the page
+ * skipped itself, and the app sat on "در حال بارگذاری…" for ever with
+ * nothing to tap - reported as "هیچ ری‌اکتی نداره".
+ *
+ * The script is still loaded, because it is what supplies the theme
+ * colours, expand() and the native buttons. But nothing the customer needs
+ * depends on it any more.
+ */
+function initDataFromUrl() {
+  const sources = [window.location.hash.slice(1), window.location.search.slice(1)];
+  for (const source of sources) {
+    if (!source) continue;
+    const found = new URLSearchParams(source).get("tgWebAppData");
+    if (found) return found;
+  }
+  return "";
+}
+
 function useTelegram() {
-  const [ready, setReady] = useState(Boolean(window.Telegram?.WebApp));
+  // `undefined` means "still trying"; `null` means "the script is not
+  // coming". Keeping those apart is the whole fix - collapsing them into
+  // one falsy value is what made the page wait for ever.
+  const [webApp, setWebApp] = useState(window.Telegram?.WebApp);
+  const [settled, setSettled] = useState(Boolean(window.Telegram?.WebApp));
 
   useEffect(() => {
-    if (window.Telegram?.WebApp) {
-      setReady(true);
-      return undefined;
-    }
+    if (window.Telegram?.WebApp) return undefined;
+
     // Loaded here rather than in index.html: the admin panel is the same
-    // bundle and has no business pulling a script from telegram.org on
-    // every login page in Iran, where that request is one more thing to be
-    // blocked or to hang.
+    // bundle and has no business fetching from telegram.org on every login
+    // page, on networks where that request is one more thing to hang.
     const script = document.createElement("script");
     script.src = TELEGRAM_SCRIPT;
     script.async = true;
-    script.onload = () => setReady(true);
-    script.onerror = () => setReady(true); // fall through to the "open me in Telegram" notice
+    const done = () => {
+      setWebApp(window.Telegram?.WebApp || null);
+      setSettled(true);
+    };
+    script.onload = done;
+    script.onerror = done;
+    // Belt and braces: a request that neither loads nor errors - a
+    // connection that just hangs, the common failure here - would otherwise
+    // never call either handler.
+    const timer = setTimeout(done, 6000);
     document.head.appendChild(script);
-    return () => script.remove();
+    return () => {
+      clearTimeout(timer);
+      script.remove();
+    };
   }, []);
 
-  return ready ? window.Telegram?.WebApp : undefined;
+  return { webApp, settled };
 }
 
 function Card({ children, className = "" }) {
@@ -108,23 +146,30 @@ function ServiceCard({ service }) {
 }
 
 export default function MiniApp() {
-  const telegram = useTelegram();
+  const { webApp, settled } = useTelegram();
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [tab, setTab] = useState("shop");
 
-  useEffect(() => {
-    if (telegram === undefined) return;
-    telegram?.ready?.();
-    telegram?.expand?.();
+  // Read once, from the URL, and kept for the retry button. Not derived
+  // from webApp: see initDataFromUrl on why the page must not wait for
+  // telegram.org.
+  const [initData] = useState(() => initDataFromUrl());
 
-    const initData = telegram?.initData || "";
-    if (!initData) {
+  useEffect(() => {
+    // Wait only for the script's fate to be decided, never for the script
+    // itself to succeed.
+    if (!settled) return;
+    webApp?.ready?.();
+    webApp?.expand?.();
+
+    const credential = initData || webApp?.initData || "";
+    if (!credential) {
       setError("این صفحه را از داخل ربات تلگرام باز کنید.");
       return;
     }
-    load(initData);
-  }, [telegram]);
+    load(credential);
+  }, [settled, webApp, initData]);
 
   const load = (initData) => {
     setError("");
@@ -161,7 +206,7 @@ export default function MiniApp() {
           <button
             type="button"
             className="mt-4 px-4 py-2 rounded-xl bg-sky-500 text-white text-sm"
-            onClick={() => load(telegram?.initData || "")}
+            onClick={() => load(initData || webApp?.initData || "")}
           >
             تلاش دوباره
           </button>

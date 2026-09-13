@@ -135,6 +135,21 @@ export default function PanelTlsCard() {
         </div>
       )}
 
+      {/* Something else on this host already terminates TLS. That is a
+          perfectly good setup - it is how a panel shares a server with
+          other sites - so the card says so instead of offering to take over
+          ports another service is holding. */}
+      {!state.enabled && state.behind_proxy && (
+        <div className="text-sm rounded-lg px-3 py-2 mb-4 text-sky-800 bg-sky-50 space-y-1">
+          <div>{t("settings.tlsBehindProxy", { domain: state.domain, port: state.fallback_http_port })}</div>
+          {state.bind === "0.0.0.0" && (
+            <div className="text-amber-700">
+              {t("settings.tlsBindWarning", { port: state.fallback_http_port })}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
           <label className="block text-sm text-gray-600 mb-1">{t("settings.tlsDomain")}</label>

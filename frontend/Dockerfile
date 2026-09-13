@@ -9,6 +9,12 @@ COPY package.json package-lock.json ./
 RUN npm ci --include=dev
 COPY index.html vite.config.js tailwind.config.js postcss.config.js ./
 COPY src ./src
+# `npm run build` runs scripts/check-hooks.mjs first (see package.json), so
+# the script has to be in the image. This COPY was the missing half of
+# adding that check: the build passed locally, where the whole repo is on
+# disk, and failed inside Docker with "Cannot find module" - which the
+# self-update caught before restarting anything, exactly as designed.
+COPY scripts ./scripts
 RUN npm run build
 
 FROM nginx:alpine

@@ -1118,6 +1118,12 @@ class PanelTlsState(BaseModel):
     enabled: bool = False
     fallback_http_port: int = 80
     email: str = ""
+    # Something else on this host already terminates TLS and proxies here -
+    # see services/panel_tls.behind_reverse_proxy.
+    behind_proxy: bool = False
+    # Which interface the panel's own HTTP port is published on. "0.0.0.0"
+    # while behind a proxy means the certificate can simply be bypassed.
+    bind: str = "0.0.0.0"
 
 
 class PanelPortChangeResult(BaseModel):

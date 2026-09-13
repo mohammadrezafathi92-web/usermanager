@@ -269,6 +269,25 @@ def ports_in_use() -> list[str]:
     return sorted(set(busy))
 
 
+def behind_reverse_proxy() -> bool:
+    """True when something else on this host is already terminating TLS and
+    proxying to the panel.
+
+    The tell is the combination the settings page would otherwise present
+    confusingly: a hostname is configured, the frontend has been moved off
+    port 80, and yet our own Caddy profile is not on. That is exactly the
+    shape of "an nginx in front of me", which is a perfectly good setup -
+    it is how the vendor's own server runs, sharing 443 with
+    license.netcip.ir - and the card should say so rather than offering to
+    take over ports another service holds.
+    """
+    env_path = _root_env_path()
+    domain = (_read_env_var(env_path, "PANEL_DOMAIN") or "").strip()
+    port = int(_read_env_var(env_path, "PANEL_WEB_PORT") or 80)
+    profiles = _split_profiles(_read_env_var(env_path, "COMPOSE_PROFILES") or "")
+    return bool(domain) and port != 80 and "tls" not in profiles
+
+
 def current_state() -> dict:
     env_path = _root_env_path()
     domain = _read_env_var(env_path, "PANEL_DOMAIN") or ""
@@ -278,6 +297,11 @@ def current_state() -> dict:
         "enabled": bool(domain) and "tls" in _split_profiles(profiles),
         "fallback_http_port": int(_read_env_var(env_path, "PANEL_WEB_PORT") or 80),
         "email": _read_env_var(env_path, "PANEL_TLS_EMAIL") or "",
+        "behind_proxy": behind_reverse_proxy(),
+        # Whether that port is exposed to the whole internet or only to a
+        # proxy on this host. Public + behind a proxy means the certificate
+        # can be walked around by asking for the port directly.
+        "bind": (_read_env_var(env_path, "PANEL_WEB_BIND") or "0.0.0.0"),
     }
 
 

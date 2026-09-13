@@ -263,6 +263,45 @@ with tempfile.TemporaryDirectory() as tmp:
             forced = "refused"
         check("and «به‌هرحال ادامه بده» cannot override a port clash", forced, "refused")
 
+print("\n--- a panel behind someone else's nginx is a supported shape, not a broken one ---")
+# 2026-09-13: the vendor's own server serves license.netcip.ir on 443, so the
+# panel went behind that same nginx on a second hostname. The card must
+# recognise that rather than offering to seize ports another service holds.
+with tempfile.TemporaryDirectory() as tmp:
+    env_path = os.path.join(tmp, ".env")
+    with patch.object(panel_tls, "_root_env_path", return_value=env_path):
+        _write_env_var(env_path, "PANEL_DOMAIN", "panel.netcip.ir")
+        _write_env_var(env_path, "PANEL_WEB_PORT", "8080")
+        _write_env_var(env_path, "COMPOSE_PROFILES", "")
+        check("hostname set, moved off 80, our own TLS off = a proxy in front",
+              panel_tls.behind_reverse_proxy(), True)
+
+        _write_env_var(env_path, "COMPOSE_PROFILES", "tls")
+        check("...but not when WE are the one serving TLS",
+              panel_tls.behind_reverse_proxy(), False)
+
+        _write_env_var(env_path, "COMPOSE_PROFILES", "")
+        _write_env_var(env_path, "PANEL_WEB_PORT", "80")
+        check("...nor on an ordinary install still on port 80",
+              panel_tls.behind_reverse_proxy(), False)
+
+        _write_env_var(env_path, "PANEL_WEB_PORT", "8080")
+        _write_env_var(env_path, "PANEL_DOMAIN", "")
+        check("...nor with no hostname configured at all",
+              panel_tls.behind_reverse_proxy(), False)
+
+print("\n--- ...and the plain-HTTP port can be shut to the internet ---")
+# Published on every interface, the panel stays reachable over http on that
+# port, which walks straight around the certificate in front of it.
+compose = yaml.safe_load(
+    (pathlib.Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text())
+ports = str(compose["services"]["frontend"]["ports"])
+check("the bind address is configurable", "PANEL_WEB_BIND" in ports, True)
+check("...and defaults to today's behaviour, so an upgrade changes nothing",
+      "PANEL_WEB_BIND:-0.0.0.0" in ports, True)
+check("the panel reports which it is, so it can warn",
+      "bind" in panel_tls.current_state(), True)
+
 print("\n" + "=" * 60)
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))

@@ -185,7 +185,16 @@ services:
       # port back to 80. Storing it in the untracked .env instead means a
       # port change never shows up as a local modification to a tracked
       # file again - `git pull` never has anything to fight here.
-      - "${PANEL_WEB_PORT:-80}:80"
+      #
+      # PANEL_WEB_BIND is which host interface that port is published on.
+      # Empty (the default) means every interface, exactly as before. Set it
+      # to 127.0.0.1 when something else on this host - an nginx or Caddy
+      # already serving other sites - terminates TLS and proxies here: the
+      # proxy reaches it over loopback, and the plain-HTTP port stops being
+      # a second, unencrypted way in from the internet that quietly
+      # undoes the certificate. Added 2026-09-13 after putting a panel
+      # behind the nginx that already served license.netcip.ir.
+      - "${PANEL_WEB_BIND:-0.0.0.0}:${PANEL_WEB_PORT:-80}:80"
 
   # HTTPS for this panel, on its own hostname.
   #

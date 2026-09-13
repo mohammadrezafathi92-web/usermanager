@@ -1016,6 +1016,15 @@ def get_bot_subscription_link(username: str, db: Session = Depends(get_db), owne
     return schemas.BotSubscriptionLinkOut(web_url=f"{base}/s/{token}", app_url=f"{base}/api/subscribe/{token}")
 
 
+@router.get("/panel-public-url")
+def get_panel_public_url(db: Session = Depends(get_db)):
+    """PanelSettings.panel_public_url, for callers that need to build an
+    absolute link. Used by telegram_bot/runner.py to point each bot's Menu
+    button at this panel's Mini App - see _set_menu_button there."""
+    settings_row = db.get(models.PanelSettings, 1)
+    return {"url": (settings_row.panel_public_url or "").strip().rstrip("/") if settings_row else ""}
+
+
 @router.post("/users/{username}/purchases/{purchase_id}/renew", response_model=schemas.BotUserResponse)
 def renew_service(
     username: str, purchase_id: int, payload: schemas.BotRenewRequest,

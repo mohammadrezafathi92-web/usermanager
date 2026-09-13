@@ -119,6 +119,13 @@ class RemoteBridge:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         return await self._call("GET", "/sales-stats", params=params) or {}
 
+    async def get_panel_public_url(self) -> str:
+        """Mirrors PanelBridge.get_panel_public_url. A bot deployed to a
+        second server has no PanelSettings row of its own, so this is the
+        only way it can learn the address to point its Menu button at."""
+        row = await self._call("GET", "/panel-public-url")
+        return (row or {}).get("url") or ""
+
     async def get_customer_menu_disabled_items(self) -> list[str]:
         row = await self._call("GET", "/customer-menu-config")
         return (row or {}).get("disabled_items", [])

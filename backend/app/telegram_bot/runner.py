@@ -165,6 +165,51 @@ async def _set_bot_commands(bot: Bot, admin_ids: set) -> None:
             logger.warning("failed to set bot commands menu for admin chat %s", admin_id, exc_info=True)
 
 
+async def _set_menu_button(bot) -> None:
+    """Points the bot's Menu button at this panel's Mini App.
+
+    Done here rather than by hand in @BotFather, for two reasons. Every
+    reseller on this panel has their own bot, and asking each of them to
+    find a setting that BotFather keeps moving is a support burden that
+    never ends. And the panel already holds the token, so it can simply say
+    so - once, on every start, which also repairs a button someone changed
+    or a URL that moved.
+
+    ONE url serves every reseller: the page is told which shop it is by the
+    signature on Telegram's own initData, not by anything in the address
+    (see services/telegram_webapp.py). So this is the same call with the
+    same argument for every bot.
+
+    Silent no-op unless the panel has a public https address configured -
+    Telegram will not open a Mini App over http or on an IP, so setting one
+    would only produce a button that fails when tapped, which is worse than
+    no button.
+    """
+    from aiogram.types import MenuButtonWebApp, WebAppInfo
+    from .panel_bridge import api, ApiError
+
+    try:
+        public_url = (await api.get_panel_public_url()) or ""
+    except ApiError:
+        public_url = ""
+    public_url = public_url.strip().rstrip("/")
+    if not public_url.startswith("https://"):
+        logger.info(
+            "منوی مینی‌اپ تنظیم نشد: آدرس عمومی پنل روی https تنظیم نشده است "
+            "(تنظیمات > سرور > آدرس عمومی پنل)"
+        )
+        return
+    try:
+        await bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(text="🛍 فروشگاه", web_app=WebAppInfo(url=f"{public_url}/app"))
+        )
+        logger.info("دکمه‌ی مینی‌اپ روی %s/app تنظیم شد", public_url)
+    except Exception:
+        # Best-effort, exactly like the commands menu above: a transient
+        # Telegram error must not stop the bot from starting.
+        logger.warning("تنظیم دکمه‌ی مینی‌اپ ناموفق بود", exc_info=True)
+
+
 @dataclass
 class _Instance:
     """Everything runner.py used to keep as loose module-level globals
@@ -677,6 +722,7 @@ async def _main(
         inst.sentry_scope.set_tag("bot.username", me.username)
     logger.info("Telegram bot started: @%s (owner_admin_id=%s)", me.username, bot_owner_admin_id)
     await _set_bot_commands(bot, admin_ids)
+    await _set_menu_button(bot)
 
     dp = Dispatcher(storage=MemoryStorage())
     maintenance_mw = MaintenanceModeMiddleware()

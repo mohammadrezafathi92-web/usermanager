@@ -123,6 +123,32 @@ home_src = inspect.getsource(miniapp.home)
 for fn in ("list_packages", "list_users_by_telegram", "get_payment_info"):
     check(f"{fn} is the bot router's", f"bot_router.{fn}" in home_src, True)
 
+print("\n--- the bot points its own Menu button at the Mini App ---")
+# BotFather keeps moving where the Menu button lives, and every reseller on
+# this panel has their own bot - asking each of them to find that setting is
+# a support burden with no end. The panel already holds the token, so it
+# says so itself, on every start (which also repairs a button someone
+# changed or a URL that moved).
+from app.telegram_bot import runner  # noqa: E402
+
+menu_src = inspect.getsource(runner._set_menu_button)
+check("it is a web_app button, not a link", "MenuButtonWebApp" in menu_src, True)
+check("...pointing at /app", '/app"' in menu_src, True)
+check("refuses anything but https - Telegram will not open a Mini App over http",
+      'startswith("https://")' in menu_src, True)
+check("a failure cannot stop the bot starting", "except Exception" in menu_src, True)
+check("...and it runs on every start", "_set_menu_button(bot)" in inspect.getsource(runner._main), True)
+
+# A bot deployed to a second server talks to the panel over HTTP instead of
+# in-process. The two bridges must offer the same surface or that bot dies
+# on a method only one of them has.
+from app.telegram_bot.panel_bridge import PanelBridge  # noqa: E402
+from app.telegram_bot.remote_bridge import RemoteBridge  # noqa: E402
+
+check("the remote bridge can answer it too",
+      hasattr(RemoteBridge, "get_panel_public_url") and hasattr(PanelBridge, "get_panel_public_url"),
+      True)
+
 print("\n" + "=" * 60)
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))

@@ -185,6 +185,14 @@ class PanelBridge:
         row = await _call(bot_router.get_customer_menu_config)
         return bool(row.get("customer_bot_enabled", True))
 
+    async def get_panel_public_url(self) -> str:
+        """This panel's own https address, or "" when none is configured.
+        runner.py needs it to point each bot's Menu button at the Mini App
+        (see _set_menu_button); there is no browser origin to borrow inside
+        a bot process."""
+        row = await _call(bot_router.get_panel_public_url)
+        return (row or {}).get("url") or ""
+
     # -------------------------------------------------------- tutorials
     async def list_tutorials(self, owner_admin_id: Optional[int] = None) -> list[dict]:
         """Same owner-scoping shape as list_packages/get_payment_info above

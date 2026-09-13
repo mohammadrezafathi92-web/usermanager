@@ -55,6 +55,23 @@ def current_visitor(
         raise HTTPException(401, "این صفحه باید از داخل ربات تلگرام باز شود.")
 
 
+def _bot_username(owner_admin_id: int | None) -> str | None:
+    from ..telegram_bot import runner
+
+    try:
+        status = (
+            runner.admin_bot_status(owner_admin_id)
+            if owner_admin_id is not None
+            else runner.get_status()
+        )
+        return status.get("bot_username")
+    except Exception:
+        # A missing @username costs the invite card a nicer link and
+        # nothing else. It must never be able to take the whole page down.
+        logger.debug("miniapp: no bot username for owner %s", owner_admin_id, exc_info=True)
+        return None
+
+
 def _shop_title(db: Session, owner_admin_id: int | None) -> str:
     if owner_admin_id is None:
         return ""
@@ -170,6 +187,13 @@ def home(visitor: dict = Depends(current_visitor), db: Session = Depends(get_db)
         "shop": {
             "title": _shop_title(db, owner),
             "packages": packages,
+            # For the invite card's share link. Read from the running bot's
+            # own get_me() answer rather than stored anywhere, because a bot
+            # can be renamed in BotFather at any time and a stale @username
+            # produces an invite link that goes nowhere. None when the bot
+            # is not currently running - the card falls back to sharing the
+            # bare code, which still works when it is typed into the bot.
+            "bot_username": _bot_username(owner),
         },
         "me": {
             "telegram_id": visitor["telegram_id"],

@@ -26,6 +26,7 @@ from ..services import backup as backup_service
 from ..services import local_deploy
 from ..services import hierarchy
 from ..services import payment_cards as payment_cards_service
+from ..services import panel_tls
 from ..services import telegram_ids
 
 # Panel-wide (single PanelSettings row, id=1) - payment/checkout info,
@@ -296,6 +297,52 @@ def activate_payment_card(card_id: int, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(row)
     return _settings_out(db, row)
+
+
+# ---------------------------------------------------------------------------
+# دامنه و SSL. Superadmin-only, and for the same reason the port change is:
+# it takes the panel offline for a moment and moves the address everyone
+# reaches it on. See services/panel_tls.py for why a panel needs its own
+# certificate at all (short version: a Telegram Mini App cannot talk to an
+# http API from an https page, so a central server cannot stand in).
+@router.get("/tls", response_model=schemas.PanelTlsState, dependencies=[Depends(require_superadmin)])
+def get_tls_state():
+    state = panel_tls.current_state()
+    return schemas.PanelTlsState(**state)
+
+
+@router.post("/tls/check-dns", response_model=schemas.PanelTlsDnsCheck, dependencies=[Depends(require_superadmin)])
+def check_tls_dns(payload: schemas.PanelTlsRequest):
+    """Answers "does this name point here yet?" without changing anything.
+
+    Its own endpoint because the answer is worth showing WHILE the operator
+    is still editing the field - a failed issuance is rate-limited five per
+    hostname per week, so the cheap lookup belongs before the expensive
+    attempt, not instead of its error message.
+    """
+    try:
+        domain = panel_tls.normalise_domain(payload.domain)
+    except DeployError as exc:
+        raise HTTPException(400, str(exc))
+    return schemas.PanelTlsDnsCheck(**panel_tls.check_dns(domain))
+
+
+@router.post("/tls/enable", response_model=schemas.PanelPortChangeResult, dependencies=[Depends(require_superadmin)])
+def enable_tls(payload: schemas.PanelTlsRequest, _confirm=Depends(require_confirm_password)):
+    try:
+        log = panel_tls.enable(payload.domain, payload.email or "", skip_dns_check=payload.force)
+    except DeployError as exc:
+        raise HTTPException(400, str(exc))
+    return schemas.PanelPortChangeResult(ok=True, message=log)
+
+
+@router.post("/tls/disable", response_model=schemas.PanelPortChangeResult, dependencies=[Depends(require_superadmin)])
+def disable_tls(_confirm=Depends(require_confirm_password)):
+    try:
+        log = panel_tls.disable()
+    except DeployError as exc:
+        raise HTTPException(400, str(exc))
+    return schemas.PanelPortChangeResult(ok=True, message=log)
 
 
 @router.post("/change-port", response_model=schemas.PanelPortChangeResult, dependencies=[Depends(require_superadmin)])

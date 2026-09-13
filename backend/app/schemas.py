@@ -1083,6 +1083,31 @@ class PanelPortChangeRequest(BaseModel):
         return v
 
 
+class PanelTlsRequest(BaseModel):
+    domain: str
+    email: Optional[str] = None
+    # Issue anyway despite the DNS check disagreeing. Exists because the
+    # check can be wrong in one direction - a CDN/proxy in front, or a
+    # resolver that has not caught up - and refusing outright would leave
+    # no way through. It is a deliberate override, not the default.
+    force: bool = False
+
+
+class PanelTlsDnsCheck(BaseModel):
+    ok: bool
+    domain: str
+    resolved: List[str] = []
+    public_ip: Optional[str] = None
+    reason: str
+
+
+class PanelTlsState(BaseModel):
+    domain: str = ""
+    enabled: bool = False
+    fallback_http_port: int = 80
+    email: str = ""
+
+
 class PanelPortChangeResult(BaseModel):
     ok: bool
     message: str

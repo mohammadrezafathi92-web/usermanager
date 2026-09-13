@@ -7,6 +7,7 @@ import LicenseCard from "../components/LicenseCard.jsx";
 import DbHealthCard from "../components/DbHealthCard.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
+import PanelTlsCard from "../components/PanelTlsCard.jsx";
 import {
   changePassword,
   changeUsername,
@@ -1547,6 +1548,10 @@ export default function Settings() {
           server's display timezone), the same family as License/HA/port
           below, not personal-account settings like the cards above this
           tab. */}
+      {/* دامنه و SSL - on the Server tab, next to the panel port and
+          the licence, since it is the same kind of decision: it changes
+          the address everyone reaches this panel on. */}
+      {isSuperadmin && <PanelTlsCard />}
       {isSuperadmin && <UpdateCard t={t} />}
       {isSuperadmin && <TimezoneCard t={t} />}
       {/* Folded out of the old combined "growth" card on the General tab

@@ -477,3 +477,10 @@ export const deleteAdPostImage = (id) => client.delete(`/ads/posts/${id}/image`)
 // ---------- بروزرسانی پنل (see backend services/self_update.py) ----------
 export const checkPanelUpdate = () => client.get("/settings/update/check");
 export const applyPanelUpdate = () => client.post("/settings/update/apply", {}, { timeout: 900000 });
+
+// دامنه و SSL (see backend services/panel_tls.py). Superadmin-only.
+export const fetchTlsState = () => client.get("/settings/tls");
+export const checkTlsDns = (domain) => client.post("/settings/tls/check-dns", { domain });
+export const enableTls = (domain, email, force = false) =>
+  client.post("/settings/tls/enable", { domain, email, force });
+export const disableTls = () => client.post("/settings/tls/disable");

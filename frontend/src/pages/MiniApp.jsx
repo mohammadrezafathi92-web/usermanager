@@ -123,17 +123,48 @@ export default function MiniApp() {
       setError("این صفحه را از داخل ربات تلگرام باز کنید.");
       return;
     }
+    load(initData);
+  }, [telegram]);
+
+  const load = (initData) => {
+    setError("");
     fetchMiniAppHome(initData)
       .then((r) => setData(r.data))
-      .catch((err) => setError(err?.response?.data?.detail || "اتصال برقرار نشد."));
-  }, [telegram]);
+      .catch((err) => {
+        // The status matters here in a way it usually does not. This page
+        // has three quite different failures that all look identical to a
+        // customer staring at a screen with nothing to tap: the panel has
+        // not been updated yet so the endpoint is not there (404), the
+        // signature was refused (401), or the server is simply down. Saying
+        // which turns "the app does not work" into something answerable.
+        const status = err?.response?.status;
+        const detail = err?.response?.data?.detail;
+        if (status === 404) {
+          setError("این پنل هنوز به‌روزرسانی نشده است - نسخه‌ی جدید را نصب کنید.");
+        } else if (detail) {
+          setError(detail);
+        } else {
+          setError("اتصال به سرور برقرار نشد.");
+        }
+      });
+  };
 
   if (error) {
     return (
-      <div className="min-h-screen bg-[var(--tg-theme-bg-color,#17212b)] text-[var(--tg-theme-text-color,#fff)] flex items-center justify-center p-6">
+      <div className="min-h-screen bg-[var(--tg-theme-bg-color,#17212b)] text-[var(--tg-theme-text-color,#fff)] flex items-center justify-center p-6" dir="rtl">
         <Card className="text-center max-w-sm">
           <AlertTriangle className="mx-auto mb-3 text-amber-400" size={28} />
           <div className="text-sm">{error}</div>
+          {/* Something to tap. An error screen with no control on it is
+              indistinguishable from a frozen app - which is exactly how the
+              first version was reported ("هیچ کلیکی نمیشه"). */}
+          <button
+            type="button"
+            className="mt-4 px-4 py-2 rounded-xl bg-sky-500 text-white text-sm"
+            onClick={() => load(telegram?.initData || "")}
+          >
+            تلاش دوباره
+          </button>
         </Card>
       </div>
     );

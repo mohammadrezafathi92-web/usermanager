@@ -228,22 +228,30 @@ export default function MiniApp() {
   // telegram.org.
   const [initData] = useState(() => initDataFromUrl());
 
+  // The panel's own stylesheet gives <body> a light background, which showed
+  // as a pale strip down the side of the dark app wherever our container did
+  // not reach. Painted on the document itself, and only on this route.
+  //
+  // ITS OWN EFFECT, deliberately. It was originally folded into the loading
+  // effect below, where its cleanup `return` sat ABOVE the fetch - so the
+  // effect returned before ever calling load(), `data` stayed null, and the
+  // page showed «در حال بارگذاری» for ever. An effect that both paints and
+  // fetches has a return statement in the middle of it waiting to swallow
+  // whatever gets added next; two effects cannot.
+  useEffect(() => {
+    const previous = document.body.style.background;
+    document.body.style.background = "var(--tg-theme-bg-color, #17212b)";
+    return () => {
+      document.body.style.background = previous;
+    };
+  }, []);
+
   useEffect(() => {
     // Wait only for the script's fate to be decided, never for the script
     // itself to succeed.
     if (!settled) return;
     webApp?.ready?.();
     webApp?.expand?.();
-
-    // The panel's own stylesheet gives <body> a light background, which
-    // showed as a pale strip down the side of the dark app wherever our
-    // container did not reach. Painted on the document itself, and only on
-    // this route.
-    const previous = document.body.style.background;
-    document.body.style.background = "var(--tg-theme-bg-color, #17212b)";
-    return () => {
-      document.body.style.background = previous;
-    };
 
     const credential = initData || webApp?.initData || "";
     if (!credential) {

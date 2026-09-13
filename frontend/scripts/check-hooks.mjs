@@ -77,12 +77,71 @@ function scan(path) {
   });
 }
 
+/**
+ * Second rule: nothing may follow a useEffect's cleanup `return`.
+ *
+ * Reported 2026-09-13, the mini app stuck on «در حال بارگذاری» for ever. One
+ * effect did two jobs - paint the body background, then fetch the page's
+ * data - and the background half ends in `return () => {...}`, which was
+ * written above the fetch. So the effect returned its cleanup and the fetch
+ * below it never ran once. No error, no warning, valid JavaScript; the only
+ * symptom is a spinner that never stops.
+ *
+ * Cheap to catch: inside a useEffect callback, a cleanup return is at four
+ * spaces of indentation, and so is any statement that follows it.
+ */
+const dead = [];
+
+function scanEffects(path) {
+  const lines = readFileSync(path, "utf8").split("\n");
+  let returnedAt = 0;
+
+  lines.forEach((line, i) => {
+    if (/^\s{2}useEffect\(\(\) => \{/.test(line)) {
+      returnedAt = 0;
+      return;
+    }
+    // End of the effect: `}, [deps]);` at the effect's own indentation.
+    if (/^ {2}\}, \[/.test(line)) {
+      returnedAt = 0;
+      return;
+    }
+    if (!returnedAt && /^ {4}return \(\) => \{/.test(line)) {
+      returnedAt = i + 1;
+      return;
+    }
+    if (!returnedAt) return;
+    const body = line.trim();
+    // Blank lines, comments, and the cleanup's own closing `};` are not
+    // statements - the first real statement at the effect's top level is.
+    if (!body || body.startsWith("//") || body.startsWith("*") || body.startsWith("/*")) return;
+    if (/^ {4}\S/.test(line) && !/^ {4}\}/.test(line)) {
+      dead.push(`${path}:${i + 1}  unreachable: the cleanup return is on line ${returnedAt}\n    ${body}`);
+      returnedAt = 0;
+    }
+  });
+}
+
+function walkEffects(dir) {
+  for (const entry of readdirSync(dir)) {
+    const path = join(dir, entry);
+    if (statSync(path).isDirectory()) walkEffects(path);
+    else if (entry.endsWith(".jsx")) scanEffects(path);
+  }
+}
+
 for (const root of roots) walk(root);
+for (const root of roots) walkEffects(root);
 
 if (problems.length) {
   console.error("\nReact hooks must run on every render, so none may sit below an early return.");
   console.error("A component that breaks this renders a blank page the moment the guard stops firing.\n");
   for (const problem of problems) console.error("  " + problem + "\n");
-  process.exit(1);
 }
-console.log(`hooks ok - no hook sits below an early return in ${roots.join(", ")}`);
+if (dead.length) {
+  console.error("\nA useEffect's cleanup `return` ends the effect - code written below it never runs.");
+  console.error("Give the cleanup its own useEffect instead.\n");
+  for (const item of dead) console.error("  " + item + "\n");
+}
+if (problems.length || dead.length) process.exit(1);
+console.log(`hooks ok - no hook below an early return, no code below a cleanup return (${roots.join(", ")})`);

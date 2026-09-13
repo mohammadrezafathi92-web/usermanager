@@ -47,9 +47,6 @@ import {
   resolveHaFailover,
   changePanelPort,
   checkPanelUpdate, applyPanelUpdate, fetchMe,
-  listTelegramProxyNodes,
-  checkTelegramProxyNode,
-  setupTelegramProxy,
   fetchIpBans, addIpBan, removeIpBan,
 } from "../api/client.js";
 import { formatDateTime, formatBytes, copyText, downloadBlob, getDisplayOffset, setDisplayOffset, errorText } from "../utils.js";
@@ -585,11 +582,6 @@ export default function Settings() {
   const [botStatus, setBotStatus] = useState({ running: false, last_error: null, bot_username: null });
   const [remoteStatus, setRemoteStatus] = useState({ remote_mode: false, remote_host: null, remote_status: null, remote_deployed_at: null });
   const [botMsg, setBotMsg] = useState(null);
-  // راه‌اندازی خودکار پروکسی تلگرام روی نود میکروتیک
-  const [proxyNodes, setProxyNodes] = useState([]);
-  const [proxyNodeId, setProxyNodeId] = useState("");
-  const [proxyBusy, setProxyBusy] = useState(false);
-  const [proxyResult, setProxyResult] = useState(null);
   const [savingBot, setSavingBot] = useState(false);
   const [restartingBot, setRestartingBot] = useState(false);
   const [showBotToken, setShowBotToken] = useState(false);
@@ -609,50 +601,6 @@ export default function Settings() {
     if (isSuperadmin) loadBotSettings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const loadProxyNodes = async () => {
-    try {
-      const res = await listTelegramProxyNodes();
-      setProxyNodes(res.data || []);
-    } catch {
-      setProxyNodes([]);
-    }
-  };
-
-  const runProxyCheck = async () => {
-    if (!proxyNodeId) return;
-    setProxyBusy(true);
-    setProxyResult(null);
-    try {
-      const res = await checkTelegramProxyNode(proxyNodeId);
-      setProxyResult({ type: res.data.ok ? "ok" : "err", text: res.data.detail });
-    } catch (err) {
-      setProxyResult({ type: "err", text: errorText(err, t("settings.msgGenericError")) });
-    } finally {
-      setProxyBusy(false);
-    }
-  };
-
-  const runProxySetup = async () => {
-    if (!proxyNodeId) return;
-    setProxyBusy(true);
-    setProxyResult(null);
-    try {
-      const res = await setupTelegramProxy({ node_id: Number(proxyNodeId) });
-      // The URL is filled in but NOT saved: configuring a router and
-      // switching the live bot onto it are two decisions, and the admin
-      // presses ذخیره when they are ready for the second one.
-      setBotForm((f) => ({ ...f, telegram_proxy_url: res.data.proxy_url, telegram_api_proxy_url: "" }));
-      setProxyResult({
-        type: "ok",
-        text: [...(res.data.log || []), res.data.next_step].join("\n"),
-      });
-    } catch (err) {
-      setProxyResult({ type: "err", text: errorText(err, t("settings.msgGenericError")) });
-    } finally {
-      setProxyBusy(false);
-    }
-  };
 
   const submitBot = async (e) => {
     e.preventDefault();
@@ -1157,49 +1105,11 @@ export default function Settings() {
             <div className="hint">{t("settings.telegramSocksUrlHint")}</div>
           </div>
 
-          {/* راه‌اندازی خودکار روی یک نود میکروتیک. Placed directly under the
-              proxy field it fills in, so the relationship between the button
-              and the value it produces needs no explaining. */}
-          <div className="md:col-span-2 rounded-xl border border-gray-200 bg-gray-50/70 p-4">
-            <div className="text-sm font-medium text-gray-800">{t("settings.tgProxyAutoTitle")}</div>
-            <div className="text-xs text-gray-500 mt-1">{t("settings.tgProxyAutoHint")}</div>
-            <div className="flex flex-col sm:flex-row gap-2 mt-3">
-              <select
-                className="input input-sm flex-1"
-                value={proxyNodeId}
-                onFocus={() => { if (!proxyNodes.length) loadProxyNodes(); }}
-                onChange={(e) => { setProxyNodeId(e.target.value); setProxyResult(null); }}
-              >
-                <option value="">{t("settings.tgProxyPickNode")}</option>
-                {proxyNodes.map((n) => (
-                  <option key={n.id} value={n.id}>{n.name} — {n.host}</option>
-                ))}
-              </select>
-              <button
-                type="button"
-                className="btn-outline btn-sm"
-                disabled={!proxyNodeId || proxyBusy}
-                onClick={runProxyCheck}
-              >
-                {t("settings.tgProxyTest")}
-              </button>
-              <button
-                type="button"
-                className="btn-primary btn-sm"
-                disabled={!proxyNodeId || proxyBusy}
-                onClick={runProxySetup}
-              >
-                {proxyBusy ? t("settings.saving") : t("settings.tgProxySetup")}
-              </button>
-            </div>
-            {proxyResult && (
-              <div className={`text-xs rounded-lg px-3 py-2 mt-3 whitespace-pre-line ${
-                proxyResult.type === "ok" ? "text-emerald-700 bg-emerald-50" : "text-red-600 bg-red-50"
-              }`}>
-                {proxyResult.text}
-              </div>
-            )}
-          </div>
+          {/* The «راه‌اندازی خودکار پروکسی روی نود میکروتیک» card used to sit
+              here. Removed at the owner's request: it never actually produced
+              a working proxy, so it was a button that promised a result it
+              could not deliver. The two fields above still accept a proxy
+              URL typed in by hand, which is the path that does work. */}
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("settings.adminIds")}</label>
             <input

@@ -316,10 +316,6 @@ export const fetchTelegramBotSettings = () => client.get("/telegram-bot");
 export const updateTelegramBotSettings = (data) => client.put("/telegram-bot", data);
 
 // راه‌اندازی خودکار پروکسی تلگرام روی یک نود میکروتیک
-export const listTelegramProxyNodes = () => client.get("/telegram-proxy/nodes");
-export const checkTelegramProxyNode = (nodeId) => client.post(`/telegram-proxy/check/${nodeId}`);
-export const setupTelegramProxy = (data) => client.post("/telegram-proxy/setup", data);
-export const disableTelegramProxy = (nodeId) => client.post(`/telegram-proxy/disable/${nodeId}`);
 
 // تونل وایرگارد تلگرام - داخل همین کانتینر بک‌اند بالا می‌آید
 export const getTelegramTunnel = () => client.get("/telegram-tunnel");

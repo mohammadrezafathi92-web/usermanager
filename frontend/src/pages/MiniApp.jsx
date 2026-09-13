@@ -23,7 +23,11 @@ import { formatBytes, formatToman } from "../utils.js";
  * admin panel - and Telegram supplies the surrounding colours, which is why
  * they are read from its CSS variables with the panel's own as a fallback.
  */
-const TELEGRAM_SCRIPT = "https://telegram.org/js/telegram-web-app.js";
+// Served by this panel, not by telegram.org - see the backend endpoint of
+// the same name. telegram.org is precisely the host that is blocked on the
+// networks this is sold into, and loading it from there made the page
+// depend, at load time, on the one domain its customers cannot reach.
+const TELEGRAM_SCRIPT = "/api/miniapp/telegram-web-app.js";
 
 /**
  * The initData blob, from the URL rather than from Telegram's script.
@@ -49,6 +53,16 @@ function initDataFromUrl() {
     if (found) return found;
   }
   return "";
+}
+
+/** Which parameters Telegram put on the url - names only, never values. */
+function debugUrlKeys() {
+  const keys = [];
+  for (const source of [window.location.hash.slice(1), window.location.search.slice(1)]) {
+    if (!source) continue;
+    for (const [key] of new URLSearchParams(source)) keys.push(key);
+  }
+  return keys.join(", ");
 }
 
 function useTelegram() {
@@ -210,6 +224,22 @@ export default function MiniApp() {
           >
             تلاش دوباره
           </button>
+
+          {/* What the page actually found, for when it did not work. Three
+              rounds of "it does not open" went by without anyone being able
+              to say WHY, because the only evidence lived in a console nobody
+              could reach from inside Telegram's webview. Names and lengths
+              only - never the signature itself, which is a credential. */}
+          <details className="mt-4 text-start">
+            <summary className="text-xs opacity-50 cursor-pointer">جزئیات فنی</summary>
+            <div className="text-[11px] opacity-70 mt-2 space-y-0.5 font-mono" dir="ltr">
+              <div>telegram script: {webApp ? "loaded" : settled ? "absent" : "pending"}</div>
+              <div>initData in url: {initData ? `${initData.length} chars` : "no"}</div>
+              <div>initData from script: {webApp?.initData ? `${webApp.initData.length} chars` : "no"}</div>
+              <div>url keys: {debugUrlKeys() || "(none)"}</div>
+              <div>platform: {webApp?.platform || "unknown"}</div>
+            </div>
+          </details>
         </Card>
       </div>
     );

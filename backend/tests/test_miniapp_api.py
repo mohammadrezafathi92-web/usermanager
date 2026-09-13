@@ -18,6 +18,7 @@ import hmac
 import inspect
 import json
 import os
+import pathlib
 import sys
 from urllib.parse import urlencode
 
@@ -177,6 +178,33 @@ check("...and skips a bot whose loop is not running",
 check("the remote bridge can answer it too",
       hasattr(RemoteBridge, "get_panel_public_url") and hasattr(PanelBridge, "get_panel_public_url"),
       True)
+
+print("\n--- Telegram's script is served by this panel, not by telegram.org ---")
+# telegram.org is exactly the host that is blocked on the networks this is
+# sold into, and the page was depending on it AT LOAD TIME for both the
+# theme and, on some clients, the credential itself.
+script_src = inspect.getsource(miniapp.telegram_web_app_script)
+check("fetched through the same route the bots use to reach Telegram",
+      "_lookup_telegram_api_proxy_url" in script_src, True)
+check("...and cached, so it is fetched once rather than per visitor",
+      "_script_cache" in script_src, True)
+check("a stale copy beats none when Telegram is unreachable",
+      script_src.count("cached") >= 2, True)
+check("...and even with no copy at all it answers valid JavaScript",
+      "/* telegram-web-app.js unavailable */" in script_src, True)
+check("never a 5xx - the page copes with its absence, an error only adds noise",
+      "status_code=5" in script_src, False)
+
+page = (pathlib.Path(__file__).resolve().parents[2]
+        / "frontend" / "src" / "pages" / "MiniApp.jsx").read_text()
+check("the page loads it from its own origin",
+      'TELEGRAM_SCRIPT = "/api/miniapp/telegram-web-app.js"' in page, True)
+check("...and no longer from telegram.org", "https://telegram.org/js" in page, False)
+
+print("\n--- and when it fails, the page can say why ---")
+check("it reports what it found", "جزئیات فنی" in page, True)
+check("...lengths, never the signature itself",
+      "initData.length" in page and "{initData}" not in page, True)
 
 print("\n" + "=" * 60)
 if failures:

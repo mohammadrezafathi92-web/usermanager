@@ -20,9 +20,13 @@ there.
 """
 from __future__ import annotations
 
+import datetime as dt
 import logging
 
+import requests
+
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from .. import models
@@ -55,6 +59,57 @@ def _shop_title(db: Session, owner_admin_id: int | None) -> str:
         return ""
     admin = db.get(models.AdminUser, owner_admin_id)
     return admin.username if admin else ""
+
+
+# The Mini App needs Telegram's own small script for the theme colours and
+# initData. It is hosted on telegram.org, which is exactly the host that is
+# blocked or throttled on the networks this product is sold into - so the
+# page was depending, at load time, on the one domain its customers cannot
+# reliably reach.
+#
+# Served from this panel instead. The backend fetches it once, through the
+# same route the bots already use to reach Telegram (the WireGuard tunnel or
+# the configured API proxy - see telegram_bot/runner.py), and keeps it in
+# memory. The customer's browser then gets it from the same origin the page
+# itself came from, which it has obviously just reached.
+_TELEGRAM_SCRIPT_URL = "https://telegram.org/js/telegram-web-app.js"
+_script_cache: dict[str, object] = {"body": None, "fetched_at": None}
+_SCRIPT_TTL = dt.timedelta(hours=12)
+
+
+@router.get("/telegram-web-app.js")
+def telegram_web_app_script():
+    from ..telegram_bot.runner import _lookup_telegram_api_proxy_url
+
+    now = dt.datetime.utcnow()
+    cached, at = _script_cache["body"], _script_cache["fetched_at"]
+    if cached and at and now - at < _SCRIPT_TTL:
+        return Response(content=cached, media_type="application/javascript")
+
+    proxies = None
+    proxy = _lookup_telegram_api_proxy_url()
+    if proxy:
+        proxies = {"http": proxy, "https": proxy}
+    try:
+        resp = requests.get(_TELEGRAM_SCRIPT_URL, timeout=20, proxies=proxies)
+        resp.raise_for_status()
+        body = resp.content
+    except requests.RequestException as exc:
+        logger.warning("miniapp: could not fetch Telegram's script (%s)", exc)
+        if cached:
+            # A stale copy is worth far more than none: without it the page
+            # loses the theme and, on clients that only expose initData
+            # through this script, its credential too.
+            return Response(content=cached, media_type="application/javascript")
+        # Valid, empty JavaScript. The page is built to survive its absence
+        # (see pages/MiniApp.jsx), and a 502 here would only add a console
+        # error to a page that is already coping.
+        return Response(content=b"/* telegram-web-app.js unavailable */\n",
+                        media_type="application/javascript")
+
+    _script_cache["body"], _script_cache["fetched_at"] = body, now
+    logger.info("miniapp: Telegram's script cached (%d bytes)", len(body))
+    return Response(content=body, media_type="application/javascript")
 
 
 @router.get("/home")

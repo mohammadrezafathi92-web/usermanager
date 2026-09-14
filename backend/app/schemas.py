@@ -686,6 +686,23 @@ class DashboardStats(BaseModel):
     # as admin_balance.
     admin_billing_mode: Optional[str] = None
     admin_volume_balance_gb: Optional[float] = None
+    # What this admin currently OWES, in tomans. Null for a superadmin.
+    #
+    # Two parts, because a reseller's debt lives in two places and seeing
+    # only one of them is how a bill arrives as a surprise: money already
+    # charged and not yet paid (a negative AdminUser.balance - charges are
+    # allowed to run it below zero up to credit_limit), plus traffic that
+    # has been metered but not yet priced into a charge row
+    # (unbilled_usage_gb, drained on a schedule by
+    # services/usage_billing.settle_usage_charges).
+    #
+    # A usage-billed admin's dashboard showed a GB pool and no money at
+    # all, so the one number they actually owe was the one number the panel
+    # never told them. Reported 2026-09-14.
+    admin_debt_toman: Optional[int] = None
+    # The second part on its own, so the panel can explain the figure
+    # rather than just assert it - «۱۲٫۴ گیگابایت هنوز صورتحساب نشده».
+    admin_unbilled_usage_gb: Optional[float] = None
     # Live-ish throughput: sum of UsageLog.delta_bytes recorded in the last
     # 60 seconds (across all connections in scope), divided by 60. Since
     # poll_all runs every POLL_INTERVAL_SECONDS (default 30s - see

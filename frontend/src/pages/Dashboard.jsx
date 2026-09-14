@@ -233,6 +233,25 @@ export default function Dashboard() {
                       {stats.admin_volume_balance_gb < 0 && (
                         <div className="text-xs text-red-500 mt-1">{t("dashboard.volumeDebtHint")}</div>
                       )}
+                      {/* The money side of the same account. A usage-billed
+                          reseller was shown a GB pool and nothing else, so
+                          the one number they actually owe was the one the
+                          panel never told them. Includes traffic metered
+                          but not yet billed, which is why it can move
+                          without any charge appearing yet. */}
+                      {stats.admin_debt_toman > 0 && (
+                        <div className="text-xs text-red-500 mt-1" dir="rtl">
+                          {t("dashboard.debtLabel")}{" "}
+                          <span dir="ltr">{formatToman(stats.admin_debt_toman, language)}</span>{" "}
+                          {t("dashboard.tomanUnit")}
+                          {stats.admin_unbilled_usage_gb > 0 && (
+                            <span className="opacity-70">
+                              {" "}({t("dashboard.debtIncludesUnbilled").replace(
+                                "{gb}", formatGb(stats.admin_unbilled_usage_gb, language))})
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </>
                 ) : (
@@ -245,6 +264,13 @@ export default function Dashboard() {
                         {formatToman(stats.admin_balance, language)} <span className="text-sm text-gray-400 font-normal">{t("dashboard.tomanUnit")}</span>
                       </div>
                       <div className="text-sm text-gray-400">{t("dashboard.yourBalance")}</div>
+                      {stats.admin_debt_toman > 0 && (
+                        <div className="text-xs text-red-500 mt-1" dir="rtl">
+                          {t("dashboard.debtLabel")}{" "}
+                          <span dir="ltr">{formatToman(stats.admin_debt_toman, language)}</span>{" "}
+                          {t("dashboard.tomanUnit")}
+                        </div>
+                      )}
                     </div>
                   </>
                 )}

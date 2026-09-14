@@ -539,7 +539,7 @@ function CheckoutSheet({ pkg, wallet, account, payment, initData, onClose, onDon
             </div>
           ) : (
             <div className="text-xs opacity-50 mb-3">
-              هنوز شماره کارتی ثبت نشده - با پشتیبانی تماس بگیرید.
+              هنوز روش پرداخت تنظیم نشده - با پشتیبانی تماس بگیرید.
             </div>
           )}
 
@@ -702,7 +702,7 @@ function TopupSheet({ wallet, account, payment, initData, onClose, onDone }) {
             </div>
           ) : (
             <div className="text-xs opacity-50 mb-3">
-              هنوز شماره کارتی ثبت نشده - با پشتیبانی تماس بگیرید.
+              هنوز روش پرداخت تنظیم نشده - با پشتیبانی تماس بگیرید.
             </div>
           )}
 

@@ -17,6 +17,34 @@ EXPIRING_SOON_DAYS = 7
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"], dependencies=[Depends(get_current_admin)])
 
 
+def _debt_toman(admin: models.AdminUser) -> int:
+    """How much money this reseller owes right now.
+
+    Answered as one question rather than two: what will their balance be
+    once the traffic already metered has been priced? Anything below zero
+    at that point is the debt.
+
+        debt = max(0, unbilled_value - balance)
+
+    Adding the two halves separately looked right and was not. An admin
+    with 900,000 in credit and one gigabyte pending would have been told
+    they owed 3,000 tomans - when that charge is simply going to come out
+    of credit they already hold. A false debt is worse than no figure: it
+    is a bill they will go looking for and not find.
+
+    Both halves still have to be in it. A charge that has already been
+    applied shows as a negative balance; traffic metered since then sits on
+    unbilled_usage_gb until services/usage_billing.settle_usage_charges
+    next runs. Showing only the first makes the debt jump every time that
+    job fires, with nothing on screen having predicted it.
+    """
+    balance = int(admin.balance or 0)
+    gb = float(admin.unbilled_usage_gb or 0)
+    rate = int(getattr(admin, "wholesale_price_per_gb", 0) or 0)
+    pending = int(round(gb * rate)) if gb > 0 and rate > 0 else 0
+    return max(0, pending - balance)
+
+
 @router.get("/stats", response_model=schemas.DashboardStats)
 def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     # Aggregate counts/sums in SQL instead of loading every User/Node row
@@ -218,6 +246,10 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
         admin_billing_mode=None if admin.is_superadmin else (admin.billing_mode or "flat"),
         admin_volume_balance_gb=(
             None if admin.is_superadmin else (admin.volume_balance_gb or 0)
+        ),
+        admin_debt_toman=None if admin.is_superadmin else _debt_toman(admin),
+        admin_unbilled_usage_gb=(
+            None if admin.is_superadmin else float(admin.unbilled_usage_gb or 0)
         ),
         avg_speed_bps=avg_speed_bps,
         protocol_connection_counts=protocol_counts,

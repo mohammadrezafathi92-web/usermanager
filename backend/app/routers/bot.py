@@ -451,12 +451,28 @@ def get_payment_info(owner_admin_id: Optional[int] = None, db: Session = Depends
         if candidate is not None and not candidate.is_superadmin:
             own_admin = candidate
     if own_admin is not None:
-        if own_admin.own_payment_card_number:
-            row.payment_card_number = own_admin.own_payment_card_number
-        if own_admin.own_payment_card_holder:
-            row.payment_card_holder = own_admin.own_payment_card_holder
-        if own_admin.own_payment_instructions:
-            row.payment_instructions = own_admin.own_payment_instructions
+        # WHERE THE MONEY GOES does not fall back. Every other field on this
+        # row degrades gracefully to the panel-wide default; a bank card
+        # cannot. A reseller who has not set their own card used to have the
+        # MAIN admin's card shown to their customers, so those customers
+        # paid the wrong person - silently, correctly-looking, and for as
+        # long as nobody noticed. Reported 2026-09-14.
+        #
+        # Blank instead. The bot and the Mini App both already handle an
+        # empty card by telling the customer payment is not set up yet and
+        # to contact support, which is a bad screen; being paid into someone
+        # else's account is not a screen at all, it is a loss.
+        #
+        # The instructions travel with the card for the same reason - the
+        # main admin's «فقط کارت به کارت، بعد رسید بفرستید» printed under a
+        # reseller's card number describes a process that is not theirs.
+        row.payment_card_number = own_admin.own_payment_card_number or ""
+        row.payment_card_holder = own_admin.own_payment_card_holder or ""
+        row.payment_instructions = own_admin.own_payment_instructions or ""
+        # These two DO still fall back, deliberately. Top-up presets are
+        # just suggested amounts, and a support contact that reaches
+        # somebody beats one that reaches nobody - neither can misdirect a
+        # payment.
         if own_admin.own_topup_presets:
             row.topup_presets = own_admin.own_topup_presets
         if own_admin.own_support_contact_text:

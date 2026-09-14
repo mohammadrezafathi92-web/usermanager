@@ -116,6 +116,77 @@ check("a redacted read does not poison the next one",
       again.payment_card_number, "6037-9975-1111-2222")
 
 
+
+# --------------------------------------------------------------------------
+# Two more things a reseller's own panel must get right about money, kept
+# here because they are the same complaint: the panel knowing something
+# about a reseller's account and not telling them.
+print("\n--- where a reseller's customers are told to pay ---")
+from app.routers import bot as bot_router  # noqa: E402
+
+# A SECOND reseller, with no saved cards of their own at all. The first one
+# already has a card in their pool, and a pool card deliberately overrides
+# the single legacy field (see get_payment_info) - so testing the fallback
+# on them would be measuring the pool, not the fallback.
+bare = models.AdminUser(id=3, username="sara", hashed_password="x",
+                        own_bot_token="8000000003:AAsara")
+db.add(bare)
+db.commit()
+
+# This reseller has set NOTHING of their own. Before this fix the main
+# admin's card was handed to their customers - who then paid the wrong
+# person, silently and correctly-looking, for as long as nobody noticed.
+info = bot_router.get_payment_info(owner_admin_id=3, db=db)
+check("no card is offered rather than the main admin's", info.payment_card_number, "")
+check("...nor the cardholder", info.payment_card_holder, "")
+check("...nor instructions describing someone else's process",
+      info.payment_instructions, "")
+# These two still fall back on purpose - neither can misdirect a payment.
+check("but the support contact still reaches somebody",
+      info.support_contact_text, "@main_support")
+check("...and the suggested amounts survive", info.topup_presets, "50000,100000")
+
+bare.own_payment_card_number = "5892-1010-2020-3030"
+bare.own_payment_card_holder = "علی"
+db.commit()
+info = bot_router.get_payment_info(owner_admin_id=3, db=db)
+check("once they set their own, that is what is shown",
+      info.payment_card_number, "5892-1010-2020-3030")
+check("...under their own name", info.payment_card_holder, "علی")
+
+# The superadmin's own shop is unaffected by any of this - their customers
+# still get whichever card their own pool resolves to, exactly as before.
+check("the main admin's own customers still see a main card",
+      bot_router.get_payment_info(owner_admin_id=None, db=db).payment_card_number,
+      "6037-1")
+# And a reseller WITH a pool still gets their own pool's card, not the
+# legacy field and certainly not the main admin's.
+check("a reseller's own pool card wins for their customers",
+      bot_router.get_payment_info(owner_admin_id=2, db=db).payment_card_number, "5892-9")
+
+
+print("\n--- and what the panel tells them they owe ---")
+from app.routers.dashboard import _debt_toman  # noqa: E402
+
+
+def owing(balance, gb=0.0, rate=0):
+    a = models.AdminUser(username="t", hashed_password="x")
+    a.balance, a.unbilled_usage_gb, a.wholesale_price_per_gb = balance, gb, rate
+    return _debt_toman(a)
+
+
+check("credit in hand is not a debt", owing(500000), 0)
+check("an overdrawn balance is", owing(-120000), 120000)
+check("so is traffic metered but not yet priced", owing(0, 12.4, 3000), 37200)
+check("and the two together", owing(-120000, 12.4, 3000), 157200)
+# The case that makes adding the halves separately wrong: the pending
+# charge is going to come out of credit they already hold, so there is no
+# debt - a figure they would go looking for and not find.
+check("credit that covers the pending charge leaves nothing owed",
+      owing(900000, 1, 3000), 0)
+check("...and traffic with no price set cannot be owed for",
+      owing(0, 12.4, 0), 0)
+
 print("\n" + "=" * 60)
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))

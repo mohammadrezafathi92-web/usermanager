@@ -36,6 +36,16 @@ logger = logging.getLogger("telegram_bot")
 
 router = Router(name="customer")
 
+# Shown instead of a card number when the reseller has not set one.
+#
+# routers/bot.py's get_payment_info no longer falls back to the MAIN
+# admin's card for a reseller who has not configured their own - a customer
+# paying into the wrong person's account is worse than a customer who
+# cannot pay yet. This is what they see instead, and the screens below must
+# not ask for a receipt when it is showing: "pay into nothing, then send me
+# the proof" is a dead end the customer cannot get out of.
+NO_PAYMENT_METHOD = "هنوز روش پرداخت تنظیم نشده - با پشتیبانی تماس بگیرید."
+
 
 async def _notify_targets(pending_row: dict) -> set:
     """Who should be told about this pending receipt.
@@ -1068,14 +1078,23 @@ async def _show_payment_screen(target, state: FSMContext) -> None:
         lines.append(f"💰 موجودی فعلی شما {account['balance']:,} تومان است - می‌توانید فوری از اعتبار پرداخت کنید،")
         lines.append("یا:")
         lines.append("")
-    lines.append("مبلغ را به شماره کارت زیر واریز کنید و سپس عکس رسید را همینجا ارسال کنید:")
-    lines.append("")
     if payment.get("payment_card_number"):
+        lines.append("مبلغ را به شماره کارت زیر واریز کنید و سپس عکس رسید را همینجا ارسال کنید:")
+        lines.append("")
         lines.append(f"💳 <code>{payment['payment_card_number']}</code>")
-    if payment.get("payment_card_holder"):
-        lines.append(f"به نام: {payment['payment_card_holder']}")
-    if payment.get("payment_instructions"):
-        lines.append("\n" + payment["payment_instructions"])
+        if payment.get("payment_card_holder"):
+            lines.append(f"به نام: {payment['payment_card_holder']}")
+        if payment.get("payment_instructions"):
+            lines.append("\n" + payment["payment_instructions"])
+    else:
+        lines.append(NO_PAYMENT_METHOD)
+        if not can_pay_from_balance:
+            # Nothing to wait for: no card to pay into and no balance to
+            # spend. Sending them into the receipt state here would leave
+            # them stuck on "send me the photo" with no way to produce one.
+            await state.clear()
+            await _reply(target, "\n".join(lines), home_kb())
+            return
 
     # Remembered so receive_receipt below can stamp it onto the pending
     # request - see storage.py's payment_card_id column docstring for why
@@ -1353,14 +1372,23 @@ async def _ask_for_topup_receipt(target, state: FSMContext, amount: int) -> None
             await target.answer(f"خطا: {exc}")
         return
     await state.update_data(topup_amount=amount, payment_card_id=payment.get("resolved_payment_card_id"))
+    # A top-up has no wallet alternative - a card is the only way in, so
+    # without one there is nothing to walk the customer through.
+    if not payment.get("payment_card_number"):
+        await state.clear()
+        if isinstance(target, CallbackQuery):
+            await target.message.edit_text(NO_PAYMENT_METHOD)
+            await target.answer()
+        else:
+            await target.answer(NO_PAYMENT_METHOD, reply_markup=home_kb())
+        return
     lines = [
         f"مبلغ افزایش اعتبار: <b>{amount:,} تومان</b>",
         "",
         "لطفا مبلغ را به شماره کارت زیر واریز کنید و سپس عکس رسید را همینجا ارسال کنید:",
         "",
+        f"💳 <code>{payment['payment_card_number']}</code>",
     ]
-    if payment.get("payment_card_number"):
-        lines.append(f"💳 <code>{payment['payment_card_number']}</code>")
     if payment.get("payment_card_holder"):
         lines.append(f"به نام: {payment['payment_card_holder']}")
     if payment.get("payment_instructions"):

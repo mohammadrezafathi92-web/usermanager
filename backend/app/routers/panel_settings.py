@@ -107,6 +107,42 @@ SUPERADMIN_ONLY_SETTINGS_FIELDS = {
 }
 
 
+# The subset of the above that must not even be READ by a reseller.
+#
+# Writes were guarded from the start; reads never were, and GET /api/settings
+# is require_admin_or_above - so every level-2 Admin could fetch the main
+# admin's bank card number, cardholder name and the whole saved-card pool.
+# The panel's own page hides that section behind isSuperadmin, which is why
+# it went unnoticed: the screen was clean and the response was not.
+#
+# panel_public_url and display_utc_offset_minutes are deliberately NOT in
+# here, though they are superadmin-only to WRITE. They are operational
+# rather than private, and a reseller's panel needs them - blanking the
+# offset would shift every timestamp they see by hours.
+SUPERADMIN_ONLY_READ_FIELDS = {
+    "payment_card_number",
+    "payment_card_holder",
+    "payment_instructions",
+    "topup_presets",
+    "payment_card_mode",
+    "active_payment_card_id",
+    "payment_card_switch_threshold",
+    "support_contact_text",
+}
+
+
+def _redact_for(out: schemas.PanelSettingsOut, admin: models.AdminUser) -> schemas.PanelSettingsOut:
+    """The main panel's own payment details, removed for anyone but its
+    owner. A reseller has their own, at /api/settings/my-payment."""
+    if admin.is_superadmin:
+        return out
+    for field in SUPERADMIN_ONLY_READ_FIELDS:
+        current = getattr(out, field, None)
+        setattr(out, field, None if not isinstance(current, str) else "")
+    out.payment_cards = []
+    return out
+
+
 def _require_superadmin_for_shared_row(admin: models.AdminUser) -> None:
     if not admin.is_superadmin:
         raise HTTPException(
@@ -117,8 +153,8 @@ def _require_superadmin_for_shared_row(admin: models.AdminUser) -> None:
 
 
 @router.get("", response_model=schemas.PanelSettingsOut)
-def get_settings(db: Session = Depends(get_db)):
-    return _settings_out(db, _get_or_create(db))
+def get_settings(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    return _redact_for(_settings_out(db, _get_or_create(db)), admin)
 
 
 @router.put("", response_model=schemas.PanelSettingsOut)

@@ -188,6 +188,14 @@ export default function PanelTlsCard() {
             {dns.ports?.length > 0 && (
               <div className="font-medium">
                 {t("settings.tlsPortsBusy", { ports: dns.ports.join("، ") })}
+                {/* When the only thing holding port 80 is this panel's own
+                    frontend, the fix is one field further down this same
+                    page - so the message says which field instead of
+                    leaving the admin to work out that "free the port"
+                    means "move my own panel". */}
+                {dns.ports_are_ours && (
+                  <div className="font-normal mt-1">{t("settings.tlsPortsBusyOurs")}</div>
+                )}
               </div>
             )}
             {/* The addresses get their own left-to-right rows rather than

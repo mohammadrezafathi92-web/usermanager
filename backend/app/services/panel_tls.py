@@ -236,7 +236,19 @@ def check_dns(domain: str) -> dict:
         "public_ip": None,
         "reason": reason,
         "ports": ports_in_use(),
+        # Whether the ONLY thing in the way is our own web frontend. That
+        # case has a remedy the admin already has to hand - the «پورت پنل
+        # وب» card on this very page - while a foreign container on 443 is
+        # a decision only they can make. Telling the two apart is the
+        # difference between a message that ends the problem and one that
+        # merely names it.
+        "ports_are_ours": _only_our_frontend(),
     }
+
+
+def _only_our_frontend() -> bool:
+    busy = ports_in_use()
+    return bool(busy) and all("usermanager-frontend" in entry for entry in busy)
 
 
 def ports_in_use() -> list[str]:

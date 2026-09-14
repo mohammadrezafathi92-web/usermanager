@@ -510,6 +510,18 @@ export const disableTls = () => client.post("/settings/tls/disable");
 // helper container that outlives the request - this is how it reports back.
 export const fetchTlsLog = () => client.get("/settings/tls/log");
 
+// Wallet top-up from inside the Mini App - lands in the same
+// «درخواست‌های در انتظار» queue as a top-up receipt sent in chat.
+export const miniAppTopupReceipt = (initData, { amount, account, file }) => {
+  const form = new FormData();
+  form.append("amount", amount);
+  if (account) form.append("account", account);
+  form.append("photo", file);
+  return axios.post("/api/miniapp/topup/receipt", form, {
+    headers: { "X-Telegram-InitData": initData },
+  });
+};
+
 // Mini App shelves - see backend models.PackageGroup. Ordinary admin API,
 // unlike the miniapp endpoints below.
 export const fetchPackageGroups = () => client.get("/package-groups");

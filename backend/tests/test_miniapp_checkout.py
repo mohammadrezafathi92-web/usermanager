@@ -137,6 +137,15 @@ def call(fn, *args, **kwargs):
         return f"{exc.status_code}: {exc.detail}"
 
 
+def call_async(fn, *args, **kwargs):
+    """call(), for the `async def` endpoints."""
+    import asyncio as _asyncio
+    try:
+        return _asyncio.run(fn(*args, **kwargs))
+    except HTTPException as exc:
+        return f"{exc.status_code}: {exc.detail}"
+
+
 # --------------------------------------------------------------------------
 print("--- what the visitor may buy ---")
 db = make_db()
@@ -369,6 +378,59 @@ try:
     check("...and is still filed", bool(storage.get_pending(out["request_id"])), True)
 finally:
     runner._make_bot = original_make_bot
+
+
+# --------------------------------------------------------------------------
+print("\n--- topping up the wallet ---")
+# «دکمه افزایش اعتبار کار نمیکنه» - because there was no button, only a
+# heading. This is the endpoint behind the one that now exists. It writes
+# the SAME row the bot's own top-up flow writes, so the existing approval
+# credits the wallet and nothing new had to learn how money works.
+db = make_db()
+storage.init_db()
+sent.clear()
+uploaded.clear()   # the purchase test above used the same recorder
+runner._make_bot = lambda token: _FakeBot()
+try:
+    out = asyncio.run(
+        miniapp.topup_receipt(
+            amount=250000, account=None, photo=FakeUpload(b"jpeg"),
+            visitor=visitor(db), db=db,
+        )
+    )
+finally:
+    runner._make_bot = original_make_bot
+
+row = storage.get_pending(out["request_id"])
+check("it reports the receipt as pending", out["status"], "pending")
+check("filed as a top-up, not a purchase", row["kind"], "topup")
+check("...for the amount asked", row["final_price"], 250000)
+check("...against the customer's own account", row["target_username"], "ali_cust")
+check("...under the reseller the signature named", row["owner_admin_id"], 2)
+check("the wallet is NOT credited yet - an unapproved receipt is a claim",
+      db.get(models.User, 100).balance, 500000)
+check("and the owner was actually shown it, from inside the event loop",
+      uploaded, [111])
+
+print("\n--- what a top-up refuses ---")
+for amount, label in ((0, "zero"), (-5000, "negative"), (10**12, "absurd")):
+    refusal = call_async(miniapp.topup_receipt, amount=amount, account=None,
+                         photo=FakeUpload(b"jpeg"), visitor=visitor(db), db=db)
+    check(f"{label} is refused", str(refusal).startswith("400"), True)
+
+# A top-up has nowhere to land without an account: the approval credits
+# models.User.balance, and there is no user yet to credit.
+refusal = call_async(miniapp.topup_receipt, amount=50000, account=None,
+                     photo=FakeUpload(b"jpeg"), visitor=visitor(db, telegram_id=777), db=db)
+check("a customer with no account is told so", str(refusal).startswith("400"), True)
+check("...rather than having the receipt vanish", "حساب" in str(refusal), True)
+
+# The same cross-shop check as the purchase path: naming another
+# reseller's account must find nothing.
+refusal = call_async(miniapp.topup_receipt, amount=50000, account="reza_cust",
+                     photo=FakeUpload(b"jpeg"), visitor=visitor(db), db=db)
+check("another shop's account cannot be topped up from here",
+      str(refusal).startswith("400"), True)
 
 
 # --------------------------------------------------------------------------

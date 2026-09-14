@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   Store, Wallet, Layers, AlertTriangle, Check, Upload, X, Loader2, Gift, Globe,
-  Copy, ShoppingBag,
+  Copy, ShoppingBag, Plus,
 } from "lucide-react";
-import { fetchMiniAppHome, miniAppCheckout, miniAppCheckoutReceipt } from "../api/client.js";
+import {
+  fetchMiniAppHome, miniAppCheckout, miniAppCheckoutReceipt, miniAppTopupReceipt,
+} from "../api/client.js";
 import { formatBytes, formatToman } from "../utils.js";
 
 /** Persian digits. Latin numerals beside Persian text render in a
@@ -584,6 +586,167 @@ function CheckoutSheet({ pkg, wallet, account, payment, initData, onClose, onDon
   );
 }
 
+
+/**
+ * Adding credit to the wallet.
+ *
+ * The wallet tab used to show a card number under the heading «افزایش
+ * اعتبار» and stop - a label where an action belongs, so there was
+ * nothing to press. Reported, again accurately, as «دکمه افزایش اعتبار
+ * کار نمیکنه».
+ *
+ * Same two steps as the card-to-card half of checkout, in the same order:
+ * how much, then the receipt. The amount is asked FIRST because it is what
+ * the customer has to type into their bank app, and the card number is
+ * shown beside it rather than on a previous screen they would have to go
+ * back to.
+ */
+function TopupSheet({ wallet, account, payment, initData, onClose, onDone }) {
+  const [amount, setAmount] = useState("");
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const fileInput = useRef(null);
+
+  // The reseller's own quick amounts (PanelSettings.topup_presets), the
+  // same list the bot offers. Parsed exactly as the bot parses it, so the
+  // two never disagree about what the admin typed.
+  const presets = String(payment?.topup_presets || "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => /^\d+$/.test(part))
+    .map(Number);
+
+  const value = Number(amount) || 0;
+
+  const send = async () => {
+    if (!value || !file) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await miniAppTopupReceipt(initData, { amount: value, account, file });
+      onDone(res.data.message);
+    } catch (err) {
+      setError(err?.response?.data?.detail || "انجام نشد. دوباره تلاش کنید.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end" dir="rtl">
+      <div className="absolute inset-0 bg-black/70" onClick={busy ? undefined : onClose} />
+      <div
+        className="relative w-full max-w-lg mx-auto rounded-t-3xl border-t border-white/10 p-5 pb-8 max-h-[88vh] overflow-y-auto"
+        style={{ background: "var(--tg-theme-secondary-bg-color,#151b23)" }}
+      >
+        <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-4" />
+
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div>
+            <div className="font-bold">افزایش اعتبار</div>
+            <div className="text-xs opacity-50 mt-1">
+              موجودی فعلی: {formatToman(wallet, "fa")} تومان
+            </div>
+          </div>
+          <button type="button" onClick={onClose} disabled={busy} className="opacity-50 p-1 -m-1">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="text-sm font-medium mb-2">چه مبلغی؟</div>
+        {presets.length > 0 && (
+          <div className="flex gap-2 overflow-x-auto pb-1 mb-2">
+            {presets.map((preset) => (
+              <button
+                key={preset}
+                type="button"
+                onClick={() => setAmount(String(preset))}
+                className={`shrink-0 px-3.5 py-2 rounded-xl text-xs font-medium ${
+                  value === preset ? "bg-sky-500 text-white" : "bg-white/[0.05] opacity-60"
+                }`}
+              >
+                {formatToman(preset, "fa")}
+              </button>
+            ))}
+          </div>
+        )}
+        {/* inputMode rather than type="number": a numeric keypad without the
+            spinner arrows, and without a browser quietly reformatting what
+            was typed. */}
+        <input
+          className="w-full rounded-xl bg-white/[0.05] px-3.5 py-3 text-sm outline-none border border-white/10 focus:border-sky-500"
+          inputMode="numeric"
+          placeholder="مبلغ به تومان"
+          value={amount}
+          disabled={busy}
+          onChange={(e) => {
+            setAmount(e.target.value.replace(/[^0-9]/g, ""));
+            setError("");
+          }}
+        />
+        {value > 0 && (
+          <div className="text-xs opacity-50 mt-2">{formatToman(value, "fa")} تومان</div>
+        )}
+
+        <div className="mt-5 pt-5 border-t border-white/[0.07]">
+          {payment?.payment_card_number ? (
+            <div className="rounded-xl bg-white/[0.04] p-3.5 text-sm space-y-2 mb-3">
+              <div className="text-xs opacity-50">مبلغ را به این کارت واریز کنید:</div>
+              <div dir="ltr" className="font-mono text-base tracking-wider select-all">
+                {payment.payment_card_number}
+              </div>
+              {payment.payment_card_holder && (
+                <div className="opacity-60 text-xs">{payment.payment_card_holder}</div>
+              )}
+            </div>
+          ) : (
+            <div className="text-xs opacity-50 mb-3">
+              هنوز شماره کارتی ثبت نشده - با پشتیبانی تماس بگیرید.
+            </div>
+          )}
+
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              setFile(e.target.files?.[0] || null);
+              setError("");
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => fileInput.current?.click()}
+            disabled={busy}
+            className={`w-full py-3 rounded-xl border text-sm flex items-center justify-center gap-2 disabled:opacity-50 ${
+              file ? "border-emerald-500/40 text-emerald-400 bg-emerald-500/5" : "border-white/15"
+            }`}
+          >
+            {file ? <Check size={15} /> : <Upload size={15} />}
+            {file ? "عکس رسید انتخاب شد" : "انتخاب عکس رسید"}
+          </button>
+
+          <button
+            type="button"
+            onClick={send}
+            disabled={busy || !value || !file}
+            className="w-full mt-2 py-3.5 rounded-xl bg-sky-500 active:bg-sky-600 disabled:opacity-30 text-white text-sm font-medium flex items-center justify-center gap-2"
+          >
+            {busy ? <Loader2 size={16} className="animate-spin" /> : null}
+            ارسال رسید
+          </button>
+        </div>
+
+        {error && (
+          <div className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2.5 mt-4">{error}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // -------------------------------------------------------------------- page
 
 export default function MiniApp() {
@@ -592,6 +755,7 @@ export default function MiniApp() {
   const [error, setError] = useState("");
   const [tab, setTab] = useState("shop");
   const [buying, setBuying] = useState(null);
+  const [toppingUp, setToppingUp] = useState(false);
   const [done, setDone] = useState("");
 
   // Read once, from the URL, and kept for the retry button. Not derived
@@ -815,18 +979,30 @@ export default function MiniApp() {
               <div className="text-3xl font-bold mt-2">{formatToman(data.me.wallet, "fa")}</div>
               <div className="text-xs opacity-45 mt-1">تومان</div>
             </Card>
-            {data.payment?.payment_card_number && (
-              <Card>
-                <div className="flex items-start gap-3">
-                  <IconTile icon={Wallet} tone="emerald" />
-                  <div className="min-w-0 flex-1">
-                    <div className="font-bold text-[15px]">افزایش اعتبار</div>
-                    <div className="text-xs opacity-50 mt-1">
-                      کارت‌به‌کارت کنید و رسید را در ربات بفرستید.
-                    </div>
+            <Card>
+              <div className="flex items-start gap-3">
+                <IconTile icon={Wallet} tone="emerald" />
+                <div className="min-w-0 flex-1">
+                  <div className="font-bold text-[15px]">افزایش اعتبار</div>
+                  <div className="text-xs opacity-50 mt-1">
+                    کارت‌به‌کارت کنید و عکس رسید را همین‌جا بفرستید.
                   </div>
                 </div>
-                <div className="rounded-xl bg-white/[0.04] p-3.5 mt-4 space-y-2">
+              </div>
+              {/* An actual button. This card used to end at the heading
+                  above plus a card number - a label where an action
+                  belongs, so there was nothing to press. */}
+              <button
+                type="button"
+                onClick={() => setToppingUp(true)}
+                className="w-full mt-4 py-3 rounded-xl bg-emerald-500 active:bg-emerald-600 text-white text-sm font-medium flex items-center justify-center gap-2"
+              >
+                <Plus size={16} />
+                افزایش اعتبار
+              </button>
+              {data.payment?.payment_card_number && (
+                <div className="rounded-xl bg-white/[0.04] p-3.5 mt-3 space-y-2">
+                  <div className="text-xs opacity-50">شماره کارت</div>
                   <div dir="ltr" className="font-mono text-base tracking-wider select-all">
                     {data.payment.payment_card_number}
                   </div>
@@ -834,8 +1010,8 @@ export default function MiniApp() {
                     <div className="opacity-60 text-xs">{data.payment.payment_card_holder}</div>
                   )}
                 </div>
-              </Card>
-            )}
+              )}
+            </Card>
           </>
         )}
       </div>
@@ -881,6 +1057,21 @@ export default function MiniApp() {
             // services list and the one-time-package rules all moved, and
             // guessing which is how a screen ends up disagreeing with the
             // server about what the customer owns.
+            load(initData || webApp?.initData || "");
+          }}
+        />
+      )}
+
+      {toppingUp && (
+        <TopupSheet
+          wallet={data.me.wallet}
+          account={data.me.accounts?.[0]?.username || ""}
+          payment={data.payment}
+          initData={initData || webApp?.initData || ""}
+          onClose={() => setToppingUp(false)}
+          onDone={(message) => {
+            setToppingUp(false);
+            setDone(message);
             load(initData || webApp?.initData || "");
           }}
         />

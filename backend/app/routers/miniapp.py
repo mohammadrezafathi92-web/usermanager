@@ -395,7 +395,8 @@ def _receipt_targets(db: Session, pending: dict) -> set[int]:
     return targets
 
 
-def _notify_receipt(db: Session, pending: dict, request_id: int, image: bytes) -> None:
+def _notify_receipt(db: Session, pending: dict, request_id: int, image: bytes,
+                    title: str = "🧾 رسید پرداخت جدید (از مینی‌اپ)") -> None:
     """Best effort, and loud when it fails. A receipt nobody is shown is a
     customer waiting for ever, so a failure here is logged at warning level
     rather than swallowed - but it never fails the request: the row is
@@ -407,10 +408,10 @@ def _notify_receipt(db: Session, pending: dict, request_id: int, image: bytes) -
     try:
         from ..telegram_bot.handlers.admin_pending import _pending_summary
 
-        caption = "🧾 رسید پرداخت جدید (از مینی‌اپ)\n\n" + _pending_summary(pending)
+        caption = title + "\n\n" + _pending_summary(pending)
     except Exception:
         logger.exception("miniapp: could not build the receipt caption")
-        caption = f"🧾 رسید پرداخت جدید (از مینی‌اپ) - درخواست #{request_id}"
+        caption = f"{title} - درخواست #{request_id}"
 
     token = _owner_bot_token(db, pending.get("owner_admin_id"))
     targets = _receipt_targets(db, pending)
@@ -574,4 +575,80 @@ async def checkout_receipt(
         "status": "pending",
         "request_id": request_id,
         "message": "رسید شما ثبت شد و برای بررسی ارسال شد. نتیجه در همین ربات اطلاع داده می‌شود.",
+    }
+
+
+@router.post("/topup/receipt")
+async def topup_receipt(
+    amount: int = Form(...),
+    account: str | None = Form(None),
+    photo: UploadFile = File(...),
+    visitor: dict = Depends(current_visitor),
+    db: Session = Depends(get_db),
+):
+    """Add credit to the wallet, by card-to-card receipt.
+
+    The wallet tab used to show a card number under the heading «افزایش
+    اعتبار» and stop there - a label where an action belongs, so there was
+    nothing to press. This is the action.
+
+    Identical in shape to checkout_receipt above, and deliberately writes
+    the SAME row the bot's own top-up flow writes (kind="topup", the
+    amount carried in a synthetic package with id 0 - see
+    telegram_bot/handlers/customer.py's receive_topup_receipt). That is
+    what makes it appear in «درخواست‌های در انتظار» and be approved by
+    the existing code, which credits the wallet. Nothing here touches a
+    balance: an unapproved receipt is a claim, not a payment.
+    """
+    from ..telegram_bot import storage
+
+    owner = visitor["owner_admin_id"]
+
+    # A bare `amount <= 0` would let 0 through as "free", and a huge number
+    # through as a typo nobody catches until an admin approves it. The
+    # ceiling is deliberately generous - it is a sanity bound, not a policy.
+    if amount <= 0:
+        raise HTTPException(400, "مبلغ را وارد کنید.")
+    if amount > 500_000_000:
+        raise HTTPException(400, "این مبلغ بیش از حد بزرگ است.")
+
+    image = await photo.read()
+    if not image:
+        raise HTTPException(400, "عکس رسید خوانده نشد.")
+    if len(image) > 10 * 1024 * 1024:
+        raise HTTPException(400, "حجم عکس بیش از حد است (حداکثر ۱۰ مگابایت).")
+
+    # Unlike a purchase, a top-up has nowhere to land without an account -
+    # the approval credits models.User.balance, and there is no user yet to
+    # credit. Said plainly rather than accepted and lost.
+    account_row = _own_account(db, visitor, account)
+    if account_row is None:
+        raise HTTPException(400, "هنوز حسابی ندارید - اولین خرید را از داخل ربات انجام دهید.")
+
+    payment = bot_router.get_payment_info(owner_admin_id=owner, db=db)
+
+    storage.init_db()
+    request_id = storage.create_pending(
+        telegram_id=visitor["telegram_id"],
+        telegram_username=visitor["user"].get("username"),
+        telegram_name=(visitor["user"].get("first_name") or "").strip(),
+        kind="topup",
+        package={"id": 0, "name": f"افزایش اعتبار {amount:,} تومان",
+                 "quota_gb": 0, "duration_days": None, "price": amount},
+        target_username=account_row.username,
+        final_price=amount,
+        payment_card_id=getattr(payment, "resolved_payment_card_id", None),
+        # Explicit, for the same reason as checkout_receipt: the default
+        # reads a threading.local belonging to a bot thread.
+        owner_admin_id=owner,
+    )
+
+    await asyncio.to_thread(
+        _notify_receipt, db, storage.get_pending(request_id), request_id, image,
+        "🧾 رسید افزایش اعتبار (از مینی‌اپ)",
+    )
+    return {
+        "status": "pending",
+        "request_id": request_id,
+        "message": "رسید شما ثبت شد. پس از تأیید، اعتبار به کیف پول شما اضافه می‌شود.",
     }

@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Store, Wallet, Layers, AlertTriangle, Check, Upload, X, Loader2, Gift, Globe,
-  Users, Copy, ShoppingBag,
+  Copy, ShoppingBag,
 } from "lucide-react";
 import { fetchMiniAppHome, miniAppCheckout, miniAppCheckoutReceipt } from "../api/client.js";
 import { formatBytes, formatToman } from "../utils.js";
@@ -591,7 +591,6 @@ export default function MiniApp() {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [tab, setTab] = useState("shop");
-  const [seats, setSeats] = useState(null);
   const [buying, setBuying] = useState(null);
   const [done, setDone] = useState("");
 
@@ -656,30 +655,12 @@ export default function MiniApp() {
       });
   };
 
-  /**
-   * Plans grouped by how many people can use them at once.
-   *
-   * Package.max_concurrent_sessions is a field the admin already fills in,
-   * so these groups are real rather than invented - «۱ کاربره», «۲ کاربره»
-   * and so on appear because such plans exist, and the row disappears
-   * entirely when they all share one number. That last part matters: a
-   * filter with a single option is furniture, not navigation.
-   */
-  const groups = useMemo(() => {
-    const packages = data?.shop?.packages || [];
-    const distinct = [...new Set(packages.map((p) => p.max_concurrent_sessions || 0))].sort(
-      (a, b) => a - b
-    );
-    return distinct.length > 1 ? distinct : [];
-  }, [data]);
-
-  // A group the customer picked can vanish when the data reloads after a
-  // purchase (the admin deleted that plan, or it was one-time and is now
-  // used up). Falling back rather than showing an empty shop.
-  const activeSeats = groups.includes(seats) ? seats : null;
-  const visiblePackages = (data?.shop?.packages || []).filter(
-    (p) => activeSeats === null || (p.max_concurrent_sessions || 0) === activeSeats
-  );
+  // The shelves, exactly as the server arranged them. No grouping is done
+  // here on purpose: which plans this shop sells, which the Mini App may
+  // show, which shelves are on and in what order are all decided in
+  // routers/miniapp.py's _shop_shelves, and re-deriving any of it here
+  // would be the same rules written twice, free to disagree.
+  const shelves = data?.shop?.groups || [];
 
   if (error) {
     return (
@@ -774,47 +755,30 @@ export default function MiniApp() {
               botUsername={data.shop.bot_username}
             />
 
-            {groups.length > 0 && (
-              <div className="flex gap-2 overflow-x-auto -mx-4 px-4 mb-4 pb-1">
-                <button
-                  type="button"
-                  onClick={() => setSeats(null)}
-                  className={`shrink-0 px-3.5 py-2 rounded-xl text-xs font-medium ${
-                    activeSeats === null ? "bg-sky-500 text-white" : "bg-white/[0.05] opacity-60"
-                  }`}
-                >
-                  همه
-                </button>
-                {groups.map((count) => (
-                  <button
-                    key={count}
-                    type="button"
-                    onClick={() => setSeats(count)}
-                    className={`shrink-0 px-3.5 py-2 rounded-xl text-xs font-medium flex items-center gap-1.5 ${
-                      activeSeats === count ? "bg-sky-500 text-white" : "bg-white/[0.05] opacity-60"
-                    }`}
-                  >
-                    <Users size={12} />
-                    {count > 0 ? `${fa(count)} کاربره` : "بدون محدودیت"}
-                  </button>
-                ))}
-              </div>
+            {shelves.length === 0 && (
+              <Card className="text-center text-sm opacity-50 py-8">
+                هنوز پلنی برای فروش تعریف نشده.
+              </Card>
             )}
 
-            {visiblePackages.length === 0 ? (
-              <Card className="text-center text-sm opacity-50 py-8">
-                پلنی در این دسته موجود نیست.
-              </Card>
-            ) : (
-              // Keyed by the group, so switching «۱ کاربره» ⇄ «۲ کاربره»
-              // starts on that group's own first plan instead of keeping a
-              // selection made in the previous one.
-              <PackagePicker
-                key={activeSeats ?? "all"}
-                packages={visiblePackages}
-                onBuy={setBuying}
-              />
-            )}
+            {shelves.map((shelf) => (
+              // Keyed by the shelf, so each card keeps its OWN selection.
+              // Sharing one PackagePicker across cards would have a tap on
+              // one card silently change what another is showing.
+              <div key={shelf.id ?? "ungrouped"} className="mb-5">
+                {shelf.name && (
+                  <div className="px-1 mb-2.5">
+                    <div className="text-sm font-bold">{shelf.name}</div>
+                    {shelf.description && (
+                      <div className="text-xs opacity-45 mt-1 leading-relaxed">
+                        {shelf.description}
+                      </div>
+                    )}
+                  </div>
+                )}
+                <PackagePicker packages={shelf.packages} onBuy={setBuying} />
+              </div>
+            ))}
           </>
         )}
 

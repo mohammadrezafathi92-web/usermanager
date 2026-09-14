@@ -770,6 +770,16 @@ class PackageBase(BaseModel):
     description: Optional[str] = None
     enabled: bool = True  # visible in the web panel's package pickers
     bot_enabled: bool = True  # visible in the Telegram bot's package picker
+    # See models.Package.miniapp_enabled - visible in the Telegram Mini
+    # App's shop. A fourth shelf switch, not a rename of bot_enabled: the
+    # chat bot can ask questions the shop screen cannot, so a plan may
+    # legitimately belong to one and not the other.
+    miniapp_enabled: bool = True
+    # Which PackageGroup this plan sits on in the Mini App (None =
+    # ungrouped, shown under «سایر پلن‌ها»). Validated against the caller's
+    # own scope in routers/packages.py - a group id from another reseller's
+    # tree is refused, not silently accepted.
+    group_id: Optional[int] = None
     # See models.Package.seller_visible - whether this Admin's own level-3
     # Sellers can see/use this package in the WEB PANEL. Independent of
     # `enabled` above (which already governs panel visibility for
@@ -809,6 +819,37 @@ class PackageOvpnTemplateOut(BaseModel):
     sort_order: int = 0
 
 
+class PackageGroupBase(BaseModel):
+    """A shelf in the Mini App's shop - see models.PackageGroup."""
+    name: str
+    description: Optional[str] = None
+    enabled: bool = True
+    sort_order: int = 0
+
+
+class PackageGroupCreate(PackageGroupBase):
+    pass
+
+
+class PackageGroupUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    enabled: Optional[bool] = None
+    sort_order: Optional[int] = None
+
+
+class PackageGroupOut(PackageGroupBase):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    created_at: dt.datetime
+    # Derived server-side from the creating admin, never accepted from a
+    # client - same rule as PackageOut.owner_admin_id.
+    owner_admin_id: Optional[int] = None
+    # Filled in by the list endpoint so the panel can show «۳ پکیج» on the
+    # row rather than making the admin count.
+    package_count: int = 0
+
+
 class PackageCreate(PackageBase):
     connections: List[PackageConnectionSpec] = []
     ovpn_templates: List[PackageOvpnTemplateIn] = []
@@ -823,6 +864,8 @@ class PackageUpdate(BaseModel):
     description: Optional[str] = None
     enabled: Optional[bool] = None
     bot_enabled: Optional[bool] = None
+    miniapp_enabled: Optional[bool] = None
+    group_id: Optional[int] = None
     seller_visible: Optional[bool] = None
     one_time_per_user: Optional[bool] = None
     sort_order: Optional[int] = None

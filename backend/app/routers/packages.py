@@ -236,6 +236,28 @@ def list_packages(db: Session = Depends(get_db), admin: models.AdminUser = Depen
     return [_out(p, my_prices.get(p.id)) for p in pkgs]
 
 
+def _check_group_in_scope(db: Session, admin: models.AdminUser, group_id) -> None:
+    """A package may only be put on a shelf its owner can reach.
+
+    group_id is the one field on a package that names ANOTHER row by id,
+    and it arrives in the request body - so without this an Admin could
+    file their package under a rival's group simply by sending that id,
+    and it would then appear inside that rival's Mini App card. Everything
+    else about a package is either self-contained or derived server-side,
+    which is why this is the only check of its kind in here.
+
+    None is always fine: it means "no shelf", not "some shelf I cannot
+    see". The 404 (rather than 403) matches _get_scoped_package - a group
+    outside the caller's tree must not be distinguishable from one that
+    does not exist, or the id space itself becomes a directory.
+    """
+    if group_id is None:
+        return
+    group = db.get(models.PackageGroup, group_id)
+    if not group or group.owner_admin_id not in hierarchy.accessible_package_owner_ids(admin):
+        raise HTTPException(404, "دسته‌بندی پیدا نشد")
+
+
 @router.post("", response_model=schemas.PackageOut)
 def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     _require_package_manager(admin)
@@ -244,6 +266,7 @@ def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db)
         _effective_package_cost(admin, payload.quota_gb, payload.cooperation_price),
         payload.price, field_label="قیمت پکیج",
     )
+    _check_group_in_scope(db, admin, payload.group_id)
     data = payload.model_dump(exclude={"connections", "ovpn_templates"})
     # owner_admin_id is always derived from who's creating it, never taken
     # from the payload - a superadmin's packages stay global (NULL), a
@@ -280,6 +303,8 @@ def update_package(package_id: int, payload: schemas.PackageUpdate, db: Session 
         ),
         data.get("price", pkg.price), field_label="قیمت پکیج",
     )
+    if "group_id" in data:
+        _check_group_in_scope(db, admin, data["group_id"])
     data.pop("owner_admin_id", None)  # ownership never changes via this endpoint
     for k, v in data.items():
         setattr(pkg, k, v)

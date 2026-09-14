@@ -1,10 +1,14 @@
 import React, { useEffect, useState } from "react";
-import { Plus, Pencil, Trash2, Power, Package as PackageIcon, Server, Paperclip, Download, Check, X, Tag } from "lucide-react";
+import { Plus, Pencil, Trash2, Power, Package as PackageIcon, Server, Paperclip, Download, Check, X, Tag, Layers, GripVertical } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import {
+  fetchPackageGroups,
+  createPackageGroup,
+  updatePackageGroup,
+  deletePackageGroup,
   fetchPackages,
   createPackage,
   updatePackage,
@@ -27,6 +31,8 @@ const emptyForm = {
   description: "",
   enabled: true,
   bot_enabled: true,
+  miniapp_enabled: true,
+  group_id: "",
   seller_visible: true,
   one_time_per_user: false,
   sort_order: 0,
@@ -86,9 +92,17 @@ export default function Packages() {
   const [priceSaving, setPriceSaving] = useState(false);
   const [priceError, setPriceError] = useState("");
 
+  const [groups, setGroups] = useState([]);
+  const [groupsOpen, setGroupsOpen] = useState(false);
+
   const load = () => fetchPackages().then((res) => setItems(res.data));
+  // Its own loader, called again after the groups dialog closes: a group
+  // created in there has to appear in the package form's dropdown without
+  // a page reload, which is the first thing anyone does after making one.
+  const loadGroups = () => fetchPackageGroups().then((res) => setGroups(res.data)).catch(() => setGroups([]));
   useEffect(() => {
     load();
+    loadGroups();
     fetchNodes().then((res) => setNodes(res.data));
   }, []);
 
@@ -153,6 +167,7 @@ export default function Packages() {
       ...emptyForm,
       ...pkg,
       cooperation_price: pkg.cooperation_price ?? "",
+      group_id: pkg.group_id ?? "",
       max_concurrent_sessions: pkg.max_concurrent_sessions ?? "",
       speed_limit_mbps: pkg.speed_limit_mbps ?? "",
       custom_message: pkg.custom_message || "",
@@ -201,6 +216,10 @@ export default function Packages() {
     try {
       const payload = {
         ...form,
+        // "" is the «بدون دسته» option. Sent as null, not dropped: an
+        // omitted field leaves the old group in place, which would make
+        // "no group" the one choice the form cannot express.
+        group_id: form.group_id === "" || form.group_id === null ? null : Number(form.group_id),
         cooperation_price: form.cooperation_price === "" ? null : Number(form.cooperation_price),
         max_concurrent_sessions: form.max_concurrent_sessions === "" ? null : Number(form.max_concurrent_sessions),
         speed_limit_mbps: form.speed_limit_mbps === "" ? null : Number(form.speed_limit_mbps),
@@ -288,7 +307,10 @@ export default function Packages() {
       <Topbar title={t("packages.title")} subtitle={t("packages.subtitle")} />
 
       {!isSeller && (
-        <div className="flex justify-end mb-4">
+        <div className="flex justify-end gap-2 mb-4">
+          <button className="btn-outline" onClick={() => setGroupsOpen(true)}>
+            <Layers size={16} /> {t("packages.manageGroups")}
+          </button>
           <button className="btn-primary" onClick={openCreate}>
             <Plus size={16} /> {t("packages.newPackage")}
           </button>
@@ -611,6 +633,17 @@ export default function Packages() {
               <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldOrder")}</label>
               <input type="number" className="input" value={form.sort_order} onChange={(e) => set("sort_order", Number(e.target.value))} />
             </div>
+            {/* Which card this plan appears on in the Mini App. */}
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldGroup")}</label>
+              <select className="input" value={form.group_id} onChange={(e) => set("group_id", e.target.value)}>
+                <option value="">{t("packages.noGroup")}</option>
+                {groups.map((g) => (
+                  <option key={g.id} value={g.id}>{g.name}</option>
+                ))}
+              </select>
+              <div className="hint">{t("packages.fieldGroupHint")}</div>
+            </div>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <label className="flex items-center gap-2 text-sm text-gray-600">
@@ -620,6 +653,10 @@ export default function Packages() {
             <label className="flex items-center gap-2 text-sm text-gray-600">
               <input type="checkbox" checked={form.bot_enabled} onChange={(e) => set("bot_enabled", e.target.checked)} />
               {t("packages.showInBot")}
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-600">
+              <input type="checkbox" checked={form.miniapp_enabled} onChange={(e) => set("miniapp_enabled", e.target.checked)} />
+              {t("packages.showInMiniApp")}
             </label>
             <label className="flex items-center gap-2 text-sm text-gray-600">
               <input type="checkbox" checked={form.seller_visible} onChange={(e) => set("seller_visible", e.target.checked)} />
@@ -841,6 +878,158 @@ export default function Packages() {
           </div>
         </form>
       </Modal>
+
+      <GroupsManager
+        open={groupsOpen}
+        onClose={() => setGroupsOpen(false)}
+        groups={groups}
+        onChanged={async () => {
+          await loadGroups();
+          // The packages list carries group_id, and deleting a group
+          // changes it underneath - reloading both keeps the dropdown and
+          // the rows telling the same story.
+          load();
+        }}
+        t={t}
+      />
     </Layout>
+  );
+}
+
+/**
+ * The shelves of the Mini App's shop (see backend models.PackageGroup).
+ *
+ * A dialog rather than a page of its own: a group is a name and a switch,
+ * and it only ever means anything next to the packages it holds, which are
+ * on the page behind this. Its own route would put the two things that have
+ * to agree in two different places.
+ *
+ * Deleting one is the only destructive action here, and it is not very
+ * destructive: the backend sets its packages' group_id to NULL, so they
+ * move to «سایر پلن‌ها» and stay on sale. The confirmation says so, because
+ * "delete group" reads like it takes the packages with it.
+ */
+function GroupsManager({ open, onClose, groups, onChanged, t }) {
+  const [draft, setDraft] = useState({ name: "", description: "", sort_order: 0 });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const run = async (action) => {
+    setBusy(true);
+    setError("");
+    try {
+      await action();
+      await onChanged();
+    } catch (err) {
+      setError(err?.response?.data?.detail || t("packages.saveError"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const add = () => {
+    if (!draft.name.trim()) return;
+    run(async () => {
+      await createPackageGroup({ ...draft, name: draft.name.trim() });
+      setDraft({ name: "", description: "", sort_order: 0 });
+    });
+  };
+
+  const remove = (group) => {
+    const count = group.package_count || 0;
+    const warning = count
+      ? t("packages.groupDeleteWithPackages").replace("{n}", count)
+      : t("packages.groupDeleteConfirm");
+    if (!window.confirm(warning)) return;
+    run(() => deletePackageGroup(group.id));
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} title={t("packages.manageGroups")} width="max-w-xl">
+      <div className="space-y-3">
+        <div className="text-xs text-gray-400">{t("packages.groupsHint")}</div>
+
+        {groups.length === 0 && (
+          <div className="text-sm text-gray-400 text-center py-6">{t("packages.noGroupsYet")}</div>
+        )}
+
+        {groups.map((group) => (
+          <div key={group.id} className="border border-gray-200 rounded-xl p-3">
+            <div className="flex items-center gap-2">
+              <GripVertical size={15} className="text-gray-300 shrink-0" />
+              <input
+                className="input input-sm flex-1"
+                defaultValue={group.name}
+                disabled={busy}
+                // Saved on blur rather than with a per-row save button: the
+                // whole dialog is a list of one-field edits, and a button
+                // beside each of them is more chrome than content.
+                onBlur={(e) => {
+                  const name = e.target.value.trim();
+                  if (name && name !== group.name) run(() => updatePackageGroup(group.id, { name }));
+                }}
+              />
+              <input
+                type="number"
+                className="input input-sm w-20"
+                defaultValue={group.sort_order}
+                disabled={busy}
+                title={t("packages.fieldOrder")}
+                onBlur={(e) => {
+                  const sort_order = Number(e.target.value);
+                  if (sort_order !== group.sort_order) run(() => updatePackageGroup(group.id, { sort_order }));
+                }}
+              />
+              <button
+                type="button"
+                disabled={busy}
+                title={group.enabled ? t("packages.disable") : t("packages.enable")}
+                className={group.enabled ? "text-emerald-600" : "text-gray-300"}
+                onClick={() => run(() => updatePackageGroup(group.id, { enabled: !group.enabled }))}
+              >
+                <Power size={16} />
+              </button>
+              <button type="button" disabled={busy} className="text-gray-400 hover:text-red-600" onClick={() => remove(group)}>
+                <Trash2 size={16} />
+              </button>
+            </div>
+            <input
+              className="input input-sm mt-2"
+              defaultValue={group.description || ""}
+              placeholder={t("packages.groupDescriptionPlaceholder")}
+              disabled={busy}
+              onBlur={(e) => {
+                const description = e.target.value;
+                if (description !== (group.description || "")) run(() => updatePackageGroup(group.id, { description }));
+              }}
+            />
+            <div className="text-xs text-gray-400 mt-2">
+              {t("packages.groupPackageCount").replace("{n}", group.package_count || 0)}
+            </div>
+          </div>
+        ))}
+
+        <div className="border-t border-gray-100 pt-3 flex gap-2">
+          <input
+            className="input input-sm flex-1"
+            placeholder={t("packages.newGroupPlaceholder")}
+            value={draft.name}
+            disabled={busy}
+            onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                add();
+              }
+            }}
+          />
+          <button type="button" className="btn-primary btn-sm" disabled={busy || !draft.name.trim()} onClick={add}>
+            <Plus size={15} /> {t("packages.addGroup")}
+          </button>
+        </div>
+
+        {error && <div className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+      </div>
+    </Modal>
   );
 }

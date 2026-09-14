@@ -99,13 +99,23 @@ check("...it just says where to open it from", "تلگرام" in detail, True)
 
 print("\n--- the page is built from THAT reseller's data ---")
 ali = miniapp.home(visitor=visitor(db, sign(ALI_TOKEN)), db=db)
-names = [p.name for p in ali["shop"]["packages"]]
+
+
+def plan_names(home):
+    """The shop arrives as cards now (see miniapp._shop_shelves), so the
+    plans are one level down. Flattened here because what these tests are
+    about is WHOSE plans came back, not how they are arranged - that is
+    test_package_groups.py's job."""
+    return [p.name for shelf in home["shop"]["groups"] for p in shelf["packages"]]
+
+
+names = plan_names(ali)
 check("Ali sees his own package", "پلن علی" in names, True)
 check("...and not Reza's", "پلن رضا" in names, False)
 check("the shop is named after the reseller", ali["shop"]["title"], "ali")
 
 reza = miniapp.home(visitor=visitor(db, sign(REZA_TOKEN)), db=db)
-check("Reza sees his own", [p.name for p in reza["shop"]["packages"]], ["پلن رضا"])
+check("Reza sees his own", plan_names(reza), ["پلن رضا"])
 check("...under his own name", reza["shop"]["title"], "reza")
 
 print("\n--- nothing in the request can choose the shop ---")
@@ -121,8 +131,13 @@ print("\n--- it reuses the bot's own answers rather than a second copy ---")
 # A price or a hidden package that is right in the bot must be right here,
 # because it is the same function answering.
 home_src = inspect.getsource(miniapp.home)
-for fn in ("list_packages", "list_users_by_telegram", "get_payment_info"):
+for fn in ("list_users_by_telegram", "get_payment_info"):
     check(f"{fn} is the bot router's", f"bot_router.{fn}" in home_src, True)
+# list_packages moved one step away, into _shop_shelves, which applies the
+# Mini App's own shelf rules on top - but it is still the BOT's answer that
+# is being filtered, never a second query against models.Package.
+check("the packages still come from the bot router's own list",
+      "bot_router.list_packages" in inspect.getsource(miniapp._shop_shelves), True)
 
 print("\n--- the bot points its own Menu button at the Mini App ---")
 # BotFather keeps moving where the Menu button lives, and every reseller on

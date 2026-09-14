@@ -1141,6 +1141,49 @@ class RadiusLimitEventLog(Base):
     created_at = Column(DateTime, default=now, index=True)
 
 
+class PackageGroup(Base):
+    """A shelf in the Mini App's shop - one card, several plans on it.
+
+    The shop started as a single card with every plan's name along the top,
+    which stops working the moment a reseller sells plans that are not
+    alternatives to each other: a single-user plan and a family plan do not
+    belong on one shelf, because nobody is choosing between them. So the
+    reseller draws the shelves themselves - «تک‌کاربره», «خانوادگی»,
+    «مخصوص قطعی» - and each becomes its own card.
+
+    Deliberately NOT derived from the data. An earlier version grouped by
+    Package.max_concurrent_sessions, which was free but wrong: it decided
+    for the reseller that the number of devices is what distinguishes their
+    plans, when it might be speed, or a particular server, or a season.
+    A name the reseller types is the only thing that can carry that.
+
+    Scoped exactly like Package itself: owner_admin_id NULL means the
+    superadmin's own, and every tier only ever sees its own tree (see
+    hierarchy.accessible_package_owner_ids). A group and the packages on it
+    must belong to the same scope - enforced in routers/package_groups.py,
+    not at the DB layer, same as everywhere else here.
+    """
+
+    __tablename__ = "package_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"),
+                            nullable=True, index=True)
+    owner_admin = relationship("AdminUser", foreign_keys=[owner_admin_id])
+
+    name = Column(String(128), nullable=False)
+    # One line under the card's title. Optional - most shelves need no
+    # explaining, and an empty subtitle is better than a filled one that
+    # says nothing.
+    description = Column(Text, nullable=True)
+    # Turns the whole shelf off in one action, without touching the
+    # miniapp_enabled flag on each plan - so a seasonal card can come back
+    # exactly as it was rather than having to be rebuilt plan by plan.
+    enabled = Column(Boolean, nullable=False, default=True)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=now)
+
+
 class Package(Base):
     """A purchasable plan (quota + duration + price) shown to customers by
     the sales bot. Optionally bundles one or more server+protocol combos
@@ -1198,6 +1241,23 @@ class Package(Base):
     # as a self-serve bot purchase option, or vice versa).
     enabled = Column(Boolean, default=True)
     bot_enabled = Column(Boolean, default=True)
+    # Same idea again, for the Telegram Mini App's shop (routers/miniapp.py).
+    # A fourth flag rather than reusing bot_enabled, because the two are
+    # genuinely different shelves: a plan that needs the bot's several
+    # node/protocol questions can be sold in chat and not in the Mini App,
+    # and a plan designed to be tapped through a shop can be the other way
+    # round. Defaults True so every package that already exists keeps
+    # showing up the moment this column is added - a new switch must never
+    # silently empty a running shop.
+    miniapp_enabled = Column(Boolean, nullable=False, default=True)
+    # Which shelf of the Mini App's shop this plan sits on (see
+    # PackageGroup). NULL = ungrouped, which is shown under «سایر پلن‌ها»
+    # rather than hidden: forgetting to pick a group must not take a plan
+    # off sale. SET NULL on delete for the same reason - deleting a shelf
+    # empties it, it does not destroy what was on it.
+    group_id = Column(Integer, ForeignKey("package_groups.id", ondelete="SET NULL"),
+                      nullable=True, index=True)
+    group = relationship("PackageGroup", foreign_keys=[group_id])
     # Whether this Admin's own level-3 Sellers can see/use this package -
     # in the WEB PANEL (create-user / renew-quick-action dropdowns, and the
     # Packages.jsx list itself, checked in routers/packages.py's

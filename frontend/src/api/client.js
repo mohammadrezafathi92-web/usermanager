@@ -510,6 +510,13 @@ export const disableTls = () => client.post("/settings/tls/disable");
 // helper container that outlives the request - this is how it reports back.
 export const fetchTlsLog = () => client.get("/settings/tls/log");
 
+// Mini App shelves - see backend models.PackageGroup. Ordinary admin API,
+// unlike the miniapp endpoints below.
+export const fetchPackageGroups = () => client.get("/package-groups");
+export const createPackageGroup = (data) => client.post("/package-groups", data);
+export const updatePackageGroup = (id, data) => client.put(`/package-groups/${id}`, data);
+export const deletePackageGroup = (id) => client.delete(`/package-groups/${id}`);
+
 // The Telegram Mini App. Deliberately NOT using `client` above: that
 // instance attaches the admin JWT and would drag the confirm-password
 // interceptor and the 401-redirect-to-login behaviour into a page that has

@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..services import telegram_webapp
+from ..services import hierarchy, telegram_webapp
 from . import bot as bot_router
 
 logger = logging.getLogger("miniapp")
@@ -54,6 +54,79 @@ def current_visitor(
         # to fix it.
         logger.warning("miniapp: initData rejected (%s)", exc)
         raise HTTPException(401, "این صفحه باید از داخل ربات تلگرام باز شود.")
+
+
+def _shop_shelves(db: Session, owner: int | None) -> list[dict]:
+    """The shop, already arranged into cards.
+
+    Grouped on the server rather than in the page because the RULES are
+    here: which packages this shop sells at all, which of them the Mini App
+    is allowed to show, which shelves are switched on, and what order any
+    of it goes in. Sending a flat list plus a group table and letting the
+    page work it out would be the same logic written twice, in two
+    languages, free to disagree.
+
+    Three things this must get right, each of which is a way a reseller
+    quietly loses sales:
+
+    - Packages come from bot_router.list_packages, so the per-seller price
+      overlay and the visibility rules are the SAME ones the bot answers
+      with. Reading models.Package directly here would sell at the wrong
+      price.
+    - miniapp_enabled filters afterwards. It is an extra shelf switch, not
+      a replacement for bot_enabled, which list_packages already applied.
+    - An ungrouped package is NOT dropped. It lands under «سایر پلن‌ها»,
+      because forgetting to pick a group is not a decision to stop selling
+      something - and on the day this ships, every existing package is
+      ungrouped.
+
+    A shelf with nothing on it is omitted: an empty card is a promise the
+    shop cannot keep.
+    """
+    packages = [
+        p for p in bot_router.list_packages(owner_admin_id=owner, db=db)
+        if getattr(p, "miniapp_enabled", True)
+    ]
+
+    groups = (
+        db.query(models.PackageGroup)
+        .filter(
+            hierarchy.owner_id_in_clause(models.PackageGroup.owner_admin_id, {owner}),
+            models.PackageGroup.enabled.is_(True),
+        )
+        .order_by(models.PackageGroup.sort_order, models.PackageGroup.id)
+        .all()
+    )
+
+    shelves: list[dict] = []
+    for group in groups:
+        on_shelf = [p for p in packages if getattr(p, "group_id", None) == group.id]
+        if not on_shelf:
+            continue
+        shelves.append({
+            "id": group.id,
+            "name": group.name,
+            "description": group.description,
+            "packages": on_shelf,
+        })
+
+    known = {g.id for g in groups}
+    # Note `not in known` rather than `is None`: a package whose group was
+    # switched OFF would otherwise vanish from the shop entirely, which is
+    # not what turning off a shelf means - it means that card is gone, not
+    # that its contents are unsellable.
+    loose = [p for p in packages if getattr(p, "group_id", None) not in known]
+    if loose:
+        shelves.append({
+            "id": None,
+            # Only worth a title when it is one card among several. On a
+            # shop with no groups at all, «سایر پلن‌ها» would be naming the
+            # only shelf in the room.
+            "name": "سایر پلن‌ها" if shelves else "",
+            "description": None,
+            "packages": loose,
+        })
+    return shelves
 
 
 def _bot_username(owner_admin_id: int | None) -> str | None:
@@ -140,7 +213,7 @@ def home(visitor: dict = Depends(current_visitor), db: Session = Depends(get_db)
     """
     owner = visitor["owner_admin_id"]
 
-    packages = bot_router.list_packages(owner_admin_id=owner, db=db)
+    packages = _shop_shelves(db, owner)
     accounts = bot_router.list_users_by_telegram(visitor["telegram_id"], db=db, owner_admin_id=owner)
     payment = bot_router.get_payment_info(owner_admin_id=owner, db=db)
 
@@ -187,7 +260,8 @@ def home(visitor: dict = Depends(current_visitor), db: Session = Depends(get_db)
     return {
         "shop": {
             "title": _shop_title(db, owner),
-            "packages": packages,
+            # One entry per card. See _shop_shelves.
+            "groups": packages,
             # For the invite card's share link. Read from the running bot's
             # own get_me() answer rather than stored anywhere, because a bot
             # can be renamed in BotFather at any time and a stale @username
@@ -248,9 +322,15 @@ def _package_or_404(db: Session, owner: int | None, package_id: int) -> dict:
     rules; reading the Package row directly would sell a hidden package, or
     sell it at the wrong price.
     """
-    for pkg in bot_router.list_packages(owner_admin_id=owner, db=db):
-        if pkg.id == package_id:
-            return pkg
+    for shelf in _shop_shelves(db, owner):
+        for pkg in shelf["packages"]:
+            if pkg.id == package_id:
+                return pkg
+    # Deliberately the same source the SHOP is drawn from, not
+    # list_packages. A plan hidden with miniapp_enabled, or sitting on a
+    # shelf that is switched off, must be unbuyable and not merely
+    # invisible - otherwise the switch only hides the button, and the old
+    # id keeps working for anyone who kept it.
     raise HTTPException(404, "این پلن دیگر برای فروش نیست.")
 
 

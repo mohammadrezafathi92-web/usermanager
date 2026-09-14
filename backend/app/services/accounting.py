@@ -288,6 +288,26 @@ def receivables_by_admin(db: Session, admin: models.AdminUser, date_to=None) -> 
     q = _receivable_base(db, date_to)
     ids = visible_admin_ids(db, admin)
     if ids is not None:
+        # Never themselves. visible_admin_ids includes the caller's own id -
+        # correct for the ledger, where an admin must see their own charges,
+        # and wrong here: this list is "who owes ME", and it is the list the
+        # «ثبت دریافت» button acts from.
+        #
+        # Reported 2026-09-14: a level-2 admin opened «طلب از نماینده‌ها»
+        # and found THEMSELVES in it, owing 65,360, with a button to mark it
+        # received. The write endpoint already refused (record_payment's
+        # target.id == current.id check), so nothing could actually be
+        # zeroed - but a button that looks like it settles your own debt is
+        # not something to leave on screen and defend with a 400. It should
+        # not be there.
+        #
+        # A superadmin (ids is None) is unaffected: they have no debt of
+        # their own here, and rows with a NULL owner are skipped below.
+        ids = [i for i in ids if i != admin.id]
+        if not ids:
+            # A seller, whose only visible id was their own. They have
+            # nobody underneath them, so nobody owes them anything.
+            return []
         q = q.filter(owner_column().in_(ids))
 
     rows = (

@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session, joinedload
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_bot_api_key
-from ..services import user_ops, hierarchy, payment_cards, accounting, admin_billing
+from ..services import user_ops, hierarchy, payment_cards, accounting, admin_billing, trial
 from ..services.quota_manager import _set_connection_enabled
 from .panel_settings import _get_or_create as _get_or_create_settings
 
@@ -128,6 +128,12 @@ def _charge_seller(
     superadmin, who is never charged - so there is nothing to do.
     """
     if user.owner_admin_id is None:
+        return
+    # A sample the reseller is giving away must not also be a sample they
+    # are BUYING. Charging for it would mean a reseller with an empty
+    # balance cannot offer one at all, which defeats the point - and the
+    # cost of a trial is the traffic, which is metered normally either way.
+    if trial.is_trial(package):
         return
     admin = db.get(models.AdminUser, user.owner_admin_id)
     if admin is None:
@@ -733,9 +739,14 @@ def create_user(payload: schemas.BotCreateUserRequest, db: Session = Depends(get
     # enforced while doing nothing at all.
     _ensure_telegram_can_buy(db, payload.telegram_id)
     if payload.package_id:
+        _new_package = db.get(models.Package, payload.package_id)
         _ensure_one_time_package_not_reused(
-            db, db.get(models.Package, payload.package_id), telegram_id=payload.telegram_id,
+            db, _new_package, telegram_id=payload.telegram_id,
         )
+        # The usual way a trial is taken: a brand-new customer, so there is
+        # no `user` yet - only their Telegram id, which is what every rule
+        # is keyed on anyway (see services/trial.py).
+        trial.ensure_allowed(db, _new_package, telegram_id=payload.telegram_id)
     user = user_ops.create_user_record(
         db, payload.username, payload.full_name, payload.quota_gb, payload.expire_days,
         telegram_id=payload.telegram_id, owner_admin_id=payload.owner_admin_id,
@@ -816,6 +827,7 @@ def purchase_package(
     if not package:
         raise HTTPException(404, "پکیج پیدا نشد")
     _ensure_one_time_package_not_reused(db, package, user=user, telegram_id=user.telegram_id)
+    trial.ensure_allowed(db, package, user=user, telegram_id=user.telegram_id)
     override = (
         [{"node_id": c.node_id, "protocol": c.protocol, "flow": c.flow or ""} for c in payload.connections]
         if payload.connections else None

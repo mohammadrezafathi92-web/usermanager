@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Plus, Pencil, Trash2, Power, Package as PackageIcon, Server, Paperclip, Download, Check, X, Tag, Layers, GripVertical } from "lucide-react";
+import { Plus, Pencil, Trash2, Power, Package as PackageIcon, Server, Paperclip, Download, Check, X, Tag, Layers, GripVertical, Gift } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
 import Topbar from "../components/Topbar.jsx";
@@ -32,6 +32,8 @@ const emptyForm = {
   enabled: true,
   bot_enabled: true,
   miniapp_enabled: true,
+  is_trial: false,
+  trial_daily_cap: "",
   group_id: "",
   seller_visible: true,
   one_time_per_user: false,
@@ -306,6 +308,14 @@ export default function Packages() {
     <Layout>
       <Topbar title={t("packages.title")} subtitle={t("packages.subtitle")} />
 
+      {!isSeller && (
+        <TrialCard
+          t={t}
+          trial={items.find((p) => p.is_trial) || null}
+          nodes={nodes}
+          onChanged={load}
+        />
+      )}
       {!isSeller && (
         <div className="flex justify-end gap-2 mb-4">
           <button className="btn-outline" onClick={() => setGroupsOpen(true)}>
@@ -1031,5 +1041,142 @@ function GroupsManager({ open, onClose, groups, onChanged, t }) {
         {error && <div className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
       </div>
     </Modal>
+  );
+}
+
+
+/**
+ * The free sample, in one button.
+ *
+ * A trial IS a package (see backend models.Package.is_trial), so this card
+ * is a shortcut rather than a separate system: press it once and a package
+ * appears with the defaults that make a trial a trial - 200 MB, one day,
+ * price zero, one purchase per customer, a daily ceiling. Press it again
+ * and it goes on or off.
+ *
+ * The shortcut exists because the alternative is a form with twenty fields
+ * where nineteen of the answers are always the same, and the twentieth -
+ * which servers - is the only one worth asking. Everything it creates is
+ * an ordinary package underneath, editable in the ordinary way, so nothing
+ * here is a dead end.
+ */
+function TrialCard({ t, trial, nodes, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [picking, setPicking] = useState(false);
+  const [chosen, setChosen] = useState([]);
+
+  const run = async (action) => {
+    setBusy(true);
+    setError("");
+    try {
+      await action();
+      await onChanged();
+    } catch (err) {
+      setError(err?.response?.data?.detail || t("packages.saveError"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const create = () =>
+    run(async () => {
+      await createPackage({
+        ...emptyForm,
+        name: t("packages.trialDefaultName"),
+        // 200 MB. quota_gb is a float, so a fraction is not a hack here -
+        // it is the field doing what it was declared to do.
+        quota_gb: 0.2,
+        duration_days: 1,
+        price: 0,
+        cooperation_price: null,
+        is_trial: true,
+        one_time_per_user: true,
+        trial_daily_cap: 20,
+        connections: chosen.map((node_id) => ({ node_id, protocol: "wireguard", flow: "" })),
+      });
+      setPicking(false);
+      setChosen([]);
+    });
+
+  const toggle = () =>
+    run(() => updatePackage(trial.id, { bot_enabled: !trial.bot_enabled, miniapp_enabled: !trial.bot_enabled }));
+
+  const on = trial && trial.bot_enabled;
+
+  return (
+    <div className="card mb-4">
+      <div className="flex items-start gap-3">
+        <div className="w-11 h-11 rounded-2xl bg-violet-50 text-violet-600 flex items-center justify-center shrink-0">
+          <Gift size={20} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h3 className="font-bold text-gray-700">{t("packages.trialTitle")}</h3>
+          <p className="text-xs text-gray-400 mt-1">{t("packages.trialHint")}</p>
+        </div>
+        {trial && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={toggle}
+            className={on ? "btn-secondary" : "btn-primary"}
+          >
+            <Power size={15} /> {on ? t("packages.disable") : t("packages.enable")}
+          </button>
+        )}
+      </div>
+
+      {trial ? (
+        <div className="text-xs text-gray-500 mt-3 flex flex-wrap gap-x-4 gap-y-1">
+          <span className={on ? "text-emerald-600" : "text-gray-400"}>
+            {on ? t("status.active") : t("status.disabled")}
+          </span>
+          <span>{trial.name}</span>
+          <span dir="ltr">{trial.quota_gb} GB / {trial.duration_days} d</span>
+          {trial.trial_daily_cap ? (
+            <span>{t("packages.trialCapLabel").replace("{n}", trial.trial_daily_cap)}</span>
+          ) : null}
+        </div>
+      ) : !picking ? (
+        <button type="button" className="btn-primary mt-3" disabled={busy} onClick={() => setPicking(true)}>
+          <Plus size={15} /> {t("packages.trialCreate")}
+        </button>
+      ) : (
+        <div className="mt-3">
+          {/* The one question worth asking. Everything else about a trial
+              has an obvious answer; which servers it runs on does not. */}
+          <div className="text-sm text-gray-600 mb-2">{t("packages.trialPickNodes")}</div>
+          <div className="flex flex-wrap gap-2">
+            {nodes.map((n) => {
+              const active = chosen.includes(n.id);
+              return (
+                <button
+                  key={n.id}
+                  type="button"
+                  onClick={() =>
+                    setChosen((c) => (active ? c.filter((x) => x !== n.id) : [...c, n.id]))
+                  }
+                  className={`px-3 py-1.5 rounded-lg text-xs border ${
+                    active ? "bg-brand-600 text-white border-brand-600" : "border-gray-200 text-gray-500"
+                  }`}
+                >
+                  {n.name}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex gap-2 mt-3">
+            <button type="button" className="btn-primary" disabled={busy || !chosen.length} onClick={create}>
+              {busy ? t("settings.saving") : t("packages.trialCreate")}
+            </button>
+            <button type="button" className="btn-secondary" disabled={busy} onClick={() => setPicking(false)}>
+              {t("common.cancel")}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {error && <div className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mt-3">{error}</div>}
+    </div>
   );
 }

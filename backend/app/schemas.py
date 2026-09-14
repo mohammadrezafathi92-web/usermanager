@@ -806,6 +806,9 @@ class PackageBase(BaseModel):
     # this package via the bot's self-service purchase endpoints more than
     # once. Never restricts an admin/seller manually granting it.
     one_time_per_user: bool = False
+    # See models.Package.is_trial - the free sample, with its own rules.
+    is_trial: bool = False
+    trial_daily_cap: Optional[int] = None
     sort_order: int = 0
     # Combined cap across every bundled OpenVPN/L2TP service together (not
     # per service) - copied onto User.max_concurrent_sessions when a user
@@ -885,6 +888,8 @@ class PackageUpdate(BaseModel):
     group_id: Optional[int] = None
     seller_visible: Optional[bool] = None
     one_time_per_user: Optional[bool] = None
+    is_trial: Optional[bool] = None
+    trial_daily_cap: Optional[int] = None
     sort_order: Optional[int] = None
     max_concurrent_sessions: Optional[int] = None
     speed_limit_mbps: Optional[int] = None

@@ -1288,6 +1288,32 @@ class Package(Base):
     # always manually grant this package again; the limit is only ever on
     # the customer buying it themselves.
     one_time_per_user = Column(Boolean, nullable=False, default=False)
+
+    # The free sample. Not a separate kind of thing - a Package with its
+    # price at zero and a handful of rules attached, because everything a
+    # trial needs (a quota, a duration, a bundle of nodes and protocols,
+    # the visibility switches) a package already has. Inventing a second
+    # entity would mean maintaining two of all of it.
+    #
+    # True changes four behaviours, and they belong together:
+    #   * the reseller is not charged for it (routers/bot.py's
+    #     _charge_seller), and the "you have no volume left" gate does not
+    #     apply - a reseller with an empty balance must still be able to
+    #     hand out samples, which is the entire point of a sample.
+    #   * one_time_per_user is enforced whether or not it is set.
+    #   * only a customer who has never bought anything may take it.
+    #   * trial_daily_cap limits how many this shop gives out per day.
+    # See services/trial.py, which holds all of it in one place.
+    #
+    # Metered traffic is NOT waived. The 200 MB really flows, and hiding
+    # it would make the reseller's own usage figures disagree with reality
+    # - only the package's PRICE is free.
+    is_trial = Column(Boolean, nullable=False, default=False)
+    # How many trials this shop may hand out in one day. NULL = no limit.
+    # Exists because "free" and "Telegram" together is a farm: without a
+    # ceiling, one link posted in the wrong channel is a thousand accounts
+    # overnight, each costing real traffic.
+    trial_daily_cap = Column(Integer, nullable=True)
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime, default=now)
 

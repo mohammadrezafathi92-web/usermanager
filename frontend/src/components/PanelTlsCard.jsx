@@ -179,10 +179,18 @@ export default function PanelTlsCard() {
       {dns && (
         <div
           className={`text-sm rounded-lg px-3 py-2 mt-4 flex gap-2 ${
-            dns.ok ? "text-emerald-700 bg-emerald-50" : "text-amber-700 bg-amber-50"
+            dns.ok || dns.ready_for_caddy
+              ? "text-emerald-700 bg-emerald-50"
+              : "text-amber-700 bg-amber-50"
           }`}
         >
-          {!dns.ok && <AlertTriangle size={16} className="shrink-0 mt-0.5" />}
+          {/* ready_for_caddy is the "port 80 is empty on purpose, waiting
+              for Caddy" state. It reads as a failure and is the opposite -
+              drawing it amber sent the admin looking for a problem they
+              had just finished solving. */}
+          {!dns.ok && !dns.ready_for_caddy && (
+            <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+          )}
           <div className="space-y-1">
             <div>{dns.reason}</div>
             {dns.ports?.length > 0 && (

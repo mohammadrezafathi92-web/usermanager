@@ -222,6 +222,25 @@ def check_dns(domain: str) -> dict:
     resolved = resolve(domain)
     reachable, reason = reaches_this_panel(domain)
 
+    # "Nothing answered on port 80" is alarming in general and completely
+    # expected in one particular state: the admin has just moved the panel
+    # off port 80 precisely so Caddy can have it. Port 80 is empty BECAUSE
+    # they did the right thing, and the card was telling them off for it.
+    #
+    # The three conditions together are what make it unambiguous - the
+    # panel was moved, nothing is squatting on 80, and DNS does point
+    # somewhere. Then the honest message is "ready", not "no answer".
+    ready_for_caddy = False
+    if reachable is None and resolved and not ports_in_use():
+        try:
+            moved_off_80 = int(_read_env_var(_root_env_path(), "PANEL_WEB_PORT") or 80) != 80
+        except ValueError:
+            moved_off_80 = False
+        if moved_off_80:
+            ready_for_caddy = True
+            reason = ("پورت ۸۰ آزاد است و پنل روی پورت دیگری منتقل شده - همین درست است. "
+                      "Caddy پورت ۸۰ را می‌گیرد؛ فعال‌سازی را بزنید.")
+
     if not resolved:
         reachable = False
         reason = "این دامنه به هیچ آدرسی اشاره نمی‌کند. یک رکورد A بسازید که به آی‌پی این سرور اشاره کند و چند دقیقه صبر کنید."
@@ -243,6 +262,8 @@ def check_dns(domain: str) -> dict:
         # difference between a message that ends the problem and one that
         # merely names it.
         "ports_are_ours": _only_our_frontend(),
+        # Not a problem, and drawn as such: see the block above.
+        "ready_for_caddy": ready_for_caddy,
     }
 
 

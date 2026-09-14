@@ -20,7 +20,7 @@ import {
 } from "../api/client.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
-import { formatToman as formatTomanUtil } from "../utils.js";
+import { formatToman as formatTomanUtil, errorText } from "../utils.js";
 
 const emptyForm = {
   name: "",
@@ -195,7 +195,7 @@ export default function Packages() {
       const res = await uploadPackageFile(editingId, file);
       setEditingFiles((files) => [...files, res.data]);
     } catch (err) {
-      setError(err?.response?.data?.detail || t("packages.uploadError"));
+      setError(errorText(err, t("packages.uploadError")));
     } finally {
       setUploading(false);
     }
@@ -207,7 +207,7 @@ export default function Packages() {
       await deletePackageFile(editingId, fileId);
       setEditingFiles((files) => files.filter((f) => f.id !== fileId));
     } catch (err) {
-      alert(err?.response?.data?.detail || t("packages.deleteFileError"));
+      alert(errorText(err, t("packages.deleteFileError")));
     }
   };
 
@@ -235,7 +235,7 @@ export default function Packages() {
       setOpen(false);
       load();
     } catch (err) {
-      setError(err?.response?.data?.detail || t("packages.saveError"));
+      setError(errorText(err, t("packages.saveError")));
     } finally {
       setSaving(false);
     }
@@ -252,7 +252,7 @@ export default function Packages() {
       // surfaced as nothing at all: the row just stayed put with no
       // explanation, identical to the button not working (same bug class
       // already fixed once for Users.jsx's onDelete).
-      alert(err?.response?.data?.detail || t("packages.deleteError"));
+      alert(errorText(err, t("packages.deleteError")));
     }
   };
 
@@ -261,7 +261,7 @@ export default function Packages() {
       await updatePackage(pkg.id, { enabled: !pkg.enabled });
       load();
     } catch (err) {
-      alert(err?.response?.data?.detail || t("packages.toggleError"));
+      alert(errorText(err, t("packages.toggleError")));
     }
   };
 
@@ -288,7 +288,7 @@ export default function Packages() {
       // editor just silently stayed open with the rejected value still in
       // it and no explanation, identical in spirit to the delete-button
       // bug already fixed once on this same page.
-      setPriceError(err?.response?.data?.detail || t("packages.saveError"));
+      setPriceError(errorText(err, t("packages.saveError")));
     } finally {
       setPriceSaving(false);
     }
@@ -931,7 +931,7 @@ function GroupsManager({ open, onClose, groups, onChanged, t }) {
       await action();
       await onChanged();
     } catch (err) {
-      setError(err?.response?.data?.detail || t("packages.saveError"));
+      setError(errorText(err, t("packages.saveError")));
     } finally {
       setBusy(false);
     }
@@ -1064,7 +1064,20 @@ function TrialCard({ t, trial, nodes, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [picking, setPicking] = useState(false);
+  // Pairs, not node ids. A server does not carry "one protocol" - a
+  // MikroTik can serve five and an Xray node one, and which of them the
+  // trial should hand out is the single question about a trial that has
+  // no obvious answer. Picking only the server and defaulting the protocol
+  // silently decided it, which is how the first version shipped.
   const [chosen, setChosen] = useState([]);
+  const has = (nodeId, protocol) =>
+    chosen.some((c) => c.node_id === nodeId && c.protocol === protocol);
+  const toggleProtocol = (nodeId, protocol) =>
+    setChosen((c) =>
+      has(nodeId, protocol)
+        ? c.filter((x) => !(x.node_id === nodeId && x.protocol === protocol))
+        : [...c, { node_id: nodeId, protocol }]
+    );
 
   const run = async (action) => {
     setBusy(true);
@@ -1073,7 +1086,7 @@ function TrialCard({ t, trial, nodes, onChanged }) {
       await action();
       await onChanged();
     } catch (err) {
-      setError(err?.response?.data?.detail || t("packages.saveError"));
+      setError(errorText(err, t("packages.saveError")));
     } finally {
       setBusy(false);
     }
@@ -1083,6 +1096,14 @@ function TrialCard({ t, trial, nodes, onChanged }) {
     run(async () => {
       await createPackage({
         ...emptyForm,
+        // emptyForm carries "" for the optional numeric fields because an
+        // empty <input> is "", and the backend's Optional[int] refuses it -
+        // a 422 whose detail is a LIST, which is what actually blanked this
+        // page: React throws on an array rendered as a child. Both halves
+        // are fixed; this is the half that stops the 422 happening at all.
+        group_id: null,
+        max_concurrent_sessions: null,
+        speed_limit_mbps: null,
         name: t("packages.trialDefaultName"),
         // 200 MB. quota_gb is a float, so a fraction is not a hack here -
         // it is the field doing what it was declared to do.
@@ -1093,7 +1114,7 @@ function TrialCard({ t, trial, nodes, onChanged }) {
         is_trial: true,
         one_time_per_user: true,
         trial_daily_cap: 20,
-        connections: chosen.map((node_id) => ({ node_id, protocol: "wireguard", flow: "" })),
+        connections: chosen.map(({ node_id, protocol }) => ({ node_id, protocol, flow: "" })),
       });
       setPicking(false);
       setChosen([]);
@@ -1146,24 +1167,33 @@ function TrialCard({ t, trial, nodes, onChanged }) {
           {/* The one question worth asking. Everything else about a trial
               has an obvious answer; which servers it runs on does not. */}
           <div className="text-sm text-gray-600 mb-2">{t("packages.trialPickNodes")}</div>
-          <div className="flex flex-wrap gap-2">
-            {nodes.map((n) => {
-              const active = chosen.includes(n.id);
-              return (
-                <button
-                  key={n.id}
-                  type="button"
-                  onClick={() =>
-                    setChosen((c) => (active ? c.filter((x) => x !== n.id) : [...c, n.id]))
-                  }
-                  className={`px-3 py-1.5 rounded-lg text-xs border ${
-                    active ? "bg-brand-600 text-white border-brand-600" : "border-gray-200 text-gray-500"
-                  }`}
-                >
+          <div className="space-y-2">
+            {nodes.map((n) => (
+              <div key={n.id} className="flex flex-wrap items-center gap-2 border border-gray-100 rounded-xl p-2.5">
+                <div className="text-xs text-gray-600 min-w-24 flex items-center gap-1.5">
+                  <Server size={13} className="text-gray-300" />
                   {n.name}
-                </button>
-              );
-            })}
+                </div>
+                {/* Only what this server can actually carry - a MikroTik
+                    cannot serve Xray and an Xray node serves nothing else.
+                    Offering the full list would produce a trial that fails
+                    at provisioning time, long after anyone links the two. */}
+                {protocolsForType(n.type).map((protocol) => (
+                  <button
+                    key={protocol}
+                    type="button"
+                    onClick={() => toggleProtocol(n.id, protocol)}
+                    className={`px-2.5 py-1 rounded-lg text-xs border ${
+                      has(n.id, protocol)
+                        ? "bg-brand-600 text-white border-brand-600"
+                        : "border-gray-200 text-gray-500"
+                    }`}
+                  >
+                    {PROTOCOL_LABELS[protocol] || protocol}
+                  </button>
+                ))}
+              </div>
+            ))}
           </div>
           <div className="flex gap-2 mt-3">
             <button type="button" className="btn-primary" disabled={busy || !chosen.length} onClick={create}>

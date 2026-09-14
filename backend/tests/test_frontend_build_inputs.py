@@ -67,3 +67,45 @@ if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))
     sys.exit(1)
 print("هرچه بیلد فرانت‌اند لازم دارد داخل ایمیج کپی می‌شود")
+
+
+# --------------------------------------------------------------------------
+# The white page of 2026-09-14, and the one line that caused it.
+#
+# Pressing «ساخت سرویس تست» blanked the page. The trial card spread
+# emptyForm, which carries "" for the optional numeric fields (an empty
+# <input> is ""), and the backend's Optional[int] refuses that - a 422
+# whose `detail` is a LIST of error objects. The card then did
+#
+#     setError(err?.response?.data?.detail || fallback)
+#
+# putting an ARRAY into state and then into JSX, and React throws on an
+# object rendered as a child: the whole page goes.
+#
+# Both halves are asserted, because either alone would have hidden it:
+# utils.errorText turns any of FastAPI's shapes into a string, and the
+# trial card no longer sends "" for a field typed as a number.
+import pathlib as _pathlib  # noqa: E402
+
+_pkg = _pathlib.Path(__file__).resolve().parents[2] / "frontend" / "src" / "pages" / "Packages.jsx"
+_src = _pkg.read_text(encoding="utf-8")
+
+check("the trial card reports errors through errorText, not a raw detail",
+      "setError(errorText(err" in _src, True)
+check("...and never puts a raw detail into state",
+      "response?.data?.detail ||" in _src, False)
+check("it sends null, not \"\", for the optional numeric fields",
+      "group_id: null," in _src, True)
+
+_utils = _pathlib.Path(__file__).resolve().parents[2] / "frontend" / "src" / "utils.js"
+_u = _utils.read_text(encoding="utf-8")
+check("errorText handles FastAPI's array-shaped detail",
+      "Array.isArray(detail)" in _u, True)
+
+# And the question that came with the bug report: where protocols are
+# chosen. A trial that picks servers but defaults the protocol has decided
+# something the admin never said.
+check("the trial picker offers protocols per server",
+      "protocolsForType(n.type)" in _src, True)
+check("...and carries the choice into the package",
+      "chosen.map(({ node_id, protocol })" in _src, True)

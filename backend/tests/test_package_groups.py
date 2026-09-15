@@ -317,6 +317,47 @@ check("the existing package survived untouched", row[2], "قدیمی")
 check("...is visible in the Mini App by default", bool(row[0]), True)
 check("...and is simply ungrouped", row[1], None)
 
+
+# --------------------------------------------------------------------------
+print("\n--- the free sample is not a shelf ---")
+# «تست هم نباید اون پایین نشون داده بشه و توی سایر پلن ها باید اون بالا بزنه
+# تست رایگان» - it was arriving as an ordinary ungrouped plan, so it sat in
+# «سایر پلن‌ها» at the very bottom, below everything a customer might pay
+# for. A sample filed with the leftovers is a sample nobody takes.
+db, engine = make_db()
+add_package(db, "پلن عادی", owner=2)
+t = add_package(db, "تست رایگان", owner=2)
+t.is_trial = True
+t.price = 0
+t.quota_gb = 0.2
+t.duration_days = 1
+db.commit()
+
+shelves = miniapp._shop_shelves(db, 2)
+check("no shelf contains the trial",
+      any(p.is_trial for s in shelves for p in s["packages"]), False)
+check("the paid plan is still shelved",
+      [p.name for s in shelves for p in s["packages"]], ["پلن عادی"])
+check("the trial comes back on its own", miniapp._trial_package(db, 2).name, "تست رایگان")
+
+home = miniapp.home(visitor=visitor(db, ALI_TOKEN), db=db)
+check("/home carries it beside the shelves, not inside them",
+      home["shop"]["trial"].name, "تست رایگان")
+check("...and it is buyable by id even though no shelf lists it",
+      miniapp._package_or_404(db, 2, t.id).name, "تست رایگان")
+
+# A trial with nothing provisionable in it is not offered: the banner would
+# be a button that fails after it is pressed.
+t.connections.clear()
+db.commit()
+check("a trial with no services is not offered at all",
+      miniapp._trial_package(db, 2), None)
+
+# And a shop with no trial simply has none - no empty banner.
+db, engine = make_db()
+add_package(db, "تنها پلن", owner=2)
+check("a shop without a trial reports none", miniapp._trial_package(db, 2), None)
+
 print("\n" + "=" * 60)
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))

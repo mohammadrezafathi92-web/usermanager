@@ -272,6 +272,62 @@ check("a superadmin may set a larger trial",
       ).quota_gb,
       50)
 
+
+print("\n--- zero is not small ---")
+# «با خالی کردن میشه تست رو نامحدود کرد». In this schema 0 means UNLIMITED
+# for quota_gb and 0/None means NEVER EXPIRES for duration_days, so a
+# ceiling written only as "> MAX" has a hole at the BOTTOM: clearing the
+# field sails under it and produces the most generous package the panel can
+# express.
+
+
+class _Reseller:
+    is_superadmin = False
+
+
+class _Root:
+    is_superadmin = True
+
+
+for label, q, d in (
+    ("emptying the quota", None, 1),
+    ("zeroing the quota", 0, 1),
+    ("emptying the duration", 0.2, None),
+    ("zeroing the duration", 0.2, 0),
+    ("emptying both", 0, 0),
+):
+    check(f"{label} is refused",
+          bool(refusal(trial.ensure_within_limits, _Reseller(),
+                       quota_gb=q, duration_days=d, price=0)), True)
+check("a real 200 MB / 1 day trial still passes",
+      refusal(trial.ensure_within_limits, _Reseller(),
+              quota_gb=0.2, duration_days=1, price=0), None)
+check("and the superadmin may still make an unlimited one",
+      refusal(trial.ensure_within_limits, _Root(),
+              quota_gb=0, duration_days=0, price=0), None)
+
+print("\n--- and one already saved as unlimited is refused at sale time ---")
+# ensure_within_limits runs on create and update, which cannot reach the
+# row already sitting in the database - the reported case was exactly that.
+db4 = fresh()
+db4.add(models.AdminUser(id=1, username="root", hashed_password="x", is_superadmin=True))
+db4.add(models.AdminUser(id=2, username="ali", hashed_password="x"))
+db4.add(models.Package(id=1, name="تست نامحدود", quota_gb=0, duration_days=None,
+                       price=0, is_trial=True, owner_admin_id=2))
+db4.add(models.Package(id=2, name="تست درست", quota_gb=0.2, duration_days=1,
+                       price=0, is_trial=True, owner_admin_id=2))
+db4.add(models.Package(id=3, name="مال ادمین اصلی", quota_gb=0, duration_days=None,
+                       price=0, is_trial=True, owner_admin_id=None))
+db4.commit()
+
+check("the unlimited one cannot be handed out",
+      "پشتیبانی" in str(refusal(trial.ensure_allowed, db4, db4.get(models.Package, 1),
+                                telegram_id=555)), True)
+check("a correctly-sized one still can",
+      refusal(trial.ensure_allowed, db4, db4.get(models.Package, 2), telegram_id=555), None)
+check("the superadmin's own is not second-guessed",
+      refusal(trial.ensure_allowed, db4, db4.get(models.Package, 3), telegram_id=555), None)
+
 print("\n" + "=" * 60)
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))

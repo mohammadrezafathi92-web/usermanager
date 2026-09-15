@@ -56,6 +56,40 @@ def current_visitor(
         raise HTTPException(401, "این صفحه باید از داخل ربات تلگرام باز شود.")
 
 
+def _shop_packages(db: Session, owner: int | None) -> list:
+    """Every package this shop may show in the Mini App, trial included.
+
+    Split out from _shop_shelves because the trial is sold like the others
+    and DISPLAYED unlike them - so the buyability check (_package_or_404)
+    has to see it while the shelves must not.
+    """
+    return [
+        p for p in bot_router.list_packages(owner_admin_id=owner, db=db)
+        if getattr(p, "miniapp_enabled", True)
+    ]
+
+
+def _trial_package(db: Session, owner: int | None):
+    """The free sample, which is not a shelf.
+
+    It was landing in «سایر پلن‌ها» at the bottom of the shop - filed with
+    the leftovers, below everything a customer might pay for, which is the
+    opposite of what a sample is for. Reported 2026-09-15: «تست هم نباید
+    اون پایین نشون داده بشه و توی سایر پلن ها باید اون بالا بزنه تست
+    رایگان».
+
+    Returned on its own so the page can put it at the top, and excluded
+    from the shelves so it is not in both places. Only the first one: a
+    shop offering two different free samples is a shop with a
+    configuration mistake, not a feature, and showing both would present
+    the mistake as a choice.
+    """
+    for pkg in _shop_packages(db, owner):
+        if getattr(pkg, "is_trial", False) and (pkg.connections or []):
+            return pkg
+    return None
+
+
 def _shop_shelves(db: Session, owner: int | None) -> list[dict]:
     """The shop, already arranged into cards.
 
@@ -83,10 +117,7 @@ def _shop_shelves(db: Session, owner: int | None) -> list[dict]:
     A shelf with nothing on it is omitted: an empty card is a promise the
     shop cannot keep.
     """
-    packages = [
-        p for p in bot_router.list_packages(owner_admin_id=owner, db=db)
-        if getattr(p, "miniapp_enabled", True)
-    ]
+    packages = [p for p in _shop_packages(db, owner) if not getattr(p, "is_trial", False)]
 
     groups = (
         db.query(models.PackageGroup)
@@ -269,6 +300,8 @@ def home(visitor: dict = Depends(current_visitor), db: Session = Depends(get_db)
             # is not currently running - the card falls back to sharing the
             # bare code, which still works when it is typed into the bot.
             "bot_username": _bot_username(owner),
+            # Its own field, not a shelf - see _trial_package.
+            "trial": _trial_package(db, owner),
         },
         "me": {
             "telegram_id": visitor["telegram_id"],
@@ -322,10 +355,9 @@ def _package_or_404(db: Session, owner: int | None, package_id: int) -> dict:
     rules; reading the Package row directly would sell a hidden package, or
     sell it at the wrong price.
     """
-    for shelf in _shop_shelves(db, owner):
-        for pkg in shelf["packages"]:
-            if pkg.id == package_id:
-                return pkg
+    for pkg in _shop_packages(db, owner):
+        if pkg.id == package_id:
+            return pkg
     # Deliberately the same source the SHOP is drawn from, not
     # list_packages. A plan hidden with miniapp_enabled, or sitting on a
     # shelf that is switched off, must be unbuyable and not merely

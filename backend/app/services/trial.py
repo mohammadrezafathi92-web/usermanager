@@ -61,13 +61,40 @@ def ensure_within_limits(admin, *, quota_gb, duration_days, price) -> None:
     """
     if getattr(admin, "is_superadmin", False):
         return
-    if quota_gb is not None and float(quota_gb) > TRIAL_MAX_GB:
+
+    # ZERO IS NOT SMALL. In this schema 0 means UNLIMITED for quota_gb and
+    # 0/None means NEVER EXPIRES for duration_days (see models.Package), so
+    # a ceiling written only as `> MAX` has a hole at the bottom: clearing
+    # the field sails under it and produces the most generous package the
+    # panel can express. Reported 2026-09-15 with a screenshot reading
+    # «نامحدود / بدون انقضا»: «با خالی کردن میشه تست رو نامحدود کرد».
+    #
+    # Third time today that a falsy zero has meant the opposite of small -
+    # the others were a free package's price skipping the payment branch,
+    # and the same price passing a "has a value" test. Worth stating: in
+    # this codebase 0 is a value with meaning, never an absence.
+    quota = 0.0 if quota_gb is None else float(quota_gb)
+    if quota <= 0:
+        raise HTTPException(
+            400,
+            "حجم سرویس تست را خالی یا صفر نگذارید - صفر یعنی نامحدود. "
+            f"عددی بین ۰ تا {TRIAL_MAX_GB:g} گیگابایت وارد کنید.",
+        )
+    if quota > TRIAL_MAX_GB:
         raise HTTPException(
             400,
             f"حجم سرویس تست حداکثر می‌تواند {TRIAL_MAX_GB:g} گیگابایت باشد. "
             "برای حجم بیشتر یک پکیج عادی بسازید.",
         )
-    if duration_days is not None and int(duration_days) > TRIAL_MAX_DAYS:
+
+    days = 0 if duration_days is None else int(duration_days)
+    if days <= 0:
+        raise HTTPException(
+            400,
+            "مدت سرویس تست را خالی یا صفر نگذارید - صفر یعنی بدون انقضا. "
+            f"عددی بین ۱ تا {TRIAL_MAX_DAYS} روز وارد کنید.",
+        )
+    if days > TRIAL_MAX_DAYS:
         raise HTTPException(
             400,
             f"مدت سرویس تست حداکثر می‌تواند {TRIAL_MAX_DAYS} روز باشد. "
@@ -167,6 +194,31 @@ def ensure_allowed(
     """
     if not is_trial(package):
         return
+
+    # Rule 0, checked at the moment it costs money rather than only when
+    # the package was saved.
+    #
+    # ensure_within_limits runs on create and update, which protects every
+    # trial made from now on and NOT the one already sitting in the
+    # database - the reported case was a trial already saved as «نامحدود /
+    # بدون انقضا» before the limits existed, live and being given away. A
+    # guard that only runs at configuration time cannot reach it.
+    #
+    # Refused, not clamped: silently handing out something different from
+    # what the package says would leave the admin believing their unlimited
+    # trial works, and the customer with a service nobody promised them.
+    owner = db.get(models.AdminUser, package.owner_admin_id) if package.owner_admin_id else None
+    if owner is not None and not owner.is_superadmin:
+        try:
+            ensure_within_limits(
+                owner, quota_gb=package.quota_gb,
+                duration_days=package.duration_days, price=package.price,
+            )
+        except HTTPException:
+            raise HTTPException(
+                403,
+                "سرویس تست فعلاً در دسترس نیست - با پشتیبانی تماس بگیرید.",
+            ) from None
 
     account_ids = _account_ids_for(db, telegram_id, user)
 

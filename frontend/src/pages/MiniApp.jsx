@@ -230,6 +230,54 @@ function ReferralCard({ code, payment, botUsername }) {
   );
 }
 
+
+/**
+ * The free sample, at the top, on its own.
+ *
+ * It used to arrive as an ordinary plan inside «سایر پلن‌ها» - filed with
+ * the leftovers at the very bottom, below everything a customer might pay
+ * for, which is the opposite of what a sample is for. It is the first
+ * thing a shop should offer someone who has not bought anything, so it is
+ * the first thing on the screen.
+ *
+ * Drawn as a strip rather than a plan card on purpose: it is not one of
+ * the options being compared. A customer choosing between plans is doing
+ * a different job from a customer deciding whether to try at all, and
+ * putting the sample in the comparison invites them to weigh «رایگان»
+ * against a price, which it always wins.
+ */
+function TrialBanner({ trial, busy, onTake }) {
+  if (!trial) return null;
+  return (
+    <div className="rounded-2xl border border-violet-500/25 bg-violet-500/[0.08] p-4 mb-4">
+      <div className="flex items-start gap-3">
+        <IconTile icon={Gift} tone="violet" />
+        <div className="min-w-0 flex-1">
+          <div className="font-bold text-[15px]">{trial.name}</div>
+          <div className="text-xs opacity-55 mt-1">
+            {trial.quota_gb
+              ? `${fa(Math.round(trial.quota_gb * 1024))} مگابایت`
+              : "حجم نامحدود"}
+            {" · "}
+            {trial.duration_days ? `${fa(trial.duration_days)} روز` : "بدون انقضا"}
+            {" · "}
+            رایگان
+          </div>
+        </div>
+      </div>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => onTake(trial)}
+        className="w-full mt-3.5 py-3 rounded-xl bg-violet-500 active:bg-violet-600 disabled:opacity-50 text-white text-sm font-medium flex items-center justify-center gap-2"
+      >
+        {busy ? <Loader2 size={16} className="animate-spin" /> : <Gift size={16} />}
+        دریافت رایگان
+      </button>
+    </div>
+  );
+}
+
 /**
  * Every plan in ONE card.
  *
@@ -949,6 +997,12 @@ export default function MiniApp() {
             <PageTitle
               title={data.me.name ? `سلام ${data.me.name}` : "فروشگاه"}
               subtitle="پلن مورد نظر خود را انتخاب کنید."
+            />
+
+            <TrialBanner
+              trial={data.shop.trial}
+              busy={claiming === data.shop.trial?.id}
+              onTake={(pkg) => takePackage(pkg, { free: true })}
             />
 
             <ReferralCard

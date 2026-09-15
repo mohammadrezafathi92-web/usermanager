@@ -387,7 +387,25 @@ def list_packages(owner_admin_id: Optional[int] = None, db: Session = Depends(ge
         q = q.filter(models.Package.owner_admin_id.is_(None))
 
     pkgs = q.order_by(models.Package.sort_order, models.Package.id).all()
-    if target is not None and hierarchy.role(target) == hierarchy.ROLE_SELLER:
+    # Keyed on OWNERSHIP, not on the role column.
+    #
+    # It used to read `role(target) == ROLE_SELLER`, which is right only as
+    # long as every level-3 account's stored role says so - and role() falls
+    # back to deriving from parent_admin_id precisely because some rows
+    # predate that column. An account whose role reads "admin" while sitting
+    # under a parent skipped this filter entirely, and the package the owner
+    # had kept for themselves showed up in that account's shop. Reported
+    # 2026-09-15: «اونای که با گزینه عدم نمایش در بات فروشنده تیک خورده بود
+    # توی اپ نماینده دیده میشه».
+    #
+    # Ownership is the question the flag actually asks - «نمایش به
+    # فروشنده‌ها» means "anyone but me" - and it cannot be wrong in the way
+    # a stored role can: the owner always sees their own package, and
+    # everyone else in the tree needs the flag. Same restriction as
+    # routers/packages.py's panel list, and it now holds for every surface
+    # a downstream account reaches: their admin-menu pickers AND their own
+    # dedicated bot's and Mini App's customer-facing shop.
+    if target is not None and not target.is_superadmin:
         # Same restriction as routers/packages.py's panel list_packages -
         # an Admin can keep a package for their own use without handing it
         # to this Seller at all, and that has to hold everywhere this
@@ -402,7 +420,10 @@ def list_packages(owner_admin_id: Optional[int] = None, db: Session = Depends(ge
         # bot either way - models.Package.seller_visible's docstring
         # claimed this was panel-only by design; it wasn't meant to leave
         # the bot as a back door around it.
-        pkgs = [p for p in pkgs if p.seller_visible]
+        pkgs = [
+            p for p in pkgs
+            if p.seller_visible or p.owner_admin_id == target.id
+        ]
     for p in pkgs:
         if p.id in seller_prices:
             # In-memory only, on this freshly-queried (never committed)

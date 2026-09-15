@@ -358,6 +358,44 @@ db, engine = make_db()
 add_package(db, "تنها پلن", owner=2)
 check("a shop without a trial reports none", miniapp._trial_package(db, 2), None)
 
+
+# --------------------------------------------------------------------------
+print("\n--- «نمایش به فروشنده‌ها» holds in the Mini App too ---")
+# «اونای که با گزینه عدم نمایش در بات فروشنده تیک خورده بود توی اپ نماینده
+# دیده میشه». The filter existed but was keyed on the stored ROLE column,
+# and role() falls back to deriving from parent_admin_id precisely because
+# some rows predate that column - so an account whose role reads "admin"
+# while sitting under a parent skipped the check entirely.
+#
+# Keyed on OWNERSHIP now, which is the question the flag actually asks
+# («anyone but me») and cannot be wrong the way a stored role can.
+db, engine = make_db()
+owner = db.get(models.AdminUser, 2)
+seller = models.AdminUser(id=9, username="sub", hashed_password="x",
+                          parent_admin_id=2, role="seller")
+db.add(seller)
+db.commit()
+
+shared = add_package(db, "برای همه", owner=2)
+private = add_package(db, "مخصوص خودم", owner=2)
+private.seller_visible = False
+db.commit()
+
+check("the owner still sees their own private package",
+      sorted(p.name for p in miniapp._shop_packages(db, 2)), ["برای همه", "مخصوص خودم"])
+check("their seller does not",
+      [p.name for p in miniapp._shop_packages(db, 9)], ["برای همه"])
+check("...and cannot buy it by id either",
+      str(call(miniapp._package_or_404, db, 9, private.id)).startswith("404"), True)
+check("...while the shared one is still buyable for them",
+      miniapp._package_or_404(db, 9, shared.id).name, "برای همه")
+
+# The check must not depend on the role column being right.
+src = __import__("inspect").getsource(__import__("app.routers.bot", fromlist=["x"]).list_packages)
+check("ownership, not role, decides", "p.owner_admin_id == target.id" in src, True)
+check("...and the old role-keyed condition is gone",
+      "hierarchy.role(target) == hierarchy.ROLE_SELLER:\n        pkgs" in src, False)
+
 print("\n" + "=" * 60)
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))

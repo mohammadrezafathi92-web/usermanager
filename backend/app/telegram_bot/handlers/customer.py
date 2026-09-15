@@ -1023,6 +1023,55 @@ async def enter_discount_code(message: Message, state: FSMContext) -> None:
     await _advance_purchase_flow(message, state)
 
 
+
+async def _give_free_package(target, state: FSMContext, pkg: dict, account) -> None:
+    """A package that costs nothing, handed over on the spot.
+
+    Writes the same pending row a receipt would (minus the receipt - there
+    is no payment to evidence) and then approves it immediately, so a free
+    package travels the identical route a paid one does after an admin
+    presses Approve. The alternative - provisioning inline here - would be
+    a second implementation of account creation, referral redemption,
+    config delivery and notification, free to drift from the first.
+    """
+    from .admin_pending import perform_approval
+
+    data = await state.get_data()
+    target_username = data.get("target_username") or (account or {}).get("username")
+    kind = data.get("kind", "new")
+    if not target_username:
+        # Brand-new customer: the same tgNNN placeholder the receipt flow
+        # uses. perform_approval creates the account under it.
+        target_username = f"tg{_uid(target)}"
+
+    request_id = storage.create_pending(
+        telegram_id=_uid(target),
+        telegram_username=getattr(target.from_user, "username", None),
+        telegram_name=getattr(target.from_user, "full_name", None),
+        kind=kind,
+        package=pkg,
+        target_username=target_username,
+        node_id=data.get("node_id"),
+        node_name=data.get("node_name"),
+        protocol=data.get("protocol"),
+        referral_code=data.get("referral_code"),
+        final_price=0,
+        renew_purchase_id=data.get("renew_purchase_id"),
+        comment=data.get("comment"),
+    )
+    await state.clear()
+
+    pending = storage.get_pending(request_id)
+    bot = target.bot if hasattr(target, "bot") else None
+    ok, message = await perform_approval(pending, bot)
+    if not ok:
+        # The refusals here are the trial's own rules (already taken, not a
+        # new customer, daily cap) - the customer's own answer, so it is
+        # shown rather than logged.
+        storage.set_status(request_id, "rejected")
+    await _reply(target, message or ("✅ سرویس شما فعال شد." if ok else "انجام نشد."), home_kb())
+
+
 async def _show_payment_screen(target, state: FSMContext) -> None:
     try:
         payment = await api.get_payment_info()
@@ -1069,6 +1118,22 @@ async def _show_payment_screen(target, state: FSMContext) -> None:
     can_pay_from_balance = bool(account and final_price and (account.get("balance") or 0) >= final_price)
     if account:
         await state.update_data(target_username=account["username"])
+
+    # Nothing to pay means nothing to ask. A free package (the trial - see
+    # backend models.Package.is_trial) used to land in the card-to-card
+    # branch below, because `final_price` of 0 is falsy and so
+    # can_pay_from_balance was False - so the bot showed a card number and
+    # asked for a receipt for a zero-toman package. Reported 2026-09-15:
+    # «برای تست رایگان گزینه پرداخت نباید بیاد چه بات چه مینی اپ».
+    #
+    # Handed straight to the approval path instead of being provisioned
+    # here by hand. That path already knows how to create a brand-new
+    # account, apply a referral code, send the configs and notify everyone
+    # - all of which a free package needs exactly as much as a paid one,
+    # and none of which is worth a second copy of.
+    if final_price <= 0:
+        await _give_free_package(target, state, pkg, account)
+        return
 
     if discount_amount:
         lines = [f"پکیج: <b>{pkg['name']}</b> — <s>{price:,}</s> {final_price:,} تومان (🎟 {discount_amount:,} تومان تخفیف)", ""]

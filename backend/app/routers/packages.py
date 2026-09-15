@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_admin, require_confirm_password
-from ..services import hierarchy, admin_billing
+from ..services import hierarchy, admin_billing, trial
 
 # Router-level dependency is just "logged in" - listing packages is
 # available to every admin (needed to pick a package while creating a
@@ -261,11 +261,27 @@ def _check_group_in_scope(db: Session, admin: models.AdminUser, group_id) -> Non
 @router.post("", response_model=schemas.PackageOut)
 def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     _require_package_manager(admin)
-    _check_cooperation_floor(admin, payload.quota_gb, payload.cooperation_price)
-    _check_price_floor(
-        _effective_package_cost(admin, payload.quota_gb, payload.cooperation_price),
-        payload.price, field_label="قیمت پکیج",
-    )
+    # The price floor exists so a reseller cannot sell below what the
+    # package costs them. A trial costs them nothing - _charge_seller skips
+    # it entirely - so the floor has nothing to protect and would only
+    # refuse the one package that is SUPPOSED to be free. Reported the
+    # moment the trial button was first pressed: «قیمت پکیج نمی‌تواند کمتر
+    # از قیمت همکاری این پکیج (480 تومان) باشد».
+    #
+    # Safe because the trial has its own ceiling instead (ensure_within_
+    # limits): a reseller cannot use is_trial to give away something large
+    # for free, which is the loss the floor was guarding against.
+    if payload.is_trial:
+        trial.ensure_within_limits(
+            admin, quota_gb=payload.quota_gb, duration_days=payload.duration_days,
+            price=payload.price,
+        )
+    else:
+        _check_cooperation_floor(admin, payload.quota_gb, payload.cooperation_price)
+        _check_price_floor(
+            _effective_package_cost(admin, payload.quota_gb, payload.cooperation_price),
+            payload.price, field_label="قیمت پکیج",
+        )
     _check_group_in_scope(db, admin, payload.group_id)
     data = payload.model_dump(exclude={"connections", "ovpn_templates"})
     # owner_admin_id is always derived from who's creating it, never taken
@@ -292,19 +308,32 @@ def update_package(package_id: int, payload: schemas.PackageUpdate, db: Session 
     # Judged on the values the package will HAVE, not only the ones being
     # sent: changing quota alone can put an untouched cooperation price
     # under the floor just as surely as changing the price itself.
-    _check_cooperation_floor(
-        admin,
-        data.get("quota_gb", pkg.quota_gb),
-        data.get("cooperation_price", pkg.cooperation_price),
-    )
-    _check_price_floor(
-        _effective_package_cost(
-            admin, data.get("quota_gb", pkg.quota_gb), data.get("cooperation_price", pkg.cooperation_price),
-        ),
-        data.get("price", pkg.price), field_label="قیمت پکیج",
-    )
+    if not data.get("is_trial", pkg.is_trial):
+        _check_cooperation_floor(
+            admin,
+            data.get("quota_gb", pkg.quota_gb),
+            data.get("cooperation_price", pkg.cooperation_price),
+        )
+        _check_price_floor(
+            _effective_package_cost(
+                admin, data.get("quota_gb", pkg.quota_gb), data.get("cooperation_price", pkg.cooperation_price),
+            ),
+            data.get("price", pkg.price), field_label="قیمت پکیج",
+        )
     if "group_id" in data:
         _check_group_in_scope(db, admin, data["group_id"])
+    # On the values the package will HAVE, not only the ones being sent.
+    # Editing is exactly how the hole was found: the package was created
+    # inside the limits and then raised afterwards. Also catches ticking
+    # is_trial ON an existing large package, which would otherwise be a way
+    # to stop being charged for it.
+    if data.get("is_trial", pkg.is_trial):
+        trial.ensure_within_limits(
+            admin,
+            quota_gb=data.get("quota_gb", pkg.quota_gb),
+            duration_days=data.get("duration_days", pkg.duration_days),
+            price=data.get("price", pkg.price),
+        )
     data.pop("owner_admin_id", None)  # ownership never changes via this endpoint
     for k, v in data.items():
         setattr(pkg, k, v)

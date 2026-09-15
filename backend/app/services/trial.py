@@ -32,8 +32,51 @@ from sqlalchemy.orm import Session
 from .. import models
 
 
+# What a sample may be, at most, when a reseller defines one.
+#
+# The reason there is a ceiling at all: is_trial waives the charge to the
+# reseller (routers/bot.py's _charge_seller). Without a limit, a reseller
+# could tick that box on a 500 GB annual package - or simply edit the
+# 200 MB one upward - and hand out a year of service that costs them
+# nothing and the platform everything. Reported 2026-09-15: «بعد از ساخت
+# تست رایگان ... میتونه تایم و حجمش رو هرچقدر که بخواد بالا ببره».
+#
+# A superadmin is exempt. It is their platform and their cost, so a
+# ceiling on them would be a rule with nobody to enforce it for.
+TRIAL_MAX_GB = 1.0
+TRIAL_MAX_DAYS = 7
+
+
 def is_trial(package: Optional[models.Package]) -> bool:
     return bool(package is not None and getattr(package, "is_trial", False))
+
+
+def ensure_within_limits(admin, *, quota_gb, duration_days, price) -> None:
+    """Refuses a trial that is too generous to be a trial.
+
+    Checked on the values the package will HAVE, by the caller, on both
+    create and update - an edit is exactly how the hole was found, and a
+    check that only runs at creation is a check that runs once and then
+    never again on the thing it was protecting.
+    """
+    if getattr(admin, "is_superadmin", False):
+        return
+    if quota_gb is not None and float(quota_gb) > TRIAL_MAX_GB:
+        raise HTTPException(
+            400,
+            f"حجم سرویس تست حداکثر می‌تواند {TRIAL_MAX_GB:g} گیگابایت باشد. "
+            "برای حجم بیشتر یک پکیج عادی بسازید.",
+        )
+    if duration_days is not None and int(duration_days) > TRIAL_MAX_DAYS:
+        raise HTTPException(
+            400,
+            f"مدت سرویس تست حداکثر می‌تواند {TRIAL_MAX_DAYS} روز باشد. "
+            "برای مدت بیشتر یک پکیج عادی بسازید.",
+        )
+    # A priced "trial" is a contradiction, and a dangerous one: it would be
+    # sold like a package while costing the reseller nothing.
+    if price is not None and int(price) != 0:
+        raise HTTPException(400, "قیمت سرویس تست باید صفر باشد.")
 
 
 def _account_ids_for(db: Session, telegram_id: Optional[int],

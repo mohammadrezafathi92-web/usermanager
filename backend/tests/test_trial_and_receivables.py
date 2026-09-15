@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import pathlib
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -192,6 +193,84 @@ check("a brand-new customer is checked too",
 from app.routers import users as users_router  # noqa: E402
 check("the admin panel's own grant is NOT - an admin may always hand one out",
       "trial.ensure_allowed" in inspect.getsource(users_router), False)
+
+
+# --------------------------------------------------------------------------
+print("\n--- a free package asks for no payment ---")
+# «برای تست رایگان گزینه پرداخت نباید بیاد چه بات چه مینی اپ» - and the two
+# ways it used to: the bot showed a card number for a zero-toman package
+# (final_price of 0 is falsy, so the "pay from balance" branch was skipped
+# and the card branch ran), and the Mini App opened a checkout sheet.
+import inspect as _inspect  # noqa: E402
+
+from app.telegram_bot.handlers import customer as _customer  # noqa: E402
+
+_pay = _inspect.getsource(_customer._show_payment_screen)
+check("the bot leaves before the card block when there is nothing to pay",
+      "if final_price <= 0:" in _pay, True)
+check("...and hands it to the approval path rather than provisioning inline",
+      "perform_approval(pending, bot)" in _inspect.getsource(_customer._give_free_package), True)
+
+_mini = (_pathlib_root := pathlib.Path(__file__).resolve().parents[2]) / "frontend" / "src" / "pages" / "MiniApp.jsx"
+_m = _mini.read_text(encoding="utf-8")
+check("the Mini App shows a claim button, not a price row", "دریافت رایگان" in _m, True)
+check("...and does not open the checkout sheet for it", "onBuy(pkg, { free: true })" in _m, True)
+# There is no separate price row any more - the price lives inside the buy
+# button (see PackagePicker) - so "free" is expressed by that button being a
+# different button, with no toman figure on it at all.
+_free_btn = _m[_m.index("{buyable && free ?"):_m.index(") : buyable ?")]
+check("the free button carries no price", "تومان" in _free_btn, False)
+check("...and it is the free one", "دریافت رایگان" in _free_btn, True)
+
+
+print("\n--- the price floor does not apply to something meant to be free ---")
+from app.routers import packages as _pr  # noqa: E402
+
+_create = _inspect.getsource(_pr.create_package)
+check("a trial skips the floor", "if payload.is_trial:" in _create, True)
+check("...and everything else still gets it", "_check_price_floor(" in _create, True)
+
+
+print("\n--- what a reseller may NOT do to a trial ---")
+db3 = fresh()
+boss3 = models.AdminUser(id=2, username="ali", hashed_password="x", wholesale_price_per_gb=2400)
+root3 = models.AdminUser(id=1, username="root", hashed_password="x", is_superadmin=True)
+db3.add_all([boss3, root3])
+db3.commit()
+
+from app import schemas as _schemas  # noqa: E402
+
+made = _pr.create_package(
+    _schemas.PackageCreate(name="تست", quota_gb=0.2, duration_days=1, price=0, is_trial=True),
+    db=db3, admin=boss3,
+)
+check("a free trial can be created at all despite the per-GB floor", made.price, 0)
+
+for label, change in (
+    ("grow the quota", {"quota_gb": 500}),
+    ("grow the duration", {"duration_days": 365}),
+    ("give it a price", {"price": 50000}),
+):
+    detail = refusal(_pr.update_package, made.id, _schemas.PackageUpdate(**change), db=db3, admin=boss3)
+    check(f"{label} is refused", bool(detail), True)
+
+# The subtler one: ticking is_trial ON an existing large package would stop
+# it being charged for - a way to give away a year of service for nothing.
+big = _pr.create_package(
+    _schemas.PackageCreate(name="بزرگ", quota_gb=500, duration_days=365, price=9_000_000),
+    db=db3, admin=boss3,
+)
+check("turning a big package INTO a trial is refused",
+      bool(refusal(_pr.update_package, big.id, _schemas.PackageUpdate(is_trial=True), db=db3, admin=boss3)),
+      True)
+
+# The superadmin is exempt - it is their platform and their cost.
+check("a superadmin may set a larger trial",
+      _pr.create_package(
+          _schemas.PackageCreate(name="تست بزرگ", quota_gb=50, duration_days=30, price=0, is_trial=True),
+          db=db3, admin=root3,
+      ).quota_gb,
+      50)
 
 print("\n" + "=" * 60)
 if failures:

@@ -466,6 +466,41 @@ def checkout(
     price = _price_of(pkg)
 
     account = _own_account(db, visitor, payload.account)
+
+    # A free plan - the trial - is the one case where "you have no account"
+    # is not a reason to refuse. The whole point of a sample is to reach
+    # someone who has not signed up yet, and sending them back to the bot
+    # to do it there would make the shop the long way round.
+    #
+    # Created through routers/bot.py's create_user, the same single choke
+    # point the bot's own signup uses, so the trial's rules, the purchase
+    # lock and the referral hook all apply exactly as they do in chat.
+    if account is None and price == 0:
+        created = bot_router.create_user(
+            schemas.BotCreateUserRequest(
+                username=f"tg{visitor['telegram_id']}",
+                full_name=(visitor["user"].get("first_name") or "").strip() or None,
+                quota_gb=float(getattr(pkg, "quota_gb", 0) or 0),
+                expire_days=getattr(pkg, "duration_days", None),
+                telegram_id=visitor["telegram_id"],
+                connections=[
+                    schemas.BotCreateConnectionSpec(
+                        node_id=c.node_id, protocol=c.protocol, flow=getattr(c, "flow", "") or "",
+                    )
+                    for c in _connections_of(pkg)
+                ],
+                package_name=pkg.name,
+                package_id=pkg.id,
+                owner_admin_id=owner,
+            ),
+            db=db,
+        )
+        return {
+            "status": "done",
+            "message": "سرویس تست شما فعال شد. در «سرویس‌های من» ببینیدش.",
+            "connections": [c.model_dump() for c in created.connections],
+        }
+
     if account is None:
         raise HTTPException(400, "هنوز حسابی ندارید - اولین خرید را از داخل ربات انجام دهید.")
     if (account.balance or 0) < price:

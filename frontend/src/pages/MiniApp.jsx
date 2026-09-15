@@ -261,6 +261,11 @@ function PackagePicker({ packages, onBuy }) {
   // fails after it is pressed.
   const buyable = protocols.length > 0;
   const seats = pkg.max_concurrent_sessions || 0;
+  // Nothing to pay, so nothing to ask. A checkout sheet offering a wallet
+  // and a card number for a plan that costs zero is a form with no
+  // question in it - and it was the only thing standing between the
+  // customer and the sample.
+  const free = (pkg.price || 0) === 0;
   // First in the list is the reseller's own answer to which plan they want
   // pushed: the packages arrive in Package.sort_order, which the admin
   // arranges by hand (routers/bot.py's list_packages). No new field, no guess.
@@ -336,7 +341,16 @@ function PackagePicker({ packages, onBuy }) {
         {/* The price sits INSIDE the button, on the far side. The eye looks
             for the number and the thumb looks for the button; putting them in
             one shape means it only has to find one thing. */}
-        {buyable ? (
+        {buyable && free ? (
+          <button
+            type="button"
+            onClick={() => onBuy(pkg, { free: true })}
+            className="w-full mt-4 py-3 rounded-xl bg-violet-500 active:bg-violet-600 text-sm font-medium text-white flex items-center justify-center gap-2"
+          >
+            <Gift size={16} />
+            دریافت رایگان
+          </button>
+        ) : buyable ? (
           <button
             type="button"
             onClick={() => onBuy(pkg)}
@@ -756,6 +770,7 @@ export default function MiniApp() {
   const [tab, setTab] = useState("shop");
   const [buying, setBuying] = useState(null);
   const [toppingUp, setToppingUp] = useState(false);
+  const [claiming, setClaiming] = useState(null);
   const [done, setDone] = useState("");
 
   // Read once, from the URL, and kept for the retry button. Not derived
@@ -795,6 +810,29 @@ export default function MiniApp() {
     }
     load(credential);
   }, [settled, webApp, initData]);
+
+  /**
+   * Buying, and the case where there is nothing to buy.
+   *
+   * A free plan goes straight to the endpoint - no sheet, because a sheet
+   * that offers a wallet and a card number for a zero-toman plan is a form
+   * with no question in it, and it was the only thing between the customer
+   * and the sample. Everything else opens checkout as before.
+   */
+  const takePackage = (pkg, opts) => {
+    if (!opts?.free) {
+      setBuying(pkg);
+      return;
+    }
+    setClaiming(pkg.id);
+    miniAppCheckout(initData || webApp?.initData || "", { package_id: pkg.id })
+      .then((res) => {
+        setDone(res.data.message);
+        load(initData || webApp?.initData || "");
+      })
+      .catch((err) => setDone(err?.response?.data?.detail || "انجام نشد. دوباره تلاش کنید."))
+      .finally(() => setClaiming(null));
+  };
 
   const load = (initData) => {
     setError("");
@@ -940,7 +978,7 @@ export default function MiniApp() {
                     )}
                   </div>
                 )}
-                <PackagePicker packages={shelf.packages} onBuy={setBuying} />
+                <PackagePicker packages={shelf.packages} onBuy={takePackage} />
               </div>
             ))}
           </>

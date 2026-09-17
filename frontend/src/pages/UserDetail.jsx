@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import QRCode from "qrcode";
-import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, ShieldCheck, Lock, Save, KeyRound, Power, ShieldEllipsis, RefreshCw, Pencil, Package, LogOut, Send } from "lucide-react";
+import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, ShieldCheck, Lock, Save, KeyRound, Power, ShieldEllipsis, ShieldAlert, RefreshCw, Pencil, Package, LogOut, Send } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import JalaliDateInput from "../components/JalaliDateInput.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";

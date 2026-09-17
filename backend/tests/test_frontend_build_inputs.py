@@ -109,3 +109,23 @@ check("the trial picker offers protocols per server",
       "protocolsForType(n.type)" in _src, True)
 check("...and carries the choice into the package",
       "chosen.map(({ node_id, protocol })" in _src, True)
+
+
+# --------------------------------------------------------------------------
+# The third white page, 2026-09-17: «دوباره صفحه کاربران لود نمیشه». An icon
+# was used on a page and never added to the import line. JSX compiles that
+# to React.createElement(Name, ...) - valid JavaScript until it runs, when
+# it throws ReferenceError and React unmounts the whole tree. Green build,
+# blank page.
+#
+# check-imports.mjs catches it, and is only useful if it actually runs.
+check("check-imports.mjs exists",
+      (_pathlib.Path(__file__).resolve().parents[2] / "frontend" / "scripts" / "check-imports.mjs").is_file(),
+      True)
+_pkg_json = __import__("json").loads(
+    (_pathlib.Path(__file__).resolve().parents[2] / "frontend" / "package.json").read_text(encoding="utf-8")
+)
+check("...and the build runs it", "check-imports.mjs" in _pkg_json["scripts"]["build"], True)
+check("...alongside the other two guards",
+      all(name in _pkg_json["scripts"]["build"]
+          for name in ("check-hooks.mjs", "check-i18n.mjs")), True)

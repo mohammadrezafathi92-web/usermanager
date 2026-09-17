@@ -1110,6 +1110,24 @@ class RadiusActiveSession(Base):
     started_at = Column(DateTime, default=now)
     last_seen_at = Column(DateTime, default=now, index=True)
 
+    # THIS SESSION's own last-reported counters.
+    #
+    # RADIUS accounting counters are per SESSION - each one starts at zero
+    # and grows - but the baseline used to be kept per CONNECTION
+    # (Connection.last_rx_bytes + radius_session_id). With one session that
+    # is the same thing. With two, which is exactly what a «۳ کاربر همزمان»
+    # package is sold to allow, the two sessions reset each other's
+    # baseline on every update, so each interim report added that session's
+    # ENTIRE cumulative total again instead of the increment since its own
+    # previous report.
+    #
+    # Reported 2026-09-17 by a customer's reseller as "the panel counts far
+    # more volume than my users actually use". Reproduced: two devices, 1.4
+    # GB really used, 3.6 GB recorded - and it compounds the longer a
+    # session stays up and the more devices share the account.
+    last_rx_bytes = Column(BigInteger, default=0)
+    last_tx_bytes = Column(BigInteger, default=0)
+
 
 class RadiusLimitEventLog(Base):
     """Persisted history of RADIUS auth attempts rejected for exceeding the

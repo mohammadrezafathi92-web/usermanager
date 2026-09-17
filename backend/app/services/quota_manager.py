@@ -67,13 +67,28 @@ def _apply_delta(db: Session, connection: models.Connection, rx: int, tx: int):
         # reconnected with a fresh dynamic interface)
         delta = new_total
 
-    if delta <= 0:
-        connection.last_rx_bytes = rx
-        connection.last_tx_bytes = tx
-        return
-
     connection.last_rx_bytes = rx
     connection.last_tx_bytes = tx
+    if delta <= 0:
+        return
+    add_usage(db, connection, delta)
+
+
+def add_usage(db: Session, connection: models.Connection, delta: int) -> None:
+    """Add `delta` bytes to everything that counts them.
+
+    The second half of _apply_delta, split out because the two halves have
+    different owners. Working out the delta needs a baseline, and WHERE
+    that baseline lives depends on the protocol: for WireGuard and Xray it
+    is the connection (one counter per peer, which is what the node
+    reports), and for the RADIUS protocols it is the SESSION - each session
+    has its own counter starting at zero, and a connection may have several
+    at once. Keeping the arithmetic here and the baseline with whoever owns
+    it is what stopped two concurrent sessions from resetting each other's
+    (see models.RadiusActiveSession.last_rx_bytes).
+    """
+    if delta <= 0:
+        return
     connection.total_bytes = (connection.total_bytes or 0) + delta
 
     user: models.User = connection.user

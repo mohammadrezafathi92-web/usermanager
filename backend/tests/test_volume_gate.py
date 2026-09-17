@@ -111,11 +111,16 @@ print("\n--- traffic already flowing is still NOT cut off ---")
 # would be a far worse bug than the debt.
 from app.services import quota_manager  # noqa: E402
 
+# _apply_delta works out the delta; add_usage applies it. They were split
+# when the RADIUS baseline moved to the session row (see
+# test_radius_usage_per_session.py) - the metering itself is unchanged, so
+# this now reads the half that does it.
 apply_delta = inspect.getsource(quota_manager._apply_delta)
+add_usage = inspect.getsource(quota_manager.add_usage)
 check("usage is still metered with no balance check",
-      "ensure_volume_available" in apply_delta, False)
+      "ensure_volume_available" in apply_delta + add_usage, False)
 check("...and still decrements the pool",
-      'volume_balance_gb", -gb' in apply_delta, True)
+      'volume_balance_gb", -gb' in add_usage, True)
 
 print("\n--- the receipt-approval path stays untouched on purpose ---")
 # routers/bot.py's create_user is called AFTER a customer has already paid

@@ -33,7 +33,7 @@ from .. import models
 from ..config import settings
 from ..database import SessionLocal
 from ..telegram_bot import runner as telegram_bot_runner
-from .quota_manager import _apply_delta, _enforce_user_limits, _enforce_purchase_limits, active_session_count
+from .quota_manager import add_usage, _enforce_user_limits, _enforce_purchase_limits, active_session_count
 from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
 from . import mschapv2
 from . import ip_guard
@@ -613,6 +613,47 @@ class UserManagerRadiusServer(Server):
             models.RadiusActiveSession.session_id == session_id,
         ).delete(synchronize_session=False)
 
+    @staticmethod
+    def _session_delta(db, connection_id: int, session_id: str, rx: int, tx: int) -> int:
+        """How many bytes THIS session has moved since its own last report.
+
+        RADIUS counters are per session and start at zero, so the baseline
+        has to be per session too. It used to live on the Connection, which
+        is the same thing only while a connection has ONE session - and a
+        «۳ کاربر همزمان» package exists precisely so that it can have
+        three. With two, each report found a baseline belonging to the
+        other session, decided the counter had "reset", and added that
+        session's entire cumulative total again. Two devices, 1.4 GB really
+        used, 3.6 GB recorded.
+
+        A row is created if we never saw the Start - a fresh baseline for
+        that session only, leaving every other session's untouched.
+        """
+        row = (
+            db.query(models.RadiusActiveSession)
+            .filter(
+                models.RadiusActiveSession.connection_id == connection_id,
+                models.RadiusActiveSession.session_id == session_id,
+            )
+            .first()
+        )
+        if row is None:
+            row = models.RadiusActiveSession(
+                connection_id=connection_id, session_id=session_id,
+                last_rx_bytes=0, last_tx_bytes=0,
+            )
+            db.add(row)
+
+        previous = (row.last_rx_bytes or 0) + (row.last_tx_bytes or 0)
+        current = (rx or 0) + (tx or 0)
+        # Within one session a counter only ever grows; going backwards
+        # means the NAS restarted the session under the same id, so what it
+        # reports now is all of it.
+        delta = current - previous if current >= previous else current
+        row.last_rx_bytes = rx or 0
+        row.last_tx_bytes = tx or 0
+        return max(0, delta)
+
     # ---------------------------------------------------------- accounting
     def HandleAcctPacket(self, pkt):
         db = SessionLocal()
@@ -640,22 +681,24 @@ class UserManagerRadiusServer(Server):
 
             if conn:
                 if status == "Start":
+                    # Kept for display/diagnostics only - the accounting
+                    # baseline moved to the session row, see _session_delta.
                     conn.radius_session_id = session_id
-                    conn.last_rx_bytes = 0
-                    conn.last_tx_bytes = 0
                     self._open_active_session(db, conn.id, session_id, nas_ip, client_ip)
                 elif status in ("Interim-Update", "Stop"):
-                    if conn.radius_session_id != session_id:
-                        # We missed the Start (e.g. server restarted) - treat
-                        # this as a fresh baseline instead of double-counting.
-                        conn.radius_session_id = session_id
-                        conn.last_rx_bytes = 0
-                        conn.last_tx_bytes = 0
+                    conn.radius_session_id = session_id
                     in_octets = _gigaword_total(pkt, "Acct-Input-Octets", "Acct-Input-Gigawords")
                     out_octets = _gigaword_total(pkt, "Acct-Output-Octets", "Acct-Output-Gigawords")
-                    _apply_delta(db, conn, in_octets, out_octets)
+                    # Per session, not per connection. The delta is worked
+                    # out against THIS session's own previous report; every
+                    # other session on the same connection is untouched.
+                    delta = self._session_delta(db, conn.id, session_id, in_octets, out_octets)
+                    add_usage(db, conn, delta)
                     if status == "Stop":
                         conn.radius_session_id = None
+                        # After the delta above, never before - closing
+                        # deletes the row the baseline lives on, and the
+                        # final report is usually the largest one.
                         self._close_active_session(db, conn.id, session_id)
                     else:
                         self._touch_active_session(db, conn.id, session_id, nas_ip, client_ip)

@@ -122,6 +122,7 @@ PROTOCOL_NAMES = {
     "l2tp": "L2TP",
     "ikev2": "IKEv2",
     "sstp": "SSTP",
+    "pptp": "PPTP",
     "xray": "V2Ray",
 }
 

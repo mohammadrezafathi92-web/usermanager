@@ -19,6 +19,7 @@ import {
   addL2tpConnection,
   addIkev2Connection,
   addSstpConnection,
+  addPptpConnection,
   addXrayConnection,
   deleteConnection,
   getShareLink,
@@ -51,11 +52,14 @@ function buildTypeMeta(t) {
     l2tp: { label: `L2TP/IPsec (${t("userDetail.mikrotikLabel")})`, icon: Lock, color: "bg-amber-50 text-amber-600" },
     ikev2: { label: `IKEv2/IPsec (${t("userDetail.mikrotikLabel")})`, icon: KeyRound, color: "bg-sky-50 text-sky-600" },
     sstp: { label: `SSTP (${t("userDetail.mikrotikLabel")})`, icon: ShieldEllipsis, color: "bg-rose-50 text-rose-600" },
+    // Amber-on-warning rather than a colour of its own: the point of the
+    // label is that this one is not like the others.
+    pptp: { label: `PPTP ⚠️ (${t("userDetail.mikrotikLabel")})`, icon: ShieldAlert, color: "bg-orange-50 text-orange-600" },
     xray: { label: "V2Ray / Xray", icon: Globe, color: "bg-purple-50 text-purple-600" },
   };
 }
 
-const FILE_EXT = { wireguard: "conf", openvpn: "txt", l2tp: "txt", ikev2: "txt", sstp: "txt" };
+const FILE_EXT = { wireguard: "conf", openvpn: "txt", l2tp: "txt", ikev2: "txt", sstp: "txt", pptp: "txt" };
 
 // Groups a user's connections by which purchase created them together
 // (Connection.purchase_batch, stamped once at provisioning time when several
@@ -479,6 +483,8 @@ export default function UserDetail() {
         await addIkev2Connection(user.id, Number(connNodeId), Number(connMaxSessions) || 0);
       } else if (protocol === "sstp") {
         await addSstpConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 0);
+      } else if (protocol === "pptp") {
+        await addPptpConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 0);
       } else {
         await addXrayConnection(user.id, Number(connNodeId), connFlow);
       }
@@ -1702,6 +1708,18 @@ export default function UserDetail() {
                 </button>
                 <button disabled={saving} className="btn-secondary" onClick={() => addConnection("sstp")}>
                   <ShieldEllipsis size={16} /> SSTP
+                </button>
+                {/* Last, and visibly different. PPTP is here for devices
+                    that speak nothing else; anyone who picks it without
+                    meaning to has been given a protocol whose encryption
+                    is broken (see backend models.ConnectionType.pptp). */}
+                <button
+                  disabled={saving}
+                  className="btn-secondary !text-orange-600 !border-orange-200"
+                  title={t("userDetail.pptpWarning")}
+                  onClick={() => addConnection("pptp")}
+                >
+                  <ShieldAlert size={16} /> PPTP ⚠️
                 </button>
               </div>
             </>

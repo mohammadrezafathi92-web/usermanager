@@ -50,10 +50,11 @@ TYPE_LABELS = {
     "l2tp": "🌐 L2TP/IPsec",
     "ikev2": "🛰 IKEv2/IPsec",
     "sstp": "🔐 SSTP",
+    "pptp": "⚠️ PPTP (قدیمی)",
     "xray": "⚡ V2Ray/Xray",
 }
 
-DEFAULT_PORTS = {"l2tp": 1701, "ikev2": 500, "sstp": 443}
+DEFAULT_PORTS = {"l2tp": 1701, "ikev2": 500, "sstp": 443, "pptp": 1723}
 
 
 def _qr_bytes(data: str) -> bytes:
@@ -89,7 +90,7 @@ async def send_connection(bot: Bot, chat_id: int, conn: dict) -> None:
             _log_send_failure(exc, f"send wireguard connection {conn.get('id')} to {chat_id}")
         return
 
-    if ctype in ("openvpn", "l2tp", "ikev2", "sstp"):
+    if ctype in ("openvpn", "l2tp", "ikev2", "sstp", "pptp"):
         # Ready-to-import .ovpn file: the package's admin-uploaded template
         # with only this customer's credentials injected (see services/
         # link_builder.py's render_ovpn_template). When a template exists

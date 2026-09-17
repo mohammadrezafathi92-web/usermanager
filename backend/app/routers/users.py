@@ -600,7 +600,7 @@ def get_user(user_id: int, db: Session = Depends(get_db), admin: models.AdminUse
                 ip_by_connection[session.connection_id] = session.client_ip
         for c in out.connections:
             c.active_session_count = counts.get(c.id, 0)
-            if c.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp):
+            if c.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp, models.ConnectionType.pptp):
                 # PPP connections have no "online" DB column of their own
                 # (that column only means anything for xray) - their live
                 # state is whether a RADIUS session is currently open.
@@ -866,6 +866,21 @@ def add_ikev2_connection(
  _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
     return user_ops.provision_ikev2(db, user, node, payload.max_concurrent_sessions)
+
+
+@router.post("/{user_id}/connections/pptp", response_model=schemas.ConnectionOut)
+def add_pptp_connection(
+    user_id: int,
+    payload: schemas.ConnectionCreatePptp,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+ _perm=_may_manage_connections):
+    """PPTP, for a device that speaks nothing else. See
+    models.ConnectionType.pptp for why it is labelled insecure wherever it
+    appears - the credentials handed to the customer carry the warning
+    too."""
+    user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
+    return user_ops.provision_pptp(db, user, node, payload.max_concurrent_sessions)
 
 
 @router.post("/{user_id}/connections/sstp", response_model=schemas.ConnectionOut)
@@ -1183,7 +1198,7 @@ def update_connection(
     out.active_session_count = db.query(models.RadiusActiveSession).filter(
         models.RadiusActiveSession.connection_id == conn.id
     ).count()
-    if conn.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp):
+    if conn.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp, models.ConnectionType.pptp):
         out.online = out.active_session_count > 0
     return out
 
@@ -1237,7 +1252,7 @@ def unban_connection(
 
     out = schemas.ConnectionOut.model_validate(conn)
     out.active_session_count = active_count
-    if conn.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp):
+    if conn.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp, models.ConnectionType.pptp):
         out.online = active_count > 0
     return out
 

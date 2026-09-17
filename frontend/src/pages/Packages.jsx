@@ -56,14 +56,18 @@ function formatFileSize(bytes) {
 // the answer depends entirely on which server it is.
 const emptyConn = { node_id: "", protocol: "", flow: "" };
 
-const PROTOCOL_LABELS = { wireguard: "WireGuard", openvpn: "OpenVPN", l2tp: "L2TP", ikev2: "IKEv2", sstp: "SSTP", xray: "V2Ray/Xray" };
+const PROTOCOL_LABELS = { wireguard: "WireGuard", openvpn: "OpenVPN", l2tp: "L2TP", ikev2: "IKEv2", sstp: "SSTP", pptp: "PPTP ⚠️", xray: "V2Ray/Xray" };
 
 // Which protocols a server can actually carry. Same split the bot already
 // applies (telegram_bot/keyboards.py's protocols_kb) - a MikroTik cannot
 // serve Xray and an Xray node serves nothing else, so offering the full
 // list here only ever produced a package whose service fails at
 // provisioning time, long after anyone would connect the two.
-const MIKROTIK_PROTOCOLS = ["wireguard", "openvpn", "l2tp", "ikev2", "sstp"];
+// PPTP last on purpose: it is offered for old devices that speak nothing
+// else, and putting it beside the others invites picking it by accident.
+// Its label carries a warning for the same reason - see backend
+// models.ConnectionType.pptp.
+const MIKROTIK_PROTOCOLS = ["wireguard", "openvpn", "l2tp", "ikev2", "sstp", "pptp"];
 const XRAY_PROTOCOLS = ["xray"];
 const protocolsForType = (type) => (type === "xray" ? XRAY_PROTOCOLS : MIKROTIK_PROTOCOLS);
 

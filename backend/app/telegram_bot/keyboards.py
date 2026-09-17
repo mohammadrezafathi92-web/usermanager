@@ -36,6 +36,7 @@ PROTOCOL_LABELS = {
     "l2tp": "🌐 L2TP/IPsec",
     "ikev2": "🛰 IKEv2/IPsec",
     "sstp": "🔐 SSTP",
+    "pptp": "⚠️ PPTP (قدیمی)",
     "xray": "⚡ V2Ray/Xray",
 }
 
@@ -291,9 +292,20 @@ def nodes_kb(nodes: list[dict]) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+# Which protocols each kind of node can carry - a MikroTik cannot serve
+# Xray and an Xray node serves nothing else. Named constants rather than a
+# literal inside the function because routers/packages.py holds the same
+# split for the panel, and test_package_protocols.py compares the two: a
+# protocol added to one side and forgotten on the other now fails a test
+# instead of quietly disagreeing (which is how PPTP was nearly shipped
+# offerable in the bot and not in the panel).
+MIKROTIK_PROTOCOLS = ["wireguard", "openvpn", "l2tp", "ikev2", "sstp", "pptp"]
+XRAY_PROTOCOLS = ["xray"]
+
+
 def protocols_kb(node_type: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    protocols = ["xray"] if node_type == "xray" else ["wireguard", "openvpn", "l2tp", "ikev2", "sstp"]
+    protocols = XRAY_PROTOCOLS if node_type == "xray" else MIKROTIK_PROTOCOLS
     for p in protocols:
         kb.button(text=PROTOCOL_LABELS.get(p, p), callback_data=ProtocolCB(protocol=p))
     kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))

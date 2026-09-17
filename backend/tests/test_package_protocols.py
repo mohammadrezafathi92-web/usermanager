@@ -105,12 +105,25 @@ check("the existing set survived",
 print("\n--- the panel and the bot agree on the split ---")
 from app.telegram_bot import keyboards
 
-for node_type, expected in (("xray", {"xray"}),
-                            ("mikrotik", {"wireguard", "openvpn", "l2tp", "ikev2", "sstp"})):
-    bot_side = {"xray"} if node_type == "xray" else {"wireguard", "openvpn", "l2tp", "ikev2", "sstp"}
-    panel_side = (packages_router.XRAY_PROTOCOLS if node_type == "xray"
-                  else packages_router.MIKROTIK_PROTOCOLS)
+# Read from BOTH sides rather than compared against a literal. The old
+# version asserted each side against a hardcoded set, which meant adding a
+# protocol to both places and forgetting the test was the ONLY way to fail
+# it - the reverse of what it is for. Now a protocol added to one side and
+# not the other fails immediately.
+for node_type in ("xray", "mikrotik"):
+    bot_side = set(keyboards.XRAY_PROTOCOLS if node_type == "xray"
+                   else keyboards.MIKROTIK_PROTOCOLS)
+    panel_side = set(packages_router.XRAY_PROTOCOLS if node_type == "xray"
+                     else packages_router.MIKROTIK_PROTOCOLS)
     check(f"{node_type}: same set on both sides", panel_side, bot_side)
+
+# And both sides against the enum, so a protocol can never be offered that
+# the database cannot store.
+from app import models as _models  # noqa: E402
+
+known = {c.value for c in _models.ConnectionType}
+check("every offered protocol is a real ConnectionType",
+      (set(keyboards.MIKROTIK_PROTOCOLS) | set(keyboards.XRAY_PROTOCOLS)) - known, set())
 
 print("\n" + "=" * 60)
 if failures:

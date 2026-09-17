@@ -170,6 +170,11 @@ class ConnectionCreateIkev2(BaseModel):
     max_concurrent_sessions: Optional[int] = 1  # 0 = unlimited
 
 
+class ConnectionCreatePptp(BaseModel):
+    node_id: int
+    max_concurrent_sessions: Optional[int] = 1  # 0 = unlimited
+
+
 class ConnectionCreateSstp(BaseModel):
     node_id: int
     max_concurrent_sessions: Optional[int] = 1  # 0 = unlimited
@@ -712,7 +717,7 @@ class DashboardStats(BaseModel):
     avg_speed_bps: float = 0
     # Connection count per protocol type (in the same visibility scope as
     # everything else above), keyed by models.ConnectionType's string value
-    # ("wireguard", "openvpn", "l2tp", "ikev2", "sstp", "xray") - powers the
+    # ("wireguard", "openvpn", "l2tp", "ikev2", "sstp", "pptp", "xray") - powers the
     # dashboard's per-protocol status grid. Always 0 for a protocol with no
     # connections yet, never omitted, so the frontend can render a fixed
     # grid without guessing which keys might be missing.

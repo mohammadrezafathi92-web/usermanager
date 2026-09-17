@@ -441,6 +441,26 @@ class MikrotikClient:
     # This only flips the SSTP server on and points it at a certificate +
     # RADIUS auth - it deliberately does NOT touch IP pools or PPP profiles,
     # same minimal-touch scope as push_radius_config above.
+    # --------------------------------------------------------------- PPTP
+    # The simplest of the lot, because there is nothing to secure: no
+    # certificate like SSTP, no pre-shared key like L2TP. That is exactly
+    # what is wrong with it (see models.ConnectionType.pptp) - it is offered
+    # for devices that speak nothing else.
+    #
+    # mschap2 only, deliberately. RouterOS will happily negotiate pap and
+    # chap as well, which send the password in the clear or near it; on a
+    # protocol whose encryption is already broken there is no reason to add
+    # a weaker rung to the ladder.
+    def push_pptp_config(self) -> None:
+        try:
+            list(self._api(
+                "/interface/pptp-server/server/set",
+                enabled="yes",
+                authentication="mschap2",
+            ))
+        except Exception as exc:
+            raise MikrotikError(f"تنظیم PPTP روی میکروتیک ناموفق بود: {exc}") from exc
+
     def push_sstp_config(self, port: int, certificate_name: str = "usermanager-sstp") -> str:
         cert = self.ensure_self_signed_certificate(certificate_name)
         try:

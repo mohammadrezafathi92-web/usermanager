@@ -260,6 +260,39 @@ def push_radius_config(node_id: int, payload: schemas.RadiusPushRequest, db: Ses
     return {"ok": True, "message": "تنظیمات RADIUS با موفقیت روی میکروتیک اعمال شد"}
 
 
+@router.post("/{node_id}/push-pptp-config", response_model=schemas.ProtocolPushResult)
+def push_pptp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    """One-click PPTP setup: registers the panel as a /radius client
+    (service=ppp, same as the others) and switches the PPTP server on with
+    authentication=mschap2.
+
+    The shortest of these functions, because PPTP has nothing to secure -
+    no certificate like SSTP, no pre-shared key like L2TP. That is the
+    protocol's whole problem, not a saving; see
+    models.ConnectionType.pptp."""
+    node = _get_owned_node(db, node_id, admin)
+    if node.type != models.NodeType.mikrotik:
+        raise HTTPException(400, "این عملیات فقط برای نود میکروتیک است")
+    if not node.mt_radius_secret:
+        raise HTTPException(400, "ابتدا مقدار RADIUS Secret این نود را وارد و ذخیره کنید")
+
+    panel_host = _resolve_panel_host(payload.panel_host)
+    try:
+        with MikrotikClient.for_node(node) as mt:
+            mt.push_radius_config(
+                panel_host=panel_host,
+                secret=node.mt_radius_secret,
+                auth_port=settings.radius_auth_port,
+                acct_port=settings.radius_acct_port,
+                service="ppp",
+            )
+            mt.push_pptp_config()
+    except MikrotikError as exc:
+        raise HTTPException(400, str(exc))
+
+    return {"ok": True, "message": "PPTP فعال شد - توجه: رمزنگاری این پروتکل امن نیست."}
+
+
 @router.post("/{node_id}/push-sstp-config", response_model=schemas.ProtocolPushResult)
 def push_sstp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
     """One-click SSTP setup: registers the panel as a /radius client

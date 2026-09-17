@@ -184,6 +184,30 @@ def build_ikev2_info(connection: models.Connection, node: models.Node) -> str:
     return "\n".join(lines)
 
 
+def build_pptp_info(connection: models.Connection, node: models.Node) -> str:
+    """Same shape as build_sstp_info - credentials and a port, since the
+    client is built into the operating system.
+
+    The warning is part of the config, not decoration. A customer handed
+    these details has no other way to learn that this particular protocol
+    cannot keep their traffic private, and they are frequently the least
+    technical customer on the panel - it is why they asked for the one that
+    needs no app.
+    """
+    lines = [
+        f"آدرس سرور: {node.mt_endpoint_host}",
+        f"پورت: {node.mt_pptp_port or 1723}",
+        f"نام کاربری: {connection.ppp_username}",
+        f"رمز عبور: {connection.ppp_password}",
+        "نوع VPN: PPTP",
+        "",
+        "⚠️ توجه: رمزنگاری PPTP امن نیست و قابل شکستن است. فقط برای دستگاه‌های",
+        "قدیمی که پروتکل دیگری ندارند استفاده کنید. روی آیفون و اندروید جدید",
+        "هم پشتیبانی نمی‌شود - برای آن‌ها IKEv2 یا L2TP را بگیرید.",
+    ]
+    return "\n".join(lines)
+
+
 def build_sstp_info(connection: models.Connection, node: models.Node) -> str:
     """Like build_openvpn_config: SSTP tunnels PPP inside a TLS connection
     (needs a server certificate, not a PSK), which the panel does not have

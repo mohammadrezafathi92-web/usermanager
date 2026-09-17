@@ -35,6 +35,19 @@ class ConnectionType(str, enum.Enum):
     l2tp = "l2tp"  # hosted on a MikroTik node (PPP secret)
     ikev2 = "ikev2"  # hosted on a MikroTik node (PPP secret via RADIUS, same as l2tp)
     sstp = "sstp"  # hosted on a MikroTik node (PPP secret via RADIUS, same as l2tp/ikev2)
+    # Also a PPP secret via RADIUS, same plumbing again - but NOT the same
+    # thing to sell. PPTP's authentication (MS-CHAPv2) has been fully broken
+    # since 2012: the whole session reduces to one DES key, and the MPPE
+    # encryption keys derive from the same password hash, so anyone who
+    # captures the traffic can read it. Apple dropped PPTP in iOS 10 and
+    # Android in 12, and its GRE transport is filtered on most Iranian
+    # mobile networks.
+    #
+    # Added anyway, on request, for customers with old Windows boxes and
+    # routers that speak nothing else - and labelled as insecure everywhere
+    # it is offered, so nobody chooses it believing it protects them. See
+    # services/link_builder.py's build_pptp_info.
+    pptp = "pptp"  # hosted on a MikroTik node (PPP secret) - INSECURE, see above
     xray = "xray"  # vless/vmess/trojan hosted on an Xray node
 
 
@@ -486,6 +499,7 @@ class Node(Base):
     # itself is configured directly on the router by the admin; these fields
     # are informational only, just so the panel can print correct
     # instructions to the client.
+    mt_pptp_port = Column(Integer, nullable=True, default=1723)
     mt_sstp_port = Column(Integer, nullable=True, default=443)
     mt_sstp_certificate = Column(String(128), nullable=True)  # informational only, shown in the generated config
 

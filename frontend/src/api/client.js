@@ -199,6 +199,8 @@ export const addIkev2Connection = (userId, nodeId, maxConcurrentSessions = 1) =>
   client.post(`/users/${userId}/connections/ikev2`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });
 export const addSstpConnection = (userId, nodeId, maxConcurrentSessions = 1) =>
   client.post(`/users/${userId}/connections/sstp`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });
+export const addPptpConnection = (userId, nodeId, maxConcurrentSessions = 1) =>
+  client.post(`/users/${userId}/connections/pptp`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });
 export const addXrayConnection = (userId, nodeId, flow = "") =>
   client.post(`/users/${userId}/connections/xray`, { node_id: nodeId, flow });
 export const deleteConnection = (userId, connectionId) =>
@@ -231,6 +233,8 @@ export const pushRadiusConfig = (id, panelHost, interimUpdate) =>
   });
 export const pushSstpConfig = (id, panelHost) =>
   client.post(`/nodes/${id}/push-sstp-config`, { panel_host: panelHost || null });
+export const pushPptpConfig = (id, panelHost) =>
+  client.post(`/nodes/${id}/push-pptp-config`, { panel_host: panelHost || null });
 export const pushL2tpConfig = (id, panelHost) =>
   client.post(`/nodes/${id}/push-l2tp-config`, { panel_host: panelHost || null });
 export const pushIkev2Config = (id, panelHost) =>

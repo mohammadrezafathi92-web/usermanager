@@ -147,7 +147,7 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 # A server only carries the protocols its own software speaks. Same split
 # the bot applies when a customer picks (telegram_bot/keyboards.py's
 # protocols_kb) and the panel's package form now offers.
-MIKROTIK_PROTOCOLS = {"wireguard", "openvpn", "l2tp", "ikev2", "sstp"}
+MIKROTIK_PROTOCOLS = {"wireguard", "openvpn", "l2tp", "ikev2", "sstp", "pptp"}
 XRAY_PROTOCOLS = {"xray"}
 
 

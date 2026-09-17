@@ -27,6 +27,7 @@ from .link_builder import (
     build_openvpn_config,
     build_l2tp_info,
     build_ikev2_info,
+    build_pptp_info,
     build_sstp_info,
 )
 
@@ -1019,6 +1020,8 @@ def _provision_ppp(
         "l2tp": models.ConnectionType.l2tp,
         "ikev2": models.ConnectionType.ikev2,
         "sstp": models.ConnectionType.sstp,
+    "pptp": models.ConnectionType.pptp,
+        "pptp": models.ConnectionType.pptp,
     }[service]
     conn = models.Connection(
         user_id=user.id,
@@ -1071,6 +1074,21 @@ def provision_ikev2(
     speed_limit_mbps: Optional[int] = None,
 ) -> models.Connection:
     return _provision_ppp(db, user, node, "ikev2", max_concurrent_sessions, purchase_batch, package_name, speed_limit_mbps)
+
+
+def provision_pptp(
+    db: Session,
+    user: models.User,
+    node: models.Node,
+    max_concurrent_sessions: Optional[int] = 1,
+    purchase_batch: Optional[str] = None,
+    package_name: Optional[str] = None,
+    speed_limit_mbps: Optional[int] = None,
+) -> models.Connection:
+    """Identical plumbing to every other PPP protocol here - one secret,
+    authenticated over RADIUS. What differs about PPTP is only what the
+    customer is told (see link_builder.build_pptp_info)."""
+    return _provision_ppp(db, user, node, "pptp", max_concurrent_sessions, purchase_batch, package_name, speed_limit_mbps)
 
 
 def provision_sstp(
@@ -1459,6 +1477,8 @@ def provision_connection(
         return provision_l2tp(db, user, node, max_concurrent_sessions, purchase_batch, package_name, speed_limit_mbps)
     if protocol == models.ConnectionType.ikev2:
         return provision_ikev2(db, user, node, max_concurrent_sessions, purchase_batch, package_name, speed_limit_mbps)
+    if protocol == models.ConnectionType.pptp:
+        return provision_pptp(db, user, node, max_concurrent_sessions, purchase_batch, package_name, speed_limit_mbps)
     if protocol == models.ConnectionType.sstp:
         return provision_sstp(db, user, node, max_concurrent_sessions, purchase_batch, package_name, speed_limit_mbps)
     if protocol == models.ConnectionType.xray:
@@ -1501,7 +1521,8 @@ def deprovision_connection(connection: models.Connection):
                 # (see MikrotikClient.remove_simple_queue) - always attempted
                 # so a queue never outlives the peer it was limiting.
                 mt.remove_simple_queue(wg_speed_queue_name(connection.wg_peer_name))
-        elif connection.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp):
+        elif connection.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp,
+                              models.ConnectionType.pptp):
             # Authenticated via RADIUS against this panel's own database -
             # there is no remote PPP secret to remove, deleting the DB row
             # (done by the caller) is all that's needed.
@@ -1558,7 +1579,8 @@ def kick_connection(db: Session, connection: models.Connection) -> bool:
       revokes its access at xray-core, forcing the live connection to drop
       and the client to reconnect."""
     node = connection.node
-    if connection.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp):
+    if connection.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp,
+                              models.ConnectionType.pptp):
         try:
             with MikrotikClient.for_node(node) as mt:
                 found = mt.kick_ppp_session(connection.ppp_username)
@@ -1609,6 +1631,7 @@ _PPP_SERVICE_TO_CONN_TYPE = {
     "ovpn": models.ConnectionType.openvpn,
     "l2tp": models.ConnectionType.l2tp,
     "sstp": models.ConnectionType.sstp,
+    "pptp": models.ConnectionType.pptp,
 }
 
 
@@ -2263,6 +2286,12 @@ def get_connection_share(connection: models.Connection) -> dict:
             "username": connection.ppp_username, "password": connection.ppp_password, "psk": node.mt_ikev2_psk,
         }
 
+    if connection.type == models.ConnectionType.pptp:
+        text = build_pptp_info(connection, node)
+        return {
+            "kind": "pptp", "link": None, "config_text": text,
+            "server": node.mt_endpoint_host, "port": node.mt_pptp_port or 1723,
+        }
     if connection.type == models.ConnectionType.sstp:
         text = build_sstp_info(connection, node)
         return {

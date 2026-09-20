@@ -192,6 +192,78 @@ TRIAL_BUTTON = "🎁 دریافت تست رایگان"
 BUY_BUTTON = "🛒 خرید و اطلاعات بیشتر"
 
 
+def _kind(title: str) -> str:
+    """Which family an advert belongs to, from its own title."""
+    for prefix in ("تست رایگان", "مینی‌اپ", "پکیج", "تخفیف", "کوتاه", "زاویه"):
+        if title.startswith(prefix):
+            return prefix
+    return "سایر"
+
+
+def interleaved() -> list[tuple[str, str]]:
+    """The adverts, round-robined across their families.
+
+    ADS is written grouped - all five trial texts together, then all five
+    mini-app ones - because that is how a person reads and edits them. It
+    is the worst possible order to SEND in: the channel gets five posts
+    about the free trial back to back and then nothing about it for a day.
+    Reported 2026-09-20 with a screenshot of the schedule: «تست ها همه پشت
+    هم میفته و این بده».
+
+    So the file stays readable and the ORDER is computed: one from each
+    family in turn, which spreads the trial posts roughly every sixth slot
+    and guarantees no two neighbours come from the same family.
+    """
+    families: dict[str, list[tuple[str, str]]] = {}
+    for title, body in ADS:
+        families.setdefault(_kind(title), []).append((title, body))
+
+    # Largest families first, so the ones with most entries get the widest
+    # spacing rather than bunching at the end when the others run out.
+    order = sorted(families, key=lambda k: -len(families[k]))
+    out: list[tuple[str, str]] = []
+    index = 0
+    while len(out) < len(ADS):
+        placed = False
+        for key in order:
+            if index < len(families[key]):
+                out.append(families[key][index])
+                placed = True
+        if not placed:
+            break
+        index += 1
+    return out
+
+
+def _reorder(db, channel) -> int:
+    """Rewrites sort_order only. Nothing is deleted, added, or edited.
+
+    For channels that already took the adverts in the grouped order. Doing
+    it with --replace would work too, but would throw away any package or
+    discount code the admin has since attached to a post - which is the
+    one piece of work that was theirs, not the script's.
+
+    Posts this script did not write keep their place: their sort_order is
+    left alone and the known ones are threaded around them, so a channel
+    with a mix does not have its own adverts shuffled by a tool that did
+    not write them.
+    """
+    wanted = [title for title, _ in interleaved()]
+    rank = {title: index for index, title in enumerate(wanted)}
+
+    posts = db.query(models.AdPost).filter(
+        models.AdPost.channel_id == channel.id).all()
+    known = [p for p in posts if p.title in rank]
+    for post in known:
+        post.sort_order = rank[post.title]
+    # Anything else goes after, keeping its relative order.
+    others = sorted((p for p in posts if p.title not in rank),
+                    key=lambda p: (p.sort_order or 0, p.id))
+    for offset, post in enumerate(others):
+        post.sort_order = len(wanted) + offset
+    return len(known)
+
+
 def _install(db, channel, replace: bool) -> tuple[int, int]:
     """Puts the adverts on one channel. Returns (deleted, added)."""
     deleted = 0
@@ -201,7 +273,7 @@ def _install(db, channel, replace: bool) -> tuple[int, int]:
     base = 0 if replace else (
         db.query(models.AdPost).filter(models.AdPost.channel_id == channel.id).count()
     )
-    for index, (title, body) in enumerate(ADS):
+    for index, (title, body) in enumerate(interleaved()):
         db.add(models.AdPost(
             channel_id=channel.id,
             title=title,
@@ -269,6 +341,8 @@ def main() -> int:
                         help="ادمین صاحب کانال تبلیغات (شناسه‌ی عددی)")
     parser.add_argument("--all", action="store_true",
                         help="روی همه‌ی کانال‌ها اعمال شود، نه فقط یکی")
+    parser.add_argument("--reorder", action="store_true",
+                        help="فقط ترتیب ارسال را اصلاح کن - چیزی حذف یا اضافه نکن")
     parser.add_argument("--replace", action="store_true",
                         help="تبلیغ‌های فعلی این کانال حذف و با این‌ها جایگزین شوند")
     parser.add_argument("--dry-run", action="store_true",
@@ -283,6 +357,23 @@ def main() -> int:
 
     db = SessionLocal()
     try:
+        if args.all and args.reorder:
+            channels = db.query(models.AdChannel).order_by(
+                models.AdChannel.owner_admin_id).all()
+            total = 0
+            for channel in channels:
+                moved = _reorder(db, channel)
+                total += moved
+                print(f"  ادمین {channel.owner_admin_id}: ترتیب {moved} تبلیغ اصلاح شد")
+            if args.dry_run:
+                db.rollback()
+                print("\n--dry-run: چیزی نوشته نشد.")
+                return 0
+            db.commit()
+            print(f"\n✅ ترتیب {total} تبلیغ روی {len(channels)} کانال اصلاح شد.")
+            print("حالا تست‌ها پشت سر هم نمی‌افتند - هر شش پست یک‌بار.")
+            return 0
+
         if args.all:
             return _apply_to_all(db, replace=args.replace, dry_run=args.dry_run)
 
@@ -318,15 +409,27 @@ def main() -> int:
             models.AdPost.channel_id == channel.id).count()
 
         print(f"کانال ادمین {args.admin} - الان {existing} تبلیغ دارد.")
-        if args.replace:
+        if args.reorder:
+            pass  # --reorder adds nothing; the counts below would misdescribe it
+        elif args.replace:
             print(f"با --replace: آن {existing} تا حذف و {len(ADS)} تای جدید جایگزین می‌شود.")
         else:
             print(f"{len(ADS)} تبلیغ جدید به آن‌ها اضافه می‌شود (مجموع {existing + len(ADS)}).")
             print("اگر می‌خواهی قبلی‌ها پاک شوند، --replace را اضافه کن.")
 
+        if args.reorder:
+            moved = _reorder(db, channel)
+            if args.dry_run:
+                db.rollback()
+                print(f"--dry-run: ترتیب {moved} تبلیغ اصلاح می‌شد، چیزی نوشته نشد.")
+                return 0
+            db.commit()
+            print(f"✅ ترتیب {moved} تبلیغ اصلاح شد - تست‌ها دیگر پشت سر هم نیستند.")
+            return 0
+
         if args.dry_run:
-            print("\n--dry-run: چیزی نوشته نشد. عنوان‌هایی که ساخته می‌شدند:\n")
-            for index, (title, _) in enumerate(ADS, 1):
+            print("\n--dry-run: چیزی نوشته نشد. به این ترتیب ساخته می‌شدند:\n")
+            for index, (title, _) in enumerate(interleaved(), 1):
                 print(f"  {index:>2}. {title}")
             return 0
 

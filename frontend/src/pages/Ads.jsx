@@ -131,7 +131,9 @@ export default function Ads() {
           actually reach a channel, so that decision comes before the posts. */}
       <div className="card mb-6">
         <div className="flex items-center gap-2 mb-3">
-          <Megaphone size={18} className="text-brand-600" />
+          <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+            <Megaphone size={15} />
+          </span>
           <h3 className="font-bold text-gray-700">{t("ads.channelTitle")}</h3>
         </div>
         <p className="text-xs text-gray-400 mb-4">{t("ads.channelHint")}</p>
@@ -202,7 +204,7 @@ export default function Ads() {
             {/* The single most common failure is the bot not being a channel
                 admin, which Telegram only reveals at send time. */}
             {channel.last_error && (
-              <div className="sm:col-span-2 text-xs text-red-600 bg-red-50 dark:bg-red-950 rounded-lg px-3 py-2" dir="ltr">
+              <div className="sm:col-span-2 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950 rounded-lg px-3 py-2" dir="ltr">
                 {channel.last_error}
               </div>
             )}
@@ -217,7 +219,9 @@ export default function Ads() {
       {schedule && (
         <div className="card mb-6">
           <div className="flex items-center gap-2 mb-1">
-            <CalendarClock size={18} className="text-brand-600" />
+            <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+              <CalendarClock size={15} />
+            </span>
             <h3 className="font-bold text-gray-700">{t("ads.schedule")}</h3>
           </div>
           <div className="text-xs text-gray-400 mb-3">
@@ -226,7 +230,7 @@ export default function Ads() {
               total: schedule.total_posts,
               hours: schedule.interval_hours,
             })}
-            {!schedule.in_window_now && <span className="text-amber-600"> · {t("ads.outsideWindow")}</span>}
+            {!schedule.in_window_now && <span className="text-amber-600 dark:text-amber-400"> · {t("ads.outsideWindow")}</span>}
           </div>
           {schedule.upcoming?.length ? (
             <ol className="space-y-1.5">
@@ -262,7 +266,7 @@ export default function Ads() {
         </div>
       </div>
 
-      {flash && <div className="mb-3 text-sm text-emerald-700 bg-emerald-50 dark:bg-emerald-950 rounded-lg px-3 py-2">{flash}</div>}
+      {flash && <div className="mb-3 text-sm text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950 rounded-lg px-3 py-2">{flash}</div>}
 
       {posts.length === 0 ? (
         <div className="card empty-state">{t("ads.none")}</div>

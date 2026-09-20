@@ -216,37 +216,37 @@ export default function Tutorials() {
       </div>
       )}
       {importMsg && (
-        <div className="mb-4 text-sm text-emerald-700 bg-emerald-50 dark:bg-emerald-950 rounded-lg px-3 py-2">{importMsg}</div>
+        <div className="mb-4 text-sm text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950 rounded-lg px-3 py-2">{importMsg}</div>
       )}
 
       <div className="card !p-0">
         {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
-        <div className="hidden md:block overflow-x-auto">
-          <table className="w-full text-sm min-w-[40rem]">
-            <thead className="bg-gray-50 text-gray-500 text-xs">
+        <div className="hidden md:block table-wrap !mx-0">
+          <table>
+            <thead>
               <tr>
-                <th className="text-right font-medium px-4 py-3">{t("tutorials.colTitle")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("tutorials.colMedia")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("tutorials.colOrder")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("tutorials.colStatus")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("tutorials.colActions")}</th>
+                <th>{t("tutorials.colTitle")}</th>
+                <th>{t("tutorials.colMedia")}</th>
+                <th>{t("tutorials.colOrder")}</th>
+                <th>{t("tutorials.colStatus")}</th>
+                <th>{t("tutorials.colActions")}</th>
               </tr>
             </thead>
             <tbody>
               {items.map((item) => (
-                <tr key={item.id} className="border-t border-gray-50 hover:bg-gray-50/60">
-                  <td className="px-4 py-3">
+                <tr key={item.id}>
+                  <td>
                     <div className="font-medium text-gray-800">{item.title}</div>
                     {item.text && <div className="text-xs text-gray-400 truncate max-w-md">{item.text}</div>}
                   </td>
-                  <td className="px-4 py-3 text-gray-500">{t("tutorials.fileCount", { count: item.media?.length || 0 })}</td>
-                  <td className="px-4 py-3 text-gray-500">{item.sort_order}</td>
-                  <td className="px-4 py-3">
-                    <span className={`badge ${item.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                  <td className="text-gray-500 dark:text-gray-400">{t("tutorials.fileCount", { count: item.media?.length || 0 })}</td>
+                  <td className="text-gray-500 dark:text-gray-400">{item.sort_order}</td>
+                  <td>
+                    <span className={item.enabled ? "badge-success" : "badge-neutral"}>
                       {item.enabled ? t("status.active") : t("status.disabled")}
                     </span>
                   </td>
-                  <td className="px-4 py-3">
+                  <td>
                     {isAdminOrAbove ? (
                       <div className="flex items-center gap-2">
                         <button title={item.enabled ? t("tutorials.disable") : t("tutorials.enable")} onClick={() => onToggle(item)} className="text-gray-400 hover:text-brand-600">
@@ -278,7 +278,7 @@ export default function Tutorials() {
         </div>
 
         {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
-        <div className="md:hidden divide-y divide-gray-50">
+        <div className="md:hidden divide-y divide-gray-100 dark:divide-slate-800">
           {items.map((item) => (
             <div key={item.id} className="p-4">
               <div className="flex items-start justify-between gap-2">
@@ -301,7 +301,7 @@ export default function Tutorials() {
                 )}
               </div>
               <div className="flex items-center gap-2 mt-2">
-                <span className={`badge ${item.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                <span className={item.enabled ? "badge-success" : "badge-neutral"}>
                   {item.enabled ? t("status.active") : t("status.disabled")}
                 </span>
                 <span className="text-xs text-gray-500">{t("tutorials.fileCount", { count: item.media?.length || 0 })}</span>
@@ -428,7 +428,7 @@ export default function Tutorials() {
             )}
           </div>
 
-          {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+          {error && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{error}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setOpen(false)}>
               {t("common.cancel")}

@@ -47,15 +47,15 @@ import { useLanguage } from "../context/LanguageContext.jsx";
 // can react to the active language via t() - see TYPE_META usage below.
 function buildTypeMeta(t) {
   return {
-    wireguard: { label: `WireGuard (${t("userDetail.mikrotikLabel")})`, icon: Wifi, color: "bg-indigo-50 text-indigo-600" },
-    openvpn: { label: `OpenVPN (${t("userDetail.mikrotikLabel")})`, icon: ShieldCheck, color: "bg-teal-50 text-teal-600" },
-    l2tp: { label: `L2TP/IPsec (${t("userDetail.mikrotikLabel")})`, icon: Lock, color: "bg-amber-50 text-amber-600" },
-    ikev2: { label: `IKEv2/IPsec (${t("userDetail.mikrotikLabel")})`, icon: KeyRound, color: "bg-sky-50 text-sky-600" },
-    sstp: { label: `SSTP (${t("userDetail.mikrotikLabel")})`, icon: ShieldEllipsis, color: "bg-rose-50 text-rose-600" },
+    wireguard: { label: `WireGuard (${t("userDetail.mikrotikLabel")})`, icon: Wifi, color: "bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-400" },
+    openvpn: { label: `OpenVPN (${t("userDetail.mikrotikLabel")})`, icon: ShieldCheck, color: "bg-teal-50 text-teal-600 dark:bg-teal-500/10 dark:text-teal-400" },
+    l2tp: { label: `L2TP/IPsec (${t("userDetail.mikrotikLabel")})`, icon: Lock, color: "bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400" },
+    ikev2: { label: `IKEv2/IPsec (${t("userDetail.mikrotikLabel")})`, icon: KeyRound, color: "bg-sky-50 text-sky-600 dark:bg-sky-500/10 dark:text-sky-400" },
+    sstp: { label: `SSTP (${t("userDetail.mikrotikLabel")})`, icon: ShieldEllipsis, color: "bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-400" },
     // Amber-on-warning rather than a colour of its own: the point of the
     // label is that this one is not like the others.
-    pptp: { label: `PPTP ⚠️ (${t("userDetail.mikrotikLabel")})`, icon: ShieldAlert, color: "bg-orange-50 text-orange-600" },
-    xray: { label: "V2Ray / Xray", icon: Globe, color: "bg-purple-50 text-purple-600" },
+    pptp: { label: `PPTP ⚠️ (${t("userDetail.mikrotikLabel")})`, icon: ShieldAlert, color: "bg-orange-50 text-orange-600 dark:bg-orange-500/10 dark:text-orange-400" },
+    xray: { label: "V2Ray / Xray", icon: Globe, color: "bg-purple-50 text-purple-600 dark:bg-purple-500/10 dark:text-purple-400" },
   };
 }
 
@@ -812,7 +812,7 @@ export default function UserDetail() {
             )}
           </div>
           {(user.reserved_quota_bytes || user.reserved_duration_days) && (
-            <div className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mt-3">
+            <div className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-500/10 dark:text-amber-400 rounded-lg px-3 py-2 mt-3">
               ⏳ {t("userDetail.reservedRenewal", {
                 value: [
                   user.reserved_quota_bytes ? formatBytes(user.reserved_quota_bytes) : null,
@@ -963,7 +963,7 @@ export default function UserDetail() {
                   })}
                 </div>
                 {(purchase.reserved_quota_bytes || purchase.reserved_duration_days) && (
-                  <div className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mt-2">
+                  <div className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-500/10 dark:text-amber-400 rounded-lg px-3 py-2 mt-2">
                     ⏳ {t("userDetail.reservedRenewal", {
                       value: [
                         purchase.reserved_quota_bytes ? formatBytes(purchase.reserved_quota_bytes) : null,
@@ -1050,11 +1050,11 @@ export default function UserDetail() {
                         </div>
                       </div>
                       <div className="flex flex-col items-end gap-1">
-                        <span className={`badge ${c.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                        <span className={`badge ${c.enabled ? "badge-success" : "badge-neutral"}`}>
                           {c.enabled ? t("status.active") : t("status.disabled")}
                         </span>
-                        <span className={`badge ${c.online ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-400"}`}>
-                          <span className={`inline-block w-1.5 h-1.5 rounded-full ml-1 ${c.online ? "bg-emerald-500" : "bg-gray-300"}`} />
+                        <span className={`badge ${c.online ? "badge-success" : "badge-neutral"}`}>
+                          <span className={`inline-block w-1.5 h-1.5 rounded-full ml-1 ${c.online ? "bg-emerald-500" : "bg-gray-300 dark:bg-slate-600"}`} />
                           {c.online ? t("users.online") : t("users.offline")}
                         </span>
                         {c.online && (
@@ -1201,17 +1201,17 @@ export default function UserDetail() {
         <div className="card mt-4">
           <h3 className="font-bold text-gray-700 mb-3">{t("userDetail.limitLogHeading")}</h3>
           {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
-          <div className="hidden md:block overflow-x-auto">
+          <div className="hidden md:block table-wrap !mx-0">
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-xs text-gray-400">
-                  <th className="text-right font-medium py-2">{t("radiusLogs.colType")}</th>
-                  <th className="text-right font-medium py-2">{t("radiusLogs.colConnType")}</th>
-                  <th className="text-right font-medium py-2">{t("radiusLogs.colIp")}</th>
-                  <th className="text-right font-medium py-2">{t("radiusLogs.colCount")}</th>
-                  <th className="text-right font-medium py-2">{t("radiusLogs.colBannedUntil")}</th>
-                  <th className="text-right font-medium py-2">{t("radiusLogs.colTime")}</th>
-                  <th className="text-right font-medium py-2">{t("radiusLogs.colAction")}</th>
+                <tr>
+                  <th>{t("radiusLogs.colType")}</th>
+                  <th>{t("radiusLogs.colConnType")}</th>
+                  <th>{t("radiusLogs.colIp")}</th>
+                  <th>{t("radiusLogs.colCount")}</th>
+                  <th>{t("radiusLogs.colBannedUntil")}</th>
+                  <th>{t("radiusLogs.colTime")}</th>
+                  <th>{t("radiusLogs.colAction")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1225,15 +1225,15 @@ export default function UserDetail() {
                   const relatedConn = user.connections.find((c) => c.id === l.connection_id);
                   const stillBanned = relatedConn && relatedConn.banned_until && new Date(relatedConn.banned_until) > new Date();
                   return (
-                    <tr key={l.id} className="border-t border-gray-50">
-                      <td className="py-2">
+                    <tr key={l.id}>
+                      <td>
                         <span
                           className={`badge ${
                             l.event_type === "ban"
-                              ? "bg-red-50 text-red-600"
+                              ? "badge-danger"
                               : l.event_type === "unban"
-                              ? "bg-emerald-50 text-emerald-600"
-                              : "bg-amber-50 text-amber-600"
+                              ? "badge-success"
+                              : "badge-warn"
                           }`}
                         >
                           {l.event_type === "ban"
@@ -1243,14 +1243,14 @@ export default function UserDetail() {
                             : t("radiusLogs.eventReject")}
                         </span>
                       </td>
-                      <td className="py-2 text-gray-500">{l.connection_type || "-"}</td>
-                      <td className="py-2 text-gray-500 font-mono" dir="ltr">{l.client_ip || "-"}</td>
-                      <td className="py-2 text-gray-500">
+                      <td className="text-gray-500">{l.connection_type || "-"}</td>
+                      <td className="text-gray-500 font-mono" dir="ltr">{l.client_ip || "-"}</td>
+                      <td className="text-gray-500">
                         {l.active_count ?? "-"}/{l.limit_value ?? "-"}
                       </td>
-                      <td className="py-2 text-gray-500">{l.banned_until ? formatDateTime(l.banned_until, language) : "-"}</td>
-                      <td className="py-2 text-gray-500">{formatDateTime(l.created_at, language)}</td>
-                      <td className="py-2">
+                      <td className="text-gray-500">{l.banned_until ? formatDateTime(l.banned_until, language) : "-"}</td>
+                      <td className="text-gray-500">{formatDateTime(l.created_at, language)}</td>
+                      <td>
                         {stillBanned && (
                           <button className="text-red-500 underline text-xs whitespace-nowrap" onClick={() => unban(relatedConn)}>
                             {t("userDetail.forceUnban")}
@@ -1265,7 +1265,7 @@ export default function UserDetail() {
           </div>
 
           {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
-          <div className="md:hidden divide-y divide-gray-50">
+          <div className="md:hidden divide-y divide-gray-100 dark:divide-slate-800">
             {limitLogs.map((l) => {
               const relatedConn = user.connections.find((c) => c.id === l.connection_id);
               const stillBanned = relatedConn && relatedConn.banned_until && new Date(relatedConn.banned_until) > new Date();
@@ -1275,10 +1275,10 @@ export default function UserDetail() {
                     <span
                       className={`badge ${
                         l.event_type === "ban"
-                          ? "bg-red-50 text-red-600"
+                          ? "badge-danger"
                           : l.event_type === "unban"
-                          ? "bg-emerald-50 text-emerald-600"
-                          : "bg-amber-50 text-amber-600"
+                          ? "badge-success"
+                          : "badge-warn"
                       }`}
                     >
                       {l.event_type === "ban"
@@ -1464,7 +1464,7 @@ export default function UserDetail() {
             )}
           </div>
 
-          {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+          {error && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{error}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setEditOpen(false)}>
               {t("common.cancel")}
@@ -1539,7 +1539,7 @@ export default function UserDetail() {
               {t("userDetail.resetUsageLabel")}
             </label>
           </div>
-          {renewError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{renewError}</div>}
+          {renewError && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{renewError}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setRenewOpen(false)}>
               {t("common.cancel")}
@@ -1622,7 +1622,7 @@ export default function UserDetail() {
               {t("userDetail.resetUsageLabel")}
             </label>
           </div>
-          {purchaseRenewError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{purchaseRenewError}</div>}
+          {purchaseRenewError && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{purchaseRenewError}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setPurchaseRenewTarget(null)}>
               {t("common.cancel")}
@@ -1650,7 +1650,7 @@ export default function UserDetail() {
             </select>
             <div className="hint">{t("userDetail.addPackageHint")}</div>
           </div>
-          {applyPackageError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{applyPackageError}</div>}
+          {applyPackageError && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{applyPackageError}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setAddPackageOpen(false)}>
               {t("common.cancel")}
@@ -1676,7 +1676,7 @@ export default function UserDetail() {
               ))}
             </select>
           </div>
-          {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+          {error && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{error}</div>}
 
           {selectedNode?.type === "mikrotik" && (
             <>
@@ -1769,11 +1769,11 @@ export default function UserDetail() {
                 <div className="hint">{t("userDetail.speedLimitHint")}</div>
               </div>
             ) : (
-              <div className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2">
+              <div className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-500/10 dark:text-amber-400 rounded-lg px-3 py-2">
                 {t("userDetail.speedLimitXrayUnsupported")}
               </div>
             )}
-            {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+            {error && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{error}</div>}
             <div className="flex justify-end gap-2 pt-2">
               <button type="button" className="btn-secondary" onClick={() => setLimitConn(null)}>
                 {t("common.cancel")}
@@ -1820,7 +1820,7 @@ export default function UserDetail() {
                 </div>
               </>
             )}
-            {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+            {error && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{error}</div>}
             <div className="flex justify-end gap-2 pt-2">
               <button type="button" className="btn-secondary" onClick={() => setEditConn(null)}>
                 {t("common.cancel")}

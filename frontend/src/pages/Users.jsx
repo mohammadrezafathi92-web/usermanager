@@ -675,7 +675,7 @@ export default function Users() {
           )}
 
           {onlineOnly && (
-            <span className="badge bg-emerald-50 text-emerald-600 inline-flex items-center gap-1">
+            <span className="badge-success inline-flex items-center gap-1">
               {t("users.onlineOnlyBadge")}
               <button type="button" className="hover:text-emerald-800" onClick={clearFilters}>
                 <X size={12} />
@@ -1099,7 +1099,7 @@ export default function Users() {
             <textarea className="input" rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
           </div>
 
-          {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+          {error && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{error}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setOpen(false)}>
               {t("common.cancel")}
@@ -1259,7 +1259,7 @@ export default function Users() {
           </div>
           )}
 
-          {bulkCreateError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{bulkCreateError}</div>}
+          {bulkCreateError && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{bulkCreateError}</div>}
           {bulkCreateResult && (
             <div className="text-xs text-gray-600 bg-gray-50 rounded-lg px-3 py-2">
               {t("users.bulkCreateResultSummary", { created: bulkCreateResult.created_count, skipped: bulkCreateResult.skipped_count })}
@@ -1371,7 +1371,7 @@ export default function Users() {
               </label>
             </div>
           </div>
-          {bulkEditError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{bulkEditError}</div>}
+          {bulkEditError && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{bulkEditError}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setBulkEditOpen(false)}>
               {t("common.cancel")}
@@ -1415,7 +1415,7 @@ export default function Users() {
                 placeholder={t("users.notifyMessagePlaceholder")}
               />
             </div>
-            {bulkNotifyError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{bulkNotifyError}</div>}
+            {bulkNotifyError && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{bulkNotifyError}</div>}
             <div className="flex justify-end gap-2 pt-2">
               <button type="button" className="btn-secondary" onClick={() => setBulkNotifyOpen(false)}>
                 {t("common.cancel")}

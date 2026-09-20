@@ -431,17 +431,17 @@ export default function Nodes() {
           <div key={n.id} className={`card ${!n.enabled ? "opacity-60" : ""}`}>
             <div className="flex items-start justify-between mb-3">
               <div className="flex items-center gap-2">
-                <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${n.type === "mikrotik" ? "bg-indigo-50 text-indigo-600" : "bg-purple-50 text-purple-600"}`}>
+                <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${n.type === "mikrotik" ? "bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-400" : "bg-purple-50 text-purple-600 dark:bg-purple-500/10 dark:text-purple-400"}`}>
                   {n.type === "mikrotik" ? <Wifi size={18} /> : <Globe size={18} />}
                 </div>
                 <div>
                   <div className="font-medium text-gray-800 flex items-center gap-2">
                     {n.name}
-                    <span className={`badge ${n.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                    <span className={n.enabled ? "badge-success" : "badge-neutral"}>
                       {n.enabled ? t("status.active") : t("status.disabled")}
                     </span>
                     {!isSuperadmin && (
-                      <span className={`badge ${n.owner_admin_id === adminId ? "bg-brand-50 text-brand-600" : "bg-gray-100 text-gray-500"}`}>
+                      <span className={n.owner_admin_id === adminId ? "badge-info" : "badge-neutral"}>
                         {n.owner_admin_id === adminId ? t("nodes.myOwnServer") : t("nodes.grantedServer")}
                       </span>
                     )}
@@ -462,7 +462,9 @@ export default function Nodes() {
                   disabled={togglingId === n.id}
                   onClick={() => onToggleEnabled(n)}
                   className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors disabled:opacity-50 ${
-                    n.enabled ? "bg-emerald-50 text-emerald-600 hover:bg-emerald-100" : "bg-gray-100 text-gray-400 hover:bg-gray-200"
+                    n.enabled
+                      ? "bg-emerald-50 text-emerald-600 hover:bg-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-400 dark:hover:bg-emerald-500/20"
+                      : "bg-gray-100 text-gray-400 hover:bg-gray-200 dark:bg-slate-800 dark:text-gray-500 dark:hover:bg-slate-700"
                   }`}
                 >
                   <Power size={16} />
@@ -473,8 +475,8 @@ export default function Nodes() {
             <div className="text-xs text-gray-500 space-y-1 mb-3">
               <div>{t("nodes.address", { value: n.type === "mikrotik" ? `${n.mt_host}:${n.mt_use_ssl ? n.mt_api_ssl_port : n.mt_port}${n.mt_use_ssl ? " (SSL)" : ""}` : (n.xr_panel_mode === "3xui" ? `${n.xr_panel_base_url} (${t("nodes.threexuiPanel")})` : n.xr_ssh_host) })}</div>
               <div>{t("nodes.lastSeen", { value: formatDateTime(n.last_seen, language) })}</div>
-              {n.last_error && <div className="text-red-500">{t("nodes.error", { value: n.last_error })}</div>}
-              {!n.enabled && <div className="text-amber-600">{t("nodes.disabledNote")}</div>}
+              {n.last_error && <div className="text-red-500 dark:text-red-400">{t("nodes.error", { value: n.last_error })}</div>}
+              {!n.enabled && <div className="text-amber-600 dark:text-amber-400">{t("nodes.disabledNote")}</div>}
             </div>
 
             {/* Live resource monitor (see services/node_monitor.py) - a
@@ -493,7 +495,7 @@ export default function Nodes() {
               </div>
             )}
             {res && res.error && (
-              <div className="text-[11px] text-amber-600 mb-3">{t("nodes.resourcesUnavailable")}</div>
+              <div className="text-[11px] text-amber-600 dark:text-amber-400 mb-3">{t("nodes.resourcesUnavailable")}</div>
             )}
 
             <div className="flex items-center gap-2">
@@ -520,7 +522,7 @@ export default function Nodes() {
               )}
             </div>
             {testResult[n.id] && testResult[n.id] !== "loading" && (
-              <div className={`flex items-center gap-1 text-xs mt-2 ${testResult[n.id] === "ok" ? "text-emerald-600" : "text-red-500"}`}>
+              <div className={`flex items-center gap-1 text-xs mt-2 ${testResult[n.id] === "ok" ? "text-emerald-600 dark:text-emerald-400" : "text-red-500 dark:text-red-400"}`}>
                 {testResult[n.id] === "ok" ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
                 {testResult[n.id] === "ok" ? t("nodes.testOk") : testResult[n.id]}
               </div>
@@ -536,7 +538,7 @@ export default function Nodes() {
           <div>
             <div className="flex items-center gap-1.5 mb-2">
               {steps.map((s, i) => (
-                <div key={s.key} className={`flex-1 h-1.5 rounded-full ${i <= step ? "bg-brand-500" : "bg-gray-200"}`} />
+                <div key={s.key} className={`flex-1 h-1.5 rounded-full ${i <= step ? "bg-brand-500" : "bg-gray-200 dark:bg-slate-700"}`} />
               ))}
             </div>
             <div className="flex items-center justify-between text-xs text-gray-500">
@@ -553,10 +555,10 @@ export default function Nodes() {
               </div>
 
               <div className="flex gap-2">
-                <button type="button" disabled={!!editingId} onClick={() => set("type", "mikrotik")} className={`flex-1 rounded-xl border py-2 text-sm font-medium disabled:opacity-60 ${form.type === "mikrotik" ? "border-brand-500 bg-brand-50 text-brand-700" : "border-gray-200 text-gray-500"}`}>
+                <button type="button" disabled={!!editingId} onClick={() => set("type", "mikrotik")} className={`flex-1 rounded-xl border py-2 text-sm font-medium disabled:opacity-60 ${form.type === "mikrotik" ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400" : "border-gray-200 text-gray-500"}`}>
                   {t("nodes.mikrotikType")}
                 </button>
-                <button type="button" disabled={!!editingId} onClick={() => set("type", "xray")} className={`flex-1 rounded-xl border py-2 text-sm font-medium disabled:opacity-60 ${form.type === "xray" ? "border-brand-500 bg-brand-50 text-brand-700" : "border-gray-200 text-gray-500"}`}>
+                <button type="button" disabled={!!editingId} onClick={() => set("type", "xray")} className={`flex-1 rounded-xl border py-2 text-sm font-medium disabled:opacity-60 ${form.type === "xray" ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400" : "border-gray-200 text-gray-500"}`}>
                   {t("nodes.xrayType")}
                 </button>
               </div>
@@ -817,7 +819,7 @@ export default function Nodes() {
                       </div>
                     )}
                     {typeof importStatus === "string" && importStatus !== "loading" && importStatus !== "done" && (
-                      <div className="text-xs mt-2 text-red-500">{importStatus}</div>
+                      <div className="text-xs mt-2 text-red-500 dark:text-red-400">{importStatus}</div>
                     )}
                   </div>
                 )}
@@ -843,7 +845,7 @@ export default function Nodes() {
                       </div>
                     )}
                     {typeof umImportStatus === "string" && umImportStatus !== "loading" && umImportStatus !== "done" && (
-                      <div className="text-xs mt-2 text-red-500">{umImportStatus}</div>
+                      <div className="text-xs mt-2 text-red-500 dark:text-red-400">{umImportStatus}</div>
                     )}
                   </div>
                 )}
@@ -860,14 +862,14 @@ export default function Nodes() {
                   <button
                     type="button"
                     onClick={() => set("xr_panel_mode", "ssh")}
-                    className={`flex-1 rounded-xl border py-2 text-sm font-medium ${form.xr_panel_mode !== "3xui" ? "border-brand-500 bg-brand-50 text-brand-700" : "border-gray-200 text-gray-500"}`}
+                    className={`flex-1 rounded-xl border py-2 text-sm font-medium ${form.xr_panel_mode !== "3xui" ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400" : "border-gray-200 text-gray-500"}`}
                   >
                     {t("nodes.sshMethod")}
                   </button>
                   <button
                     type="button"
                     onClick={() => set("xr_panel_mode", "3xui")}
-                    className={`flex-1 rounded-xl border py-2 text-sm font-medium ${form.xr_panel_mode === "3xui" ? "border-brand-500 bg-brand-50 text-brand-700" : "border-gray-200 text-gray-500"}`}
+                    className={`flex-1 rounded-xl border py-2 text-sm font-medium ${form.xr_panel_mode === "3xui" ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400" : "border-gray-200 text-gray-500"}`}
                   >
                     {t("nodes.threexuiMethod")}
                   </button>
@@ -939,13 +941,13 @@ export default function Nodes() {
                         </div>
                       )}
                       {typeof xuiImportStatus === "string" && xuiImportStatus !== "loading" && xuiImportStatus !== "done" && (
-                        <div className="text-xs mt-2 text-red-500">{xuiImportStatus}</div>
+                        <div className="text-xs mt-2 text-red-500 dark:text-red-400">{xuiImportStatus}</div>
                       )}
                     </div>
                   )}
                   {editingId && (
-                    <div className="col-span-2 mt-1 bg-amber-50 rounded-lg p-3">
-                      <div className="text-xs text-amber-800 mb-2">{t("nodes.rebuildNote")}</div>
+                    <div className="col-span-2 mt-1 bg-amber-50 dark:bg-amber-500/10 rounded-lg p-3">
+                      <div className="text-xs text-amber-800 dark:text-amber-400 mb-2">{t("nodes.rebuildNote")}</div>
                       <button type="button" className="btn-secondary" onClick={onRebuildClients} disabled={rebuildStatus === "loading"}>
                         {rebuildStatus === "loading" ? t("nodes.reading") : t("nodes.rebuildButton")}
                       </button>
@@ -962,7 +964,7 @@ export default function Nodes() {
                         </div>
                       )}
                       {typeof rebuildStatus === "string" && rebuildStatus !== "loading" && rebuildStatus !== "done" && (
-                        <div className="text-xs mt-2 text-red-500">{rebuildStatus}</div>
+                        <div className="text-xs mt-2 text-red-500 dark:text-red-400">{rebuildStatus}</div>
                       )}
                     </div>
                   )}
@@ -1061,7 +1063,7 @@ export default function Nodes() {
             </div>
           )}
 
-          {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+          {error && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{error}</div>}
           <div className="flex justify-between gap-2 pt-2">
             <div>
               {step > 0 && (

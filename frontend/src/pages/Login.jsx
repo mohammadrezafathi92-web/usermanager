@@ -105,7 +105,7 @@ export default function Login() {
             <label className="block text-sm text-gray-600 mb-1">{t("login.password")}</label>
             <input type="password" className="input" value={password} onChange={(e) => setPassword(e.target.value)} required />
           </div>
-          {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+          {error && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{error}</div>}
           <button type="submit" disabled={loading} className="btn-primary w-full">
             <LogIn size={16} />
             {loading ? t("login.submitting") : t("login.submit")}
@@ -156,7 +156,7 @@ export default function Login() {
               <div className="hint">{t("login.licenseKeyHint")}</div>
             </div>
 
-            {licError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{licError}</div>}
+            {licError && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{licError}</div>}
             <button
               type="submit"
               disabled={licSaving || !licKey.trim() || !username || !password}
@@ -168,7 +168,7 @@ export default function Login() {
         )}
 
         {licDone && (
-          <div className="mt-6 pt-5 border-t border-gray-100 text-sm text-emerald-600 bg-emerald-50 rounded-lg px-3 py-2">
+          <div className="mt-6 pt-5 border-t border-gray-100 text-sm text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400 rounded-lg px-3 py-2">
             {t("login.licenseActivated")}
           </div>
         )}

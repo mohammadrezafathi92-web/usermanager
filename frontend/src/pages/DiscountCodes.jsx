@@ -126,37 +126,37 @@ export default function DiscountCodes() {
 
       <div className="card !p-0 overflow-hidden">
         {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
-        <div className="hidden md:block overflow-x-auto">
-          <table className="w-full text-sm">
+        <div className="hidden md:block table-wrap !mx-0">
+          <table>
             <thead>
-              <tr className="text-xs text-gray-400 border-b border-gray-50">
-                <th className="text-right font-medium px-4 py-3">{t("discountCodes.colCode")}</th>
-                {showOwnerColumn && <th className="text-right font-medium px-4 py-3">{t("discountCodes.colOwner")}</th>}
-                <th className="text-right font-medium px-4 py-3">{t("discountCodes.colValue")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("discountCodes.colUsage")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("discountCodes.colExpires")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("discountCodes.colStatus")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("discountCodes.colNote")}</th>
-                <th className="text-right font-medium px-4 py-3"></th>
+              <tr>
+                <th>{t("discountCodes.colCode")}</th>
+                {showOwnerColumn && <th>{t("discountCodes.colOwner")}</th>}
+                <th>{t("discountCodes.colValue")}</th>
+                <th>{t("discountCodes.colUsage")}</th>
+                <th>{t("discountCodes.colExpires")}</th>
+                <th>{t("discountCodes.colStatus")}</th>
+                <th>{t("discountCodes.colNote")}</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {codes.map((c) => (
-                <tr key={c.id} className="border-t border-gray-50 hover:bg-gray-50/60">
-                  <td className="px-4 py-3">
+                <tr key={c.id}>
+                  <td>
                     <span className="inline-flex items-center gap-1 font-mono font-medium text-gray-800">
                       <Ticket size={14} className="text-brand-500" /> {c.code}
                     </span>
                   </td>
                   {showOwnerColumn && (
-                    <td className="px-4 py-3 text-gray-500 text-xs">
+                    <td className="text-gray-500 dark:text-gray-400 text-xs">
                       {isOwnRow(c) ? t("discountCodes.ownerMe") : (c.owner_admin_username || "-")}
                     </td>
                   )}
-                  <td className="px-4 py-3 text-gray-600">
+                  <td className="text-gray-600 dark:text-gray-300">
                     {c.kind === "percent" ? `${c.value}%` : `${formatToman(c.value, language)} ${t("discountCodes.toman")}`}
                   </td>
-                  <td className="px-4 py-3">
+                  <td>
                     <button
                       type="button"
                       onClick={() => openRedemptions(c)}
@@ -168,19 +168,19 @@ export default function DiscountCodes() {
                       {c.max_uses ? ` / ${c.max_uses}` : ` / ${t("discountCodes.unlimited")}`}
                     </button>
                   </td>
-                  <td className="px-4 py-3 text-gray-500">{c.expires_at ? formatDateTime(c.expires_at, language) : t("discountCodes.never")}</td>
-                  <td className="px-4 py-3">
+                  <td className="text-gray-500 dark:text-gray-400">{c.expires_at ? formatDateTime(c.expires_at, language) : t("discountCodes.never")}</td>
+                  <td>
                     <button
                       onClick={() => isOwnRow(c) && toggleEnabled(c)}
                       disabled={!isOwnRow(c)}
-                      className={`badge ${c.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"} ${!isOwnRow(c) ? "cursor-default opacity-70" : ""}`}
+                      className={`${c.enabled ? "badge-success" : "badge-neutral"} ${!isOwnRow(c) ? "cursor-default opacity-70" : ""}`}
                     >
-                      <Power size={12} className="inline ml-1" />
+                      <Power size={12} />
                       {c.enabled ? t("discountCodes.enabled") : t("discountCodes.disabled")}
                     </button>
                   </td>
-                  <td className="px-4 py-3 text-gray-400 text-xs max-w-[12rem] truncate">{c.note || "-"}</td>
-                  <td className="px-4 py-3">
+                  <td className="text-gray-400 text-xs max-w-[12rem] truncate">{c.note || "-"}</td>
+                  <td>
                     {isOwnRow(c) ? (
                       <div className="flex items-center justify-end gap-2">
                         <button onClick={() => openEdit(c)} className="text-gray-400 hover:text-brand-600">
@@ -208,7 +208,7 @@ export default function DiscountCodes() {
         </div>
 
         {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
-        <div className="md:hidden divide-y divide-gray-50">
+        <div className="md:hidden divide-y divide-gray-100 dark:divide-slate-800">
           {codes.map((c) => (
             <div key={c.id} className="p-4">
               <div className="flex items-start justify-between gap-2">
@@ -254,9 +254,9 @@ export default function DiscountCodes() {
                 <button
                   onClick={() => isOwnRow(c) && toggleEnabled(c)}
                   disabled={!isOwnRow(c)}
-                  className={`badge ${c.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"} ${!isOwnRow(c) ? "cursor-default opacity-70" : ""}`}
+                  className={`${c.enabled ? "badge-success" : "badge-neutral"} ${!isOwnRow(c) ? "cursor-default opacity-70" : ""}`}
                 >
-                  <Power size={12} className="inline ml-1" />
+                  <Power size={12} />
                   {c.enabled ? t("discountCodes.enabled") : t("discountCodes.disabled")}
                 </button>
                 {c.note && <span className="text-gray-400 text-xs truncate max-w-[10rem]">{c.note}</span>}
@@ -279,23 +279,23 @@ export default function DiscountCodes() {
         ) : redemptions.length === 0 ? (
           <div className="text-gray-400 text-center py-6">{t("discountCodes.noRedemptions")}</div>
         ) : (
-          <div className="overflow-x-auto max-h-96 overflow-y-auto">
-            <table className="w-full text-sm">
+          <div className="table-wrap !mx-0 max-h-96 overflow-y-auto">
+            <table>
               <thead>
-                <tr className="text-xs text-gray-400 border-b border-gray-50">
-                  <th className="text-right font-medium px-3 py-2">{t("discountCodes.redColUser")}</th>
-                  <th className="text-right font-medium px-3 py-2">{t("discountCodes.redColPrice")}</th>
-                  <th className="text-right font-medium px-3 py-2">{t("discountCodes.redColDiscount")}</th>
-                  <th className="text-right font-medium px-3 py-2">{t("discountCodes.redColDate")}</th>
+                <tr>
+                  <th>{t("discountCodes.redColUser")}</th>
+                  <th>{t("discountCodes.redColPrice")}</th>
+                  <th>{t("discountCodes.redColDiscount")}</th>
+                  <th>{t("discountCodes.redColDate")}</th>
                 </tr>
               </thead>
               <tbody>
                 {redemptions.map((r) => (
-                  <tr key={r.id} className="border-t border-gray-50">
-                    <td className="px-3 py-2 font-mono text-gray-700 dark:text-gray-200">{r.username || (r.user_id ? `#${r.user_id}` : "-")}</td>
-                    <td className="px-3 py-2 text-gray-500" dir="ltr">{r.package_price != null ? formatToman(r.package_price, language) : "-"}</td>
-                    <td className="px-3 py-2 text-emerald-600 font-medium" dir="ltr">{r.discount_amount != null ? formatToman(r.discount_amount, language) : "-"}</td>
-                    <td className="px-3 py-2 text-gray-400 text-xs" dir="ltr">{formatDateTime(r.created_at, language)}</td>
+                  <tr key={r.id}>
+                    <td className="font-mono text-gray-700 dark:text-gray-200">{r.username || (r.user_id ? `#${r.user_id}` : "-")}</td>
+                    <td className="text-gray-500 dark:text-gray-400" dir="ltr">{r.package_price != null ? formatToman(r.package_price, language) : "-"}</td>
+                    <td className="text-emerald-600 dark:text-emerald-400 font-medium" dir="ltr">{r.discount_amount != null ? formatToman(r.discount_amount, language) : "-"}</td>
+                    <td className="text-gray-400 text-xs" dir="ltr">{formatDateTime(r.created_at, language)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -371,7 +371,7 @@ export default function DiscountCodes() {
             />
             <label htmlFor="dc-enabled" className="text-sm text-gray-600">{t("discountCodes.enabled")}</label>
           </div>
-          {error && <div className="md:col-span-2 text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+          {error && <div className="md:col-span-2 text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{error}</div>}
           <div className="md:col-span-2">
             <button type="submit" disabled={saving} className="btn-primary">
               {saving ? t("settings.saving") : t("discountCodes.save")}

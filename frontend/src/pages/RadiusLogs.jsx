@@ -23,16 +23,16 @@ const EVENT_FILTER_OPTIONS = [
 // adding a type is one row, and a type can no longer end up with a label
 // but no colour (or the reverse).
 const EVENT_STYLES = {
-  ban: { tone: "bg-red-50 text-red-600", labelKey: "radiusLogs.eventBan" },
-  unban: { tone: "bg-emerald-50 text-emerald-600", labelKey: "radiusLogs.eventUnban" },
-  reject: { tone: "bg-amber-50 text-amber-600", labelKey: "radiusLogs.eventReject" },
+  ban: { tone: "bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400", labelKey: "radiusLogs.eventBan" },
+  unban: { tone: "bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400", labelKey: "radiusLogs.eventUnban" },
+  reject: { tone: "bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400", labelKey: "radiusLogs.eventReject" },
   // A wrong password is the one an admin most often needs to tell apart
   // from "the account is finished" - different colour, not just wording.
-  auth_fail: { tone: "bg-rose-50 text-rose-600", labelKey: "radiusLogs.eventAuthFail" },
-  quota_exceeded: { tone: "bg-orange-50 text-orange-600", labelKey: "radiusLogs.eventQuotaExceeded" },
-  expired: { tone: "bg-slate-100 text-slate-600", labelKey: "radiusLogs.eventExpired" },
-  disabled: { tone: "bg-gray-100 text-gray-500", labelKey: "radiusLogs.eventDisabled" },
-  unknown_user: { tone: "bg-purple-50 text-purple-600", labelKey: "radiusLogs.eventUnknownUser" },
+  auth_fail: { tone: "bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-400", labelKey: "radiusLogs.eventAuthFail" },
+  quota_exceeded: { tone: "bg-orange-50 text-orange-600 dark:bg-orange-500/10 dark:text-orange-400", labelKey: "radiusLogs.eventQuotaExceeded" },
+  expired: { tone: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300", labelKey: "radiusLogs.eventExpired" },
+  disabled: { tone: "bg-gray-100 text-gray-500 dark:bg-slate-800 dark:text-gray-400", labelKey: "radiusLogs.eventDisabled" },
+  unknown_user: { tone: "bg-purple-50 text-purple-600 dark:bg-purple-500/10 dark:text-purple-400", labelKey: "radiusLogs.eventUnknownUser" },
 };
 
 // How many of the most-recent (already newest-first from the API) log rows
@@ -42,7 +42,7 @@ const EVENT_STYLES = {
 const LIMIT_OPTIONS = [10, 20, 50, 100, 300];
 
 function eventBadgeClass(eventType) {
-  return EVENT_STYLES[eventType]?.tone || "bg-amber-50 text-amber-600";
+  return EVENT_STYLES[eventType]?.tone || "bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400";
 }
 
 function eventLabelKey(eventType) {
@@ -95,28 +95,28 @@ export default function RadiusLogs() {
 
       <div className="card !p-0 overflow-hidden">
         {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
-        <div className="hidden md:block overflow-x-auto">
-          <table className="w-full text-sm">
+        <div className="hidden md:block table-wrap !mx-0">
+          <table>
             <thead>
-              <tr className="text-xs text-gray-400 border-b border-gray-50">
-                <th className="text-right font-medium px-4 py-3">{t("radiusLogs.colType")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("radiusLogs.colUser")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("radiusLogs.colConnType")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("radiusLogs.colIp")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("radiusLogs.colCount")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("radiusLogs.colBannedUntil")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("radiusLogs.colTime")}</th>
+              <tr>
+                <th>{t("radiusLogs.colType")}</th>
+                <th>{t("radiusLogs.colUser")}</th>
+                <th>{t("radiusLogs.colConnType")}</th>
+                <th>{t("radiusLogs.colIp")}</th>
+                <th>{t("radiusLogs.colCount")}</th>
+                <th>{t("radiusLogs.colBannedUntil")}</th>
+                <th>{t("radiusLogs.colTime")}</th>
               </tr>
             </thead>
             <tbody>
               {logs.map((l) => (
-                <tr key={l.id} className="border-t border-gray-50 hover:bg-gray-50/60">
-                  <td className="px-4 py-3">
+                <tr key={l.id}>
+                  <td>
                     <span className={`badge ${eventBadgeClass(l.event_type)}`}>
                       {t(eventLabelKey(l.event_type))}
                     </span>
                   </td>
-                  <td className="px-4 py-3">
+                  <td>
                     {l.user_id ? (
                       <Link to={`/users/${l.user_id}`} className="font-medium text-gray-800 hover:text-brand-600">
                         {l.username || l.user_id}
@@ -125,13 +125,13 @@ export default function RadiusLogs() {
                       l.username || "-"
                     )}
                   </td>
-                  <td className="px-4 py-3 text-gray-500">{l.connection_type || "-"}</td>
-                  <td className="px-4 py-3 text-gray-500 font-mono" dir="ltr">{l.client_ip || "-"}</td>
-                  <td className="px-4 py-3 text-gray-500">
+                  <td className="text-gray-500 dark:text-gray-400">{l.connection_type || "-"}</td>
+                  <td className="text-gray-500 dark:text-gray-400 font-mono" dir="ltr">{l.client_ip || "-"}</td>
+                  <td className="text-gray-500 dark:text-gray-400">
                     {l.active_count ?? "-"}/{l.limit_value ?? "-"}
                   </td>
-                  <td className="px-4 py-3 text-gray-500">{l.banned_until ? formatDateTime(l.banned_until, language) : "-"}</td>
-                  <td className="px-4 py-3 text-gray-500">{formatDateTime(l.created_at, language)}</td>
+                  <td className="text-gray-500 dark:text-gray-400">{l.banned_until ? formatDateTime(l.banned_until, language) : "-"}</td>
+                  <td className="text-gray-500 dark:text-gray-400">{formatDateTime(l.created_at, language)}</td>
                 </tr>
               ))}
               {!loading && logs.length === 0 && (
@@ -146,7 +146,7 @@ export default function RadiusLogs() {
         </div>
 
         {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
-        <div className="md:hidden divide-y divide-gray-50">
+        <div className="md:hidden divide-y divide-gray-100 dark:divide-slate-800">
           {logs.map((l) => (
             <div key={l.id} className="p-4">
               <div className="flex items-center justify-between gap-2">

@@ -51,7 +51,7 @@ function KindBadge({ kind, t }) {
     expense: "bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400",
   };
   return (
-    <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${tones[kind] || "bg-gray-100 text-gray-500"}`}>
+    <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${tones[kind] || "bg-gray-100 text-gray-500 dark:bg-slate-800 dark:text-gray-400"}`}>
       {t(`accounting.kind.${kind}`)}
     </span>
   );
@@ -59,9 +59,9 @@ function KindBadge({ kind, t }) {
 
 function LoadFailed({ message, onRetry, t }) {
   return (
-    <div className="card border border-red-200 bg-red-50">
-      <div className="text-sm text-red-700 font-medium mb-1">{t("accounting.loadFailed")}</div>
-      <div className="text-xs text-red-600 whitespace-pre-line mb-3">{message}</div>
+    <div className="card border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-500/10">
+      <div className="text-sm text-red-700 dark:text-red-300 font-medium mb-1">{t("accounting.loadFailed")}</div>
+      <div className="text-xs text-red-600 dark:text-red-400 whitespace-pre-line mb-3">{message}</div>
       <button type="button" className="btn-secondary" onClick={onRetry}>{t("common.retry")}</button>
     </div>
   );
@@ -488,53 +488,57 @@ export default function Accounting() {
               )}
 
               {summary.by_admin && summary.by_admin.length > 0 && (
-                <div className="card mb-6 overflow-x-auto">
+                <div className="card mb-6">
                   <h3 className="font-bold text-gray-700 dark:text-gray-200 mb-3">{t("accounting.byAdmin")}</h3>
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="text-xs text-gray-400 border-b border-gray-50">
-                        <th className="text-right font-medium px-4 py-2">{t("accounting.colAdmin")}</th>
-                        <th className="text-right font-medium px-4 py-2">{t("accounting.colSales")}</th>
-                        <th className="text-right font-medium px-4 py-2">{t("accounting.colCount")}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {summary.by_admin.map((row) => (
-                        <tr key={row.admin_id ?? "self"} className="border-t border-gray-50">
-                          <td className="px-4 py-2">{row.admin_username || t("accounting.mySales")}</td>
-                          <td className="px-4 py-2 font-medium text-right" dir="ltr">{fmt(row.sales_total)}</td>
-                          <td className="px-4 py-2">{row.sales_count}</td>
+                  <div className="table-wrap !mx-0">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>{t("accounting.colAdmin")}</th>
+                          <th>{t("accounting.colSales")}</th>
+                          <th>{t("accounting.colCount")}</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {summary.by_admin.map((row) => (
+                          <tr key={row.admin_id ?? "self"}>
+                            <td>{row.admin_username || t("accounting.mySales")}</td>
+                            <td className="font-medium" dir="ltr">{fmt(row.sales_total)}</td>
+                            <td>{row.sales_count}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
 
               {summary.by_card && summary.by_card.length > 0 && (
-                <div className="card mb-6 overflow-x-auto">
+                <div className="card mb-6">
                   <h3 className="font-bold text-gray-700 dark:text-gray-200 mb-3">{t("accounting.byCard")}</h3>
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="text-xs text-gray-400 border-b border-gray-50">
-                        <th className="text-right font-medium px-4 py-2">{t("accounting.colCard")}</th>
-                        <th className="text-right font-medium px-4 py-2">{t("accounting.colTotal")}</th>
-                        <th className="text-right font-medium px-4 py-2">{t("accounting.colCount")}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {summary.by_card.map((row) => (
-                        <tr key={row.payment_card_id} className="border-t border-gray-50">
-                          <td className="px-4 py-2 font-mono text-right" dir="ltr">
-                            {row.card_number || `#${row.payment_card_id}`}
-                            {row.card_holder ? ` (${row.card_holder})` : ""}
-                          </td>
-                          <td className="px-4 py-2 font-medium text-right" dir="ltr">{fmt(row.total)}</td>
-                          <td className="px-4 py-2">{row.count}</td>
+                  <div className="table-wrap !mx-0">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>{t("accounting.colCard")}</th>
+                          <th>{t("accounting.colTotal")}</th>
+                          <th>{t("accounting.colCount")}</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {summary.by_card.map((row) => (
+                          <tr key={row.payment_card_id}>
+                            <td className="font-mono" dir="ltr">
+                              {row.card_number || `#${row.payment_card_id}`}
+                              {row.card_holder ? ` (${row.card_holder})` : ""}
+                            </td>
+                            <td className="font-medium" dir="ltr">{fmt(row.total)}</td>
+                            <td>{row.count}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </>
@@ -581,29 +585,29 @@ export default function Accounting() {
           ) : (
             <div className="card p-0">
               {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
-              <div className="hidden md:block overflow-x-auto">
-                <table className="w-full text-sm">
+              <div className="hidden md:block table-wrap !mx-0">
+                <table>
                   <thead>
-                    <tr className="text-xs text-gray-400 border-b border-gray-50">
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.kind")}</th>
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.amount")}</th>
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.customer")}</th>
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.colAdmin")}</th>
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.package")}</th>
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.method")}</th>
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.date")}</th>
+                    <tr>
+                      <th>{t("accounting.kind")}</th>
+                      <th>{t("accounting.amount")}</th>
+                      <th>{t("accounting.customer")}</th>
+                      <th>{t("accounting.colAdmin")}</th>
+                      <th>{t("accounting.package")}</th>
+                      <th>{t("accounting.method")}</th>
+                      <th>{t("accounting.date")}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {tx.items.map((e) => (
-                      <tr key={e.id} className="border-t border-gray-50 hover:bg-gray-50/60 dark:hover:bg-slate-800/40">
-                        <td className="px-4 py-3"><KindBadge kind={e.kind} t={t} /></td>
-                        <td className="px-4 py-3 font-medium text-right" dir="ltr">{fmt(e.amount)}</td>
-                        <td className="px-4 py-3">{e.username_snapshot || "-"}</td>
-                        <td className="px-4 py-3">{e.admin_username_snapshot || "-"}</td>
-                        <td className="px-4 py-3">{e.package_name_snapshot || e.category || "-"}</td>
-                        <td className="px-4 py-3">{e.payment_method ? t(`accounting.method.${e.payment_method}`) : "-"}</td>
-                        <td className="px-4 py-3 text-gray-400 text-xs text-right" dir="ltr">{formatDateTime(e.created_at, language)}</td>
+                      <tr key={e.id}>
+                        <td><KindBadge kind={e.kind} t={t} /></td>
+                        <td className="font-medium" dir="ltr">{fmt(e.amount)}</td>
+                        <td>{e.username_snapshot || "-"}</td>
+                        <td>{e.admin_username_snapshot || "-"}</td>
+                        <td>{e.package_name_snapshot || e.category || "-"}</td>
+                        <td>{e.payment_method ? t(`accounting.method.${e.payment_method}`) : "-"}</td>
+                        <td className="text-gray-400 text-xs" dir="ltr">{formatDateTime(e.created_at, language)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -611,7 +615,7 @@ export default function Accounting() {
               </div>
 
               {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
-              <div className="md:hidden divide-y divide-gray-50">
+              <div className="md:hidden divide-y divide-gray-100 dark:divide-slate-800">
                 {tx.items.map((e) => (
                   <div key={e.id} className="p-4">
                     <div className="flex items-center justify-between gap-2">
@@ -629,7 +633,7 @@ export default function Accounting() {
                 ))}
               </div>
 
-              <div className="flex items-center justify-between px-4 py-3 text-sm text-gray-400 border-t border-gray-50">
+              <div className="flex items-center justify-between px-4 py-3 text-sm text-gray-400 border-t border-gray-100 dark:border-slate-800">
                 <span>{fmt(tx.total)}</span>
                 <div className="flex gap-2">
                   <button type="button" className="btn-secondary" disabled={txPage <= 1} onClick={() => { setTxPage(txPage - 1); }}>‹</button>
@@ -678,26 +682,26 @@ export default function Accounting() {
           ) : (
             <div className="card p-0">
               {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
-              <div className="hidden md:block overflow-x-auto">
-                <table className="w-full text-sm">
+              <div className="hidden md:block table-wrap !mx-0">
+                <table>
                   <thead>
-                    <tr className="text-xs text-gray-400 border-b border-gray-50">
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.amount")}</th>
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.category")}</th>
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.note")}</th>
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.date")}</th>
-                      <th className="text-right font-medium px-4 py-3"></th>
+                    <tr>
+                      <th>{t("accounting.amount")}</th>
+                      <th>{t("accounting.category")}</th>
+                      <th>{t("accounting.note")}</th>
+                      <th>{t("accounting.date")}</th>
+                      <th></th>
                     </tr>
                   </thead>
                   <tbody>
                     {expenses.items.map((e) => (
-                      <tr key={e.id} className="border-t border-gray-50">
-                        <td className="px-4 py-3 font-medium text-right" dir="ltr">{fmt(e.amount)}</td>
-                        <td className="px-4 py-3">{e.category || "-"}</td>
-                        <td className="px-4 py-3 text-gray-500">{e.note || "-"}</td>
-                        <td className="px-4 py-3 text-gray-400 text-xs text-right" dir="ltr">{language === "en" ? (e.created_at || "").slice(0, 10) : isoToJalali(e.created_at)}</td>
-                        <td className="px-4 py-3">
-                          <button type="button" className="text-red-500 hover:text-red-700" onClick={() => removeExpense(e.id)} title={t("accounting.deleteExpense")}>
+                      <tr key={e.id}>
+                        <td className="font-medium" dir="ltr">{fmt(e.amount)}</td>
+                        <td>{e.category || "-"}</td>
+                        <td className="text-gray-500">{e.note || "-"}</td>
+                        <td className="text-gray-400 text-xs" dir="ltr">{language === "en" ? (e.created_at || "").slice(0, 10) : isoToJalali(e.created_at)}</td>
+                        <td>
+                          <button type="button" className="text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300" onClick={() => removeExpense(e.id)} title={t("accounting.deleteExpense")}>
                             <Trash2 size={16} />
                           </button>
                         </td>
@@ -708,12 +712,12 @@ export default function Accounting() {
               </div>
 
               {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
-              <div className="md:hidden divide-y divide-gray-50">
+              <div className="md:hidden divide-y divide-gray-100 dark:divide-slate-800">
                 {expenses.items.map((e) => (
                   <div key={e.id} className="p-4">
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-medium" dir="ltr">{fmt(e.amount)}</span>
-                      <button type="button" className="text-red-500 hover:text-red-700" onClick={() => removeExpense(e.id)} title={t("accounting.deleteExpense")}>
+                      <button type="button" className="text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300" onClick={() => removeExpense(e.id)} title={t("accounting.deleteExpense")}>
                         <Trash2 size={16} />
                       </button>
                     </div>
@@ -764,30 +768,30 @@ export default function Accounting() {
 
               <div className="card p-0">
                 {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
-                <div className="hidden md:block overflow-x-auto">
-                  <table className="w-full text-sm">
+                <div className="hidden md:block table-wrap !mx-0">
+                  <table>
                     <thead>
-                      <tr className="text-xs text-gray-400 border-b border-gray-50">
-                        <th className="text-right font-medium px-4 py-3">{t("accounting.colAdmin")}</th>
-                        <th className="text-right font-medium px-4 py-3">{t("accounting.charged")}</th>
-                        <th className="text-right font-medium px-4 py-3">{t("accounting.paid")}</th>
-                        <th className="text-right font-medium px-4 py-3">{t("accounting.owed")}</th>
-                        <th className="text-right font-medium px-4 py-3"></th>
+                      <tr>
+                        <th>{t("accounting.colAdmin")}</th>
+                        <th>{t("accounting.charged")}</th>
+                        <th>{t("accounting.paid")}</th>
+                        <th>{t("accounting.owed")}</th>
+                        <th></th>
                       </tr>
                     </thead>
                     <tbody>
                       {receivables.items.map((r) => (
-                        <tr key={r.admin_id} className="border-t border-gray-50">
-                          <td className="px-4 py-3">
+                        <tr key={r.admin_id}>
+                          <td>
                             <div className="font-medium text-gray-700 dark:text-gray-200">{r.username}</div>
                             {r.deleted && <div className="text-xs text-gray-400">{t("accounting.deletedAdmin")}</div>}
                           </td>
-                          <td className="px-4 py-3 tabular-nums text-right" dir="ltr">{fmt(r.charged_total)}</td>
-                          <td className="px-4 py-3 tabular-nums text-emerald-600 text-right" dir="ltr">{fmt(r.paid_total)}</td>
-                          <td className="px-4 py-3 tabular-nums font-medium text-right" dir="ltr">
-                            <span className={r.owed > 0 ? "text-red-500" : "text-gray-500"}>{fmt(r.owed)}</span>
+                          <td className="tabular-nums" dir="ltr">{fmt(r.charged_total)}</td>
+                          <td className="tabular-nums text-emerald-600 dark:text-emerald-400" dir="ltr">{fmt(r.paid_total)}</td>
+                          <td className="tabular-nums font-medium" dir="ltr">
+                            <span className={r.owed > 0 ? "text-red-500 dark:text-red-400" : "text-gray-500"}>{fmt(r.owed)}</span>
                           </td>
-                          <td className="px-4 py-3">
+                          <td>
                             <button type="button" className="btn-secondary" onClick={() => openPayment(r)}>
                               <Plus size={14} /> {t("accounting.recordPayment")}
                             </button>
@@ -799,7 +803,7 @@ export default function Accounting() {
                 </div>
 
                 {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
-                <div className="md:hidden divide-y divide-gray-50">
+                <div className="md:hidden divide-y divide-gray-100 dark:divide-slate-800">
                   {receivables.items.map((r) => (
                     <div key={r.admin_id} className="p-4">
                       <div className="flex items-center justify-between gap-2">
@@ -807,13 +811,13 @@ export default function Accounting() {
                           <div className="font-medium text-gray-700 dark:text-gray-200">{r.username}</div>
                           {r.deleted && <div className="text-xs text-gray-400">{t("accounting.deletedAdmin")}</div>}
                         </div>
-                        <span className={`font-medium tabular-nums ${r.owed > 0 ? "text-red-500" : "text-gray-500"}`} dir="ltr">
+                        <span className={`font-medium tabular-nums ${r.owed > 0 ? "text-red-500 dark:text-red-400" : "text-gray-500"}`} dir="ltr">
                           {fmt(r.owed)}
                         </span>
                       </div>
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-gray-500">
                         <span>{t("accounting.charged")}: <span dir="ltr" className="tabular-nums">{fmt(r.charged_total)}</span></span>
-                        <span className="text-emerald-600">{t("accounting.paid")}: <span dir="ltr" className="tabular-nums">{fmt(r.paid_total)}</span></span>
+                        <span className="text-emerald-600 dark:text-emerald-400">{t("accounting.paid")}: <span dir="ltr" className="tabular-nums">{fmt(r.paid_total)}</span></span>
                       </div>
                       <button type="button" className="btn-secondary mt-3" onClick={() => openPayment(r)}>
                         <Plus size={14} /> {t("accounting.recordPayment")}
@@ -844,7 +848,7 @@ export default function Accounting() {
                 <label className="block text-sm text-gray-600 mb-1">{t("accounting.expenseNote")}</label>
                 <input className="input" value={payForm.note} onChange={(e) => setPayForm((f) => ({ ...f, note: e.target.value }))} />
               </div>
-              {payError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{payError}</div>}
+              {payError && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{payError}</div>}
               <button type="submit" disabled={paySaving || !Number(payForm.amount)} className="btn-primary">
                 {paySaving ? "..." : t("accounting.recordPayment")}
               </button>
@@ -911,34 +915,34 @@ export default function Accounting() {
 
               <div className="card p-0">
                 {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
-                <div className="hidden md:block overflow-x-auto">
-                  <table className="w-full text-sm">
+                <div className="hidden md:block table-wrap !mx-0">
+                  <table>
                     <thead>
-                      <tr className="text-xs text-gray-400 border-b border-gray-50">
-                        <th className="text-right font-medium px-4 py-3">{t("accounting.colAdmin")}</th>
-                        <th className="text-right font-medium px-4 py-3">{t("accounting.subtreeCustomers")}</th>
-                        <th className="text-right font-medium px-4 py-3">{t("accounting.subtreeSales")}</th>
-                        <th className="text-right font-medium px-4 py-3">{t("accounting.owed")}</th>
-                        <th className="text-right font-medium px-4 py-3">{t("accounting.subtreeBalanceCol")}</th>
+                      <tr>
+                        <th>{t("accounting.colAdmin")}</th>
+                        <th>{t("accounting.subtreeCustomers")}</th>
+                        <th>{t("accounting.subtreeSales")}</th>
+                        <th>{t("accounting.owed")}</th>
+                        <th>{t("accounting.subtreeBalanceCol")}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {subtree.map((r) => (
-                        <tr key={r.id} className="border-b border-gray-50 last:border-0">
-                          <td className="px-4 py-3">
+                        <tr key={r.id}>
+                          <td>
                             <div className="font-medium text-gray-700">{r.username}</div>
                             <div className="text-xs text-gray-400">
                               {r.role === "admin" ? t("admins.roleAdmin") : t("admins.roleSellerPlain")}
                               {r.sub_accounts > 0 && ` · ${t("accounting.subAccounts", { count: r.sub_accounts })}`}
                             </div>
                           </td>
-                          <td className="px-4 py-3 tabular-nums text-right" dir="ltr">
+                          <td className="tabular-nums" dir="ltr">
                             {fmt(r.customers)}
                             {/* Active is the number that says whether those
                                 customers are still worth anything. */}
                             <span className="text-xs text-gray-400"> ({fmt(r.active_customers)})</span>
                           </td>
-                          <td className="px-4 py-3 tabular-nums text-right" dir="ltr">
+                          <td className="tabular-nums" dir="ltr">
                             {fmt(r.sales_total)}
                             <span className="text-xs text-gray-400"> ({fmt(r.sales_count)})</span>
                             {/* The branch total above includes this account's
@@ -952,18 +956,18 @@ export default function Accounting() {
                               </div>
                             )}
                           </td>
-                          <td className="px-4 py-3 tabular-nums text-right" dir="ltr">
-                            <span className={r.owed > 0 ? "text-red-500 font-medium" : "text-gray-500"}>{fmt(r.owed)}</span>
+                          <td className="tabular-nums" dir="ltr">
+                            <span className={r.owed > 0 ? "text-red-500 dark:text-red-400 font-medium" : "text-gray-500"}>{fmt(r.owed)}</span>
                           </td>
-                          <td className="px-4 py-3 tabular-nums text-right" dir="ltr">
+                          <td className="tabular-nums" dir="ltr">
                             {/* A usage-billed account holds GB, not tomans. */}
                             {r.billing_mode === "usage" ? (
-                              <span className={r.in_debt ? "text-red-500 font-medium" : "text-gray-700"}>
+                              <span className={r.in_debt ? "text-red-500 dark:text-red-400 font-medium" : "text-gray-700"}>
                                 {formatGb(r.volume_balance_gb)} GB
                               </span>
                             ) : (
                               <>
-                                <span className={r.in_debt ? "text-red-500 font-medium" : "text-gray-700"}>
+                                <span className={r.in_debt ? "text-red-500 dark:text-red-400 font-medium" : "text-gray-700"}>
                                   {fmt(r.balance)}
                                 </span>
                                 {r.credit_limit > 0 && (
@@ -979,7 +983,7 @@ export default function Accounting() {
                 </div>
 
                 {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
-                <div className="md:hidden divide-y divide-gray-50">
+                <div className="md:hidden divide-y divide-gray-100 dark:divide-slate-800">
                   {subtree.map((r) => (
                     <div key={r.id} className="p-4">
                       <div className="font-medium text-gray-700">{r.username}</div>
@@ -1002,7 +1006,7 @@ export default function Accounting() {
                         <div>
                           <div className="text-gray-400">{t("accounting.owed")}</div>
                           <div className="tabular-nums">
-                            <span className={r.owed > 0 ? "text-red-500 font-medium" : "text-gray-700"}>{fmt(r.owed)}</span>
+                            <span className={r.owed > 0 ? "text-red-500 dark:text-red-400 font-medium" : "text-gray-700"}>{fmt(r.owed)}</span>
                           </div>
                         </div>
                         <div>
@@ -1011,12 +1015,12 @@ export default function Accounting() {
                           </div>
                           <div className="tabular-nums">
                             {r.billing_mode === "usage" ? (
-                              <span className={r.in_debt ? "text-red-500 font-medium" : "text-gray-700"}>
+                              <span className={r.in_debt ? "text-red-500 dark:text-red-400 font-medium" : "text-gray-700"}>
                                 {formatGb(r.volume_balance_gb)} GB
                               </span>
                             ) : (
                               <>
-                                <span className={r.in_debt ? "text-red-500 font-medium" : "text-gray-700"}>{fmt(r.balance)}</span>
+                                <span className={r.in_debt ? "text-red-500 dark:text-red-400 font-medium" : "text-gray-700"}>{fmt(r.balance)}</span>
                                 {r.credit_limit > 0 && <span className="text-gray-400"> / -{fmt(r.credit_limit)}</span>}
                               </>
                             )}
@@ -1047,7 +1051,7 @@ export default function Accounting() {
               </span>
             </div>
           )}
-          {creditError && <div className="text-sm text-red-500 mb-3">{creditError}</div>}
+          {creditError && <div className="text-sm text-red-500 dark:text-red-400 mb-3">{creditError}</div>}
           {!admins ? (
             errors.reports ? <LoadFailed message={errors.reports} onRetry={loadSeries} t={t} /> : <div className="text-gray-400">{t("common.loading")}</div>
           ) : admins.length === 0 ? (
@@ -1055,13 +1059,13 @@ export default function Accounting() {
           ) : (
             <div className="card p-0">
               {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
-              <div className="hidden md:block overflow-x-auto">
-                <table className="w-full text-sm">
+              <div className="hidden md:block table-wrap !mx-0">
+                <table>
                   <thead>
-                    <tr className="text-xs text-gray-400 border-b border-gray-50">
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.colAdmin")}</th>
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.creditBalance")}</th>
-                      <th className="text-right font-medium px-4 py-3">{t("accounting.creditChange")}</th>
+                    <tr>
+                      <th>{t("accounting.colAdmin")}</th>
+                      <th>{t("accounting.creditBalance")}</th>
+                      <th>{t("accounting.creditChange")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1069,19 +1073,19 @@ export default function Accounting() {
                       const f = creditForm[a.id] || { amount: "", note: "" };
                       const usageMode = a.billing_mode === "usage";
                       return (
-                        <tr key={a.id} className="border-t border-gray-50">
-                          <td className="px-4 py-3">
+                        <tr key={a.id}>
+                          <td>
                             <div className="font-medium text-gray-800 dark:text-gray-100">{a.username}</div>
                             {a.parent_admin_username && (
                               <div className="text-xs text-gray-400">{a.parent_admin_username}</div>
                             )}
                           </td>
-                          <td className="px-4 py-3 font-medium text-right" dir="ltr">
+                          <td className="font-medium" dir="ltr">
                             {usageMode
                               ? `${fmt(a.volume_balance_gb)} GB`
                               : `${fmt(a.balance)} ${t("accounting.toman")}`}
                           </td>
-                          <td className="px-4 py-3">
+                          <td>
                             {usageMode ? (
                               <button type="button" className="btn-secondary" onClick={() => openMoney(a)}>
                                 <Wallet size={14} /> {t("accounting.moneySettings")}
@@ -1134,7 +1138,7 @@ export default function Accounting() {
               </div>
 
               {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
-              <div className="md:hidden divide-y divide-gray-50">
+              <div className="md:hidden divide-y divide-gray-100 dark:divide-slate-800">
                 {admins.map((a) => {
                   const f = creditForm[a.id] || { amount: "", note: "" };
                   const usageMode = a.billing_mode === "usage";
@@ -1195,7 +1199,7 @@ export default function Accounting() {
                 })}
               </div>
 
-              <div className="px-4 py-3 text-xs text-gray-400 border-t border-gray-50">{t("accounting.creditHint")}</div>
+              <div className="px-4 py-3 text-xs text-gray-400 border-t border-gray-100 dark:border-slate-800">{t("accounting.creditHint")}</div>
             </div>
           )}
 
@@ -1264,8 +1268,8 @@ export default function Accounting() {
                           : t("accounting.perGbRateHint")}
                       </div>
                     </div>
-                    {moneyError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{moneyError}</div>}
-                    {moneyMsg && <div className="text-sm text-emerald-600 bg-emerald-50 rounded-lg px-3 py-2">{moneyMsg}</div>}
+                    {moneyError && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{moneyError}</div>}
+                    {moneyMsg && <div className="text-sm text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400 rounded-lg px-3 py-2">{moneyMsg}</div>}
                     <button type="button" className="btn-primary" disabled={moneySaving} onClick={saveMoneySettings}>
                       {moneySaving ? "..." : t("common.save")}
                     </button>
@@ -1279,15 +1283,15 @@ export default function Accounting() {
                   ) : moneyLogs.length === 0 ? (
                     <div className="empty-state">{t("accounting.noChangesYet")}</div>
                   ) : (
-                    <div className="max-h-56 overflow-y-auto divide-y divide-gray-50 border border-gray-100 rounded-xl">
+                    <div className="max-h-56 overflow-y-auto divide-y divide-gray-100 dark:divide-slate-800 border border-gray-100 rounded-xl">
                       {moneyLogs.map((l) => {
                         const gb = l.amount_gb !== undefined;
                         const amount = gb ? l.amount_gb : l.amount;
                         return (
                           <div key={l.id} className="flex items-center justify-between px-3 py-2 text-xs">
                             <div className="flex items-center gap-1.5">
-                              {amount > 0 ? <TrendingUp size={13} className="text-emerald-500" /> : <TrendingDown size={13} className="text-red-500" />}
-                              <span className={amount > 0 ? "text-emerald-600 font-medium" : "text-red-500 font-medium"} dir="ltr">
+                              {amount > 0 ? <TrendingUp size={13} className="text-emerald-500 dark:text-emerald-400" /> : <TrendingDown size={13} className="text-red-500 dark:text-red-400" />}
+                              <span className={amount > 0 ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-red-500 dark:text-red-400 font-medium"} dir="ltr">
                                 {amount > 0 ? "+" : ""}{gb ? `${formatGb(amount)} GB` : fmt(amount)}
                               </span>
                               {l.note && <span className="text-gray-400">· {l.note}</span>}

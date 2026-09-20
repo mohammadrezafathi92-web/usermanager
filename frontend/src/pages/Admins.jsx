@@ -413,7 +413,10 @@ export default function Admins() {
       <div className="card mb-6">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2 font-medium text-gray-700">
-            <UsersRound size={16} className="text-violet-500" /> {t("admins.groupsHeading")}
+            <span className="w-7 h-7 rounded-lg bg-violet-50 text-violet-600 dark:bg-violet-500/10 dark:text-violet-400 flex items-center justify-center shrink-0">
+              <UsersRound size={15} />
+            </span>
+            {t("admins.groupsHeading")}
           </div>
           <button type="button" className="btn-secondary" onClick={openGroupCreate}>
             <Plus size={14} /> {t("admins.newGroup")}
@@ -452,36 +455,36 @@ export default function Admins() {
 
       <div className="card !p-0">
         {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
-        <div className="hidden md:block overflow-x-auto">
-          <table className="w-full text-sm min-w-[48rem]">
-            <thead className="bg-gray-50 text-gray-500 text-xs">
+        <div className="hidden md:block table-wrap !mx-0">
+          <table>
+            <thead>
               <tr>
-                <th className="text-right font-medium px-4 py-3">{t("admins.colUsername")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("admins.colRole")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("admins.colPermissions")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("admins.colUsersCount")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("admins.colBalance")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("admins.colTelegramBot")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("admins.colLoginLink")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("admins.colActions")}</th>
+                <th>{t("admins.colUsername")}</th>
+                <th>{t("admins.colRole")}</th>
+                <th>{t("admins.colPermissions")}</th>
+                <th>{t("admins.colUsersCount")}</th>
+                <th>{t("admins.colBalance")}</th>
+                <th>{t("admins.colTelegramBot")}</th>
+                <th>{t("admins.colLoginLink")}</th>
+                <th>{t("admins.colActions")}</th>
               </tr>
             </thead>
             <tbody>
               {items.map((a) => (
-                <tr key={a.id} className="border-t border-gray-50 hover:bg-gray-50/60">
-                  <td className="px-4 py-3 font-medium text-gray-800">{a.username}</td>
-                  <td className="px-4 py-3">
+                <tr key={a.id}>
+                  <td className="font-medium text-gray-800">{a.username}</td>
+                  <td>
                     {a.is_superadmin ? (
-                      <span className="badge bg-brand-50 text-brand-600 flex items-center gap-1 w-fit">
+                      <span className="badge-info flex items-center gap-1 w-fit">
                         <ShieldCheck size={12} /> {t("admins.mainAdmin")}
                       </span>
                     ) : a.role === "admin" ? (
-                      <span className="badge bg-violet-50 text-violet-600 flex items-center gap-1 w-fit">
+                      <span className="badge bg-violet-50 text-violet-600 dark:bg-violet-500/10 dark:text-violet-400 flex items-center gap-1 w-fit">
                         <ShieldCheck size={12} /> {t("admins.roleAdmin")}
                       </span>
                     ) : (
                       <div className="flex flex-col gap-0.5 w-fit">
-                        <span className="badge bg-gray-100 text-gray-500 w-fit">{t("admins.roleSeller")}</span>
+                        <span className="badge-neutral w-fit">{t("admins.roleSeller")}</span>
                         {a.parent_admin_username && (
                           <span className="text-[11px] text-gray-400">
                             {t("admins.parentAdminLabel", { name: a.parent_admin_username })}
@@ -490,11 +493,11 @@ export default function Admins() {
                       </div>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-xs text-gray-500">
+                  <td className="text-xs text-gray-500">
                     {a.is_superadmin ? (
                       t("admins.everything")
                     ) : a.group_name ? (
-                      <span className="badge bg-violet-50 text-violet-600 flex items-center gap-1 w-fit">
+                      <span className="badge bg-violet-50 text-violet-600 dark:bg-violet-500/10 dark:text-violet-400 flex items-center gap-1 w-fit">
                         <UsersRound size={12} /> {t("admins.groupLabel", { name: a.group_name })}
                       </span>
                     ) : a.permissions?.length ? (
@@ -503,12 +506,12 @@ export default function Admins() {
                       t("admins.onlyUsers")
                     )}
                   </td>
-                  <td className="px-4 py-3 text-gray-600">
+                  <td className="text-gray-600">
                     <span className="flex items-center gap-1">
                       <UsersIcon size={13} className="text-gray-400" /> {a.users_count}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-gray-600" dir="ltr">
+                  <td className="text-gray-600" dir="ltr">
                     {!a.is_superadmin &&
                       (a.billing_mode === "usage" ? (
                         <span className="flex items-center gap-1 justify-end">
@@ -520,7 +523,7 @@ export default function Admins() {
                         </span>
                       ))}
                   </td>
-                  <td className="px-4 py-3 text-gray-500 text-xs" dir="ltr">
+                  <td className="text-gray-500 text-xs" dir="ltr">
                     {a.telegram_id ? (
                       <span className="flex items-center gap-1 justify-end">
                         <Send size={12} /> {a.telegram_id}
@@ -529,7 +532,7 @@ export default function Admins() {
                       "—"
                     )}
                   </td>
-                  <td className="px-4 py-3 text-gray-500 text-xs" dir="ltr">
+                  <td className="text-gray-500 text-xs" dir="ltr">
                     {a.login_slug ? (
                       <span className="flex items-center gap-1 justify-end">
                         <Link2 size={12} /> /a/{a.login_slug}
@@ -538,7 +541,7 @@ export default function Admins() {
                       "—"
                     )}
                   </td>
-                  <td className="px-4 py-3">
+                  <td>
                     {!a.is_superadmin && (
                       <div className="flex items-center gap-2">
                         <button title={t("admins.editTitle")} onClick={() => openEdit(a)} className="text-gray-400 hover:text-brand-600">
@@ -564,7 +567,7 @@ export default function Admins() {
         </div>
 
         {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
-        <div className="md:hidden divide-y divide-gray-50">
+        <div className="md:hidden divide-y divide-gray-100 dark:divide-slate-800">
           {items.map((a) => (
             <div key={a.id} className="p-4">
               <div className="flex items-start justify-between gap-2">
@@ -572,16 +575,16 @@ export default function Admins() {
                   <div className="font-medium text-gray-800 truncate">{a.username}</div>
                   <div className="mt-1">
                     {a.is_superadmin ? (
-                      <span className="badge bg-brand-50 text-brand-600 flex items-center gap-1 w-fit">
+                      <span className="badge-info flex items-center gap-1 w-fit">
                         <ShieldCheck size={12} /> {t("admins.mainAdmin")}
                       </span>
                     ) : a.role === "admin" ? (
-                      <span className="badge bg-violet-50 text-violet-600 flex items-center gap-1 w-fit">
+                      <span className="badge bg-violet-50 text-violet-600 dark:bg-violet-500/10 dark:text-violet-400 flex items-center gap-1 w-fit">
                         <ShieldCheck size={12} /> {t("admins.roleAdmin")}
                       </span>
                     ) : (
                       <div className="flex flex-col gap-0.5 w-fit">
-                        <span className="badge bg-gray-100 text-gray-500 w-fit">{t("admins.roleSeller")}</span>
+                        <span className="badge-neutral w-fit">{t("admins.roleSeller")}</span>
                         {a.parent_admin_username && (
                           <span className="text-[11px] text-gray-400">
                             {t("admins.parentAdminLabel", { name: a.parent_admin_username })}
@@ -607,7 +610,7 @@ export default function Admins() {
                 {a.is_superadmin ? (
                   t("admins.everything")
                 ) : a.group_name ? (
-                  <span className="badge bg-violet-50 text-violet-600 flex items-center gap-1 w-fit">
+                  <span className="badge bg-violet-50 text-violet-600 dark:bg-violet-500/10 dark:text-violet-400 flex items-center gap-1 w-fit">
                     <UsersRound size={12} /> {t("admins.groupLabel", { name: a.group_name })}
                   </span>
                 ) : a.permissions?.length ? (
@@ -659,7 +662,10 @@ export default function Admins() {
       <div className="card mt-6">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2 font-medium text-gray-700">
-            <MapPin size={16} className="text-brand-500" /> {t("admins.loginReportHeading")}
+            <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+              <MapPin size={15} />
+            </span>
+            {t("admins.loginReportHeading")}
           </div>
           <button type="button" className="btn-secondary" onClick={toggleLoginLogs}>
             <History size={14} /> {loginLogsOpen ? t("admins.hideReport") : t("admins.viewReport")}
@@ -683,44 +689,44 @@ export default function Admins() {
               </label>
             </div>
 
-            <div className="border border-gray-100 rounded-xl overflow-hidden">
+            <div className="border border-gray-100 dark:border-slate-800 rounded-xl overflow-hidden">
               {loginLogsLoading ? (
                 <div className="text-sm text-gray-400 text-center py-6">{t("common.loading")}</div>
               ) : loginLogs.length === 0 ? (
                 <div className="text-sm text-gray-400 text-center py-6">{t("admins.noResults")}</div>
               ) : (
-                <div className="max-h-96 overflow-auto">
-                  <table className="w-full text-xs min-w-[32rem]">
-                    <thead className="bg-gray-50 text-gray-500 sticky top-0">
+                <div className="max-h-96 overflow-auto table-wrap !mx-0">
+                  <table className="min-w-[32rem]">
+                    <thead className="sticky top-0 bg-white dark:bg-slate-900">
                       <tr>
-                        <th className="text-right font-medium px-3 py-2">{t("admins.colTime")}</th>
-                        <th className="text-right font-medium px-3 py-2">{t("admins.colUsernameShort")}</th>
-                        <th className="text-right font-medium px-3 py-2">{t("admins.colIp")}</th>
-                        <th className="text-right font-medium px-3 py-2">{t("admins.colStatus")}</th>
+                        <th>{t("admins.colTime")}</th>
+                        <th>{t("admins.colUsernameShort")}</th>
+                        <th>{t("admins.colIp")}</th>
+                        <th>{t("admins.colStatus")}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {loginLogs.map((l) => (
-                        <tr key={l.id} className="border-t border-gray-50">
-                          <td className="px-3 py-2 text-gray-500" dir="ltr">
+                        <tr key={l.id}>
+                          <td className="text-gray-500" dir="ltr">
                             {formatDateTime(l.created_at, language)}
                           </td>
-                          <td className="px-3 py-2 text-gray-700">
+                          <td className="text-gray-700 dark:text-gray-300">
                             {l.admin_username || l.attempted_username || "—"}
                             {l.admin_username && l.admin_username !== l.attempted_username && l.attempted_username && (
                               <span className="text-gray-400"> ({l.attempted_username})</span>
                             )}
                           </td>
-                          <td className="px-3 py-2 text-gray-500" dir="ltr">
+                          <td className="text-gray-500" dir="ltr">
                             {l.ip_address || "—"}
                           </td>
-                          <td className="px-3 py-2">
+                          <td>
                             {l.success ? (
-                              <span className="flex items-center gap-1 text-emerald-600">
+                              <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
                                 <CheckCircle2 size={13} /> {t("admins.success")}
                               </span>
                             ) : (
-                              <span className="flex items-center gap-1 text-red-500">
+                              <span className="flex items-center gap-1 text-red-500 dark:text-red-400">
                                 <XCircle size={13} /> {t("admins.failed")}
                               </span>
                             )}
@@ -897,8 +903,8 @@ export default function Admins() {
                 </button>
               </div>
               <div className="hint">{t("admins.changeRoleHint")}</div>
-              {roleSaved && <div className="text-xs text-emerald-600 mt-1">{t("admins.roleChangeSaved")}</div>}
-              {roleError && <div className="text-xs text-red-500 mt-1">{roleError}</div>}
+              {roleSaved && <div className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">{t("admins.roleChangeSaved")}</div>}
+              {roleError && <div className="text-xs text-red-500 dark:text-red-400 mt-1">{roleError}</div>}
             </div>
           )}
 
@@ -945,9 +951,9 @@ export default function Admins() {
                 <button type="button" className="btn-secondary" disabled={nodesSaving} onClick={saveNodeAssignment}>
                   {nodesSaving ? t("common.saving") : t("admins.saveNodeAssign")}
                 </button>
-                {nodesSaved && <span className="text-xs text-emerald-600">{t("admins.nodeAssignSaved")}</span>}
+                {nodesSaved && <span className="text-xs text-emerald-600 dark:text-emerald-400">{t("admins.nodeAssignSaved")}</span>}
               </div>
-              {nodesError && <div className="text-xs text-red-500 mt-1">{nodesError}</div>}
+              {nodesError && <div className="text-xs text-red-500 dark:text-red-400 mt-1">{nodesError}</div>}
             </div>
           )}
 
@@ -1038,7 +1044,7 @@ export default function Admins() {
             </div>
           </div>
 
-          {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+          {error && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{error}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setOpen(false)}>
               {t("common.cancel")}
@@ -1081,7 +1087,7 @@ export default function Admins() {
               ))}
             </div>
           </div>
-          {groupError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{groupError}</div>}
+          {groupError && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{groupError}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setGroupOpen(false)}>
               {t("common.cancel")}

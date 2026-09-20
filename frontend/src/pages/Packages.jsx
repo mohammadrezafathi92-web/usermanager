@@ -336,22 +336,22 @@ export default function Packages() {
 
       <div className="card !p-0">
         {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
-        <div className="hidden md:block overflow-x-auto">
+        <div className="hidden md:block table-wrap !mx-0">
           <table className="w-full text-sm min-w-[48rem]">
-            <thead className="bg-gray-50 text-gray-500 text-xs">
+            <thead>
               <tr>
-                <th className="text-right font-medium px-4 py-3">{t("packages.colName")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("packages.colQuota")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("packages.colDuration")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("packages.colPrice")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("packages.colStatus")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("packages.colActions")}</th>
+                <th>{t("packages.colName")}</th>
+                <th>{t("packages.colQuota")}</th>
+                <th>{t("packages.colDuration")}</th>
+                <th>{t("packages.colPrice")}</th>
+                <th>{t("packages.colStatus")}</th>
+                <th>{t("packages.colActions")}</th>
               </tr>
             </thead>
             <tbody>
               {items.map((p) => (
-                <tr key={p.id} className="border-t border-gray-50 hover:bg-gray-50/60">
-                  <td className="px-4 py-3">
+                <tr key={p.id}>
+                  <td>
                     <div className="font-medium text-gray-800">{p.name}</div>
                     {p.description && <div className="text-xs text-gray-400">{p.description}</div>}
                     {p.connections?.length > 0 && (
@@ -361,12 +361,12 @@ export default function Packages() {
                       </div>
                     )}
                     {p.speed_limit_mbps ? (
-                      <div className="text-xs text-amber-600 mt-1">{t("packages.speedLimitBadge", { mbps: p.speed_limit_mbps })}</div>
+                      <div className="text-xs text-amber-600 dark:text-amber-400 mt-1">{t("packages.speedLimitBadge", { mbps: p.speed_limit_mbps })}</div>
                     ) : null}
                   </td>
-                  <td className="px-4 py-3 text-gray-600">{p.quota_gb ? `${p.quota_gb} GB` : t("packages.unlimited")}</td>
-                  <td className="px-4 py-3 text-gray-600">{p.duration_days ? t("packages.days", { count: p.duration_days }) : t("packages.noExpiry")}</td>
-                  <td className="px-4 py-3 text-gray-600" dir="ltr">
+                  <td className="text-gray-600">{p.quota_gb ? `${p.quota_gb} GB` : t("packages.unlimited")}</td>
+                  <td className="text-gray-600">{p.duration_days ? t("packages.days", { count: p.duration_days }) : t("packages.noExpiry")}</td>
+                  <td className="text-gray-600" dir="ltr">
                     {!isSeller && (
                       <>
                         {formatToman(p.price)}
@@ -413,33 +413,33 @@ export default function Packages() {
                           )}
                         </div>
                         {p.cooperation_price != null && priceDraft !== "" && Number(priceDraft) < p.cooperation_price && (
-                          <div className="text-xs mt-1 text-red-600 font-medium" dir="rtl">
+                          <div className="text-xs mt-1 text-red-600 dark:text-red-400 font-medium" dir="rtl">
                             {t("packages.priceBelowCost", { floor: formatToman(p.cooperation_price) })}
                           </div>
                         )}
-                        {priceError && <div className="text-xs mt-1 text-red-600" dir="rtl">{priceError}</div>}
+                        {priceError && <div className="text-xs mt-1 text-red-600 dark:text-red-400" dir="rtl">{priceError}</div>}
                       </div>
                     )}
                   </td>
-                  <td className="px-4 py-3">
+                  <td>
                     <div className="flex flex-col gap-1 items-start">
-                      <span className={`badge ${p.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                      <span className={p.enabled ? "badge-success" : "badge-neutral"}>
                         {t("packages.webPanel")}: {p.enabled ? t("status.active") : t("status.disabled")}
                       </span>
-                      <span className={`badge ${p.bot_enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                      <span className={p.bot_enabled ? "badge-success" : "badge-neutral"}>
                         {t("packages.bot")}: {p.bot_enabled ? t("status.active") : t("status.disabled")}
                       </span>
                       {!isSeller && (
-                        <span className={`badge ${p.seller_visible ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                        <span className={p.seller_visible ? "badge-success" : "badge-neutral"}>
                           {t("packages.sellers")}: {p.seller_visible ? t("status.active") : t("status.disabled")}
                         </span>
                       )}
                       {p.one_time_per_user && (
-                        <span className="badge bg-amber-50 text-amber-600">{t("packages.oneTimePerUser")}</span>
+                        <span className="badge-warn">{t("packages.oneTimePerUser")}</span>
                       )}
                     </div>
                   </td>
-                  <td className="px-4 py-3">
+                  <td>
                     {!isSeller && (
                       <div className="flex items-center gap-2">
                         <button title={p.enabled ? t("packages.disable") : t("packages.enable")} onClick={() => onToggle(p)} className="text-gray-400 hover:text-brand-600">
@@ -470,7 +470,7 @@ export default function Packages() {
         </div>
 
         {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
-        <div className="md:hidden divide-y divide-gray-50">
+        <div className="md:hidden divide-y divide-gray-100 dark:divide-slate-800">
           {items.map((p) => (
             <div key={p.id} className="p-4">
               <div className="flex items-start justify-between gap-2">
@@ -555,30 +555,30 @@ export default function Packages() {
                         )}
                       </div>
                       {p.cooperation_price != null && priceDraft !== "" && Number(priceDraft) < p.cooperation_price && (
-                        <div className="text-xs mt-1 text-red-600 font-medium" dir="rtl">
+                        <div className="text-xs mt-1 text-red-600 dark:text-red-400 font-medium" dir="rtl">
                           {t("packages.priceBelowCost", { floor: formatToman(p.cooperation_price) })}
                         </div>
                       )}
-                      {priceError && <div className="text-xs mt-1 text-red-600" dir="rtl">{priceError}</div>}
+                      {priceError && <div className="text-xs mt-1 text-red-600 dark:text-red-400" dir="rtl">{priceError}</div>}
                     </div>
                   )}
                 </div>
               )}
 
               <div className="flex flex-wrap gap-1 items-center mt-2">
-                <span className={`badge ${p.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                <span className={p.enabled ? "badge-success" : "badge-neutral"}>
                   {t("packages.webPanel")}: {p.enabled ? t("status.active") : t("status.disabled")}
                 </span>
-                <span className={`badge ${p.bot_enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                <span className={p.bot_enabled ? "badge-success" : "badge-neutral"}>
                   {t("packages.bot")}: {p.bot_enabled ? t("status.active") : t("status.disabled")}
                 </span>
                 {!isSeller && (
-                  <span className={`badge ${p.seller_visible ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                  <span className={p.seller_visible ? "badge-success" : "badge-neutral"}>
                     {t("packages.sellers")}: {p.seller_visible ? t("status.active") : t("status.disabled")}
                   </span>
                 )}
                 {p.one_time_per_user && (
-                  <span className="badge bg-amber-50 text-amber-600">{t("packages.oneTimePerUser")}</span>
+                  <span className="badge-warn">{t("packages.oneTimePerUser")}</span>
                 )}
               </div>
             </div>
@@ -613,7 +613,7 @@ export default function Packages() {
               <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldPrice")}</label>
               <MoneyInput value={form.price} onChange={(v) => set("price", v === "" ? 0 : Number(v))} />
               {belowPriceFloor && (
-                <div className="text-xs mt-1 text-red-600 font-medium">
+                <div className="text-xs mt-1 text-red-600 dark:text-red-400 font-medium">
                   {t("packages.priceBelowCost", { floor: formatToman(priceFloor) })}
                 </div>
               )}
@@ -631,7 +631,7 @@ export default function Packages() {
               {t("packages.cooperationHint")}
             </div>
             {costFloor !== null && (
-              <div className={`text-xs mt-1 ${belowFloor ? "text-red-600 font-medium" : "text-gray-400"}`}>
+              <div className={`text-xs mt-1 ${belowFloor ? "text-red-600 dark:text-red-400 font-medium" : "text-gray-400"}`}>
                 {belowFloor
                   ? t("packages.cooperationBelowCost", { floor: formatToman(costFloor) })
                   : t("packages.cooperationYourCost", { cost: formatToman(costFloor) })}
@@ -881,7 +881,7 @@ export default function Packages() {
             ))}
           </div>
 
-          {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+          {error && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{error}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setOpen(false)}>
               {t("common.cancel")}
@@ -1042,7 +1042,7 @@ function GroupsManager({ open, onClose, groups, onChanged, t }) {
           </button>
         </div>
 
-        {error && <div className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+        {error && <div className="text-xs text-red-600 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{error}</div>}
       </div>
     </Modal>
   );
@@ -1132,7 +1132,7 @@ function TrialCard({ t, trial, nodes, onChanged }) {
   return (
     <div className="card mb-4">
       <div className="flex items-start gap-3">
-        <div className="w-11 h-11 rounded-2xl bg-violet-50 text-violet-600 flex items-center justify-center shrink-0">
+        <div className="w-11 h-11 rounded-2xl bg-violet-50 text-violet-600 dark:bg-violet-500/10 dark:text-violet-400 flex items-center justify-center shrink-0">
           <Gift size={20} />
         </div>
         <div className="min-w-0 flex-1">
@@ -1210,7 +1210,7 @@ function TrialCard({ t, trial, nodes, onChanged }) {
         </div>
       )}
 
-      {error && <div className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mt-3">{error}</div>}
+      {error && <div className="text-xs text-red-600 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2 mt-3">{error}</div>}
     </div>
   );
 }

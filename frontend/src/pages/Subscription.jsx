@@ -168,6 +168,24 @@ export default function Subscription() {
       .catch(() => setNotFound(true));
   }, [token]);
 
+  // This page has no dark-mode toggle of its own and none of its colors
+  // carry a dark: variant - it is a public, unauthenticated page that
+  // never asked for one. But `dark` is a class on <html>, persisted in
+  // localStorage, shared by every page on this origin - so a customer
+  // opening their link in a browser that once had the admin panel's dark
+  // mode switched on inherits it too, half-broken (cards go dark via the
+  // shared .card class, plain-color badges do not). Force this one page
+  // back to its designed light theme regardless, and restore whatever was
+  // there on the way out in case the same tab later reaches the panel.
+  useEffect(() => {
+    const root = document.documentElement;
+    const hadDark = root.classList.contains("dark");
+    root.classList.remove("dark");
+    return () => {
+      if (hadDark) root.classList.add("dark");
+    };
+  }, []);
+
   const appLink = `${window.location.origin}/api/subscribe/${token}`;
 
   const onCopyApp = async () => {

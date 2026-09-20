@@ -484,7 +484,7 @@ export default function Packages() {
                     </div>
                   )}
                   {p.speed_limit_mbps ? (
-                    <div className="text-xs text-amber-600 mt-1">{t("packages.speedLimitBadge", { mbps: p.speed_limit_mbps })}</div>
+                    <div className="text-xs text-amber-600 dark:text-amber-400 mt-1">{t("packages.speedLimitBadge", { mbps: p.speed_limit_mbps })}</div>
                   ) : null}
                 </div>
                 {!isSeller ? (

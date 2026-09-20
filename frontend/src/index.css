@@ -36,6 +36,31 @@
     -webkit-text-size-adjust: 100%;
   }
 
+  /* Recharts renders to raw SVG/inline styles, so it never picks up a
+     Tailwind `dark:` variant on its own - every chart on the panel was
+     quietly light-mode-only (white tooltip box, near-invisible grid) once
+     the rest of the page went dark. These custom properties are the one
+     place a chart needs to read to become theme-aware; see Dashboard.jsx's
+     AreaChart for the consumer. */
+  :root {
+    --rc-grid: #e5e7eb;
+    --rc-tick: #6b7280;
+    --rc-tooltip-bg: #ffffff;
+    --rc-tooltip-border: #e5e7eb;
+    --rc-tooltip-fg: #1f2937;
+    --rc-area-stroke: #6366f1;
+    --rc-area-fill: #6366f1;
+  }
+  .dark {
+    --rc-grid: rgba(148, 163, 184, 0.14);
+    --rc-tick: #64748b;
+    --rc-tooltip-bg: #0f172a;
+    --rc-tooltip-border: #1e293b;
+    --rc-tooltip-fg: #e2e8f0;
+    --rc-area-stroke: #818cf8;
+    --rc-area-fill: #818cf8;
+  }
+
   body {
     @apply bg-slate-100 text-gray-800 antialiased dark:bg-[#0b0d13] dark:text-gray-100;
   }

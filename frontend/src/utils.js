@@ -103,11 +103,18 @@ export function statusLabel(status, lang = "fa") {
   return translate(lang, `status.${status}`);
 }
 
+// Missing dark: variants here meant a status badge kept its light-mode
+// bg-emerald-50/bg-amber-50/... verbatim on a dark card - a bright pastel
+// chip stranded on slate-900, the one inconsistency the .badge-* classes in
+// index.css already solved for every OTHER badge in the panel. Mirroring
+// those same dark: pairs here (rather than switching every call site to
+// .badge-success/.badge-warn/...) keeps this a drop-in value, unchanged for
+// the three existing `` `badge ${STATUS_STYLES[u.status]}` `` call sites.
 export const STATUS_STYLES = {
-  active: "bg-emerald-50 text-emerald-600",
-  disabled: "bg-gray-100 text-gray-500",
-  quota_exceeded: "bg-amber-50 text-amber-600",
-  expired: "bg-red-50 text-red-600",
+  active: "bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400",
+  disabled: "bg-gray-100 text-gray-500 dark:bg-slate-800 dark:text-gray-400",
+  quota_exceeded: "bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400",
+  expired: "bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400",
 };
 
 // formatDate/formatDateTime used to hardcode the "fa-IR" locale (Jalali

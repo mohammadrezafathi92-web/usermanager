@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Users, UserCheck, UserX, AlertTriangle, Server, Database, Wifi, Wallet, Activity, Cpu, MemoryStick, HardDrive, Clock, Shield, ShieldOff } from "lucide-react";
+import { Users, UserCheck, UserX, AlertTriangle, Server, Database, Wifi, Wallet, Activity, Cpu, MemoryStick, HardDrive, Clock, Shield, ShieldOff, TrendingUp, TrendingDown, Radio } from "lucide-react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
@@ -15,14 +15,17 @@ const PROTOCOL_LABELS = { wireguard: "WireGuard", openvpn: "OpenVPN", l2tp: "L2T
 
 // One actionable tile: a number that means "go do something", with the page
 // it should take you to. Muted (not alarming) when the count is zero, so a
-// clean panel reads as calm rather than as four red boxes at 0.
+// clean panel reads as calm rather than as four red boxes at 0. A live tile
+// (idle === false) also gets a small pulsing dot on its icon - purely
+// decorative urgency, stripped by the global prefers-reduced-motion rule.
 function ActionCard({ icon: Icon, label, hint, value, tone, onClick }) {
   const idle = !value;
   const tones = {
-    amber: "bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400",
-    red: "bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400",
-    brand: "bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400",
+    amber: "bg-gradient-to-br from-amber-400/25 to-amber-600/10 text-amber-600 ring-1 ring-inset ring-amber-500/20 dark:text-amber-400",
+    red: "bg-gradient-to-br from-red-400/25 to-red-600/10 text-red-600 ring-1 ring-inset ring-red-500/20 dark:text-red-400",
+    brand: "bg-gradient-to-br from-brand-400/25 to-brand-600/10 text-brand-600 ring-1 ring-inset ring-brand-500/20 dark:text-brand-400",
   };
+  const dot = { amber: "bg-amber-500", red: "bg-red-500", brand: "bg-brand-500" };
   const muted = "bg-gray-100 text-gray-400 dark:bg-slate-800 dark:text-gray-500";
   return (
     <button
@@ -31,11 +34,12 @@ function ActionCard({ icon: Icon, label, hint, value, tone, onClick }) {
       disabled={idle}
       className={`card flex items-center gap-3 sm:gap-4 w-full text-start ${idle ? "opacity-70" : "card-hover cursor-pointer"}`}
     >
-      <div className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 ${idle ? muted : tones[tone]}`}>
+      <div className={`relative w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 ${idle ? muted : tones[tone]}`}>
         <Icon size={20} />
+        {!idle && <span className={`absolute -top-1 -end-1 w-2.5 h-2.5 rounded-full ring-2 ring-white dark:ring-slate-900 ${dot[tone]} animate-pulse`} />}
       </div>
       <div className="min-w-0">
-        <div className="text-xl font-bold text-gray-800 dark:text-gray-100 tnum">{value}</div>
+        <div className="text-xl font-bold font-mono text-gray-800 dark:text-gray-100 tnum">{value}</div>
         <div className="text-sm text-gray-400 truncate">{label}</div>
         {hint && <div className="text-xs text-gray-400 truncate">{hint}</div>}
       </div>
@@ -43,14 +47,42 @@ function ActionCard({ icon: Icon, label, hint, value, tone, onClick }) {
   );
 }
 
-function MoneyTile({ label, value, t, lang, sub }) {
+const MONEY_TONES = {
+  brand: "border-t-brand-400 dark:border-t-brand-500",
+  emerald: "border-t-emerald-400 dark:border-t-emerald-500",
+  slate: "border-t-gray-200 dark:border-t-slate-700",
+};
+
+function MoneyTile({ icon: Icon, label, value, t, lang, trend, tone = "slate" }) {
   return (
-    <div className="card">
-      <div className="text-sm text-gray-400">{label}</div>
-      <div className="text-xl sm:text-2xl font-bold text-gray-800 dark:text-gray-100 tnum mt-1" dir="ltr">
-        {formatToman(value, lang)} <span className="text-sm font-normal text-gray-400">{t("dashboard.toman")}</span>
+    <div className={`card border-t-4 ${MONEY_TONES[tone]}`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-sm text-gray-400">{label}</div>
+        {Icon && <Icon size={15} className="text-gray-300 dark:text-gray-600" />}
       </div>
-      {sub}
+      <div className="text-xl sm:text-2xl font-bold font-mono text-gray-800 dark:text-gray-100 tnum mt-1.5" dir="ltr">
+        {formatToman(value, lang)} <span className="text-sm font-normal font-sans text-gray-400">{t("dashboard.toman")}</span>
+      </div>
+      {trend}
+    </div>
+  );
+}
+
+/** One number in the hero strip - icon chip, big tabular value, quiet label under it. */
+function HeroStat({ icon: Icon, value, label }) {
+  return (
+    <div className="flex items-center gap-2.5">
+      {Icon && (
+        <div className="w-9 h-9 rounded-xl bg-white/15 backdrop-blur flex items-center justify-center text-white shrink-0">
+          <Icon size={17} />
+        </div>
+      )}
+      <div className="text-start">
+        <div className="text-lg sm:text-xl font-bold font-mono text-white tnum" dir="ltr">
+          {value}
+        </div>
+        <div className="text-xs text-white/70 whitespace-nowrap">{label}</div>
+      </div>
     </div>
   );
 }
@@ -89,6 +121,30 @@ export default function Dashboard() {
         <div className="text-gray-400">{t("common.loading")}</div>
       ) : (
         <>
+          {/* Hero: the "is everything alive" glance, before anything else. */}
+          <div className="relative overflow-hidden rounded-3xl mb-6 p-5 sm:p-7 bg-gradient-to-br from-brand-600 via-brand-500 to-indigo-600 dark:from-brand-700 dark:via-brand-600 dark:to-indigo-800 shadow-glow">
+            <div className="absolute inset-0 opacity-20 [background:radial-gradient(circle_at_20%_20%,#fff,transparent_35%),radial-gradient(circle_at_85%_75%,#fff,transparent_30%)]" />
+            <div className="relative">
+              <div className="inline-flex items-center gap-1.5 text-xs font-medium text-white/90 bg-white/15 backdrop-blur px-2.5 py-1 rounded-full mb-3">
+                <Radio size={12} className="animate-pulse" />
+                {t("dashboard.liveOverview")}
+              </div>
+              <div className="flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  <h2 className="text-xl sm:text-2xl font-bold text-white">{t("dashboard.title")}</h2>
+                  {t("dashboard.subtitle") && (
+                    <p className="text-sm text-white/70 mt-1">{t("dashboard.subtitle")}</p>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-3 sm:gap-4">
+                  <HeroStat icon={Wifi} label={t("dashboard.onlineUsersNow")} value={stats.online_users_now} />
+                  <HeroStat icon={Server} label={t("dashboard.onlineServers")} value={`${stats.online_nodes}/${stats.total_nodes}`} />
+                  <HeroStat icon={Users} label={t("dashboard.totalUsers")} value={stats.total_users} />
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* What needs doing, before the totals. Ordered by urgency:
               something broken, then money about to walk out the door. */}
           <div className="section-title mb-2">{t("dashboard.needsYou")}</div>
@@ -121,15 +177,24 @@ export default function Dashboard() {
 
           <div className="section-title mb-2">{t("dashboard.money")}</div>
           <div className="grid grid-cols-1 xs:grid-cols-3 gap-3 sm:gap-4 mb-6">
-            <MoneyTile label={t("dashboard.salesToday")} value={stats.sales_today} t={t} lang={language} />
+            <MoneyTile icon={Wallet} tone="brand" label={t("dashboard.salesToday")} value={stats.sales_today} t={t} lang={language} />
             <MoneyTile
+              icon={TrendingUp}
+              tone="emerald"
               label={t("dashboard.salesMonth")}
               value={stats.sales_month}
               t={t}
               lang={language}
-              sub={
+              trend={
                 stats.sales_prev_month > 0 ? (
-                  <div className={`text-xs mt-1 ${stats.sales_month >= stats.sales_prev_month ? "text-emerald-600" : "text-red-500"}`}>
+                  <div
+                    className={`inline-flex items-center gap-1 text-xs font-medium mt-2 px-2 py-0.5 rounded-full ${
+                      stats.sales_month >= stats.sales_prev_month
+                        ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400"
+                        : "bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400"
+                    }`}
+                  >
+                    {stats.sales_month >= stats.sales_prev_month ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
                     {t("dashboard.vsPrevMonth", {
                       percent: Math.round(((stats.sales_month - stats.sales_prev_month) / stats.sales_prev_month) * 100),
                     })}
@@ -137,7 +202,7 @@ export default function Dashboard() {
                 ) : null
               }
             />
-            <MoneyTile label={t("dashboard.salesPrevMonth")} value={stats.sales_prev_month} t={t} lang={language} />
+            <MoneyTile icon={Clock} tone="slate" label={t("dashboard.salesPrevMonth")} value={stats.sales_prev_month} t={t} lang={language} />
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -147,51 +212,25 @@ export default function Dashboard() {
             <StatCard icon={UserX} label={t("dashboard.disabledUsers")} value={stats.disabled_users} tone="red" onClick={() => navigate("/users?status=disabled")} />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
             <div className="card flex items-center gap-4">
-              <div className="w-12 h-12 rounded-2xl bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center">
-                <Server size={22} />
-              </div>
-              <div>
-                <div className="text-2xl font-bold text-gray-800 dark:text-gray-100" dir="ltr">
-                  {stats.online_nodes}/{stats.total_nodes}
-                </div>
-                <div className="text-sm text-gray-400">{t("dashboard.onlineServers")}</div>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => navigate("/users?online_only=1")}
-              className="card flex items-center gap-4 w-full text-right cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition"
-            >
-              <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400 flex items-center justify-center">
-                <Wifi size={22} />
-              </div>
-              <div>
-                <div className="text-2xl font-bold text-gray-800 dark:text-gray-100" dir="ltr">
-                  {stats.online_users_now}
-                </div>
-                <div className="text-sm text-gray-400">{t("dashboard.onlineUsersNow")}</div>
-              </div>
-            </button>
-            <div className="card flex items-center gap-4">
-              <div className="w-12 h-12 rounded-2xl bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-brand-400/20 to-brand-600/10 text-brand-600 ring-1 ring-inset ring-brand-500/15 dark:from-brand-400/25 dark:to-brand-600/10 dark:text-brand-400 flex items-center justify-center shrink-0">
                 <Database size={22} />
               </div>
-              <div>
-                <div className="text-2xl font-bold text-gray-800 dark:text-gray-100 whitespace-nowrap" dir="ltr">
+              <div className="min-w-0">
+                <div className="text-xl sm:text-2xl font-bold font-mono text-gray-800 dark:text-gray-100 whitespace-nowrap tnum" dir="ltr">
                   {formatBytes(stats.total_used_bytes)}
-                  <span className="text-sm text-gray-400 font-normal"> / {stats.total_quota_bytes ? formatBytes(stats.total_quota_bytes) : t("userDetail.unlimited")}</span>
+                  <span className="text-sm text-gray-400 font-normal font-sans"> / {stats.total_quota_bytes ? formatBytes(stats.total_quota_bytes) : t("userDetail.unlimited")}</span>
                 </div>
                 <div className="text-sm text-gray-400">{t("dashboard.totalUsageAllUsers")}</div>
               </div>
             </div>
             <div className="card flex items-center gap-4">
-              <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400 flex items-center justify-center">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-amber-400/20 to-amber-600/10 text-amber-600 ring-1 ring-inset ring-amber-500/15 dark:from-amber-400/25 dark:to-amber-600/10 dark:text-amber-400 flex items-center justify-center shrink-0">
                 <Activity size={22} />
               </div>
               <div>
-                <div className="text-2xl font-bold text-gray-800 dark:text-gray-100 whitespace-nowrap" dir="ltr">
+                <div className="text-xl sm:text-2xl font-bold font-mono text-gray-800 dark:text-gray-100 whitespace-nowrap tnum" dir="ltr">
                   {formatBitrate(stats.avg_speed_bps)}
                 </div>
                 <div className="text-sm text-gray-400">{t("dashboard.avgSpeed")}</div>
@@ -208,17 +247,17 @@ export default function Dashboard() {
                     as missing here specifically. */}
                 {stats.admin_billing_mode === "usage" ? (
                   <>
-                    <div className="w-12 h-12 rounded-2xl bg-violet-50 text-violet-600 dark:bg-violet-500/10 dark:text-violet-400 flex items-center justify-center">
+                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-violet-400/20 to-violet-600/10 text-violet-600 ring-1 ring-inset ring-violet-500/15 dark:from-violet-400/25 dark:to-violet-600/10 dark:text-violet-400 flex items-center justify-center shrink-0">
                       <Database size={22} />
                     </div>
                     <div>
                       <div
-                        className={`text-2xl font-bold ${
+                        className={`text-xl sm:text-2xl font-bold font-mono tnum ${
                           stats.admin_volume_balance_gb < 0 ? "text-red-500" : "text-gray-800 dark:text-gray-100"
                         }`}
                         dir="ltr"
                       >
-                        {formatGb(stats.admin_volume_balance_gb, language)} <span className="text-sm text-gray-400 font-normal">GB</span>
+                        {formatGb(stats.admin_volume_balance_gb, language)} <span className="text-sm text-gray-400 font-normal font-sans">GB</span>
                       </div>
                       <div className="text-sm text-gray-400">{t("dashboard.yourBalance")}</div>
                       {/* A negative pool is legitimate and was alarming
@@ -256,12 +295,12 @@ export default function Dashboard() {
                   </>
                 ) : (
                   <>
-                    <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400 flex items-center justify-center">
+                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-400/20 to-emerald-600/10 text-emerald-600 ring-1 ring-inset ring-emerald-500/15 dark:from-emerald-400/25 dark:to-emerald-600/10 dark:text-emerald-400 flex items-center justify-center shrink-0">
                       <Wallet size={22} />
                     </div>
                     <div>
-                      <div className="text-2xl font-bold text-gray-800 dark:text-gray-100" dir="ltr">
-                        {formatToman(stats.admin_balance, language)} <span className="text-sm text-gray-400 font-normal">{t("dashboard.tomanUnit")}</span>
+                      <div className="text-xl sm:text-2xl font-bold font-mono tnum text-gray-800 dark:text-gray-100" dir="ltr">
+                        {formatToman(stats.admin_balance, language)} <span className="text-sm text-gray-400 font-normal font-sans">{t("dashboard.tomanUnit")}</span>
                       </div>
                       <div className="text-sm text-gray-400">{t("dashboard.yourBalance")}</div>
                       {stats.admin_debt_toman > 0 && (
@@ -281,7 +320,12 @@ export default function Dashboard() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
             {stats.system_cpu_percent != null && (
               <div className="card">
-                <h3 className="font-bold text-gray-700 dark:text-gray-300 mb-4">{t("dashboard.systemStatus")}</h3>
+                <h3 className="flex items-center gap-2 font-bold text-gray-700 dark:text-gray-300 mb-4">
+                  <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center">
+                    <Cpu size={14} />
+                  </span>
+                  {t("dashboard.systemStatus")}
+                </h3>
                 <div className="space-y-4">
                   <div>
                     <div className="flex items-center justify-between text-sm mb-1.5">
@@ -325,7 +369,12 @@ export default function Dashboard() {
             )}
 
             <div className="card">
-              <h3 className="font-bold text-gray-700 dark:text-gray-300 mb-4">{t("dashboard.protocolStatus")}</h3>
+              <h3 className="flex items-center gap-2 font-bold text-gray-700 dark:text-gray-300 mb-4">
+                <span className="w-7 h-7 rounded-lg bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400 flex items-center justify-center">
+                  <Shield size={14} />
+                </span>
+                {t("dashboard.protocolStatus")}
+              </h3>
               <div className="grid grid-cols-2 gap-2.5">
                 {Object.entries(PROTOCOL_LABELS).map(([key, label]) => {
                   const count = stats.protocol_connection_counts?.[key] || 0;
@@ -333,7 +382,11 @@ export default function Dashboard() {
                   return (
                     <div
                       key={key}
-                      className="flex items-center justify-between rounded-xl border border-gray-100 dark:border-slate-800 px-3 py-2.5"
+                      className={`flex items-center justify-between rounded-xl border px-3 py-2.5 transition-colors ${
+                        active
+                          ? "border-emerald-200/60 bg-emerald-50/50 dark:border-emerald-500/20 dark:bg-emerald-500/5"
+                          : "border-gray-100 dark:border-slate-800"
+                      }`}
                     >
                       <span className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200">
                         {active ? (
@@ -359,20 +412,41 @@ export default function Dashboard() {
           </div>
 
           <div className="card">
-            <h3 className="font-bold text-gray-700 dark:text-gray-300 mb-4">{t("dashboard.usageLast24h")}</h3>
+            <h3 className="flex items-center gap-2 font-bold text-gray-700 dark:text-gray-300 mb-4">
+              <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center">
+                <TrendingUp size={14} />
+              </span>
+              {t("dashboard.usageLast24h")}
+            </h3>
+            {/* recharts renders its own inline SVG styles and doesn't see
+                Tailwind's dark: variants - it's themed here off the --rc-*
+                custom properties defined in index.css instead, which flip
+                with the .dark class the same way everything else does. */}
             <ResponsiveContainer width="100%" height={280}>
               <AreaChart data={chartData}>
                 <defs>
                   <linearGradient id="colorUsage" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#4763f5" stopOpacity={0.4} />
-                    <stop offset="95%" stopColor="#4763f5" stopOpacity={0} />
+                    <stop offset="5%" stopColor="var(--rc-area-fill)" stopOpacity={0.4} />
+                    <stop offset="95%" stopColor="var(--rc-area-fill)" stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                <XAxis dataKey="time" tick={{ fontSize: 12 }} />
-                <YAxis tickFormatter={(v) => formatBytes(v)} tick={{ fontSize: 12 }} width={70} />
-                <Tooltip formatter={(v) => formatBytes(v)} labelFormatter={(l) => t("dashboard.hourLabel", { value: l })} />
-                <Area type="monotone" dataKey="bytes" stroke="#4763f5" fill="url(#colorUsage)" strokeWidth={2} />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--rc-grid)" />
+                <XAxis dataKey="time" tick={{ fontSize: 12, fill: "var(--rc-tick)" }} axisLine={{ stroke: "var(--rc-grid)" }} tickLine={{ stroke: "var(--rc-grid)" }} />
+                <YAxis
+                  tickFormatter={(v) => formatBytes(v)}
+                  tick={{ fontSize: 12, fill: "var(--rc-tick)" }}
+                  axisLine={{ stroke: "var(--rc-grid)" }}
+                  tickLine={{ stroke: "var(--rc-grid)" }}
+                  width={70}
+                />
+                <Tooltip
+                  formatter={(v) => formatBytes(v)}
+                  labelFormatter={(l) => t("dashboard.hourLabel", { value: l })}
+                  contentStyle={{ background: "var(--rc-tooltip-bg)", border: "1px solid var(--rc-tooltip-border)", borderRadius: 12 }}
+                  labelStyle={{ color: "var(--rc-tooltip-fg)" }}
+                  itemStyle={{ color: "var(--rc-tooltip-fg)" }}
+                />
+                <Area type="monotone" dataKey="bytes" stroke="var(--rc-area-stroke)" fill="url(#colorUsage)" strokeWidth={2.5} />
               </AreaChart>
             </ResponsiveContainer>
           </div>

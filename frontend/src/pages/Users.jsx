@@ -56,6 +56,38 @@ const SORT_OPTIONS = [
   { value: "status", labelKey: "sort.status" },
 ];
 
+// A row of usernames is otherwise just plain text top to bottom - this gives
+// each row a distinct anchor to scan by, without fetching/storing a real
+// avatar. The tone is derived from the username itself, so the same user
+// always gets the same colour (stable across reloads/pages/sort order).
+const AVATAR_TONES = [
+  "from-brand-400 to-brand-600",
+  "from-emerald-400 to-emerald-600",
+  "from-amber-400 to-amber-600",
+  "from-rose-400 to-rose-600",
+  "from-violet-400 to-violet-600",
+  "from-cyan-400 to-cyan-600",
+];
+function UserAvatar({ username, online }) {
+  let hash = 0;
+  for (let i = 0; i < (username || "").length; i++) hash = (hash * 31 + username.charCodeAt(i)) >>> 0;
+  const tone = AVATAR_TONES[hash % AVATAR_TONES.length];
+  return (
+    <span className="relative shrink-0">
+      <span
+        className={`w-8 h-8 rounded-xl bg-gradient-to-br ${tone} text-white text-xs font-bold flex items-center justify-center shadow-sm`}
+      >
+        {(username || "?").slice(0, 2).toUpperCase()}
+      </span>
+      <span
+        className={`absolute -bottom-0.5 -end-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-white dark:ring-slate-900 ${
+          online ? "bg-emerald-500" : "bg-gray-300 dark:bg-slate-600"
+        }`}
+      />
+    </span>
+  );
+}
+
 export default function Users() {
   // Guards against an out-of-order response: with no sequencing, a slower
   // earlier request (e.g. right before the 350ms search debounce fires a
@@ -550,12 +582,12 @@ export default function Users() {
     <Layout>
       <Topbar title={t("users.title")} subtitle={t("users.subtitle", { count: total })} />
 
-      <div className="card !p-4 mb-4 space-y-3">
+      <div className="card !p-4 mb-4 space-y-3 ring-1 ring-inset ring-gray-100 dark:ring-slate-800">
         <div className="flex items-center gap-2 flex-wrap">
           <div className="relative">
-            <Search className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
+            <Search className="absolute end-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
             <input
-              className="input pr-9 !w-full sm:!w-56"
+              className="input pe-9 !w-full sm:!w-56"
               placeholder={t("users.search")}
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
@@ -652,7 +684,7 @@ export default function Users() {
           )}
         </div>
 
-        <div className="flex items-center justify-between gap-2 flex-wrap pt-3 border-t border-gray-100">
+        <div className="flex items-center justify-between gap-2 flex-wrap pt-3 border-t border-gray-100 dark:border-slate-800">
           <div className="flex items-center gap-2 flex-wrap">
             {(statusFilter || packageFilter || onlineOnly || ownerAdminFilter || search) && total > 0 && (
               <button className="btn-secondary" onClick={selectAllMatching} disabled={selectingAll}>
@@ -661,7 +693,7 @@ export default function Users() {
             )}
             {selected.size > 0 && (
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-xs font-medium text-brand-700 bg-brand-50 rounded-full px-2.5 py-1">
+                <span className="text-xs font-medium text-brand-700 bg-brand-50 dark:bg-brand-500/10 dark:text-brand-400 rounded-full px-2.5 py-1">
                   {t("users.selected", { count: selected.size })}
                 </span>
                 <button className="btn-secondary" onClick={openBulkEdit}>
@@ -695,49 +727,50 @@ export default function Users() {
 
       <div className="card !p-0">
         {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
-        <div className="hidden md:block overflow-x-auto">
-          <table className="w-full text-sm min-w-[48rem]">
-            <thead className="bg-gray-50 text-gray-500 text-xs">
+        <div className="hidden md:block table-wrap !mx-0">
+          <table>
+            <thead>
               <tr>
-                <th className="text-right font-medium px-4 py-3 w-8">
+                <th className="w-8">
                   <input type="checkbox" checked={allOnPageSelected} onChange={toggleAllOnPage} />
                 </th>
-                <th className="text-right font-medium px-4 py-3">{t("users.colUser")}</th>
-                {isSuperadmin && <th className="text-right font-medium px-4 py-3">{t("users.colAdmin")}</th>}
-                <th className="text-right font-medium px-4 py-3">{t("users.colStatus")}</th>
-                <th className="text-right font-medium px-4 py-3 w-56">{t("users.colUsage")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("users.colConnections")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("users.colExpiry")}</th>
-                <th className="text-right font-medium px-4 py-3">{t("users.colActions")}</th>
+                <th>{t("users.colUser")}</th>
+                {isSuperadmin && <th>{t("users.colAdmin")}</th>}
+                <th>{t("users.colStatus")}</th>
+                <th className="w-56">{t("users.colUsage")}</th>
+                <th>{t("users.colConnections")}</th>
+                <th>{t("users.colExpiry")}</th>
+                <th>{t("users.colActions")}</th>
               </tr>
             </thead>
             <tbody>
               {users.map((u) => (
-                <tr key={u.id} className="border-t border-gray-50 hover:bg-gray-50/60">
-                  <td className="px-4 py-3">
+                <tr key={u.id}>
+                  <td>
                     <input type="checkbox" checked={selected.has(u.id)} onChange={() => toggleOne(u.id)} />
                   </td>
-                  <td className="px-4 py-3">
-                    <Link to={`/users/${u.id}`} className="font-medium text-gray-800 hover:text-brand-600 inline-flex items-center gap-1.5">
-                      <span
-                        className={`inline-block w-2 h-2 rounded-full ${u.online ? "bg-emerald-500" : "bg-gray-300"}`}
-                        title={u.online ? t("users.online") : t("users.offline")}
-                      />
-                      {u.username}
+                  <td>
+                    <Link to={`/users/${u.id}`} className="flex items-center gap-2.5 group">
+                      <UserAvatar username={u.username} online={u.online} />
+                      <span className="min-w-0">
+                        <span className="block font-medium text-gray-800 dark:text-gray-100 group-hover:text-brand-600 dark:group-hover:text-brand-400 truncate">
+                          {u.username}
+                        </span>
+                        {u.full_name && <span className="block text-xs text-gray-400 truncate">{u.full_name}</span>}
+                      </span>
                     </Link>
-                    {u.full_name && <div className="text-xs text-gray-400">{u.full_name}</div>}
                   </td>
                   {isSuperadmin && (
-                    <td className="px-4 py-3 text-xs text-gray-500">
+                    <td className="text-xs text-gray-500 dark:text-gray-400">
                       {u.owner_admin_username ||
                         (u.created_via === "bot" ? (
-                          <span className="text-gray-400">{t("userDetail.ownerBot")}</span>
+                          <span className="text-gray-400 dark:text-gray-500">{t("userDetail.ownerBot")}</span>
                         ) : (
-                          <span className="text-gray-300">—</span>
+                          <span className="text-gray-300 dark:text-gray-600">—</span>
                         ))}
                     </td>
                   )}
-                  <td className="px-4 py-3">
+                  <td>
                     <div className="flex items-center gap-1.5">
                       <span className={`badge ${STATUS_STYLES[u.status]}`}>{statusLabel(u.status, language)}</span>
                       {/* A locked customer is still active - the lock rides
@@ -749,29 +782,37 @@ export default function Users() {
                       )}
                     </div>
                   </td>
-                  <td className="px-4 py-3">
+                  <td>
                     <QuotaBar used={u.used_bytes} total={u.total_quota_bytes} />
                   </td>
-                  <td className="px-4 py-3 text-gray-500">
+                  <td className="text-gray-500 dark:text-gray-400">
                     <span className="inline-flex items-center gap-1">
                       <Network size={14} /> {u.connections_count}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-gray-500">
+                  <td className="text-gray-500 dark:text-gray-400">
                     {!u.expire_at && u.expire_days_after_first_use ? (
-                      <span className="text-amber-600" title={t("users.notConnectedYet")}>
+                      <span className="text-amber-600 dark:text-amber-400" title={t("users.notConnectedYet")}>
                         {t("users.fromFirstConnection", { days: u.expire_days_after_first_use })}
                       </span>
                     ) : (
                       formatDate(u.expire_at, language)
                     )}
                   </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <button title={t("users.resetUsage")} onClick={() => setResetTargetId(u.id)} className="text-gray-400 hover:text-brand-600">
+                  <td>
+                    <div className="flex items-center gap-1">
+                      <button
+                        title={t("users.resetUsage")}
+                        onClick={() => setResetTargetId(u.id)}
+                        className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-brand-600 hover:bg-brand-50 dark:hover:bg-brand-500/10 dark:hover:text-brand-400 transition-colors"
+                      >
                         <RotateCcw size={16} />
                       </button>
-                      <button title={t("common.delete")} onClick={() => onDelete(u.id)} className="text-gray-400 hover:text-red-600">
+                      <button
+                        title={t("common.delete")}
+                        onClick={() => onDelete(u.id)}
+                        className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10 dark:hover:text-red-400 transition-colors"
+                      >
                         <Trash2 size={16} />
                       </button>
                     </div>
@@ -790,44 +831,49 @@ export default function Users() {
         </div>
 
         {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
-        <div className="md:hidden divide-y divide-gray-50">
+        <div className="md:hidden divide-y divide-gray-100 dark:divide-slate-800">
           {users.map((u) => (
-            <div key={u.id} className="p-4">
+            <div key={u.id} className="p-4 hover:bg-brand-50/30 dark:hover:bg-brand-500/[0.04] transition-colors">
               <div className="flex items-start justify-between gap-2">
-                <label className="flex items-start gap-2 min-w-0">
-                  <input type="checkbox" className="mt-1" checked={selected.has(u.id)} onChange={() => toggleOne(u.id)} />
+                <label className="flex items-start gap-2.5 min-w-0">
+                  <input type="checkbox" className="mt-1.5" checked={selected.has(u.id)} onChange={() => toggleOne(u.id)} />
+                  <UserAvatar username={u.username} online={u.online} />
                   <span className="min-w-0">
-                    <Link to={`/users/${u.id}`} className="font-medium text-gray-800 hover:text-brand-600 inline-flex items-center gap-1.5">
-                      <span
-                        className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${u.online ? "bg-emerald-500" : "bg-gray-300"}`}
-                        title={u.online ? t("users.online") : t("users.offline")}
-                      />
-                      <span className="truncate">{u.username}</span>
+                    <Link to={`/users/${u.id}`} className="font-medium text-gray-800 dark:text-gray-100 hover:text-brand-600 dark:hover:text-brand-400 block truncate">
+                      {u.username}
                     </Link>
                     {u.full_name && <div className="text-xs text-gray-400">{u.full_name}</div>}
                     {isSuperadmin && (
-                      <div className="text-xs text-gray-500 mt-0.5">
+                      <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                         {u.owner_admin_username ||
                           (u.created_via === "bot" ? (
-                            <span className="text-gray-400">{t("userDetail.ownerBot")}</span>
+                            <span className="text-gray-400 dark:text-gray-500">{t("userDetail.ownerBot")}</span>
                           ) : (
-                            <span className="text-gray-300">—</span>
+                            <span className="text-gray-300 dark:text-gray-600">—</span>
                           ))}
                       </div>
                     )}
                   </span>
                 </label>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <button title={t("users.resetUsage")} onClick={() => setResetTargetId(u.id)} className="text-gray-400 hover:text-brand-600">
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <button
+                    title={t("users.resetUsage")}
+                    onClick={() => setResetTargetId(u.id)}
+                    className="w-9 h-9 rounded-lg flex items-center justify-center text-gray-400 hover:text-brand-600 hover:bg-brand-50 dark:hover:bg-brand-500/10 dark:hover:text-brand-400 transition-colors"
+                  >
                     <RotateCcw size={16} />
                   </button>
-                  <button title={t("common.delete")} onClick={() => onDelete(u.id)} className="text-gray-400 hover:text-red-600">
+                  <button
+                    title={t("common.delete")}
+                    onClick={() => onDelete(u.id)}
+                    className="w-9 h-9 rounded-lg flex items-center justify-center text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10 dark:hover:text-red-400 transition-colors"
+                  >
                     <Trash2 size={16} />
                   </button>
                 </div>
               </div>
 
-              <div className="flex items-center justify-between mt-2">
+              <div className="flex items-center justify-between mt-2.5 ps-[2.6rem]">
                 <div className="flex items-center gap-1.5">
                   <span className={`badge ${STATUS_STYLES[u.status]}`}>{statusLabel(u.status, language)}</span>
                   {u.purchases_blocked && (
@@ -836,18 +882,18 @@ export default function Users() {
                     </span>
                   )}
                 </div>
-                <span className="inline-flex items-center gap-1 text-xs text-gray-500">
+                <span className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
                   <Network size={14} /> {u.connections_count}
                 </span>
               </div>
 
-              <div className="mt-2">
+              <div className="mt-2.5 ps-[2.6rem]">
                 <QuotaBar used={u.used_bytes} total={u.total_quota_bytes} />
               </div>
 
-              <div className="text-xs text-gray-500 mt-2">
+              <div className="text-xs text-gray-500 dark:text-gray-400 mt-2 ps-[2.6rem]">
                 {!u.expire_at && u.expire_days_after_first_use ? (
-                  <span className="text-amber-600" title={t("users.notConnectedYet")}>
+                  <span className="text-amber-600 dark:text-amber-400" title={t("users.notConnectedYet")}>
                     {t("users.fromFirstConnection", { days: u.expire_days_after_first_use })}
                   </span>
                 ) : (
@@ -859,7 +905,7 @@ export default function Users() {
           {users.length === 0 && <div className="empty-state">{t("users.noUsers")}</div>}
         </div>
 
-        <div className="flex items-center justify-between px-4 py-3 border-t border-gray-50 text-sm text-gray-500">
+        <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100 dark:border-slate-800 text-sm text-gray-500 dark:text-gray-400">
           <div>
             {t("users.page", { page, total: totalPages })}
           </div>

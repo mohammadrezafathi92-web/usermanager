@@ -4,6 +4,7 @@
     docker compose exec backend python scripts/import_ads.py --list
     docker compose exec backend python scripts/import_ads.py --admin 1 --dry-run
     docker compose exec backend python scripts/import_ads.py --admin 1 --replace
+    docker compose exec backend python scripts/import_ads.py --all --replace
 
 The texts live in docs/ad-texts.md, written for a human to read and edit;
 this script holds the same texts in a form the database can take. They are
@@ -191,10 +192,83 @@ TRIAL_BUTTON = "🎁 دریافت تست رایگان"
 BUY_BUTTON = "🛒 خرید و اطلاعات بیشتر"
 
 
+def _install(db, channel, replace: bool) -> tuple[int, int]:
+    """Puts the adverts on one channel. Returns (deleted, added)."""
+    deleted = 0
+    if replace:
+        deleted = db.query(models.AdPost).filter(
+            models.AdPost.channel_id == channel.id).delete(synchronize_session=False)
+    base = 0 if replace else (
+        db.query(models.AdPost).filter(models.AdPost.channel_id == channel.id).count()
+    )
+    for index, (title, body) in enumerate(ADS):
+        db.add(models.AdPost(
+            channel_id=channel.id,
+            title=title,
+            body=body,
+            button_text=TRIAL_BUTTON if "تست رایگان" in title or "کوتاه" in title else BUY_BUTTON,
+            enabled=True,
+            sort_order=base + index,
+        ))
+    return deleted, len(ADS)
+
+
+def _apply_to_all(db, *, replace: bool, dry_run: bool) -> int:
+    """Every channel on the panel, including the resellers' own.
+
+    Prints the full account of what it will do BEFORE doing any of it, and
+    per channel rather than as one total. This wipes other people's
+    advertising - a reseller who wrote their own posts loses them - so the
+    one thing this must never be is quiet about its scope.
+    """
+    channels = db.query(models.AdChannel).order_by(models.AdChannel.owner_admin_id).all()
+    if not channels:
+        print("هیچ کانال تبلیغاتی وجود ندارد.")
+        return 1
+
+    print(f"{len(channels)} کانال پیدا شد:\n")
+    total_existing = 0
+    for channel in channels:
+        admin = db.get(models.AdminUser, channel.owner_admin_id)
+        count = db.query(models.AdPost).filter(
+            models.AdPost.channel_id == channel.id).count()
+        total_existing += count
+        print(f"  ادمین {channel.owner_admin_id:<4} {(admin.username if admin else '?'):<16} "
+              f"{count} تبلیغ فعلی")
+
+    print()
+    if replace:
+        print(f"⚠️  مجموعاً {total_existing} تبلیغ موجود حذف می‌شود - شامل تبلیغ‌هایی که")
+        print("   نماینده‌ها خودشان نوشته‌اند - و برای هر کانال "
+              f"{len(ADS)} تبلیغ جدید گذاشته می‌شود.")
+    else:
+        print(f"{len(ADS)} تبلیغ جدید به هر کانال اضافه می‌شود؛ تبلیغ‌های فعلی می‌مانند.")
+        print("برای پاک کردن قبلی‌ها --replace را اضافه کن.")
+
+    if dry_run:
+        print("\n--dry-run: چیزی نوشته نشد.")
+        return 0
+
+    deleted_total = added_total = 0
+    for channel in channels:
+        deleted, added = _install(db, channel, replace)
+        deleted_total += deleted
+        added_total += added
+    db.commit()
+
+    print(f"\n✅ {deleted_total} تبلیغ حذف شد، {added_total} تبلیغ روی {len(channels)} کانال اضافه شد.")
+    print("تبلیغ‌هایی که به پکیج یا کد تخفیف نیاز دارند در عنوانشان نوشته شده -")
+    print("هر ادمین باید در پنل خودش برایشان یکی انتخاب کند، وگرنه به‌جای قیمت")
+    print("خط تیره فرستاده می‌شود.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--admin", type=int,
                         help="ادمین صاحب کانال تبلیغات (شناسه‌ی عددی)")
+    parser.add_argument("--all", action="store_true",
+                        help="روی همه‌ی کانال‌ها اعمال شود، نه فقط یکی")
     parser.add_argument("--replace", action="store_true",
                         help="تبلیغ‌های فعلی این کانال حذف و با این‌ها جایگزین شوند")
     parser.add_argument("--dry-run", action="store_true",
@@ -203,8 +277,15 @@ def main() -> int:
                         help="کانال‌های موجود را فهرست کن و خارج شو")
     args = parser.parse_args()
 
+    if args.all and args.admin:
+        print("یا --all یا --admin، نه هر دو.")
+        return 1
+
     db = SessionLocal()
     try:
+        if args.all:
+            return _apply_to_all(db, replace=args.replace, dry_run=args.dry_run)
+
         if args.list or not args.admin:
             channels = db.query(models.AdChannel).all()
             if not channels:
@@ -220,7 +301,7 @@ def main() -> int:
                       f"chat_id={channel.chat_id or '-':<20} "
                       f"{posts} تبلیغ")
             if not args.admin:
-                print("\nیکی را با --admin انتخاب کن.")
+                print("\nیکی را با --admin انتخاب کن، یا --all برای همه.")
             return 0
 
         channel = (
@@ -249,28 +330,9 @@ def main() -> int:
                 print(f"  {index:>2}. {title}")
             return 0
 
-        if args.replace and existing:
-            db.query(models.AdPost).filter(
-                models.AdPost.channel_id == channel.id).delete(synchronize_session=False)
-            print(f"{existing} تبلیغ قبلی حذف شد.")
-
-        # Continue the existing numbering when appending, so the rotation
-        # order stays predictable instead of every new post landing at 0.
-        base = 0 if args.replace else (
-            db.query(models.AdPost).filter(models.AdPost.channel_id == channel.id).count()
-        )
-        for index, (title, body) in enumerate(ADS):
-            db.add(models.AdPost(
-                channel_id=channel.id,
-                title=title,
-                body=body,
-                # The trial ads get their own call to action: "buy" under a
-                # post whose whole point is that it costs nothing reads as a
-                # contradiction.
-                button_text=TRIAL_BUTTON if "تست رایگان" in title or "کوتاه" in title else BUY_BUTTON,
-                enabled=True,
-                sort_order=base + index,
-            ))
+        deleted, added = _install(db, channel, args.replace)
+        if deleted:
+            print(f"{deleted} تبلیغ قبلی حذف شد.")
         db.commit()
         print(f"\n✅ {len(ADS)} تبلیغ اضافه شد.")
         print("در پنل، بخش «تبلیغات» را باز کن: آن‌هایی که به پکیج یا کد تخفیف")

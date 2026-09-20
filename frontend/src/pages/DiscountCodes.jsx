@@ -1,11 +1,12 @@
-import React, { useEffect, useState } from "react";
-import { Plus, Trash2, Pencil, Ticket, Power, Users } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Plus, Trash2, Pencil, Ticket, Power, Users, Search } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import JalaliDateInput from "../components/JalaliDateInput.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import ReferralLoyaltyCard from "../components/ReferralLoyaltyCard.jsx";
+import { useConfirm } from "../components/ConfirmDialog.jsx";
 import { fetchDiscountCodes, createDiscountCode, updateDiscountCode, deleteDiscountCode, fetchDiscountCodeRedemptions } from "../api/client.js";
 import { formatDateTime, formatToman } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
@@ -16,6 +17,7 @@ const EMPTY_FORM = { code: "", kind: "percent", value: 0, max_uses: "", enabled:
 export default function DiscountCodes() {
   const { t, language } = useLanguage();
   const { isSuperadmin, isAdminOrAbove, adminId } = useAuth();
+  const confirm = useConfirm();
   // Roll-up: a level-2 Admin can see (but never edit/delete) their own
   // Sellers' codes too - see routers/discount_codes.py's _get_viewable_code
   // vs _get_owned_code. Superadmin's "own" scope is owner_admin_id===null;
@@ -35,6 +37,14 @@ export default function DiscountCodes() {
   const [redemptionsFor, setRedemptionsFor] = useState(null); // the code row being inspected
   const [redemptions, setRedemptions] = useState([]);
   const [redemptionsLoading, setRedemptionsLoading] = useState(false);
+  const [searchInput, setSearchInput] = useState("");
+  const filteredCodes = useMemo(() => {
+    const q = searchInput.trim().toLowerCase();
+    if (!q) return codes;
+    return codes.filter(
+      (c) => (c.code || "").toLowerCase().includes(q) || (c.note || "").toLowerCase().includes(q)
+    );
+  }, [codes, searchInput]);
 
   const openRedemptions = (c) => {
     setRedemptionsFor(c);
@@ -109,7 +119,7 @@ export default function DiscountCodes() {
   };
 
   const remove = async (c) => {
-    if (!window.confirm(t("discountCodes.confirmDelete", { code: c.code }))) return;
+    if (!(await confirm({ message: t("discountCodes.confirmDelete", { code: c.code }), danger: true }))) return;
     await deleteDiscountCode(c.id);
     load();
   };
@@ -118,7 +128,16 @@ export default function DiscountCodes() {
     <Layout>
       <Topbar title={t("discountCodes.title")} subtitle={t("discountCodes.subtitle")} />
 
-      <div className="flex justify-end mb-4">
+      <div className="flex items-center justify-between mb-4 gap-2 flex-wrap">
+        <div className="relative">
+          <Search className="absolute end-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
+          <input
+            className="input pe-9 !w-full sm:!w-56"
+            placeholder={t("discountCodes.search")}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+          />
+        </div>
         <button className="btn-primary" onClick={openCreate}>
           <Plus size={16} /> {t("discountCodes.newCode")}
         </button>
@@ -141,7 +160,7 @@ export default function DiscountCodes() {
               </tr>
             </thead>
             <tbody>
-              {codes.map((c) => (
+              {filteredCodes.map((c) => (
                 <tr key={c.id}>
                   <td>
                     <span className="inline-flex items-center gap-1 font-mono font-medium text-gray-800">
@@ -196,10 +215,10 @@ export default function DiscountCodes() {
                   </td>
                 </tr>
               ))}
-              {!loading && codes.length === 0 && (
+              {!loading && filteredCodes.length === 0 && (
                 <tr>
                   <td colSpan={showOwnerColumn ? 8 : 7} className="empty-state">
-                    {t("discountCodes.empty")}
+                    {codes.length === 0 ? t("discountCodes.empty") : t("common.noResults")}
                   </td>
                 </tr>
               )}
@@ -209,7 +228,7 @@ export default function DiscountCodes() {
 
         {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
         <div className="md:hidden divide-y divide-gray-100 dark:divide-slate-800">
-          {codes.map((c) => (
+          {filteredCodes.map((c) => (
             <div key={c.id} className="p-4">
               <div className="flex items-start justify-between gap-2">
                 <span className="inline-flex items-center gap-1 font-mono font-medium text-gray-800">
@@ -263,7 +282,9 @@ export default function DiscountCodes() {
               </div>
             </div>
           ))}
-          {!loading && codes.length === 0 && <div className="empty-state">{t("discountCodes.empty")}</div>}
+          {!loading && filteredCodes.length === 0 && (
+            <div className="empty-state">{codes.length === 0 ? t("discountCodes.empty") : t("common.noResults")}</div>
+          )}
         </div>
       </div>
 

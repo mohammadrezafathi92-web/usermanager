@@ -1,9 +1,11 @@
-import React, { useEffect, useState } from "react";
-import { Plus, Pencil, Trash2, Power, Package as PackageIcon, Server, Paperclip, Download, Check, X, Tag, Layers, GripVertical, Gift } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Plus, Pencil, Trash2, Power, Package as PackageIcon, Server, Paperclip, Download, Check, X, Tag, Layers, GripVertical, Gift, Search } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
+import { useConfirm } from "../components/ConfirmDialog.jsx";
+import { useToast } from "../components/Toast.jsx";
 import {
   fetchPackageGroups,
   createPackageGroup,
@@ -78,8 +80,18 @@ export default function Packages() {
   // number/date on this page.
   const formatToman = (n) => formatTomanUtil(n, language);
   const { role, wallet } = useAuth();
+  const confirm = useConfirm();
+  const toast = useToast();
   const isSeller = role === "seller";
   const [items, setItems] = useState([]);
+  const [searchInput, setSearchInput] = useState("");
+  const filteredItems = useMemo(() => {
+    const q = searchInput.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter(
+      (p) => (p.name || "").toLowerCase().includes(q) || (p.description || "").toLowerCase().includes(q)
+    );
+  }, [items, searchInput]);
   const [nodes, setNodes] = useState([]);
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -211,7 +223,7 @@ export default function Packages() {
       await deletePackageFile(editingId, fileId);
       setEditingFiles((files) => files.filter((f) => f.id !== fileId));
     } catch (err) {
-      alert(errorText(err, t("packages.deleteFileError")));
+      toast.error(errorText(err, t("packages.deleteFileError")));
     }
   };
 
@@ -246,7 +258,7 @@ export default function Packages() {
   };
 
   const onDelete = async (id) => {
-    if (!confirm(t("packages.deleteConfirm"))) return;
+    if (!(await confirm({ message: t("packages.deleteConfirm"), danger: true }))) return;
     try {
       await deletePackage(id);
       load();
@@ -256,7 +268,7 @@ export default function Packages() {
       // surfaced as nothing at all: the row just stayed put with no
       // explanation, identical to the button not working (same bug class
       // already fixed once for Users.jsx's onDelete).
-      alert(errorText(err, t("packages.deleteError")));
+      toast.error(errorText(err, t("packages.deleteError")));
     }
   };
 
@@ -265,7 +277,7 @@ export default function Packages() {
       await updatePackage(pkg.id, { enabled: !pkg.enabled });
       load();
     } catch (err) {
-      alert(errorText(err, t("packages.toggleError")));
+      toast.error(errorText(err, t("packages.toggleError")));
     }
   };
 
@@ -320,16 +332,27 @@ export default function Packages() {
           onChanged={load}
         />
       )}
-      {!isSeller && (
-        <div className="flex justify-end gap-2 mb-4">
-          <button className="btn-outline" onClick={() => setGroupsOpen(true)}>
-            <Layers size={16} /> {t("packages.manageGroups")}
-          </button>
-          <button className="btn-primary" onClick={openCreate}>
-            <Plus size={16} /> {t("packages.newPackage")}
-          </button>
+      <div className="flex items-center gap-2 flex-wrap justify-between mb-4">
+        <div className="relative">
+          <Search className="absolute end-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
+          <input
+            className="input pe-9 !w-full sm:!w-56"
+            placeholder={t("packages.search")}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+          />
         </div>
-      )}
+        {!isSeller && (
+          <div className="flex gap-2">
+            <button className="btn-outline" onClick={() => setGroupsOpen(true)}>
+              <Layers size={16} /> {t("packages.manageGroups")}
+            </button>
+            <button className="btn-primary" onClick={openCreate}>
+              <Plus size={16} /> {t("packages.newPackage")}
+            </button>
+          </div>
+        )}
+      </div>
       {isSeller && (
         <div className="text-xs text-gray-400 mb-4">{t("packages.sellerPriceHint")}</div>
       )}
@@ -349,7 +372,7 @@ export default function Packages() {
               </tr>
             </thead>
             <tbody>
-              {items.map((p) => (
+              {filteredItems.map((p) => (
                 <tr key={p.id}>
                   <td>
                     <div className="font-medium text-gray-800">{p.name}</div>
@@ -457,11 +480,11 @@ export default function Packages() {
                   </td>
                 </tr>
               ))}
-              {items.length === 0 && (
+              {filteredItems.length === 0 && (
                 <tr>
                   <td colSpan={6} className="empty-state">
                     <PackageIcon size={28} className="mx-auto mb-2 text-gray-300" />
-                    {t("packages.empty")}
+                    {items.length === 0 ? t("packages.empty") : t("common.noResults")}
                   </td>
                 </tr>
               )}
@@ -471,7 +494,7 @@ export default function Packages() {
 
         {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
         <div className="md:hidden divide-y divide-gray-100 dark:divide-slate-800">
-          {items.map((p) => (
+          {filteredItems.map((p) => (
             <div key={p.id} className="p-4">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
@@ -583,10 +606,10 @@ export default function Packages() {
               </div>
             </div>
           ))}
-          {items.length === 0 && (
+          {filteredItems.length === 0 && (
             <div className="empty-state">
               <PackageIcon size={28} className="mx-auto mb-2 text-gray-300" />
-              {t("packages.empty")}
+              {items.length === 0 ? t("packages.empty") : t("common.noResults")}
             </div>
           )}
         </div>
@@ -924,6 +947,7 @@ export default function Packages() {
  * "delete group" reads like it takes the packages with it.
  */
 function GroupsManager({ open, onClose, groups, onChanged, t }) {
+  const confirm = useConfirm();
   const [draft, setDraft] = useState({ name: "", description: "", sort_order: 0 });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -949,12 +973,12 @@ function GroupsManager({ open, onClose, groups, onChanged, t }) {
     });
   };
 
-  const remove = (group) => {
+  const remove = async (group) => {
     const count = group.package_count || 0;
     const warning = count
       ? t("packages.groupDeleteWithPackages").replace("{n}", count)
       : t("packages.groupDeleteConfirm");
-    if (!window.confirm(warning)) return;
+    if (!(await confirm({ message: warning, danger: true }))) return;
     run(() => deletePackageGroup(group.id));
   };
 

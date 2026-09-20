@@ -9,6 +9,7 @@ import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import ResetUsageDialog from "../components/ResetUsageDialog.jsx";
 import QuotaBar from "../components/QuotaBar.jsx";
+import { useConfirm } from "../components/ConfirmDialog.jsx";
 import {
   fetchUser,
   updateUser,
@@ -107,6 +108,7 @@ export default function UserDetail() {
   const { isSuperadmin } = useAuth();
   const { t, language } = useLanguage();
   const TYPE_META = buildTypeMeta(t);
+  const confirm = useConfirm();
   const navigate = useNavigate();
   const location = useLocation();
   const [user, setUser] = useState(null);
@@ -207,7 +209,7 @@ export default function UserDetail() {
   const [deletingPurchaseId, setDeletingPurchaseId] = useState(null);
   const removePurchase = async (purchase) => {
     const label = purchase.package_name_snapshot || t("userDetail.purchaseUsageHeading");
-    if (!confirm(t("userDetail.deleteServiceConfirm", { name: label }))) return;
+    if (!(await confirm({ message: t("userDetail.deleteServiceConfirm", { name: label }), danger: true }))) return;
     setDeletingPurchaseId(purchase.id);
     try {
       await deletePurchase(user.id, purchase.id);
@@ -578,7 +580,7 @@ export default function UserDetail() {
   };
 
   const removeConnection = async (connId) => {
-    if (!confirm(t("userDetail.deleteConnConfirm"))) return;
+    if (!(await confirm({ message: t("userDetail.deleteConnConfirm"), danger: true }))) return;
     await deleteConnection(user.id, connId);
     load();
   };
@@ -606,7 +608,7 @@ export default function UserDetail() {
   };
 
   const onRegenerateSubLink = async () => {
-    if (!window.confirm(t("userDetail.regenerateLinkConfirm"))) return;
+    if (!(await confirm({ message: t("userDetail.regenerateLinkConfirm"), danger: true }))) return;
     setSubLinkBusy(true);
     try {
       const res = await regenerateSubscriptionLink(user.id);
@@ -720,7 +722,7 @@ export default function UserDetail() {
 
   const toggleConnEnabled = async (c) => {
     const next = !c.enabled;
-    if (!next && !confirm(t("userDetail.disableConnConfirm"))) return;
+    if (!next && !(await confirm({ message: t("userDetail.disableConnConfirm"), danger: true }))) return;
     try {
       await updateConnection(user.id, c.id, { enabled: next });
       load();

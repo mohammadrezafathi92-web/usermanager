@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from "react";
-import { Plus, Pencil, Trash2, ShieldCheck, Users as UsersIcon, Link2, Wallet, Send, Wand2, Eye, EyeOff, UsersRound, History, TrendingUp, TrendingDown, MapPin, CheckCircle2, XCircle, Database, Server } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Plus, Pencil, Trash2, ShieldCheck, Users as UsersIcon, Link2, Wallet, Send, Wand2, Eye, EyeOff, UsersRound, History, TrendingUp, TrendingDown, MapPin, CheckCircle2, XCircle, Database, Server, Search } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
+import { useConfirm } from "../components/ConfirmDialog.jsx";
 import {
   fetchAdmins,
   fetchPermissionChoices,
@@ -70,7 +71,18 @@ export default function Admins() {
   const formatToman = (n) => formatTomanUtil(n, language);
   const formatGb = (n) => formatGbUtil(n, language);
   const { isSuperadmin, adminId } = useAuth();
+  const confirm = useConfirm();
   const [items, setItems] = useState([]);
+  const [searchInput, setSearchInput] = useState("");
+  const filteredItems = useMemo(() => {
+    const q = searchInput.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter(
+      (a) =>
+        (a.username || "").toLowerCase().includes(q) ||
+        (a.parent_admin_username || "").toLowerCase().includes(q)
+    );
+  }, [items, searchInput]);
   const [choices, setChoices] = useState({});
   const [permGroups, setPermGroups] = useState({});
   const [open, setOpen] = useState(false);
@@ -353,7 +365,7 @@ export default function Admins() {
       // A failed preview must not block the delete - it is an explanation,
       // not a permission check.
     }
-    if (!confirm(t("admins.deleteConfirm", { name: admin.username }) + detail)) return;
+    if (!(await confirm({ message: t("admins.deleteConfirm", { name: admin.username }) + detail, danger: true }))) return;
     await deleteAdmin(admin.id);
     load();
   };
@@ -400,7 +412,7 @@ export default function Admins() {
   };
 
   const onDeleteGroup = async (g) => {
-    if (!confirm(t("admins.deleteGroupConfirm", { name: g.name }))) return;
+    if (!(await confirm({ message: t("admins.deleteGroupConfirm", { name: g.name }), danger: true }))) return;
     await deleteAdminGroup(g.id);
     loadGroups();
     load();
@@ -447,7 +459,16 @@ export default function Admins() {
         )}
       </div>
 
-      <div className="flex justify-end mb-4">
+      <div className="flex items-center gap-2 flex-wrap justify-between mb-4">
+        <div className="relative">
+          <Search className="absolute end-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
+          <input
+            className="input pe-9 !w-full sm:!w-56"
+            placeholder={t("admins.search")}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+          />
+        </div>
         <button className="btn-primary" onClick={openCreate}>
           <Plus size={16} /> {t("admins.newAdmin")}
         </button>
@@ -470,7 +491,7 @@ export default function Admins() {
               </tr>
             </thead>
             <tbody>
-              {items.map((a) => (
+              {filteredItems.map((a) => (
                 <tr key={a.id}>
                   <td className="font-medium text-gray-800">{a.username}</td>
                   <td>
@@ -555,10 +576,10 @@ export default function Admins() {
                   </td>
                 </tr>
               ))}
-              {items.length === 0 && (
+              {filteredItems.length === 0 && (
                 <tr>
                   <td colSpan={8} className="empty-state">
-                    {t("admins.empty")}
+                    {items.length === 0 ? t("admins.empty") : t("common.noResults")}
                   </td>
                 </tr>
               )}
@@ -568,7 +589,7 @@ export default function Admins() {
 
         {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
         <div className="md:hidden divide-y divide-gray-100 dark:divide-slate-800">
-          {items.map((a) => (
+          {filteredItems.map((a) => (
             <div key={a.id} className="p-4">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
@@ -655,7 +676,9 @@ export default function Admins() {
               )}
             </div>
           ))}
-          {items.length === 0 && <div className="empty-state">{t("admins.empty")}</div>}
+          {filteredItems.length === 0 && (
+            <div className="empty-state">{items.length === 0 ? t("admins.empty") : t("common.noResults")}</div>
+          )}
         </div>
       </div>
 

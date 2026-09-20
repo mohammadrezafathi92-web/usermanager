@@ -8,6 +8,7 @@ import DbHealthCard from "../components/DbHealthCard.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import PanelTlsCard from "../components/PanelTlsCard.jsx";
+import { useConfirm } from "../components/ConfirmDialog.jsx";
 import {
   changePassword,
   changeUsername,
@@ -226,6 +227,7 @@ function TimezoneCard({ t }) {
 export default function Settings() {
   const { isSuperadmin, isAdminOrAbove, username, telegramId, refreshMe } = useAuth();
   const { t, language } = useLanguage();
+  const confirm = useConfirm();
 
   // Menu audit (3-tier hierarchy, task #26): tab visibility no longer
   // depends on the now-removed manage_bot_settings/manage_payment_settings
@@ -381,9 +383,10 @@ export default function Settings() {
 
   const onChangePort = async () => {
     if (
-      !window.confirm(
-        t("settings.confirmPortChange", { oldPort: portForm.panel_web_port || 80, newPort })
-      )
+      !(await confirm({
+        message: t("settings.confirmPortChange", { oldPort: portForm.panel_web_port || 80, newPort }),
+        danger: true,
+      }))
     ) {
       return;
     }
@@ -422,7 +425,7 @@ export default function Settings() {
 
   const onResolveHa = async () => {
     if (
-      !window.confirm(t("settings.confirmResolveHa"))
+      !(await confirm({ message: t("settings.confirmResolveHa"), danger: true }))
     ) {
       return;
     }
@@ -476,7 +479,7 @@ export default function Settings() {
     await reloadPaymentCards();
   };
   const deletePaymentCardHandler = async (id) => {
-    if (!window.confirm(t("settings.confirmDeleteCard"))) return;
+    if (!(await confirm({ message: t("settings.confirmDeleteCard"), danger: true }))) return;
     await deletePaymentCard(id);
     await reloadPaymentCards();
   };
@@ -571,7 +574,7 @@ export default function Settings() {
   };
 
   const onDeleteKey = async (id) => {
-    if (!confirm(t("settings.confirmDeleteKey"))) return;
+    if (!(await confirm({ message: t("settings.confirmDeleteKey"), danger: true }))) return;
     await deleteApiKey(id);
     loadKeys();
   };
@@ -757,7 +760,7 @@ export default function Settings() {
     e.target.value = "";
     if (!file) return;
     if (
-      !window.confirm(t("settings.confirmRestore"))
+      !(await confirm({ message: t("settings.confirmRestore"), danger: true }))
     ) {
       return;
     }
@@ -1939,6 +1942,7 @@ function OwnBotCard({ t }) {
 // ALL_SETTINGS_TABS), but the fetch would 403 for a non-superadmin anyway
 // (routers/ip_bans.py), so nothing relies on that alone.
 function IpBansCard({ t, language }) {
+  const confirm = useConfirm();
   const [bans, setBans] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -1963,8 +1967,8 @@ function IpBansCard({ t, language }) {
     load();
   }, []);
 
-  const onUnban = (ip) => {
-    if (!window.confirm(t("ipBans.confirmUnban"))) return;
+  const onUnban = async (ip) => {
+    if (!(await confirm({ message: t("ipBans.confirmUnban"), danger: true }))) return;
     removeIpBan(ip).then(load);
   };
 
@@ -2334,6 +2338,7 @@ function PaymentCardsManager({
 // back to the panel-wide default automatically - no need to duplicate the
 // support text or leave a field "wrong" just to have something in it.
 function OwnPaymentCard({ t }) {
+  const confirm = useConfirm();
   const [form, setForm] = useState({ payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "", support_contact_text: "" });
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -2386,7 +2391,7 @@ function OwnPaymentCard({ t }) {
     await reloadCards();
   };
   const deleteCard = async (id) => {
-    if (!window.confirm(t("settings.confirmDeleteCard"))) return;
+    if (!(await confirm({ message: t("settings.confirmDeleteCard"), danger: true }))) return;
     await deleteMyPaymentCard(id);
     await reloadCards();
   };

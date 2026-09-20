@@ -1,9 +1,11 @@
-import React, { useEffect, useState } from "react";
-import { Plus, Trash2, Pencil, Wifi, Globe, PlugZap, CheckCircle2, XCircle, Power, X, Cpu, MemoryStick, HardDrive, Clock } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Plus, Trash2, Pencil, Wifi, Globe, PlugZap, CheckCircle2, XCircle, Power, X, Cpu, MemoryStick, HardDrive, Clock, Search } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import UsageBar from "../components/UsageBar.jsx";
+import { useConfirm } from "../components/ConfirmDialog.jsx";
+import { useToast } from "../components/Toast.jsx";
 import { fetchNodes, fetchNodeResources, createNode, updateNode, deleteNode, testNode, pushRadiusConfig, pushSstpConfig, pushL2tpConfig, pushIkev2Config, importPppUsers, importUserManagerUsers, import3xuiClients, rebuildNodeClients } from "../api/client.js";
 import { formatDateTime } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
@@ -77,7 +79,15 @@ function ResourceRow({ icon: Icon, label, percent, text }) {
 export default function Nodes() {
   const { t, language } = useLanguage();
   const { isSuperadmin, adminId } = useAuth();
+  const confirm = useConfirm();
+  const toast = useToast();
   const [nodes, setNodes] = useState([]);
+  const [searchInput, setSearchInput] = useState("");
+  const filteredNodes = useMemo(() => {
+    const q = searchInput.trim().toLowerCase();
+    if (!q) return nodes;
+    return nodes.filter((n) => (n.name || "").toLowerCase().includes(q));
+  }, [nodes, searchInput]);
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm);
@@ -234,7 +244,7 @@ export default function Nodes() {
 
   const onImportPpp = async () => {
     if (!editingId) return;
-    if (!confirm(t("nodes.importPppConfirm"))) return;
+    if (!(await confirm(t("nodes.importPppConfirm")))) return;
     setImportStatus("loading");
     setImportResult(null);
     try {
@@ -248,7 +258,7 @@ export default function Nodes() {
 
   const onImportUm = async () => {
     if (!editingId) return;
-    if (!confirm(t("nodes.importUmConfirm"))) return;
+    if (!(await confirm(t("nodes.importUmConfirm")))) return;
     setUmImportStatus("loading");
     setUmImportResult(null);
     try {
@@ -262,7 +272,7 @@ export default function Nodes() {
 
   const onImportXui = async () => {
     if (!editingId) return;
-    if (!confirm(t("nodes.importXuiConfirm"))) return;
+    if (!(await confirm(t("nodes.importXuiConfirm")))) return;
     setXuiImportStatus("loading");
     setXuiImportResult(null);
     try {
@@ -281,7 +291,7 @@ export default function Nodes() {
   const [rebuildResult, setRebuildResult] = useState(null);
   const onRebuildClients = async () => {
     if (!editingId) return;
-    if (!confirm(t("nodes.rebuildConfirm"))) return;
+    if (!(await confirm(t("nodes.rebuildConfirm")))) return;
     setRebuildStatus("loading");
     setRebuildResult(null);
     try {
@@ -376,18 +386,18 @@ export default function Nodes() {
   };
 
   const onDelete = async (id) => {
-    if (!confirm(t("nodes.deleteConfirm"))) return;
+    if (!(await confirm({ message: t("nodes.deleteConfirm"), danger: true }))) return;
     try {
       await deleteNode(id);
       load();
     } catch (err) {
-      alert(err?.response?.data?.detail || t("nodes.deleteError"));
+      toast.error(err?.response?.data?.detail || t("nodes.deleteError"));
     }
   };
 
   const onToggleEnabled = async (node) => {
     const next = !node.enabled;
-    if (!next && !confirm(t("nodes.disableConfirm", { name: node.name }))) {
+    if (!next && !(await confirm({ message: t("nodes.disableConfirm", { name: node.name }), danger: true }))) {
       return;
     }
     setTogglingId(node.id);
@@ -396,7 +406,7 @@ export default function Nodes() {
     try {
       await updateNode(node.id, { enabled: next });
     } catch (err) {
-      alert(err?.response?.data?.detail || t("nodes.toggleError"));
+      toast.error(err?.response?.data?.detail || t("nodes.toggleError"));
       setNodes((ns) => ns.map((n) => (n.id === node.id ? { ...n, enabled: node.enabled } : n)));
     } finally {
       setTogglingId(null);
@@ -417,14 +427,23 @@ export default function Nodes() {
     <Layout>
       <Topbar title={t("nodes.title")} subtitle={t("nodes.subtitle")} />
 
-      <div className="flex justify-end mb-4">
+      <div className="flex items-center gap-2 flex-wrap justify-between mb-4">
+        <div className="relative">
+          <Search className="absolute end-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
+          <input
+            className="input pe-9 !w-full sm:!w-56"
+            placeholder={t("nodes.search")}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+          />
+        </div>
         <button className="btn-primary" onClick={openCreate}>
           <Plus size={16} /> {t("nodes.addServer")}
         </button>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {nodes.map((n) => {
+        {filteredNodes.map((n) => {
           const res = resources[n.id];
           return (
 
@@ -530,7 +549,11 @@ export default function Nodes() {
           </div>
           );
         })}
-        {nodes.length === 0 && <div className="card text-center text-gray-400 col-span-2 py-10">{t("nodes.empty")}</div>}
+        {filteredNodes.length === 0 && (
+          <div className="card text-center text-gray-400 col-span-2 py-10">
+            {nodes.length === 0 ? t("nodes.empty") : t("common.noResults")}
+          </div>
+        )}
       </div>
 
       <Modal open={open} onClose={() => setOpen(false)} title={editingId ? t("nodes.editModal") : t("nodes.newModal")} width="max-w-2xl">

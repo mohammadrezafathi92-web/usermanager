@@ -7,6 +7,7 @@ import MoneyInput from "../components/MoneyInput.jsx";
 import JalaliDateInput from "../components/JalaliDateInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import StatCard from "../components/StatCard.jsx";
+import { useConfirm } from "../components/ConfirmDialog.jsx";
 import {
   fetchAccountingSummary,
   fetchAccountingSeries,
@@ -87,6 +88,7 @@ export default function Accounting() {
   const { t, language } = useLanguage();
   const fmt = (n) => formatToman(n, language);
   const { isSuperadmin, isAdminOrAbove, wallet } = useAuth();
+  const confirm = useConfirm();
   const [tab, setTab] = useState("dashboard");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -154,7 +156,7 @@ export default function Accounting() {
 
   const [resetting, setResetting] = useState(false);
   const doResetReceivables = async () => {
-    if (!window.confirm(t("accounting.resetConfirm"))) return;
+    if (!(await confirm({ message: t("accounting.resetConfirm"), danger: true }))) return;
     setResetting(true);
     try {
       await resetAccountingReceivables();
@@ -298,7 +300,7 @@ export default function Accounting() {
   };
 
   const removeExpense = async (id) => {
-    if (!window.confirm(t("accounting.deleteExpenseConfirm"))) return;
+    if (!(await confirm({ message: t("accounting.deleteExpenseConfirm"), danger: true }))) return;
     await deleteAccountingExpense(id);
     loadExpenses();
     loadSummary();

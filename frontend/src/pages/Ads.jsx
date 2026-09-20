@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from "react";
-import { Megaphone, Plus, Pencil, Trash2, Send, Eye, Image as ImageIcon, X, Check, CalendarClock, Download } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Megaphone, Plus, Pencil, Trash2, Send, Eye, Image as ImageIcon, X, Check, CalendarClock, Download, Search } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
@@ -28,6 +28,14 @@ export default function Ads() {
   const [flash, setFlash] = useState("");
   const [importing, setImporting] = useState(false);
   const [schedule, setSchedule] = useState(null);
+  const [searchInput, setSearchInput] = useState("");
+  const filteredPosts = useMemo(() => {
+    const q = searchInput.trim().toLowerCase();
+    if (!q) return posts;
+    return posts.filter(
+      (p) => (p.title || "").toLowerCase().includes(q) || (p.body || "").toLowerCase().includes(q)
+    );
+  }, [posts, searchInput]);
 
   // The schedule is derived from the channel settings AND the posts, so it
   // is refreshed alongside them rather than on its own timer - a stale
@@ -250,12 +258,21 @@ export default function Ads() {
         </div>
       )}
 
-      <div className="flex items-center justify-between mb-2 gap-2">
+      <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
         <div>
           <div className="section-title">{t("ads.postsTitle")}</div>
           <div className="hint">{t("ads.postsHint")}</div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+          <div className="relative">
+            <Search className="absolute end-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
+            <input
+              className="input pe-9 !w-full sm:!w-56"
+              placeholder={t("ads.search")}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+            />
+          </div>
           {/* Imported adverts arrive DISABLED - see the endpoint's docstring. */}
           <button className="btn-secondary" disabled={importing} onClick={doImportDefaults}>
             <Download size={16} /> {importing ? t("common.loading") : t("ads.importDefaults")}
@@ -268,11 +285,11 @@ export default function Ads() {
 
       {flash && <div className="mb-3 text-sm text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950 rounded-lg px-3 py-2">{flash}</div>}
 
-      {posts.length === 0 ? (
-        <div className="card empty-state">{t("ads.none")}</div>
+      {filteredPosts.length === 0 ? (
+        <div className="card empty-state">{posts.length === 0 ? t("ads.none") : t("common.noResults")}</div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
-          {posts.map((p) => (
+          {filteredPosts.map((p) => (
             <div key={p.id} className={`card ${p.enabled ? "" : "opacity-60"}`}>
               <div className="flex items-start justify-between gap-2 mb-2">
                 <div className="min-w-0">

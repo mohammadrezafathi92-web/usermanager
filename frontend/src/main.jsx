@@ -4,6 +4,8 @@ import { BrowserRouter } from "react-router-dom";
 import App from "./App.jsx";
 import { AuthProvider } from "./context/AuthContext.jsx";
 import { LanguageProvider } from "./context/LanguageContext.jsx";
+import { ConfirmProvider } from "./components/ConfirmDialog.jsx";
+import { ToastProvider } from "./components/Toast.jsx";
 import "./index.css";
 
 // جلوگیری از تغییر مقدار فیلدهای عددی با اسکرول ماوس: وقتی روی یک
@@ -24,9 +26,13 @@ ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <BrowserRouter>
       <LanguageProvider>
-        <AuthProvider>
-          <App />
-        </AuthProvider>
+        <ToastProvider>
+          <ConfirmProvider>
+            <AuthProvider>
+              <App />
+            </AuthProvider>
+          </ConfirmProvider>
+        </ToastProvider>
       </LanguageProvider>
     </BrowserRouter>
   </React.StrictMode>

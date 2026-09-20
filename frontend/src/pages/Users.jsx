@@ -16,6 +16,8 @@ import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import ResetUsageDialog from "../components/ResetUsageDialog.jsx";
 import QuotaBar from "../components/QuotaBar.jsx";
+import { useConfirm } from "../components/ConfirmDialog.jsx";
+import { useToast } from "../components/Toast.jsx";
 import {
   fetchUsers,
   fetchUserIds,
@@ -101,6 +103,8 @@ export default function Users() {
   const loadSeq = useRef(0);
   const { isSuperadmin } = useAuth();
   const { t, language } = useLanguage();
+  const confirm = useConfirm();
+  const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [users, setUsers] = useState([]);
   const [total, setTotal] = useState(0);
@@ -190,7 +194,7 @@ export default function Users() {
         (res.headers["content-disposition"] || "").match(/filename="?([^"]+)"?/)?.[1] || "users_export.xlsx";
       downloadBlob(filename, res.data);
     } catch (err) {
-      alert(t("users.exportError"));
+      toast.error(t("users.exportError"));
     } finally {
       setExporting(false);
     }
@@ -340,7 +344,7 @@ export default function Users() {
   };
 
   const onDelete = async (id) => {
-    if (!confirm(t("users.confirmDeleteUser"))) return;
+    if (!(await confirm({ message: t("users.confirmDeleteUser"), danger: true }))) return;
     try {
       await deleteUser(id);
     } catch (err) {
@@ -348,7 +352,7 @@ export default function Users() {
       // currently unreachable, so its config can't be removed remotely
       // (see routers/users.py's delete_user) - used to fail with nothing
       // shown at all, identical to the button just not working.
-      alert(err?.response?.data?.detail || t("users.deleteUserError"));
+      toast.error(err?.response?.data?.detail || t("users.deleteUserError"));
       return;
     }
     // Deleting the last remaining user on a page beyond page 1 (e.g. page 3
@@ -420,7 +424,7 @@ export default function Users() {
 
   const onBulkDelete = async () => {
     if (selected.size === 0) return;
-    if (!confirm(t("users.confirmBulkDelete", { count: selected.size }))) return;
+    if (!(await confirm({ message: t("users.confirmBulkDelete", { count: selected.size }), danger: true }))) return;
     try {
       const res = await bulkDeleteUsers(Array.from(selected));
       clearSelection();
@@ -434,14 +438,15 @@ export default function Users() {
       // "چرا حذف نشد" has an actual answer instead of silence.
       if (res.data.failed_count > 0) {
         const reasons = res.data.failed.map((f) => `${f.username}: ${f.reason}`).join("\n");
-        alert(
+        toast.error(
           t("users.bulkDeletePartialFailure", { deleted: res.data.deleted_count, failed: res.data.failed_count }) +
             "\n\n" +
-            reasons
+            reasons,
+          7000
         );
       }
     } catch (err) {
-      alert(err?.response?.data?.detail || t("users.bulkDeleteError"));
+      toast.error(err?.response?.data?.detail || t("users.bulkDeleteError"));
     }
   };
 

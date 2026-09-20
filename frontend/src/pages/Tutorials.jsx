@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from "react";
-import { Plus, Pencil, Trash2, Power, GraduationCap, ImagePlus, Video, Download, Link2, FileUp } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Plus, Pencil, Trash2, Power, GraduationCap, ImagePlus, Video, Download, Link2, FileUp, Search } from "lucide-react";
 import Layout from "../components/Layout.jsx";
+import { useConfirm } from "../components/ConfirmDialog.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import {
@@ -37,7 +38,16 @@ export default function Tutorials() {
   // endpoint). A level-3 Seller still reaches this page (view_tutorials)
   // and sees the same read-only list their customers would in the bot.
   const { isAdminOrAbove } = useAuth();
+  const confirm = useConfirm();
   const [items, setItems] = useState([]);
+  const [searchInput, setSearchInput] = useState("");
+  const filteredItems = useMemo(() => {
+    const q = searchInput.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter(
+      (item) => (item.title || "").toLowerCase().includes(q) || (item.text || "").toLowerCase().includes(q)
+    );
+  }, [items, searchInput]);
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm);
@@ -189,7 +199,7 @@ export default function Tutorials() {
   };
 
   const onDelete = async (id) => {
-    if (!confirm(t("tutorials.deleteConfirm"))) return;
+    if (!(await confirm({ message: t("tutorials.deleteConfirm"), danger: true }))) return;
     await deleteTutorial(id);
     load();
   };
@@ -203,18 +213,29 @@ export default function Tutorials() {
     <Layout>
       <Topbar title={t("tutorials.title")} subtitle={t("tutorials.subtitle")} />
 
-      {isAdminOrAbove && (
-      <div className="flex justify-end mb-4 gap-2">
-        {/* Adds the ready-made set that ships with the panel. Safe to press
-            twice - anything already in the list by title is skipped. */}
-        <button className="btn-secondary" disabled={importing} onClick={doImportDefaults}>
-          <Download size={16} /> {importing ? t("common.loading") : t("tutorials.importDefaults")}
-        </button>
-        <button className="btn-primary" onClick={openCreate}>
-          <Plus size={16} /> {t("tutorials.newTutorial")}
-        </button>
+      <div className="flex items-center gap-2 flex-wrap justify-between mb-4">
+        <div className="relative">
+          <Search className="absolute end-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
+          <input
+            className="input pe-9 !w-full sm:!w-56"
+            placeholder={t("tutorials.search")}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+          />
+        </div>
+        {isAdminOrAbove && (
+        <div className="flex gap-2">
+          {/* Adds the ready-made set that ships with the panel. Safe to press
+              twice - anything already in the list by title is skipped. */}
+          <button className="btn-secondary" disabled={importing} onClick={doImportDefaults}>
+            <Download size={16} /> {importing ? t("common.loading") : t("tutorials.importDefaults")}
+          </button>
+          <button className="btn-primary" onClick={openCreate}>
+            <Plus size={16} /> {t("tutorials.newTutorial")}
+          </button>
+        </div>
+        )}
       </div>
-      )}
       {importMsg && (
         <div className="mb-4 text-sm text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950 rounded-lg px-3 py-2">{importMsg}</div>
       )}
@@ -233,7 +254,7 @@ export default function Tutorials() {
               </tr>
             </thead>
             <tbody>
-              {items.map((item) => (
+              {filteredItems.map((item) => (
                 <tr key={item.id}>
                   <td>
                     <div className="font-medium text-gray-800">{item.title}</div>
@@ -265,11 +286,11 @@ export default function Tutorials() {
                   </td>
                 </tr>
               ))}
-              {items.length === 0 && (
+              {filteredItems.length === 0 && (
                 <tr>
                   <td colSpan={5} className="empty-state">
                     <GraduationCap size={28} className="mx-auto mb-2 text-gray-300" />
-                    {t("tutorials.empty")}
+                    {items.length === 0 ? t("tutorials.empty") : t("common.noResults")}
                   </td>
                 </tr>
               )}
@@ -279,7 +300,7 @@ export default function Tutorials() {
 
         {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
         <div className="md:hidden divide-y divide-gray-100 dark:divide-slate-800">
-          {items.map((item) => (
+          {filteredItems.map((item) => (
             <div key={item.id} className="p-4">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
@@ -309,10 +330,10 @@ export default function Tutorials() {
               </div>
             </div>
           ))}
-          {items.length === 0 && (
+          {filteredItems.length === 0 && (
             <div className="empty-state">
               <GraduationCap size={28} className="mx-auto mb-2 text-gray-300" />
-              {t("tutorials.empty")}
+              {items.length === 0 ? t("tutorials.empty") : t("common.noResults")}
             </div>
           )}
         </div>

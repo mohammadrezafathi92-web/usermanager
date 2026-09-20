@@ -95,10 +95,10 @@ const linkGroups = [
 ];
 
 const navItemClass = ({ isActive }) =>
-  `flex items-center gap-3 rounded-xl px-3 min-h-11 text-sm font-medium transition-colors ${
+  `flex items-center gap-3 rounded-xl px-3 min-h-11 text-sm font-medium transition-all duration-150 ${
     isActive
-      ? "bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400"
-      : "text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-800"
+      ? "bg-brand-500/10 text-brand-700 ring-1 ring-inset ring-brand-500/25 shadow-glow-sm dark:bg-brand-500/15 dark:text-brand-300 dark:ring-brand-500/30"
+      : "text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-800/70"
   }`;
 
 export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
@@ -204,12 +204,12 @@ export default function Sidebar({ mobileOpen = false, onClose = () => {} }) {
         aria-modal={mobileOpen ? true : undefined}
         aria-label={t("nav.appName")}
         className={`fixed md:sticky top-0 start-0 z-50 md:z-auto h-screen w-72 sm:w-64 flex flex-col
-        bg-white border-e border-gray-200/70 dark:bg-slate-900 dark:border-slate-800
+        bg-white border-e border-gray-200/70 dark:bg-slate-900/85 dark:backdrop-blur-xl dark:border-slate-800
         transition-transform duration-200 md:translate-x-0 focus:outline-none
         ${mobileOpen ? "translate-x-0" : offCanvas}`}
       >
         <div className="flex items-center gap-2 px-5 py-5">
-          <div className="w-9 h-9 rounded-xl bg-brand-600 flex items-center justify-center text-white shrink-0">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-400 to-brand-600 shadow-glow-sm flex items-center justify-center text-white shrink-0">
             <Network size={18} />
           </div>
           <div className="flex-1 min-w-0">

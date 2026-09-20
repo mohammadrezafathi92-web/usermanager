@@ -40,6 +40,18 @@
     @apply bg-slate-100 text-gray-800 antialiased dark:bg-[#0b0d13] dark:text-gray-100;
   }
 
+  /* Ambient depth cue for dark mode only - two soft, static radial washes
+     pinned to the top corners. Never a light-mode rule (would just look
+     like a dirty background on white) and never animated: it is décor, not
+     motion, and decorative-only animation is exactly what the reduced-motion
+     rule below exists to strip out anyway. */
+  .dark body {
+    background-image:
+      radial-gradient(60rem 32rem at 14% -12%, rgba(99, 102, 241, 0.15), transparent 60%),
+      radial-gradient(46rem 26rem at 100% 0%, rgba(34, 211, 238, 0.07), transparent 55%);
+    background-repeat: no-repeat;
+  }
+
   /* Keyboard-only focus ring. Applied globally so every button/link/field is
      reachable without a mouse - previously only .input had any focus style,
      which made keyboard navigation effectively invisible. */
@@ -89,13 +101,13 @@
 @layer components {
   /* ---------------------------------------------------------------- surfaces */
   .card {
-    @apply bg-white rounded-2xl shadow-sm border border-gray-200/70 p-4 sm:p-5
-           dark:bg-slate-900 dark:border-slate-800;
+    @apply bg-white rounded-2xl shadow-card border border-gray-200/70 p-4 sm:p-5
+           dark:bg-slate-900/80 dark:backdrop-blur dark:border-slate-800 dark:shadow-card-dark;
   }
   /* For cards that are themselves clickable (list rows, node tiles). */
   .card-hover {
-    @apply transition-shadow hover:shadow-md hover:border-gray-300/70
-           dark:hover:border-slate-700;
+    @apply transition-all duration-200 hover:shadow-glow-sm hover:border-brand-300/60
+           dark:hover:border-brand-500/40;
   }
   .card-muted {
     @apply bg-gray-50/70 rounded-xl border border-gray-200/70 p-4
@@ -105,16 +117,21 @@
   /* ---------------------------------------------------------------- buttons */
   .btn {
     @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 text-sm font-medium
-           min-h-11 sm:min-h-9 transition-colors select-none
-           disabled:opacity-50 disabled:cursor-not-allowed;
+           min-h-11 sm:min-h-9 transition-all duration-150 select-none
+           active:scale-[0.98]
+           disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100;
   }
   /* Dense variant for buttons inside table rows / toolbars. Still 40px on
      touch screens - only the desktop size drops. */
   .btn-sm {
     @apply px-3 text-xs gap-1.5 min-h-10 sm:min-h-8 rounded-lg;
   }
+  /* The one gradient surface in the whole panel, on purpose: it is the
+     "primary action" signal, and only reads as one if nothing else competes
+     with it - secondary/outline/ghost stay flat below. */
   .btn-primary {
-    @apply btn bg-brand-600 text-white shadow-sm hover:bg-brand-700 active:bg-brand-800;
+    @apply btn text-white bg-gradient-to-b from-brand-500 to-brand-600 shadow-glow-sm
+           hover:from-brand-500 hover:to-brand-700 hover:shadow-glow active:to-brand-800;
   }
   .btn-secondary {
     @apply btn bg-gray-100 text-gray-700 hover:bg-gray-200 active:bg-gray-300
@@ -192,9 +209,13 @@
   }
 
   /* ----------------------------------------------------------------- badges */
+  /* ring-current picks up whichever text color each variant below sets, so
+     one line here gives every badge a faint self-colored outline (a common
+     "chip" cue in fintech dashboards) without repeating a ring color per
+     variant. */
   .badge {
     @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium
-           whitespace-nowrap;
+           whitespace-nowrap ring-1 ring-inset ring-current ring-opacity-15;
   }
   .badge-success {
     @apply badge bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400;
@@ -223,16 +244,17 @@
     @apply w-full min-w-[40rem] text-sm;
   }
   .table-wrap th {
-    @apply text-start text-xs font-medium text-gray-500 whitespace-nowrap px-3 py-2.5;
+    @apply text-start text-xs font-semibold uppercase tracking-wide text-gray-400 whitespace-nowrap
+           px-3 py-2.5 border-b border-gray-200/70 dark:border-slate-800 dark:text-gray-500;
   }
   .table-wrap td {
     @apply px-3 py-2.5 align-middle;
   }
   .table-wrap tbody tr {
-    @apply border-t border-gray-100 dark:border-slate-800;
+    @apply border-t border-gray-100 dark:border-slate-800/70 transition-colors;
   }
   .table-wrap tbody tr:hover {
-    @apply bg-gray-50/70 dark:bg-slate-800/40;
+    @apply bg-brand-50/40 dark:bg-brand-500/[0.06];
   }
 
   /* ------------------------------------------------------------ page layout */

@@ -45,11 +45,18 @@ export default function Topbar({ title, subtitle, actions = null }) {
       </div>
       <div className="flex items-center gap-2 sm:gap-3 shrink-0">
         {actions}
-        <div className="hidden sm:flex items-center gap-2 bg-white rounded-xl border border-gray-200/70 px-3 py-2 text-sm text-gray-600 dark:bg-slate-900 dark:border-slate-800 dark:text-gray-300">
-          <User size={16} />
+        <div className="hidden sm:flex items-center gap-2 bg-white rounded-xl border border-gray-200/70 px-3 py-2 text-sm text-gray-600 shadow-card dark:bg-slate-900/80 dark:backdrop-blur dark:border-slate-800 dark:text-gray-300 dark:shadow-card-dark">
+          <span className="w-6 h-6 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white shrink-0">
+            <User size={13} />
+          </span>
           <span className="max-w-[10rem] truncate">{username || t("topbar.admin")}</span>
         </div>
-        <button onClick={logout} className="btn-secondary btn-icon" title={t("topbar.logout")} aria-label={t("topbar.logout")}>
+        <button
+          onClick={logout}
+          className="btn-secondary btn-icon hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950 dark:hover:text-red-400"
+          title={t("topbar.logout")}
+          aria-label={t("topbar.logout")}
+        >
           <LogOut size={18} />
         </button>
       </div>

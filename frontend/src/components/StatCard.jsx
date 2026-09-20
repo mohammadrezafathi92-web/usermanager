@@ -10,10 +10,12 @@ import React from "react";
  */
 export default function StatCard({ icon: Icon, label, value, tone = "brand", hint, onClick }) {
   const tones = {
-    brand: "bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400",
-    emerald: "bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400",
-    amber: "bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400",
-    red: "bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400",
+    brand: "bg-gradient-to-br from-brand-400/20 to-brand-600/10 text-brand-600 ring-1 ring-inset ring-brand-500/15 dark:from-brand-400/25 dark:to-brand-600/10 dark:text-brand-400",
+    emerald:
+      "bg-gradient-to-br from-emerald-400/20 to-emerald-600/10 text-emerald-600 ring-1 ring-inset ring-emerald-500/15 dark:from-emerald-400/25 dark:to-emerald-600/10 dark:text-emerald-400",
+    amber:
+      "bg-gradient-to-br from-amber-400/20 to-amber-600/10 text-amber-600 ring-1 ring-inset ring-amber-500/15 dark:from-amber-400/25 dark:to-amber-600/10 dark:text-amber-400",
+    red: "bg-gradient-to-br from-red-400/20 to-red-600/10 text-red-600 ring-1 ring-inset ring-red-500/15 dark:from-red-400/25 dark:to-red-600/10 dark:text-red-400",
   };
   const Comp = onClick ? "button" : "div";
   return (
@@ -36,7 +38,7 @@ export default function StatCard({ icon: Icon, label, value, tone = "brand", hin
         {React.isValidElement(Icon) ? Icon : Icon ? <Icon size={22} /> : null}
       </div>
       <div className="min-w-0">
-        <div className="text-xl sm:text-2xl font-bold text-gray-800 dark:text-gray-100 tnum truncate">{value}</div>
+        <div className="text-xl sm:text-2xl font-bold font-mono text-gray-800 dark:text-gray-100 tnum truncate">{value}</div>
         <div className="text-sm text-gray-400 truncate">{label}</div>
         {hint && <div className="text-xs text-gray-400 mt-0.5 truncate">{hint}</div>}
       </div>

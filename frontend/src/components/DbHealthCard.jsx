@@ -29,7 +29,9 @@ export default function DbHealthCard({ t, language }) {
     <div className="card mb-4">
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
-          <Database size={18} className="text-brand-600" />
+          <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+            <Database size={15} />
+          </span>
           <h3 className="font-bold text-gray-700">{t("dbHealth.title")}</h3>
         </div>
         <button type="button" className="btn-primary" disabled={running} onClick={run}>
@@ -39,7 +41,7 @@ export default function DbHealthCard({ t, language }) {
       </div>
       <p className="text-xs text-gray-400 mb-4">{t("dbHealth.subtitle")}</p>
 
-      {error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2 mb-4">{error}</div>}
+      {error && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2 mb-4">{error}</div>}
 
       {report && (
         <div className="space-y-3">
@@ -48,7 +50,7 @@ export default function DbHealthCard({ t, language }) {
           </div>
 
           {report.healthy ? (
-            <div className="flex items-center gap-2 text-sm text-emerald-600 bg-emerald-50 rounded-lg px-3 py-3">
+            <div className="flex items-center gap-2 text-sm text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400 rounded-lg px-3 py-3">
               <CheckCircle2 size={18} />
               {t("dbHealth.allClear")}
             </div>
@@ -56,12 +58,12 @@ export default function DbHealthCard({ t, language }) {
             <>
               <div className="flex items-center gap-2 text-sm">
                 {report.error_count > 0 && (
-                  <span className="badge bg-red-50 text-red-600">
+                  <span className="badge-danger">
                     {t("dbHealth.errorCount", { count: report.error_count })}
                   </span>
                 )}
                 {report.warning_count > 0 && (
-                  <span className="badge bg-amber-50 text-amber-600">
+                  <span className="badge-warn">
                     {t("dbHealth.warningCount", { count: report.warning_count })}
                   </span>
                 )}
@@ -72,11 +74,11 @@ export default function DbHealthCard({ t, language }) {
                   <div key={issue.category} className="border border-gray-100 rounded-xl overflow-hidden">
                     <button
                       type="button"
-                      className="w-full flex items-center justify-between px-4 py-3 text-right hover:bg-gray-50/60"
+                      className="w-full flex items-center justify-between px-4 py-3 text-start hover:bg-gray-50/60"
                       onClick={() => setExpanded((e) => (e === issue.category ? null : issue.category))}
                     >
                       <div className="flex items-center gap-2">
-                        <span className={`badge ${issue.severity === "error" ? "bg-red-50 text-red-600" : "bg-amber-50 text-amber-600"}`}>
+                        <span className={issue.severity === "error" ? "badge-danger" : "badge-warn"}>
                           {issue.severity === "error" ? t("dbHealth.severityError") : t("dbHealth.severityWarning")}
                         </span>
                         <span className="text-sm text-gray-700">{issue.title}</span>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { RefreshCw, Power, Zap, Wifi, WifiOff } from "lucide-react";
+import { RefreshCw, Power, Zap, Wifi, WifiOff, Network } from "lucide-react";
 import {
   getTelegramTunnel, listTunnelNodes, setupTelegramTunnel,
   tunnelUp, tunnelDown, tunnelTest, tunnelRefreshCidrs,
@@ -77,9 +77,14 @@ export default function TelegramTunnelCard() {
   return (
     <div className="card p-5">
       <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <h3 className="font-bold text-gray-700">{t("settings.tunnelTitle")}</h3>
-          <p className="text-xs text-gray-500 mt-1 max-w-2xl">{t("settings.tunnelHint")}</p>
+        <div className="flex items-start gap-2">
+          <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+            <Network size={15} />
+          </span>
+          <div>
+            <h3 className="font-bold text-gray-700">{t("settings.tunnelTitle")}</h3>
+            <p className="text-xs text-gray-500 mt-1 max-w-2xl">{t("settings.tunnelHint")}</p>
+          </div>
         </div>
         <span className={`badge ${healthy ? "badge-success" : up ? "badge-warn" : "badge-neutral"}`}>
           {up ? <Wifi size={13} /> : <WifiOff size={13} />}
@@ -132,7 +137,7 @@ export default function TelegramTunnelCard() {
           </div>
 
           {up && !shook && (
-            <div className="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2 mt-3">
+            <div className="text-xs text-amber-700 bg-amber-50 dark:bg-amber-500/10 dark:text-amber-400 rounded-lg px-3 py-2 mt-3">
               {t("settings.tunnelNoHandshake")}
             </div>
           )}
@@ -156,7 +161,7 @@ export default function TelegramTunnelCard() {
 
       {(msg || data?.last_error) && (
         <div className={`text-xs rounded-lg px-3 py-2 mt-3 whitespace-pre-line ${
-          msg?.type === "ok" ? "text-emerald-700 bg-emerald-50" : "text-red-600 bg-red-50"
+          msg?.type === "ok" ? "text-emerald-700 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-600 bg-red-50 dark:bg-red-500/10 dark:text-red-400"
         }`}>
           {msg?.text || data.last_error}
         </div>

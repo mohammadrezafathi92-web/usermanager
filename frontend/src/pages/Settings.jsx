@@ -115,7 +115,9 @@ function UpdateCard({ t }) {
   return (
     <div className="card mb-4">
       <div className="flex items-center gap-2 mb-3">
-        <RefreshCw size={18} className="text-brand-600" />
+        <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+          <RefreshCw size={15} />
+        </span>
         <h3 className="font-bold text-gray-700">{t("settings.updateTitle")}</h3>
       </div>
       <p className="text-xs text-gray-400 mb-4">{t("settings.updateHint")}</p>
@@ -193,7 +195,9 @@ function TimezoneCard({ t }) {
   return (
     <div className="card mb-4">
       <div className="flex items-center gap-2 mb-3">
-        <Clock size={18} className="text-brand-600" />
+        <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+          <Clock size={15} />
+        </span>
         <h3 className="font-bold text-gray-700">{t("settings.timezoneTitle")}</h3>
       </div>
       <p className="text-xs text-gray-400 mb-4">{t("settings.timezoneHint")}</p>
@@ -808,7 +812,9 @@ export default function Settings() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
         <div className="card">
           <div className="flex items-center gap-2 mb-4">
-            <KeyRound size={18} className="text-brand-600" />
+            <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+              <KeyRound size={15} />
+            </span>
             <h3 className="font-bold text-gray-700">{t("settings.changePassword")}</h3>
           </div>
           <form onSubmit={submit} className="space-y-4">
@@ -821,7 +827,7 @@ export default function Settings() {
               <input type="password" className="input" required minLength={6} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
             </div>
             {message && (
-              <div className={`text-sm rounded-lg px-3 py-2 ${message.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+              <div className={`text-sm rounded-lg px-3 py-2 ${message.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
                 {message.text}
               </div>
             )}
@@ -833,7 +839,9 @@ export default function Settings() {
 
         <div className="card">
           <div className="flex items-center gap-2 mb-4">
-            <KeyRound size={18} className="text-brand-600" />
+            <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+              <KeyRound size={15} />
+            </span>
             <h3 className="font-bold text-gray-700">{t("settings.changeUsername")}</h3>
           </div>
           <form onSubmit={submitUsername} className="space-y-4">
@@ -849,7 +857,7 @@ export default function Settings() {
               <input type="password" className="input" required value={usernamePassword} onChange={(e) => setUsernamePassword(e.target.value)} />
             </div>
             {usernameMessage && (
-              <div className={`text-sm rounded-lg px-3 py-2 ${usernameMessage.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+              <div className={`text-sm rounded-lg px-3 py-2 ${usernameMessage.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
                 {usernameMessage.text}
               </div>
             )}
@@ -861,7 +869,9 @@ export default function Settings() {
 
         <div className="card">
           <div className="flex items-center gap-2 mb-4">
-            <Bot size={18} className="text-brand-600" />
+            <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+              <Bot size={15} />
+            </span>
             <h3 className="font-bold text-gray-700">{t("settings.myTelegramId")}</h3>
           </div>
           <p className="text-xs text-gray-400 mb-4">{t("settings.myTelegramIdHint")}</p>
@@ -878,7 +888,7 @@ export default function Settings() {
               />
             </div>
             {telegramIdMessage && (
-              <div className={`text-sm rounded-lg px-3 py-2 ${telegramIdMessage.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+              <div className={`text-sm rounded-lg px-3 py-2 ${telegramIdMessage.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
                 {telegramIdMessage.text}
               </div>
             )}
@@ -890,7 +900,9 @@ export default function Settings() {
 
         <div className="card">
           <div className="flex items-center gap-2 mb-4">
-            <Info size={18} className="text-brand-600" />
+            <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+              <Info size={15} />
+            </span>
             <h3 className="font-bold text-gray-700">{t("settings.configTips")}</h3>
           </div>
           <ul className="text-sm text-gray-500 space-y-2 list-disc pr-5">
@@ -912,7 +924,9 @@ export default function Settings() {
       {isSuperadmin && (
       <div className="card mb-4">
         <div className="flex items-center gap-2 mb-4">
-          <CreditCard size={18} className="text-brand-600" />
+          <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+            <CreditCard size={15} />
+          </span>
           <h3 className="font-bold text-gray-700">{t("settings.paymentInfoTitle")}</h3>
         </div>
         <p className="text-xs text-gray-400 mb-4">
@@ -959,7 +973,7 @@ export default function Settings() {
             <p className="hint">{t("settings.topupPresetsHint")}</p>
           </div>
           {paymentMsg && (
-            <div className={`md:col-span-2 text-sm rounded-lg px-3 py-2 ${paymentMsg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+            <div className={`md:col-span-2 text-sm rounded-lg px-3 py-2 ${paymentMsg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
               {paymentMsg.text}
             </div>
           )}
@@ -1003,7 +1017,9 @@ export default function Settings() {
       {isSuperadmin && (
       <div className="card mb-4">
         <div className="flex items-center gap-2 mb-4">
-          <Info size={18} className="text-brand-600" />
+          <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+            <Info size={15} />
+          </span>
           <h3 className="font-bold text-gray-700">{t("settings.growthTitle")}</h3>
         </div>
         <p className="text-xs text-gray-400 mb-4">{t("settings.growthHint")}</p>
@@ -1042,10 +1058,12 @@ export default function Settings() {
       <div className="card mb-4">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
-            <Bot size={18} className="text-brand-600" />
+            <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+              <Bot size={15} />
+            </span>
             <h3 className="font-bold text-gray-700">{t("settings.telegramBotTitle")}</h3>
           </div>
-          <span className={`badge ${botStatus.running ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+          <span className={`${botStatus.running ? "badge-success" : "badge-neutral"}`}>
             {botStatus.running ? t("settings.botActiveStatus", { username: botStatus.bot_username || "" }) : t("settings.botInactiveStatus")}
           </span>
         </div>
@@ -1053,7 +1071,7 @@ export default function Settings() {
           {t("settings.botDescription")}
         </p>
         {botStatus.last_error && (
-          <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2 mb-4">{botStatus.last_error}</div>
+          <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2 mb-4">{botStatus.last_error}</div>
         )}
         <form onSubmit={submitBot} className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="md:col-span-2">
@@ -1124,7 +1142,7 @@ export default function Settings() {
                 it has been saved and checked against the accounts table,
                 and warning about half-typed numbers would be noise. */}
             {(botForm.unlinked_admin_ids || []).length > 0 && (
-              <div className="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2 mt-2">
+              <div className="text-xs text-amber-700 bg-amber-50 dark:bg-amber-500/10 dark:text-amber-400 rounded-lg px-3 py-2 mt-2">
                 <span dir="ltr" className="font-medium">
                   {(botForm.unlinked_admin_ids || []).join("، ")}
                 </span>
@@ -1184,7 +1202,7 @@ export default function Settings() {
                 and a log line inside a container is, in practice, nowhere.
                 Reported as "app رو نیاورد". */}
             {!(payment.panel_public_url || "").startsWith("https://") && (
-              <div className="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2 mt-2">
+              <div className="text-xs text-amber-700 bg-amber-50 dark:bg-amber-500/10 dark:text-amber-400 rounded-lg px-3 py-2 mt-2">
                 {t("settings.miniappNeedsPublicUrl")}
               </div>
             )}
@@ -1217,7 +1235,7 @@ export default function Settings() {
               when the master switch is off, so an admin can see what the
               rules will be before turning it on - hiding them makes the
               switch feel like an unknown. */}
-          <div className="md:col-span-2 rounded-xl border border-amber-200 bg-amber-50/60 p-4">
+          <div className="md:col-span-2 rounded-xl border border-amber-200 dark:border-amber-500/30 bg-amber-50/60 dark:bg-amber-500/10 p-4">
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
@@ -1289,7 +1307,7 @@ export default function Settings() {
             </div>
           </div>
           {botMsg && (
-            <div className={`md:col-span-2 text-sm rounded-lg px-3 py-2 ${botMsg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+            <div className={`md:col-span-2 text-sm rounded-lg px-3 py-2 ${botMsg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
               {botMsg.text}
             </div>
           )}
@@ -1307,10 +1325,12 @@ export default function Settings() {
       <div className="card mb-4">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
-            <Server size={18} className="text-brand-600" />
+            <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+              <Server size={15} />
+            </span>
             <h3 className="font-bold text-gray-700">{t("settings.deployOtherServerTitle")}</h3>
           </div>
-          <span className={`badge ${remoteStatus.remote_mode ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+          <span className={`${remoteStatus.remote_mode ? "badge-success" : "badge-neutral"}`}>
             {remoteStatus.remote_mode ? t("settings.runningOn", { host: remoteStatus.remote_host }) : t("settings.runningHere")}
           </span>
         </div>
@@ -1318,7 +1338,7 @@ export default function Settings() {
           {t("settings.deployDescription")}
         </p>
         {deployMsg && (
-          <div className={`text-sm rounded-lg px-3 py-2 mb-4 whitespace-pre-wrap ${deployMsg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+          <div className={`text-sm rounded-lg px-3 py-2 mb-4 whitespace-pre-wrap ${deployMsg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
             {deployMsg.text}
           </div>
         )}
@@ -1445,7 +1465,9 @@ export default function Settings() {
       {isSuperadmin && (
         <div className="card mb-4">
           <div className="flex items-center gap-2 mb-4">
-            <Server size={18} className="text-brand-600" />
+            <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+              <Server size={15} />
+            </span>
             <h3 className="font-bold text-gray-700">{t("settings.panelPortTitle")}</h3>
           </div>
           <p className="text-xs text-gray-400 mb-4">
@@ -1453,7 +1475,7 @@ export default function Settings() {
           </p>
 
           {portMsg && (
-            <div className={`text-sm rounded-lg px-3 py-2 mb-4 whitespace-pre-wrap ${portMsg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+            <div className={`text-sm rounded-lg px-3 py-2 mb-4 whitespace-pre-wrap ${portMsg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
               {portMsg.text}
             </div>
           )}
@@ -1497,7 +1519,9 @@ export default function Settings() {
       {isSuperadmin && (
         <div className="card mb-4">
           <div className="flex items-center gap-2 mb-4">
-            <Server size={18} className="text-brand-600" />
+            <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+              <Server size={15} />
+            </span>
             <h3 className="font-bold text-gray-700">{t("settings.subLinkBaseUrl")}</h3>
           </div>
           <form onSubmit={submitPublicUrl}>
@@ -1510,7 +1534,7 @@ export default function Settings() {
             />
             <p className="hint">{t("settings.subLinkBaseUrlHint")}</p>
             {publicUrlMsg && (
-              <div className={`text-sm rounded-lg px-3 py-2 mt-3 ${publicUrlMsg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+              <div className={`text-sm rounded-lg px-3 py-2 mt-3 ${publicUrlMsg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
                 {publicUrlMsg.text}
               </div>
             )}
@@ -1524,17 +1548,19 @@ export default function Settings() {
         <div className="card mb-4">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
-              <Repeat size={18} className="text-brand-600" />
+              <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+                <Repeat size={15} />
+              </span>
               <h3 className="font-bold text-gray-700">{t("settings.haTitle")}</h3>
             </div>
             <span
-              className={`badge ${
+              className={
                 !ha.ha_enabled
-                  ? "bg-gray-100 text-gray-500"
+                  ? "badge-neutral"
                   : ha.ha_standby_active
-                  ? "bg-amber-50 text-amber-600"
-                  : "bg-emerald-50 text-emerald-600"
-              }`}
+                  ? "badge-warn"
+                  : "badge-success"
+              }
             >
               {!ha.ha_enabled
                 ? t("settings.haDisabled")
@@ -1554,7 +1580,7 @@ export default function Settings() {
           </p>
 
           {ha.ha_standby_active && (
-            <div className="text-sm text-amber-700 bg-amber-50 rounded-lg px-3 py-3 mb-4 space-y-2">
+            <div className="text-sm text-amber-700 bg-amber-50 dark:bg-amber-500/10 dark:text-amber-400 rounded-lg px-3 py-3 mb-4 space-y-2">
               <div>
                 {t("settings.haFailoverWarning", {
                   promotedAt: ha.ha_promoted_at ? t("settings.haFailoverPromotedAt", { value: formatDateTime(ha.ha_promoted_at, language) }) : "",
@@ -1567,7 +1593,7 @@ export default function Settings() {
           )}
 
           {haMsg && (
-            <div className={`text-sm rounded-lg px-3 py-2 mb-4 ${haMsg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+            <div className={`text-sm rounded-lg px-3 py-2 mb-4 ${haMsg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
               {haMsg.text}
             </div>
           )}
@@ -1656,7 +1682,9 @@ export default function Settings() {
       <div className="card mb-4">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
-            <DatabaseBackup size={18} className="text-brand-600" />
+            <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+              <DatabaseBackup size={15} />
+            </span>
             <h3 className="font-bold text-gray-700">{t("settings.dbBackupTitle")}</h3>
           </div>
           <button className="btn-primary" disabled={runningBackup} onClick={onRunBackup}>
@@ -1667,7 +1695,7 @@ export default function Settings() {
           {t("settings.backupDescription")}
         </p>
         {backupMsg && (
-          <div className={`text-sm rounded-lg px-3 py-2 mb-4 ${backupMsg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+          <div className={`text-sm rounded-lg px-3 py-2 mb-4 ${backupMsg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
             {backupMsg.text}
           </div>
         )}
@@ -1705,14 +1733,16 @@ export default function Settings() {
         {isSuperadmin && (
           <div className="mt-6 pt-5 border-t border-gray-100">
             <div className="flex items-center gap-2 mb-2">
-              <Upload size={16} className="text-amber-600" />
+              <span className="w-7 h-7 rounded-lg bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400 flex items-center justify-center shrink-0">
+                <Upload size={15} />
+              </span>
               <h4 className="font-bold text-gray-700 text-sm">{t("settings.restoreDbTitle")}</h4>
             </div>
             <p className="text-xs text-gray-400 mb-3">
               {t("settings.restoreDbDescription1")}<span dir="ltr">.db.gz</span> {t("settings.restoreDbDescription2")} <span dir="ltr">.db</span>{t("settings.restoreDbDescription3")}
             </p>
             {restoreMsg && (
-              <div className={`text-sm rounded-lg px-3 py-2 mb-3 ${restoreMsg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+              <div className={`text-sm rounded-lg px-3 py-2 mb-3 ${restoreMsg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
                 {restoreMsg.text}
               </div>
             )}
@@ -1731,7 +1761,9 @@ export default function Settings() {
       <div className="card">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
-            <KeyRound size={18} className="text-brand-600" />
+            <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+              <KeyRound size={15} />
+            </span>
             <h3 className="font-bold text-gray-700">{t("settings.apiKeysTitle")}</h3>
           </div>
           <button className="btn-primary" onClick={() => setKeyModalOpen(true)}>
@@ -1762,7 +1794,7 @@ export default function Settings() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <span className={`badge ${k.enabled ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+                <span className={`${k.enabled ? "badge-success" : "badge-neutral"}`}>
                   {k.enabled ? t("status.active") : t("status.disabled")}
                 </span>
                 <button className="btn-secondary" onClick={() => onToggleKey(k.id)} title={k.enabled ? t("settings.disableKey") : t("settings.enableKey")}>
@@ -1788,7 +1820,7 @@ export default function Settings() {
             <label className="block text-sm text-gray-600 mb-1">{t("settings.labelField")}</label>
             <input className="input" required value={newLabel} onChange={(e) => setNewLabel(e.target.value)} />
           </div>
-          {keyError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{keyError}</div>}
+          {keyError && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{keyError}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setKeyModalOpen(false)}>
               {t("common.cancel")}
@@ -1849,18 +1881,20 @@ function OwnBotCard({ t }) {
     <div className="card mb-4">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
-          <Bot size={18} className="text-brand-600" />
+          <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+            <Bot size={15} />
+          </span>
           <h3 className="font-bold text-gray-700">{t("settings.myBotTitle")}</h3>
         </div>
-        <span className={`badge ${status.running ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>
+        <span className={`${status.running ? "badge-success" : "badge-neutral"}`}>
           {status.running ? t("settings.botActiveStatus", { username: status.bot_username || "" }) : t("settings.botInactiveStatus")}
         </span>
       </div>
       <p className="text-xs text-gray-400 mb-4">{t("settings.myBotDescription")}</p>
       {!status.telegram_id_linked && (
-        <div className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mb-4">{t("settings.myBotNoTelegramLinked")}</div>
+        <div className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-500/10 dark:text-amber-400 rounded-lg px-3 py-2 mb-4">{t("settings.myBotNoTelegramLinked")}</div>
       )}
-      {status.last_error && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2 mb-4">{status.last_error}</div>}
+      {status.last_error && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2 mb-4">{status.last_error}</div>}
       <div className="space-y-3">
         <div>
           <label className="block text-sm text-gray-600 mb-1">{t("settings.botToken")}</label>
@@ -1887,7 +1921,7 @@ function OwnBotCard({ t }) {
           {t("settings.myBotEnabled")}
         </label>
         {msg && (
-          <div className={`text-sm rounded-lg px-3 py-2 ${msg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+          <div className={`text-sm rounded-lg px-3 py-2 ${msg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
             {msg.text}
           </div>
         )}
@@ -1955,7 +1989,9 @@ function IpBansCard({ t, language }) {
     <div className="card mb-4">
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
-          <ShieldAlert size={18} className="text-brand-600" />
+          <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+            <ShieldAlert size={15} />
+          </span>
           <h3 className="font-bold text-gray-700">{t("ipBans.title")}</h3>
         </div>
         <button type="button" className="btn-primary" onClick={() => setModalOpen(true)}>
@@ -1965,35 +2001,35 @@ function IpBansCard({ t, language }) {
       <p className="text-xs text-gray-400 mb-4">{t("ipBans.subtitle")}</p>
 
       {loadError && (
-        <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2 mb-4">{t("ipBans.loadError")}</div>
+        <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2 mb-4">{t("ipBans.loadError")}</div>
       )}
 
       {/* دسکتاپ: جدول - از md به بالا نمایش داده می‌شود */}
-      <div className="hidden md:block overflow-x-auto -mx-2">
-        <table className="w-full text-sm">
+      <div className="hidden md:block table-wrap !mx-0">
+        <table>
           <thead>
-            <tr className="text-xs text-gray-400 border-b border-gray-50">
-              <th className="text-right font-medium px-2 py-2">{t("ipBans.colIp")}</th>
-              <th className="text-right font-medium px-2 py-2">{t("ipBans.colReason")}</th>
-              <th className="text-right font-medium px-2 py-2">{t("ipBans.colHitCount")}</th>
-              <th className="text-right font-medium px-2 py-2">{t("ipBans.colSource")}</th>
-              <th className="text-right font-medium px-2 py-2">{t("ipBans.colBannedAt")}</th>
-              <th className="text-right font-medium px-2 py-2">{t("ipBans.colAction")}</th>
+            <tr>
+              <th>{t("ipBans.colIp")}</th>
+              <th>{t("ipBans.colReason")}</th>
+              <th>{t("ipBans.colHitCount")}</th>
+              <th>{t("ipBans.colSource")}</th>
+              <th>{t("ipBans.colBannedAt")}</th>
+              <th>{t("ipBans.colAction")}</th>
             </tr>
           </thead>
           <tbody>
             {bans.map((b) => (
-              <tr key={b.ip} className="border-t border-gray-50 hover:bg-gray-50/60">
-                <td className="px-2 py-3 font-mono text-gray-800" dir="ltr">{b.ip}</td>
-                <td className="px-2 py-3 text-gray-500">{b.reason || "-"}</td>
-                <td className="px-2 py-3 text-gray-500">{b.hit_count ?? "-"}</td>
-                <td className="px-2 py-3">
-                  <span className={`badge ${b.is_manual ? "bg-amber-50 text-amber-600" : "bg-purple-50 text-purple-600"}`}>
+              <tr key={b.ip}>
+                <td className="font-mono text-gray-800 dark:text-gray-100" dir="ltr">{b.ip}</td>
+                <td className="text-gray-500 dark:text-gray-400">{b.reason || "-"}</td>
+                <td className="text-gray-500 dark:text-gray-400">{b.hit_count ?? "-"}</td>
+                <td>
+                  <span className={`badge ${b.is_manual ? "bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400" : "bg-purple-50 text-purple-600 dark:bg-purple-500/10 dark:text-purple-400"}`}>
                     {b.is_manual ? t("ipBans.sourceManual") : t("ipBans.sourceAuto")}
                   </span>
                 </td>
-                <td className="px-2 py-3 text-gray-500">{b.banned_at ? formatDateTime(b.banned_at, language) : "-"}</td>
-                <td className="px-2 py-3">
+                <td className="text-gray-500 dark:text-gray-400">{b.banned_at ? formatDateTime(b.banned_at, language) : "-"}</td>
+                <td>
                   <button className="btn-secondary" onClick={() => onUnban(b.ip)}>
                     <Trash2 size={14} /> {t("ipBans.unban")}
                   </button>
@@ -2010,16 +2046,16 @@ function IpBansCard({ t, language }) {
       </div>
 
       {/* موبایل: کارت - زیر md نمایش داده می‌شود */}
-      <div className="md:hidden divide-y divide-gray-50 -mx-4">
+      <div className="md:hidden divide-y divide-gray-100 dark:divide-slate-800 -mx-4">
         {bans.map((b) => (
           <div key={b.ip} className="px-4 py-3">
             <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-gray-800 text-sm" dir="ltr">{b.ip}</span>
-              <span className={`badge ${b.is_manual ? "bg-amber-50 text-amber-600" : "bg-purple-50 text-purple-600"}`}>
+              <span className="font-mono text-gray-800 dark:text-gray-100 text-sm" dir="ltr">{b.ip}</span>
+              <span className={`badge ${b.is_manual ? "bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400" : "bg-purple-50 text-purple-600 dark:bg-purple-500/10 dark:text-purple-400"}`}>
                 {b.is_manual ? t("ipBans.sourceManual") : t("ipBans.sourceAuto")}
               </span>
             </div>
-            {b.reason && <div className="text-xs text-gray-500 mt-1">{b.reason}</div>}
+            {b.reason && <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">{b.reason}</div>}
             <div className="flex items-center justify-between mt-2">
               <span className="text-xs text-gray-400">
                 {b.banned_at ? formatDateTime(b.banned_at, language) : "-"}
@@ -2044,7 +2080,7 @@ function IpBansCard({ t, language }) {
             <label className="block text-sm text-gray-600 mb-1">{t("ipBans.reasonField")}</label>
             <input className="input" value={newReason} onChange={(e) => setNewReason(e.target.value)} />
           </div>
-          {saveError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{saveError}</div>}
+          {saveError && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{saveError}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setModalOpen(false)}>
               {t("common.cancel")}
@@ -2177,7 +2213,9 @@ function PaymentCardsManager({
           <div
             key={c.id}
             className={`rounded-lg border px-3 py-2 ${
-              c.id === activeCardId ? "border-brand-300 bg-brand-50/40" : "border-gray-200"
+              c.id === activeCardId
+                ? "border-brand-300 bg-brand-50/40 dark:border-brand-500/40 dark:bg-brand-500/10"
+                : "border-gray-200 dark:border-slate-700"
             }`}
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2194,12 +2232,12 @@ function PaymentCardsManager({
                   {c.card_holder && <div className="text-xs text-gray-400">{c.card_holder}</div>}
                 </div>
                 {c.id === activeCardId && (
-                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400">
                     {t("settings.cardActiveBadge")}
                   </span>
                 )}
                 {!c.is_active && (
-                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-400">
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-400 dark:bg-slate-800 dark:text-gray-500">
                     {t("settings.cardDisabledBadge")}
                   </span>
                 )}
@@ -2370,7 +2408,9 @@ function OwnPaymentCard({ t }) {
   return (
     <div className="card mb-4">
       <div className="flex items-center gap-2 mb-4">
-        <CreditCard size={18} className="text-brand-600" />
+        <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+          <CreditCard size={15} />
+        </span>
         <h3 className="font-bold text-gray-700">{t("settings.myPaymentTitle")}</h3>
       </div>
       <p className="text-xs text-gray-400 mb-4">{t("settings.myPaymentDescription")}</p>
@@ -2426,7 +2466,7 @@ function OwnPaymentCard({ t }) {
           <p className="hint">{t("settings.supportContactHint")}</p>
         </div>
         {msg && (
-          <div className={`md:col-span-2 text-sm rounded-lg px-3 py-2 ${msg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+          <div className={`md:col-span-2 text-sm rounded-lg px-3 py-2 ${msg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
             {msg.text}
           </div>
         )}
@@ -2491,7 +2531,9 @@ function OwnBackupCard({ t }) {
     <div className="card mb-4">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
-          <DatabaseBackup size={18} className="text-brand-600" />
+          <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+            <DatabaseBackup size={15} />
+          </span>
           <h3 className="font-bold text-gray-700">{t("settings.myBackupTitle")}</h3>
         </div>
         <button className="btn-primary" disabled={running} onClick={onRun}>
@@ -2500,7 +2542,7 @@ function OwnBackupCard({ t }) {
       </div>
       <p className="text-xs text-gray-400 mb-4">{t("settings.myBackupDescription")}</p>
       {msg && (
-        <div className={`text-sm rounded-lg px-3 py-2 mb-4 ${msg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"}`}>
+        <div className={`text-sm rounded-lg px-3 py-2 mb-4 ${msg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
           {msg.text}
         </div>
       )}

@@ -108,7 +108,7 @@ export default function LicenseCard({ t, language, onChanged }) {
   if (loadError && !status) {
     return (
       <div className="card mb-4">
-        <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{t("license.loadError")}</div>
+        <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{t("license.loadError")}</div>
       </div>
     );
   }
@@ -116,25 +116,27 @@ export default function LicenseCard({ t, language, onChanged }) {
   if (!status) return null;
 
   const badge = status.master_install
-    ? { tone: "bg-brand-50 text-brand-600", label: t("license.badgeMaster"), Icon: ShieldCheck }
+    ? { tone: "badge-info", label: t("license.badgeMaster"), Icon: ShieldCheck }
     : status.locked
-    ? { tone: "bg-red-50 text-red-600", label: t("license.badgeLocked"), Icon: ShieldX }
+    ? { tone: "badge-danger", label: t("license.badgeLocked"), Icon: ShieldX }
     : !status.has_key
-    ? { tone: "bg-amber-50 text-amber-600", label: t("license.badgeNoKey"), Icon: ShieldAlert }
-    : { tone: "bg-emerald-50 text-emerald-600", label: t("license.badgeActive"), Icon: ShieldCheck };
+    ? { tone: "badge-warn", label: t("license.badgeNoKey"), Icon: ShieldAlert }
+    : { tone: "badge-success", label: t("license.badgeActive"), Icon: ShieldCheck };
 
   return (
     <div className="card mb-4">
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
-          <badge.Icon size={18} className="text-brand-600" />
+          <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+            <badge.Icon size={15} />
+          </span>
           <h3 className="font-bold text-gray-700">{t("license.title")}</h3>
         </div>
-        <span className={`badge ${badge.tone}`}>{badge.label}</span>
+        <span className={badge.tone}>{badge.label}</span>
       </div>
 
       {status.message && (
-        <p className={`text-sm rounded-lg px-3 py-2 mb-4 ${status.locked ? "text-red-600 bg-red-50" : "text-gray-500 bg-gray-50"}`}>
+        <p className={`text-sm rounded-lg px-3 py-2 mb-4 ${status.locked ? "text-red-600 bg-red-50 dark:bg-red-500/10 dark:text-red-400" : "text-gray-500 bg-gray-50"}`}>
           {status.message}
         </p>
       )}
@@ -162,7 +164,7 @@ export default function LicenseCard({ t, language, onChanged }) {
                 <div>{t("license.daysLeftLabel", { count: status.expires_in_days })}</div>
               )}
               {typeof status.grace_days_left === "number" && status.grace_days_left > 0 && (
-                <div className="text-amber-600">{t("license.graceDaysLabel", { count: status.grace_days_left })}</div>
+                <div className="text-amber-600 dark:text-amber-400">{t("license.graceDaysLabel", { count: status.grace_days_left })}</div>
               )}
             </div>
           )}
@@ -181,7 +183,7 @@ export default function LicenseCard({ t, language, onChanged }) {
             onChange={(e) => setKeyInput(e.target.value)}
             placeholder="NETCIP-LIC.eyJ...."
           />
-          {saveError && <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{saveError}</div>}
+          {saveError && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{saveError}</div>}
           <div className="flex items-center gap-2 pt-1">
             <button type="submit" disabled={saving || !keyInput.trim()} className="btn-primary">
               {saving ? t("license.saving") : t("license.saveKey")}
@@ -192,7 +194,7 @@ export default function LicenseCard({ t, language, onChanged }) {
             {status.has_key && (
               <button
                 type="button"
-                className="btn-secondary text-red-600 hover:bg-red-50"
+                className="btn-secondary text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10"
                 disabled={deleting}
                 onClick={onDeleteKey}
               >

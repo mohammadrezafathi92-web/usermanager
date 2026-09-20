@@ -120,17 +120,19 @@ export default function PanelTlsCard() {
   return (
     <div className="card mb-4">
       <div className="flex items-center gap-2 mb-1">
-        {state.enabled ? (
-          <ShieldCheck size={18} className="text-emerald-600" />
-        ) : (
-          <Lock size={18} className="text-brand-600" />
-        )}
+        <span className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+          state.enabled
+            ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400"
+            : "bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400"
+        }`}>
+          {state.enabled ? <ShieldCheck size={15} /> : <Lock size={15} />}
+        </span>
         <h3 className="font-bold text-gray-700 dark:text-gray-300">{t("settings.tlsTitle")}</h3>
       </div>
       <p className="text-xs text-gray-400 mb-4">{t("settings.tlsHint")}</p>
 
       {state.enabled && (
-        <div className="text-sm rounded-lg px-3 py-2 mb-4 text-emerald-700 bg-emerald-50">
+        <div className="text-sm rounded-lg px-3 py-2 mb-4 text-emerald-700 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400">
           {t("settings.tlsActive", { domain: state.domain, port: state.fallback_http_port })}
         </div>
       )}
@@ -140,10 +142,10 @@ export default function PanelTlsCard() {
           other sites - so the card says so instead of offering to take over
           ports another service is holding. */}
       {!state.enabled && state.behind_proxy && (
-        <div className="text-sm rounded-lg px-3 py-2 mb-4 text-sky-800 bg-sky-50 space-y-1">
+        <div className="text-sm rounded-lg px-3 py-2 mb-4 text-sky-800 bg-sky-50 dark:bg-sky-500/10 dark:text-sky-400 space-y-1">
           <div>{t("settings.tlsBehindProxy", { domain: state.domain, port: state.fallback_http_port })}</div>
           {state.bind === "0.0.0.0" && (
-            <div className="text-amber-700">
+            <div className="text-amber-700 dark:text-amber-400">
               {t("settings.tlsBindWarning", { port: state.fallback_http_port })}
             </div>
           )}
@@ -180,8 +182,8 @@ export default function PanelTlsCard() {
         <div
           className={`text-sm rounded-lg px-3 py-2 mt-4 flex gap-2 ${
             dns.ok || dns.ready_for_caddy
-              ? "text-emerald-700 bg-emerald-50"
-              : "text-amber-700 bg-amber-50"
+              ? "text-emerald-700 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400"
+              : "text-amber-700 bg-amber-50 dark:bg-amber-500/10 dark:text-amber-400"
           }`}
         >
           {/* ready_for_caddy is the "port 80 is empty on purpose, waiting
@@ -231,7 +233,7 @@ export default function PanelTlsCard() {
       {msg && (
         <div
           className={`text-sm rounded-lg px-3 py-2 mt-4 whitespace-pre-line ${
-            msg.type === "ok" ? "text-emerald-600 bg-emerald-50" : "text-red-500 bg-red-50"
+            msg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"
           }`}
         >
           {msg.text}
@@ -268,7 +270,7 @@ export default function PanelTlsCard() {
           </button>
         )}
         {state.enabled && (
-          <button type="button" className="btn-secondary text-red-500" disabled={saving} onClick={turnOff}>
+          <button type="button" className="btn-secondary text-red-500 dark:text-red-400" disabled={saving} onClick={turnOff}>
             {t("settings.tlsDisable")}
           </button>
         )}

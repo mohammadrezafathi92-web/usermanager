@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from .. import models, schemas
 from ..database import get_db
 from ..services.jalali import fmt_jalali
-from ..deps import get_current_admin, require_confirm_password, require_permission
+from ..deps import get_current_admin, require_confirm_password, require_permission, require_superadmin
 from ..services import user_ops, hierarchy, accounting, admin_billing
 
 router = APIRouter(prefix="/api/users", tags=["users"], dependencies=[Depends(get_current_admin)])
@@ -114,13 +114,19 @@ def _build_user_query(
     query = db.query(models.User)
     owned = hierarchy.owned_admin_ids(db, admin)
     # A specific owner_admin_id filter (e.g. a level-2 Admin drilling into
-    # one particular Seller's users, or a superadmin picking one Admin) is
-    # only honored if it's actually inside this account's own scope -
-    # otherwise ignored, same as passing a bogus id would just see nothing.
+    # one particular Seller's users) is only honored if it's actually inside
+    # this account's own scope - otherwise ignored, same as passing a bogus
+    # id would just see nothing. A superadmin is the one deliberate
+    # exception: owned_admin_ids() never includes another admin's id (each
+    # admin's tree stays walled off, even from a superadmin - see that
+    # docstring), but a superadmin explicitly picking one Admin/Seller here
+    # (Users.jsx's "owner admin" filter dropdown, or the transfer-user flow
+    # in transfer_user() below) is a deliberate, one-off look-in, not the
+    # default unrestricted view - 2026-09-21.
     # Without an explicit filter, fall back to the full visibility clause
     # (which, for a superadmin, also includes orphaned/unassigned users -
     # see hierarchy.user_visibility_clause).
-    if owner_admin_id is not None and owner_admin_id in owned:
+    if owner_admin_id is not None and (owner_admin_id in owned or admin.is_superadmin):
         query = query.filter(models.User.owner_admin_id == owner_admin_id)
     else:
         query = query.filter(hierarchy.user_visibility_clause(db, admin))
@@ -748,6 +754,42 @@ def update_user(
         # disabled/deleted Xray client never comes back.
         user_ops.reconcile_user_connections(db, user)
 
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.post("/{user_id}/transfer", response_model=schemas.UserOut)
+def transfer_user(
+    user_id: int,
+    payload: schemas.UserTransferIn,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(require_superadmin),
+):
+    """Move a customer to a different admin/seller - "جابجایی یوزر بین
+    ادمین‌ها" (2026-09-21).
+
+    Deliberately superadmin-only, and deliberately looks `user` up directly
+    instead of through `_get_owned_user`/hierarchy.can_see_user: every other
+    endpoint in this router respects "each admin's customer base is walled
+    off, even from a superadmin" (see hierarchy.owned_admin_ids' docstring),
+    but that wall exists to stop a superadmin casually browsing an admin's
+    customers - not to make ownership itself unchangeable by the one role
+    that oversees the whole tree. This is the one place a superadmin is
+    allowed to reach across it, and only for this one action: pulling a
+    user from any admin over to another admin (or to themselves), or
+    handing one of their own users away.
+    """
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="کاربر پیدا نشد")
+
+    if payload.target_admin_id != admin.id:
+        target = db.get(models.AdminUser, payload.target_admin_id)
+        if not target:
+            raise HTTPException(status_code=400, detail="ادمین مقصد پیدا نشد")
+
+    user.owner_admin_id = payload.target_admin_id
     db.commit()
     db.refresh(user)
     return user

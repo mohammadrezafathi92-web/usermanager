@@ -172,6 +172,11 @@ export const deleteUser = (id) => client.delete(`/users/${id}`);
 // sends null and is charged nothing.
 export const resetUsage = (id, packageId = null) =>
   client.post(`/users/${id}/reset-usage`, { package_id: packageId });
+// Superadmin-only (see routers/users.py's transfer_user) - reassigns this
+// customer to a different admin/seller, including back to the superadmin's
+// own id.
+export const transferUser = (id, targetAdminId) =>
+  client.post(`/users/${id}/transfer`, { target_admin_id: targetAdminId });
 export const bulkCreateUsers = (data) => client.post("/users/bulk", data);
 export const bulkUpdateUsers = (data) => client.put("/users/bulk", data);
 export const bulkDeleteUsers = (userIds) => client.delete("/users/bulk", { data: { user_ids: userIds } });

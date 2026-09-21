@@ -833,6 +833,11 @@ export default function UserDetail() {
                   ? t("userDetail.reservedFromPackage", { name: user.reserved_package_name })
                   : t("userDetail.reservedManual")}
               </div>
+              {user.reserved_created_at && (
+                <div className="opacity-75 mt-0.5">
+                  {t("userDetail.reservedSince", { value: formatDateTime(user.reserved_created_at, language) })}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -991,6 +996,11 @@ export default function UserDetail() {
                         ? t("userDetail.reservedFromPackage", { name: purchase.reserved_package_name })
                         : t("userDetail.reservedManual")}
                     </div>
+                    {purchase.reserved_created_at && (
+                      <div className="opacity-75 mt-0.5">
+                        {t("userDetail.reservedSince", { value: formatDateTime(purchase.reserved_created_at, language) })}
+                      </div>
+                    )}
                   </div>
                 )}
                 <div className="mt-2">

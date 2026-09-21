@@ -212,7 +212,11 @@ export default function Dashboard() {
             <StatCard icon={UserX} label={t("dashboard.disabledUsers")} value={stats.disabled_users} tone="red" onClick={() => navigate("/users?status=disabled")} />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+          {/* lg:grid-cols-3 only when the admin_balance tile below actually
+              renders (it's null for a superadmin - see dashboard.py) - a
+              fixed 3 columns left a bare, cardless gap next to "avg speed"
+              on desktop for every superadmin login. */}
+          <div className={`grid grid-cols-1 sm:grid-cols-2 ${stats.admin_balance != null ? "lg:grid-cols-3" : "lg:grid-cols-2"} gap-4 mb-6`}>
             <div className="card flex items-center gap-4">
               <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-brand-400/20 to-brand-600/10 text-brand-600 ring-1 ring-inset ring-brand-500/15 dark:from-brand-400/25 dark:to-brand-600/10 dark:text-brand-400 flex items-center justify-center shrink-0">
                 <Database size={22} />

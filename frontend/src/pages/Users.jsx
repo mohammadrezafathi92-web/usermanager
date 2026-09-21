@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Plus, Search, Trash2, RotateCcw, Network, Layers, PencilLine, ChevronRight, ChevronLeft, X, ArrowUpDown, FileDown, Wand2, CheckSquare, Send, Lock } from "lucide-react";
+import { Plus, Search, Trash2, RotateCcw, Network, Layers, PencilLine, ChevronRight, ChevronLeft, X, ArrowUpDown, FileDown, Wand2, CheckSquare, Send, Lock, ArrowRightLeft } from "lucide-react";
 import SortableTh from "../components/SortableTh.jsx";
 
 // یوزرنیم رندوم برای دکمه "تولید خودکار" کاربر - فقط حروف/عدد لاتین (مشابه
@@ -33,6 +33,7 @@ import {
   fetchPackages,
   fetchAdmins,
   exportUsers,
+  transferUser,
 } from "../api/client.js";
 import { statusLabel, STATUS_STYLES, formatDate, gbToBytes, downloadBlob } from "../utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
@@ -102,7 +103,7 @@ export default function Users() {
   // order more often than usual (found during the 2026-09 full-codebase
   // audit).
   const loadSeq = useRef(0);
-  const { isSuperadmin } = useAuth();
+  const { isSuperadmin, adminId, username: myUsername } = useAuth();
   const { t, language } = useLanguage();
   const confirm = useConfirm();
   const toast = useToast();
@@ -390,6 +391,29 @@ export default function Users() {
     if (!resetTargetId) return;
     await resetUsage(resetTargetId, packageId);
     load();
+  };
+
+  // Superadmin-only "جابجایی یوزر بین ادمین‌ها": moves a customer to another
+  // admin/seller's pool, or back to the superadmin's own (owned_admin_ids
+  // walls off every other admin's tree even from a superadmin - see
+  // routers/users.py's transfer_user - so this is a dedicated action, not
+  // the ordinary edit-user form).
+  const [transferTargetId, setTransferTargetId] = useState(null);
+  const [transferAdminId, setTransferAdminId] = useState("");
+  const openTransfer = (id) => {
+    setTransferTargetId(id);
+    setTransferAdminId("");
+  };
+  const onTransfer = async () => {
+    if (!transferTargetId || transferAdminId === "") return;
+    try {
+      await transferUser(transferTargetId, Number(transferAdminId));
+      toast.success(t("users.transferSuccess"));
+      setTransferTargetId(null);
+      load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || t("users.transferError"));
+    }
   };
 
   // ---------------- selection ----------------
@@ -828,6 +852,15 @@ export default function Users() {
                   </td>
                   <td>
                     <div className="flex items-center gap-1">
+                      {isSuperadmin && (
+                        <button
+                          title={t("users.transfer")}
+                          onClick={() => openTransfer(u.id)}
+                          className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-brand-600 hover:bg-brand-50 dark:hover:bg-brand-500/10 dark:hover:text-brand-400 transition-colors"
+                        >
+                          <ArrowRightLeft size={16} />
+                        </button>
+                      )}
                       <button
                         title={t("users.resetUsage")}
                         onClick={() => setResetTargetId(u.id)}
@@ -883,6 +916,15 @@ export default function Users() {
                   </span>
                 </label>
                 <div className="flex items-center gap-1 flex-shrink-0">
+                  {isSuperadmin && (
+                    <button
+                      title={t("users.transfer")}
+                      onClick={() => openTransfer(u.id)}
+                      className="w-9 h-9 rounded-lg flex items-center justify-center text-gray-400 hover:text-brand-600 hover:bg-brand-50 dark:hover:bg-brand-500/10 dark:hover:text-brand-400 transition-colors"
+                    >
+                      <ArrowRightLeft size={16} />
+                    </button>
+                  )}
                   <button
                     title={t("users.resetUsage")}
                     onClick={() => setResetTargetId(u.id)}
@@ -959,6 +1001,42 @@ export default function Users() {
         onConfirm={onReset}
         packages={packages}
       />
+
+      <Modal open={!!transferTargetId} onClose={() => setTransferTargetId(null)} title={t("users.transferModalTitle")}>
+        <div className="space-y-4">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            {t("users.transferModalDesc", {
+              username: users.find((u) => u.id === transferTargetId)?.username || "",
+            })}
+          </p>
+          <div>
+            <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1">{t("users.transferTargetAdmin")}</label>
+            <select
+              className="input"
+              value={transferAdminId}
+              onChange={(e) => setTransferAdminId(e.target.value)}
+            >
+              <option value="">{t("common.select")}</option>
+              {adminId != null && (
+                <option value={adminId}>{t("users.transferMyself", { username: myUsername || "" })}</option>
+              )}
+              {admins.filter((a) => a.id !== adminId).map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.username}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" className="btn-secondary" onClick={() => setTransferTargetId(null)}>
+              {t("common.cancel")}
+            </button>
+            <button type="button" className="btn-primary" disabled={transferAdminId === ""} onClick={onTransfer}>
+              {t("users.transfer")}
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal open={open} onClose={() => setOpen(false)} title={t("users.newUserModalTitle")}>
         <form onSubmit={submit} className="space-y-4">

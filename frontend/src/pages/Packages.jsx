@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Plus, Pencil, Trash2, Power, Package as PackageIcon, Server, Paperclip, Download, Check, X, Tag, Layers, GripVertical, Gift, Search } from "lucide-react";
+import { Plus, Pencil, Trash2, Power, Package as PackageIcon, Server, Paperclip, Download, Check, X, Tag, Layers, GripVertical, Gift, Search, Copy } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
 import Topbar from "../components/Topbar.jsx";
@@ -214,6 +214,38 @@ export default function Packages() {
     setOpen(true);
   };
 
+  // "کپی گرفتن از پکیج" - opens the ordinary create modal, just pre-filled
+  // from an existing package instead of blank, so the admin can tweak a
+  // couple of fields (name, price, ...) and save it as a genuinely new,
+  // independent package rather than retyping everything. editingId stays
+  // null on purpose - submit() then calls createPackage, never
+  // updatePackage, so this can never overwrite the package it was copied
+  // from. Uploaded files aren't carried over: they're physical attachments
+  // tied to the original package's id (see uploadPackageFile), not data
+  // that can just be copied onto a not-yet-created row.
+  const openDuplicate = (pkg) => {
+    setEditingId(null);
+    setForm({
+      ...emptyForm,
+      ...pkg,
+      name: t("packages.copySuffix", { name: pkg.name }),
+      cooperation_price: pkg.cooperation_price ?? "",
+      group_id: pkg.group_id ?? "",
+      max_concurrent_sessions: pkg.max_concurrent_sessions ?? "",
+      speed_limit_mbps: pkg.speed_limit_mbps ?? "",
+      custom_message: pkg.custom_message || "",
+      ovpn_templates: (pkg.ovpn_templates || []).map((tpl) => ({ name: tpl.name, content: tpl.content })),
+      connections: (pkg.connections || []).map((c) => ({
+        node_id: c.node_id,
+        protocol: c.protocol,
+        flow: c.flow || "",
+      })),
+    });
+    setEditingFiles([]);
+    setError("");
+    setOpen(true);
+  };
+
   const onUploadFile = async (e) => {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -392,11 +424,17 @@ export default function Packages() {
                     <div className="font-medium text-gray-800">{p.name}</div>
                     {p.description && <div className="text-xs text-gray-400">{p.description}</div>}
                     {p.connections?.length > 0 && (
-                      <div className="text-xs text-brand-600 flex items-center gap-1 mt-1">
-                        <Server size={12} /> {t("packages.bundledServices", { count: p.connections.length })}
-                        {p.max_concurrent_sessions ? t("packages.maxConcurrent", { count: p.max_concurrent_sessions }) : ""}
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {p.connections.map((c) => (
+                          <span key={c.id} className="badge-info !text-[11px] !py-0.5">
+                            <Server size={10} /> {PROTOCOL_LABELS[c.protocol] || c.protocol} · {nodeName(c.node_id)}
+                          </span>
+                        ))}
                       </div>
                     )}
+                    {p.max_concurrent_sessions ? (
+                      <div className="text-xs text-gray-400 mt-1">{t("packages.maxConcurrent", { count: p.max_concurrent_sessions })}</div>
+                    ) : null}
                     {p.speed_limit_mbps ? (
                       <div className="text-xs text-amber-600 dark:text-amber-400 mt-1">{t("packages.speedLimitBadge", { mbps: p.speed_limit_mbps })}</div>
                     ) : null}
@@ -485,6 +523,9 @@ export default function Packages() {
                         <button title={t("packages.editTitle")} onClick={() => openEdit(p)} className="text-gray-400 hover:text-brand-600">
                           <Pencil size={16} />
                         </button>
+                        <button title={t("packages.duplicateTitle")} onClick={() => openDuplicate(p)} className="text-gray-400 hover:text-brand-600">
+                          <Copy size={16} />
+                        </button>
                         <button title={t("packages.deleteTitle")} onClick={() => onDelete(p.id)} className="text-gray-400 hover:text-red-600">
                           <Trash2 size={16} />
                         </button>
@@ -515,11 +556,17 @@ export default function Packages() {
                   <div className="font-medium text-gray-800">{p.name}</div>
                   {p.description && <div className="text-xs text-gray-400">{p.description}</div>}
                   {p.connections?.length > 0 && (
-                    <div className="text-xs text-brand-600 flex items-center gap-1 mt-1">
-                      <Server size={12} /> {t("packages.bundledServices", { count: p.connections.length })}
-                      {p.max_concurrent_sessions ? t("packages.maxConcurrent", { count: p.max_concurrent_sessions }) : ""}
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      {p.connections.map((c) => (
+                        <span key={c.id} className="badge-info !text-[11px] !py-0.5">
+                          <Server size={10} /> {PROTOCOL_LABELS[c.protocol] || c.protocol} · {nodeName(c.node_id)}
+                        </span>
+                      ))}
                     </div>
                   )}
+                  {p.max_concurrent_sessions ? (
+                    <div className="text-xs text-gray-400 mt-1">{t("packages.maxConcurrent", { count: p.max_concurrent_sessions })}</div>
+                  ) : null}
                   {p.speed_limit_mbps ? (
                     <div className="text-xs text-amber-600 dark:text-amber-400 mt-1">{t("packages.speedLimitBadge", { mbps: p.speed_limit_mbps })}</div>
                   ) : null}
@@ -531,6 +578,9 @@ export default function Packages() {
                     </button>
                     <button title={t("packages.editTitle")} onClick={() => openEdit(p)} className="text-gray-400 hover:text-brand-600">
                       <Pencil size={16} />
+                    </button>
+                    <button title={t("packages.duplicateTitle")} onClick={() => openDuplicate(p)} className="text-gray-400 hover:text-brand-600">
+                      <Copy size={16} />
                     </button>
                     <button title={t("packages.deleteTitle")} onClick={() => onDelete(p.id)} className="text-gray-400 hover:text-red-600">
                       <Trash2 size={16} />

@@ -466,6 +466,17 @@ class UserUpdate(BaseModel):
     purchases_blocked_reason: Optional[str] = None
 
 
+class UserTransferIn(BaseModel):
+    """Superadmin-only (see routers/users.py's transfer_user): move an
+    EXISTING customer to a different admin/seller's owner_admin_id -
+    including back to the superadmin's own id, which is why this is a
+    dedicated action rather than just reusing UserUpdate.owner_admin_id
+    (that field is only ever honored on a user the caller can already see;
+    this one deliberately crosses hierarchy.owned_admin_ids' per-admin wall,
+    see the router's docstring)."""
+    target_admin_id: int
+
+
 class UserOut(UserBase):
     model_config = ConfigDict(from_attributes=True)
     id: int

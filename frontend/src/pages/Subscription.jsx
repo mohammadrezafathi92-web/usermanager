@@ -3,7 +3,7 @@ import { useParams } from "react-router-dom";
 import QRCode from "qrcode";
 import { Wifi, Globe, ShieldCheck, Lock, KeyRound, ShieldEllipsis, Copy, Check, Download, Gift, Wallet, CalendarClock } from "lucide-react";
 import { fetchPublicSubscriptionInfo } from "../api/client.js";
-import { formatBytes, formatDateTime, statusLabel, STATUS_STYLES, copyText, downloadTextFile } from "../utils.js";
+import { formatBytes, formatDateTime, statusLabel, STATUS_STYLES, copyText } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
 // Same protocol -> icon/label/color map as UserDetail.jsx's buildTypeMeta,
@@ -70,11 +70,6 @@ function ServiceCard({ conn, meta, token }) {
     setTimeout(() => setCopiedKey(null), 1500);
   };
 
-  const onDownload = () => {
-    if (!conn.config_text) return;
-    downloadTextFile(`${conn.node_name || conn.kind}.${FILE_EXT[conn.kind] || "txt"}`, conn.config_text);
-  };
-
   return (
     <div className="card p-4 space-y-3">
       <div className="flex items-center justify-between">
@@ -135,9 +130,20 @@ function ServiceCard({ conn, meta, token }) {
                 <button className="btn-secondary flex-1" onClick={() => onCopy("config", conn.config_text)}>
                   {copiedKey === "config" ? <Check size={14} /> : <Copy size={14} />} {t("subscription.copyConfig")}
                 </button>
-                <button className="btn-primary flex-1" onClick={onDownload}>
+                {/* A real navigation to the server download endpoint, not a
+                    client-side Blob URL (see routers/subscription.py's
+                    download_connection_config, same endpoint the QR code
+                    above already points at) - Blob-URL downloads are
+                    silently swallowed by in-app browsers like Telegram's,
+                    which is how most customers actually open this page.
+                    A server response with Content-Disposition: attachment
+                    works everywhere the QR/other download buttons already
+                    do. Reported 2026-09-21: OpenVPN username/password
+                    services (no admin-uploaded .ovpn template, so this is
+                    the fallback path) weren't downloadable. */}
+                <a className="btn-primary flex-1 justify-center" href={downloadUrl} download={`${conn.node_name || conn.kind}.${FILE_EXT[conn.kind] || "txt"}`}>
                   <Download size={14} /> {t("subscription.download")}
-                </button>
+                </a>
               </div>
             </div>
           )}

@@ -50,31 +50,50 @@ def _atomic_increment(db: Session, model, obj_id: int, column: str, delta: float
     db.expire(db.get(model, obj_id), [column])
 
 
-def _apply_delta(db: Session, connection: models.Connection, rx: int, tx: int):
-    """Given fresh cumulative rx/tx from the node, compute the delta since
-    last poll (handling counter resets) and add it to the owning
-    allotment's usage - the connection's OWN Purchase (see
-    models.Purchase's docstring) if it has one, or the owning User's
-    combined used_bytes otherwise (the original, still-default behavior for
-    every connection not created via the "افزودن پکیج" flow)."""
-    prev_total = (connection.last_rx_bytes or 0) + (connection.last_tx_bytes or 0)
-    new_total = (rx or 0) + (tx or 0)
+def _apply_delta(db: Session, connection: models.Connection, download_bytes: int, upload_bytes: int):
+    """Given fresh cumulative download/upload counters from the node,
+    compute the delta since last poll for EACH direction independently
+    (handling counter resets per-counter, not combined - see below) and add
+    the total to the owning allotment's usage - the connection's OWN
+    Purchase (see models.Purchase's docstring) if it has one, or the owning
+    User's combined used_bytes otherwise (the original, still-default
+    behavior for every connection not created via the "افزودن پکیج" flow).
 
-    if new_total >= prev_total:
-        delta = new_total - prev_total
-    else:
-        # counters were reset (peer recreated / xray restarted / ppp session
-        # reconnected with a fresh dynamic interface)
-        delta = new_total
+    Callers must pass true client-facing directions, not whatever a node
+    happens to call its two counters - see each call site's comment for how
+    that protocol's raw rx/tx/uplink/downlink maps onto these two. Getting
+    this backwards doesn't break totals (delta_bytes is still the sum
+    either way) but silently swaps every upload/download split shown on the
+    dashboard and per-user usage charts.
 
-    connection.last_rx_bytes = rx
-    connection.last_tx_bytes = tx
+    Deltas are computed per-counter now instead of on the combined total -
+    the previous combined check (comparing rx+tx new vs old as one number)
+    missed a real case: if one counter alone reset (peer recreated mid-
+    session) while the other kept growing, the combined total could still
+    look like it only grew, and the reset counter's whole new value got
+    silently added on top of the other's real delta - a one-time inflated
+    spike. Each counter resetting on its own is now caught independently.
+    """
+    prev_download = connection.last_rx_bytes or 0
+    prev_upload = connection.last_tx_bytes or 0
+    download_bytes = download_bytes or 0
+    upload_bytes = upload_bytes or 0
+
+    download_delta = download_bytes - prev_download if download_bytes >= prev_download else download_bytes
+    upload_delta = upload_bytes - prev_upload if upload_bytes >= prev_upload else upload_bytes
+
+    connection.last_rx_bytes = download_bytes
+    connection.last_tx_bytes = upload_bytes
+
+    download_delta = max(0, download_delta)
+    upload_delta = max(0, upload_delta)
+    delta = download_delta + upload_delta
     if delta <= 0:
         return
-    add_usage(db, connection, delta)
+    add_usage(db, connection, delta, download_delta, upload_delta)
 
 
-def add_usage(db: Session, connection: models.Connection, delta: int) -> None:
+def add_usage(db: Session, connection: models.Connection, delta: int, download_delta: int = 0, upload_delta: int = 0) -> None:
     """Add `delta` bytes to everything that counts them.
 
     The second half of _apply_delta, split out because the two halves have
@@ -86,6 +105,12 @@ def add_usage(db: Session, connection: models.Connection, delta: int) -> None:
     at once. Keeping the arithmetic here and the baseline with whoever owns
     it is what stopped two concurrent sessions from resetting each other's
     (see models.RadiusActiveSession.last_rx_bytes).
+
+    download_delta/upload_delta are optional and only feed UsageLog's split
+    columns (dashboard/per-user usage-chart tabs) - every quota/billing
+    figure below still only cares about the combined `delta`, so a caller
+    that can't tell the two apart can leave them at 0 and everything except
+    the chart split keeps working exactly as before.
     """
     if delta <= 0:
         return
@@ -100,7 +125,10 @@ def add_usage(db: Session, connection: models.Connection, delta: int) -> None:
     else:
         _atomic_increment(db, models.User, user.id, "used_bytes", delta)
 
-    db.add(models.UsageLog(user_id=user.id, connection_id=connection.id, delta_bytes=delta))
+    db.add(models.UsageLog(
+        user_id=user.id, connection_id=connection.id, delta_bytes=delta,
+        upload_bytes=upload_delta, download_bytes=download_delta,
+    ))
 
     # Usage-based reseller billing (see AdminUser.billing_mode) - for
     # admins in "usage" mode, this single choke point (every protocol's
@@ -783,9 +811,15 @@ def poll_mikrotik_node(db: Session, node: models.Node):
                     if not peer:
                         conn.online = False
                         continue
+                    # RouterOS reports these from the router's own point of
+                    # view: "rx" is what it received FROM the peer (the
+                    # client's upload), "tx" is what it sent TO the peer
+                    # (the client's download) - the opposite of _apply_delta's
+                    # (download, upload) parameter order, so these are
+                    # passed in swapped.
                     rx = int(peer.get("rx", 0) or 0)
                     tx = int(peer.get("tx", 0) or 0)
-                    _apply_delta(db, conn, rx, tx)
+                    _apply_delta(db, conn, download_bytes=tx, upload_bytes=rx)
                     # RouterOS reports the peer's live UDP endpoint (address
                     # only, without :port) here while a handshake is fresh -
                     # this is the closest thing WireGuard has to a "client
@@ -823,7 +857,10 @@ def poll_xray_node(db: Session, node: models.Node):
                 bucket = stats.get(conn.xr_email)
                 if not bucket:
                     continue
-                _apply_delta(db, conn, bucket.get("downlink", 0), bucket.get("uplink", 0))
+                # xray-core's own naming already matches _apply_delta's
+                # (download, upload) order: downlink is server->client
+                # (download), uplink is client->server (upload).
+                _apply_delta(db, conn, download_bytes=bucket.get("downlink", 0), upload_bytes=bucket.get("uplink", 0))
 
             # Live online/offline flag (3X-UI only - see
             # ThreeXUIClient.get_online_emails; SSH-managed nodes always get

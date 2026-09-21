@@ -1132,6 +1132,14 @@ class UsageLog(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     connection_id = Column(Integer, ForeignKey("connections.id"), nullable=True, index=True)
     delta_bytes = Column(BigInteger, default=0)
+    # Same delta, split by direction (client's own upload/download, not the
+    # server's rx/tx - see services/quota_manager._apply_delta's docstring
+    # for how each protocol's raw counters get mapped onto these two).
+    # Added 2026-09; rows written before that have both at 0 even though
+    # delta_bytes is correct, since the split wasn't recorded yet - old
+    # rows age out after USAGE_LOG_KEEP_DAYS anyway.
+    upload_bytes = Column(BigInteger, default=0)
+    download_bytes = Column(BigInteger, default=0)
     created_at = Column(DateTime, default=now, index=True)
 
 

@@ -50,6 +50,10 @@
     --rc-tooltip-fg: #1f2937;
     --rc-area-stroke: #6366f1;
     --rc-area-fill: #6366f1;
+    --rc-download-stroke: #6366f1;
+    --rc-download-fill: #6366f1;
+    --rc-upload-stroke: #f59e0b;
+    --rc-upload-fill: #f59e0b;
   }
   .dark {
     --rc-grid: rgba(148, 163, 184, 0.14);
@@ -59,6 +63,10 @@
     --rc-tooltip-fg: #e2e8f0;
     --rc-area-stroke: #818cf8;
     --rc-area-fill: #818cf8;
+    --rc-download-stroke: #818cf8;
+    --rc-download-fill: #818cf8;
+    --rc-upload-stroke: #fbbf24;
+    --rc-upload-fill: #fbbf24;
   }
 
   body {

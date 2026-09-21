@@ -125,6 +125,7 @@ export const changeTelegramId = (telegram_id) =>
 
 export const fetchDashboard = () => client.get("/dashboard/stats");
 export const fetchUsageHistory = (range) => client.get("/dashboard/usage-history", { params: { range } });
+export const fetchUserUsageHistory = (userId, range) => client.get(`/users/${userId}/usage-history`, { params: { range } });
 
 export const fetchUsers = (page = 1, pageSize = 50, search = "", extra = {}) =>
   client.get("/users", {

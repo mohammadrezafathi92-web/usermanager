@@ -39,6 +39,7 @@ import {
   deletePurchase,
   fetchSubscriptionLink,
   regenerateSubscriptionLink,
+  fetchUserUsageHistory,
 } from "../api/client.js";
 import { statusLabel, STATUS_STYLES, gbToBytes, bytesToGb, formatBytes, formatDateTime, copyText, downloadTextFile, formatToman } from "../utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
@@ -281,6 +282,10 @@ export default function UserDetail() {
   // finishes loading, and every customer's page went white. Reported
   // 2026-09-13, and the same shape as the StatCard white page before it.
   const [resetTarget, setResetTarget] = useState(null); // the Purchase awaiting a reset
+  // Upload/download split for this user's last 24h, same bucket source the
+  // dashboard chart's 24h tab reads - summed client-side since this badge
+  // only needs the totals, not the per-hour shape.
+  const [usage24h, setUsage24h] = useState(null);
 
   const load = () => fetchUser(id).then((res) => {
     setUser(res.data);
@@ -314,6 +319,15 @@ export default function UserDetail() {
     fetchSubscriptionLink(id)
       .then((res) => setSubLink(res.data))
       .catch(() => setSubLink(null));
+    fetchUserUsageHistory(id, "24h")
+      .then((res) => {
+        const totals = (res.data.buckets || []).reduce(
+          (acc, b) => ({ upload: acc.upload + (b.upload_bytes || 0), download: acc.download + (b.download_bytes || 0) }),
+          { upload: 0, download: 0 }
+        );
+        setUsage24h(totals);
+      })
+      .catch(() => setUsage24h(null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
@@ -794,6 +808,16 @@ export default function UserDetail() {
             <span className="badge bg-gray-50 text-gray-600 dark:bg-slate-800 dark:text-gray-300">
               {t("userDetail.totalUsageInfo", { value: formatBytes(totalUsageInfo) })}
             </span>
+            {usage24h && (
+              <>
+                <span className="badge bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-400">
+                  {t("userDetail.downloadLast24h", { value: formatBytes(usage24h.download) })}
+                </span>
+                <span className="badge bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400">
+                  {t("userDetail.uploadLast24h", { value: formatBytes(usage24h.upload) })}
+                </span>
+              </>
+            )}
             <span className="badge bg-gray-50 text-gray-600 dark:bg-slate-800 dark:text-gray-300">
               {t("userDetail.nearestExpiry", { value: nearestExpiry ? formatDateTime(nearestExpiry, language) : t("userDetail.noExpiry") })}
             </span>

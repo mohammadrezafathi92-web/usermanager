@@ -139,12 +139,20 @@ export default function Dashboard() {
       return {
         time: at ? `${String(at.getUTCHours()).padStart(2, "0")}:00` : d.bucket.slice(11, 16),
         bytes: d.bytes,
+        upload_bytes: d.upload_bytes,
+        download_bytes: d.download_bytes,
         label: formatBytes(d.bytes),
       };
     }
     // 7d/30d buckets are date-only ("2026-08-13") - formatDate wants a
     // full timestamp to run through toDisplayDate/gregorianToJalali.
-    return { time: formatDate(`${d.bucket}T00:00:00`, language), bytes: d.bytes, label: formatBytes(d.bytes) };
+    return {
+      time: formatDate(`${d.bucket}T00:00:00`, language),
+      bytes: d.bytes,
+      upload_bytes: d.upload_bytes,
+      download_bytes: d.download_bytes,
+      label: formatBytes(d.bytes),
+    };
   });
 
   return (
@@ -485,6 +493,16 @@ export default function Dashboard() {
                 ))}
               </div>
             </div>
+            <div className="flex items-center gap-4 mb-3 text-xs text-gray-500 dark:text-gray-400">
+              <span className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ background: "var(--rc-download-stroke)" }} />
+                {t("dashboard.download")}
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ background: "var(--rc-upload-stroke)" }} />
+                {t("dashboard.upload")}
+              </span>
+            </div>
             {/* recharts renders its own inline SVG styles and doesn't see
                 Tailwind's dark: variants - it's themed here off the --rc-*
                 custom properties defined in index.css instead, which flip
@@ -492,9 +510,13 @@ export default function Dashboard() {
             <ResponsiveContainer width="100%" height={280}>
               <AreaChart data={chartData}>
                 <defs>
-                  <linearGradient id="colorUsage" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="var(--rc-area-fill)" stopOpacity={0.4} />
-                    <stop offset="95%" stopColor="var(--rc-area-fill)" stopOpacity={0} />
+                  <linearGradient id="colorDownload" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--rc-download-fill)" stopOpacity={0.4} />
+                    <stop offset="95%" stopColor="var(--rc-download-fill)" stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="colorUpload" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--rc-upload-fill)" stopOpacity={0.4} />
+                    <stop offset="95%" stopColor="var(--rc-upload-fill)" stopOpacity={0} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rc-grid)" />
@@ -507,13 +529,14 @@ export default function Dashboard() {
                   width={70}
                 />
                 <Tooltip
-                  formatter={(v) => formatBytes(v)}
+                  formatter={(v, name) => [formatBytes(v), name === "download_bytes" ? t("dashboard.download") : t("dashboard.upload")]}
                   labelFormatter={(l) => (usageRange === "24h" ? t("dashboard.hourLabel", { value: l }) : l)}
                   contentStyle={{ background: "var(--rc-tooltip-bg)", border: "1px solid var(--rc-tooltip-border)", borderRadius: 12 }}
                   labelStyle={{ color: "var(--rc-tooltip-fg)" }}
                   itemStyle={{ color: "var(--rc-tooltip-fg)" }}
                 />
-                <Area type="monotone" dataKey="bytes" stroke="var(--rc-area-stroke)" fill="url(#colorUsage)" strokeWidth={2.5} />
+                <Area type="monotone" dataKey="download_bytes" name={t("dashboard.download")} stroke="var(--rc-download-stroke)" fill="url(#colorDownload)" strokeWidth={2.5} />
+                <Area type="monotone" dataKey="upload_bytes" name={t("dashboard.upload")} stroke="var(--rc-upload-stroke)" fill="url(#colorUpload)" strokeWidth={2.5} />
               </AreaChart>
             </ResponsiveContainer>
           </div>

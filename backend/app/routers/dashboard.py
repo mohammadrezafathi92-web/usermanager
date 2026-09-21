@@ -1,5 +1,4 @@
 import datetime as dt
-from collections import OrderedDict
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, or_
@@ -8,60 +7,13 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_admin
-from ..services import accounting, hierarchy, jalali, system_stats
+from ..services import accounting, hierarchy, jalali, system_stats, usage_stats
 
 # How far ahead the dashboard looks for services about to lapse. A week is
 # long enough to act on and short enough that the number stays meaningful.
 EXPIRING_SOON_DAYS = 7
 
-# Usage-chart time ranges the frontend tabs switch between: how far back to
-# look and how coarse to bucket. Hourly for 24h stays readable at 24 points;
-# 7d/30d would be 168/720 points at hourly resolution, so those bucket by
-# day instead (7 and 30 points respectively).
-USAGE_RANGES = {
-    "24h": {"hours": 24, "step": dt.timedelta(hours=1), "fmt": "%Y-%m-%d %H:00"},
-    "7d": {"hours": 24 * 7, "step": dt.timedelta(days=1), "fmt": "%Y-%m-%d"},
-    "30d": {"hours": 24 * 30, "step": dt.timedelta(days=1), "fmt": "%Y-%m-%d"},
-}
-
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"], dependencies=[Depends(get_current_admin)])
-
-
-def _usage_buckets(db: Session, visibility, range_key: str) -> "OrderedDict[str, int]":
-    """Sums UsageLog.delta_bytes into fixed-width time buckets covering the
-    requested range, oldest first, with every bucket present (zero-filled)
-    even if no traffic happened in it - the frontend chart depends on a
-    stable, gap-free x-axis. Only a single total per bucket: UsageLog never
-    recorded which direction (upload/download) a delta was, so there's
-    nothing to split historically - see delta_bytes' docstring in models.py.
-    """
-    spec = USAGE_RANGES[range_key]
-    step = spec["step"]
-    num_buckets = spec["hours"] // int(step.total_seconds() // 3600)
-    now = dt.datetime.utcnow()
-    # Floor "now" to the bucket width - current (partial) hour/day is its
-    # own bucket, same as the original 24h-only version of this code did.
-    anchor = now.replace(minute=0, second=0, microsecond=0) if step == dt.timedelta(hours=1) \
-        else now.replace(hour=0, minute=0, second=0, microsecond=0)
-
-    buckets: "OrderedDict[str, int]" = OrderedDict()
-    for i in range(num_buckets - 1, -1, -1):
-        buckets[(anchor - i * step).strftime(spec["fmt"])] = 0
-    since = anchor - (num_buckets - 1) * step
-
-    logs = (
-        db.query(models.UsageLog.created_at, models.UsageLog.delta_bytes)
-        .join(models.User, models.User.id == models.UsageLog.user_id)
-        .filter(models.UsageLog.created_at >= since, visibility)
-        .all()
-    )
-    for created_at, delta_bytes in logs:
-        key_dt = created_at.replace(minute=0, second=0, microsecond=0) if step == dt.timedelta(hours=1) \
-            else created_at.replace(hour=0, minute=0, second=0, microsecond=0)
-        key = key_dt.strftime(spec["fmt"])
-        if key in buckets:
-            buckets[key] += int(delta_bytes or 0)
-    return buckets
 
 
 @router.get("/usage-history")
@@ -70,11 +22,11 @@ def usage_history(range: str = "24h", db: Session = Depends(get_db), admin: mode
     /stats so switching tabs doesn't re-run every other dashboard query -
     /stats still returns its own usage_last_24h (unchanged) for the initial
     24h view before the user touches a tab."""
-    if range not in USAGE_RANGES:
+    if range not in usage_stats.USAGE_RANGES:
         range = "24h"
     visibility = hierarchy.user_visibility_clause(db, admin)
-    buckets = _usage_buckets(db, visibility, range)
-    return {"range": range, "buckets": [{"bucket": k, "bytes": v} for k, v in buckets.items()]}
+    buckets = usage_stats.usage_buckets(db, visibility, range)
+    return {"range": range, "buckets": [{"bucket": k, **v} for k, v in buckets.items()]}
 
 
 def _debt_toman(admin: models.AdminUser) -> int:
@@ -145,7 +97,7 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
 
     # Bucket in Python so this works identically on sqlite/postgres/mysql -
     # shared with the /usage-history endpoint the chart's 7d/30d tabs call.
-    buckets = _usage_buckets(db, visibility, "24h")
+    buckets = usage_stats.usage_buckets(db, visibility, "24h")
 
     # Distinct users currently connected via either path: an open RADIUS
     # session (openvpn/l2tp, pushed live by the RADIUS server on
@@ -306,7 +258,7 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
         online_users_now=online_users_now,
         total_used_bytes=total_used_bytes,
         total_quota_bytes=total_quota_bytes,
-        usage_last_24h=[{"bucket": k, "bytes": v} for k, v in buckets.items()],
+        usage_last_24h=[{"bucket": k, **v} for k, v in buckets.items()],
         admin_balance=None if admin.is_superadmin else (admin.balance or 0),
         admin_billing_mode=None if admin.is_superadmin else (admin.billing_mode or "flat"),
         admin_volume_balance_gb=(

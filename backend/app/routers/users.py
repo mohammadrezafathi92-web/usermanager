@@ -13,7 +13,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..services.jalali import fmt_jalali
 from ..deps import get_current_admin, require_confirm_password, require_permission, require_superadmin
-from ..services import user_ops, hierarchy, accounting, admin_billing
+from ..services import user_ops, hierarchy, accounting, admin_billing, usage_stats
 
 router = APIRouter(prefix="/api/users", tags=["users"], dependencies=[Depends(get_current_admin)])
 
@@ -615,6 +615,18 @@ def get_user(user_id: int, db: Session = Depends(get_db), admin: models.AdminUse
             elif c.type == models.ConnectionType.wireguard:
                 c.client_ip = c.last_client_ip
     return out
+
+
+@router.get("/{user_id}/usage-history")
+def user_usage_history(user_id: int, range: str = "24h", db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    """Per-user equivalent of the dashboard's usage chart tabs (see
+    routers/dashboard.py's usage_history) - same upload/download split and
+    bucket math, scoped down to just this one user's own UsageLog rows."""
+    user = _get_owned_user(db, admin, user_id)
+    if range not in usage_stats.USAGE_RANGES:
+        range = "24h"
+    buckets = usage_stats.usage_buckets(db, models.UsageLog.user_id == user.id, range)
+    return {"range": range, "buckets": [{"bucket": k, **v} for k, v in buckets.items()]}
 
 
 # ~10.7 MB - twice the worst-case error of the edit form's two-decimal

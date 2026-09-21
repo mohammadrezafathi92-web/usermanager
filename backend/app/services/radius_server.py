@@ -614,8 +614,9 @@ class UserManagerRadiusServer(Server):
         ).delete(synchronize_session=False)
 
     @staticmethod
-    def _session_delta(db, connection_id: int, session_id: str, rx: int, tx: int) -> int:
-        """How many bytes THIS session has moved since its own last report.
+    def _session_delta(db, connection_id: int, session_id: str, in_octets: int, out_octets: int) -> tuple[int, int]:
+        """How many bytes THIS session has moved since its own last report,
+        as (download_delta, upload_delta).
 
         RADIUS counters are per session and start at zero, so the baseline
         has to be per session too. It used to live on the Connection, which
@@ -628,6 +629,14 @@ class UserManagerRadiusServer(Server):
 
         A row is created if we never saw the Start - a fresh baseline for
         that session only, leaving every other session's untouched.
+
+        Each direction is deltaed against its OWN previous value, not a
+        combined total - a combined check can miss one counter resetting
+        alone while the other keeps growing (see _apply_delta's docstring
+        in quota_manager.py for the same fix there). Acct-Input-Octets is
+        what the NAS received FROM the client (the client's upload),
+        Acct-Output-Octets is what it sent TO the client (the client's
+        download) - hence (download, upload) = (out_delta, in_delta).
         """
         row = (
             db.query(models.RadiusActiveSession)
@@ -644,15 +653,18 @@ class UserManagerRadiusServer(Server):
             )
             db.add(row)
 
-        previous = (row.last_rx_bytes or 0) + (row.last_tx_bytes or 0)
-        current = (rx or 0) + (tx or 0)
+        prev_in = row.last_rx_bytes or 0
+        prev_out = row.last_tx_bytes or 0
+        in_octets = in_octets or 0
+        out_octets = out_octets or 0
         # Within one session a counter only ever grows; going backwards
         # means the NAS restarted the session under the same id, so what it
         # reports now is all of it.
-        delta = current - previous if current >= previous else current
-        row.last_rx_bytes = rx or 0
-        row.last_tx_bytes = tx or 0
-        return max(0, delta)
+        in_delta = in_octets - prev_in if in_octets >= prev_in else in_octets
+        out_delta = out_octets - prev_out if out_octets >= prev_out else out_octets
+        row.last_rx_bytes = in_octets
+        row.last_tx_bytes = out_octets
+        return max(0, out_delta), max(0, in_delta)
 
     # ---------------------------------------------------------- accounting
     def HandleAcctPacket(self, pkt):
@@ -692,8 +704,8 @@ class UserManagerRadiusServer(Server):
                     # Per session, not per connection. The delta is worked
                     # out against THIS session's own previous report; every
                     # other session on the same connection is untouched.
-                    delta = self._session_delta(db, conn.id, session_id, in_octets, out_octets)
-                    add_usage(db, conn, delta)
+                    download_delta, upload_delta = self._session_delta(db, conn.id, session_id, in_octets, out_octets)
+                    add_usage(db, conn, download_delta + upload_delta, download_delta, upload_delta)
                     if status == "Stop":
                         conn.radius_session_id = None
                         # After the delta above, never before - closing

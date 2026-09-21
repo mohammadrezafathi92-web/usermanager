@@ -880,6 +880,19 @@ class User(Base):
     def owner_admin_username(self) -> Optional[str]:
         return self.owner_admin.username if self.owner_admin else None
 
+    @property
+    def reserved_package_name(self) -> Optional[str]:
+        """Which package (if any) the queued reserved_quota_bytes/
+        reserved_duration_days came from LAST - see renew_user's docstring:
+        reserved_package_id only ever holds the most recent renewal's
+        package, while the quota/days themselves keep accumulating across
+        every renewal queued since the reservation started. So this name is
+        a hint about the source, not a guarantee the reserved totals match
+        that one package's numbers - shown in the panel/bot precisely to
+        stop admins reading a summed reservation as if it were a single
+        known package."""
+        return self.reserved_package.name if self.reserved_package else None
+
 
 class Purchase(Base):
     """One individually-tracked package purchase/allotment for a user, with
@@ -963,6 +976,13 @@ class Purchase(Base):
         if not self.quota_bytes:
             return None
         return max(self.quota_bytes - self.used_bytes, 0)
+
+    @property
+    def reserved_package_name(self) -> Optional[str]:
+        """Per-purchase counterpart to User.reserved_package_name above -
+        same caveat: only the LAST renewal's package, while the reserved
+        totals themselves may be a sum of several queued renewals."""
+        return self.reserved_package.name if self.reserved_package else None
 
 
 class Connection(Base):

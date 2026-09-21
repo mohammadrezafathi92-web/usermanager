@@ -239,6 +239,10 @@ class PurchaseOut(BaseModel):
     reserved_quota_bytes: Optional[int] = None
     reserved_duration_days: Optional[int] = None
     reserved_package_id: Optional[int] = None
+    # Which package the reservation's LAST renewal came from - just a hint,
+    # since reserved_quota_bytes/reserved_duration_days may be the SUM of
+    # several renewals queued since. See models.Purchase.reserved_package_name.
+    reserved_package_name: Optional[str] = None
     reserved_created_at: Optional[dt.datetime] = None
     created_at: dt.datetime
     # Free-form label written by the customer at purchase time (bot) and/or
@@ -490,6 +494,10 @@ class UserOut(UserBase):
     reserved_quota_bytes: Optional[int] = None
     reserved_duration_days: Optional[int] = None
     reserved_package_id: Optional[int] = None
+    # Which package the reservation's LAST renewal came from - just a hint,
+    # since reserved_quota_bytes/reserved_duration_days may be the SUM of
+    # several renewals queued since. See models.User.reserved_package_name.
+    reserved_package_name: Optional[str] = None
     reserved_created_at: Optional[dt.datetime] = None
     # Independently-tracked package purchases added via "افزودن پکیج" - see
     # models.Purchase. Empty for users who have never used that feature.

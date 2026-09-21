@@ -815,12 +815,24 @@ export default function UserDetail() {
           </div>
           {(user.reserved_quota_bytes || user.reserved_duration_days) && (
             <div className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-500/10 dark:text-amber-400 rounded-lg px-3 py-2 mt-3">
-              ⏳ {t("userDetail.reservedRenewal", {
-                value: [
-                  user.reserved_quota_bytes ? formatBytes(user.reserved_quota_bytes) : null,
-                  user.reserved_duration_days ? t("userDetail.reservedDays", { days: user.reserved_duration_days }) : null,
-                ].filter(Boolean).join(" + "),
-              })}
+              <div>
+                ⏳ {t("userDetail.reservedRenewal", {
+                  value: [
+                    user.reserved_quota_bytes ? formatBytes(user.reserved_quota_bytes) : null,
+                    user.reserved_duration_days ? t("userDetail.reservedDays", { days: user.reserved_duration_days }) : null,
+                  ].filter(Boolean).join(" + "),
+                })}
+              </div>
+              {/* این عدد لزوماً از یک پکیج واحد نیست - چون هر تمدید جدید که
+                  رزرو می‌شه به رزرو قبلی اضافه می‌شه، نه جایگزینش (ببینید
+                  services/user_ops.py: renew_user). این خط برای همین اضافه
+                  شد: منبع آخرین تمدید رزروشده رو نشون می‌ده تا این ابهام
+                  پیش نیاد که «من همچین پکیجی ندارم». */}
+              <div className="opacity-75 mt-0.5">
+                {user.reserved_package_name
+                  ? t("userDetail.reservedFromPackage", { name: user.reserved_package_name })
+                  : t("userDetail.reservedManual")}
+              </div>
             </div>
           )}
         </div>
@@ -966,12 +978,19 @@ export default function UserDetail() {
                 </div>
                 {(purchase.reserved_quota_bytes || purchase.reserved_duration_days) && (
                   <div className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-500/10 dark:text-amber-400 rounded-lg px-3 py-2 mt-2">
-                    ⏳ {t("userDetail.reservedRenewal", {
-                      value: [
-                        purchase.reserved_quota_bytes ? formatBytes(purchase.reserved_quota_bytes) : null,
-                        purchase.reserved_duration_days ? t("userDetail.reservedDays", { days: purchase.reserved_duration_days }) : null,
-                      ].filter(Boolean).join(" + "),
-                    })}
+                    <div>
+                      ⏳ {t("userDetail.reservedRenewal", {
+                        value: [
+                          purchase.reserved_quota_bytes ? formatBytes(purchase.reserved_quota_bytes) : null,
+                          purchase.reserved_duration_days ? t("userDetail.reservedDays", { days: purchase.reserved_duration_days }) : null,
+                        ].filter(Boolean).join(" + "),
+                      })}
+                    </div>
+                    <div className="opacity-75 mt-0.5">
+                      {purchase.reserved_package_name
+                        ? t("userDetail.reservedFromPackage", { name: purchase.reserved_package_name })
+                        : t("userDetail.reservedManual")}
+                    </div>
                   </div>
                 )}
                 <div className="mt-2">

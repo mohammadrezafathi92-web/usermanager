@@ -679,7 +679,9 @@ class DashboardStats(BaseModel):
     # Services lapsing within expiring_soon_days - each is a renewal to chase.
     expiring_soon_users: int = 0
     expiring_soon_days: int = 7
-    # Sales in Toman, scoped by role exactly like the accounting section.
+    # Sales in Toman, scoped by role exactly like the accounting section -
+    # card deposits landed on one of the superadmin's own cards only (see
+    # routers/dashboard.py), not total recognized revenue.
     sales_today: int = 0
     sales_month: int = 0
     sales_prev_month: int = 0

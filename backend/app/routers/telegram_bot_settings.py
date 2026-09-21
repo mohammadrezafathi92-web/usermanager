@@ -318,3 +318,72 @@ def restart_my_bot(db: Session = Depends(get_db), admin: models.AdminUser = Depe
     _require_admin_tier(admin)
     runner.restart_admin_bot(admin.id, admin.own_bot_token or "", admin.telegram_id, bool(admin.own_bot_enabled))
     return _own_bot_response(admin)
+
+
+# ------------------------------------------- per-admin own auto-approve
+# «تایید خودکار رسید» scoped to THIS Admin's/Seller's own customers - see
+# models.AdminUser.own_auto_approve_enabled and services/auto_approve.py's
+# _effective_settings for the NULL-means-follow-global precedence rule.
+# Gated by the same _require_admin_tier as the bot itself (own_bot
+# permission for a Seller) since it is naturally part of "my own bot"'s
+# settings, not a separately grantable capability.
+def _own_auto_approve_response(admin: models.AdminUser) -> schemas.OwnAutoApproveSettingsOut:
+    return schemas.OwnAutoApproveSettingsOut(
+        enabled=admin.own_auto_approve_enabled,
+        ignore_hours=bool(admin.own_auto_approve_ignore_hours),
+        from_hour=admin.own_auto_approve_from_hour if admin.own_auto_approve_from_hour is not None else 9,
+        to_hour=admin.own_auto_approve_to_hour if admin.own_auto_approve_to_hour is not None else 23,
+        max_amount=admin.own_auto_approve_max_amount or 0,
+        returning_only=(
+            admin.own_auto_approve_returning_only if admin.own_auto_approve_returning_only is not None else True
+        ),
+    )
+
+
+@router.get("/my-bot/auto-approve", response_model=schemas.OwnAutoApproveSettingsOut)
+def get_my_auto_approve(admin: models.AdminUser = Depends(get_current_admin)):
+    _require_admin_tier(admin)
+    return _own_auto_approve_response(admin)
+
+
+@router.put("/my-bot/auto-approve", response_model=schemas.OwnAutoApproveSettingsOut)
+def update_my_auto_approve(
+    payload: schemas.OwnAutoApproveSettingsUpdate,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+):
+    """Saves this Admin's/Seller's OWN auto-approve override. Sending
+    enabled=null (not omitted - actually present with value null) resets
+    it back to NULL, i.e. "follow the shared bot's global setting again" -
+    the panel's reset-to-default action. Takes effect on the very next
+    pending receipt; nothing here restarts any bot."""
+    _require_admin_tier(admin)
+    data = payload.model_dump(exclude_unset=True)
+    # Same clamp-not-reject philosophy as the global endpoint above: an
+    # out-of-range hour is a typo, not a reason to discard the whole save.
+    for key in ("from_hour", "to_hour"):
+        if data.get(key) is not None:
+            data[key] = max(0, min(int(data[key]), 23))
+    if data.get("max_amount") is not None:
+        data["max_amount"] = max(0, int(data["max_amount"]))
+    field_map = {
+        "enabled": "own_auto_approve_enabled",
+        "ignore_hours": "own_auto_approve_ignore_hours",
+        "from_hour": "own_auto_approve_from_hour",
+        "to_hour": "own_auto_approve_to_hour",
+        "max_amount": "own_auto_approve_max_amount",
+        "returning_only": "own_auto_approve_returning_only",
+    }
+    for key, column in field_map.items():
+        if key not in data:
+            continue
+        # Only `enabled` is nullable in the DB - it is the reset-to-default
+        # signal. The other five columns are NOT NULL, so a stray null for
+        # any of them (there is no legitimate reason to send one) is
+        # ignored rather than risking a DB-level IntegrityError.
+        if data[key] is None and key != "enabled":
+            continue
+        setattr(admin, column, data[key])
+    db.commit()
+    db.refresh(admin)
+    return _own_auto_approve_response(admin)

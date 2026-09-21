@@ -337,6 +337,13 @@ export const fetchMyBot = () => client.get("/telegram-bot/my-bot");
 export const updateMyBot = (data) => client.put("/telegram-bot/my-bot", data);
 export const restartMyBot = () => client.post("/telegram-bot/my-bot/restart");
 
+// That same Admin's/Seller's OWN override of «تایید خودکار رسید» -
+// independent endpoint from /my-bot above so saving it never touches the
+// bot token/enabled fields. enabled=null resets it back to following the
+// shared bot's global setting - see routers/telegram_bot_settings.py.
+export const fetchMyAutoApprove = () => client.get("/telegram-bot/my-bot/auto-approve");
+export const updateMyAutoApprove = (data) => client.put("/telegram-bot/my-bot/auto-approve", data);
+
 export const fetchBackups = () => client.get("/backup/list");
 export const runBackup = () => client.post("/backup/run", null, { responseType: "blob" });
 export const restoreBackup = (file) => {

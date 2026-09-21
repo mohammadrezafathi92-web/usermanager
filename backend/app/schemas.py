@@ -1288,6 +1288,32 @@ class OwnBotSettingsUpdate(BaseModel):
     enabled: Optional[bool] = None
 
 
+# ---------- Per-admin/seller override of «تایید خودکار رسید» (see
+# models.AdminUser.own_auto_approve_enabled and services/auto_approve.py) ----------
+class OwnAutoApproveSettingsOut(BaseModel):
+    # None = this Admin/Seller has never configured their own override -
+    # their customers' receipts still follow the shared bot's global
+    # setting. Distinguishing None from False is exactly the point.
+    enabled: Optional[bool] = None
+    ignore_hours: bool = False
+    from_hour: int = 9
+    to_hour: int = 23
+    max_amount: int = 0
+    returning_only: bool = True
+
+
+class OwnAutoApproveSettingsUpdate(BaseModel):
+    # Sending enabled=null explicitly (present in the payload, value None -
+    # not simply omitted) resets this Admin/Seller back to following the
+    # shared bot's global setting - see PUT /my-bot/auto-approve below.
+    enabled: Optional[bool] = None
+    ignore_hours: Optional[bool] = None
+    from_hour: Optional[int] = None
+    to_hour: Optional[int] = None
+    max_amount: Optional[int] = None
+    returning_only: Optional[bool] = None
+
+
 # ---------- Per-admin own card-to-card payment info (3-tier hierarchy - see
 # AdminUser.own_payment_card_number and its docstring) ----------
 class OwnPaymentSettingsOut(BaseModel):

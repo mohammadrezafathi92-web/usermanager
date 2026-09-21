@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from types import SimpleNamespace
 
 from .. import models
 from ..database import SessionLocal
@@ -83,6 +84,46 @@ def _is_returning(db, pending: dict) -> bool:
     )
 
 
+def _effective_settings(db, pending: dict) -> tuple[object | None, bool]:
+    """(settings, is_own_override). `settings` exposes the same
+    auto_approve_enabled/ignore_hours/from_hour/to_hour/max_amount/
+    returning_only attributes as models.BotSettings, regardless of which of
+    the two sources below it actually came from - so _in_window and the
+    rest of decide() below don't need to know or care which one it is.
+
+    Precedence: the owning Admin's/Seller's OWN override
+    (AdminUser.own_auto_approve_*) if they've explicitly configured one -
+    own_auto_approve_enabled is not NULL - else the single global
+    BotSettings row, unchanged from this feature's original (pre-per-
+    reseller) behavior. See models.AdminUser's docstring on those columns
+    for why NULL, not per-field fallback, is the discriminator.
+    """
+    owner_admin_id = pending.get("owner_admin_id")
+    if owner_admin_id:
+        owner = db.get(models.AdminUser, owner_admin_id)
+        if owner is not None and owner.own_auto_approve_enabled is not None:
+            return (
+                SimpleNamespace(
+                    auto_approve_enabled=owner.own_auto_approve_enabled,
+                    auto_approve_ignore_hours=bool(owner.own_auto_approve_ignore_hours),
+                    auto_approve_from_hour=(
+                        owner.own_auto_approve_from_hour if owner.own_auto_approve_from_hour is not None else 9
+                    ),
+                    auto_approve_to_hour=(
+                        owner.own_auto_approve_to_hour if owner.own_auto_approve_to_hour is not None else 23
+                    ),
+                    auto_approve_max_amount=owner.own_auto_approve_max_amount or 0,
+                    auto_approve_returning_only=(
+                        owner.own_auto_approve_returning_only
+                        if owner.own_auto_approve_returning_only is not None
+                        else True
+                    ),
+                ),
+                True,
+            )
+    return db.get(models.BotSettings, 1), False
+
+
 def decide(pending: dict) -> tuple[bool, str]:
     """(allowed, reason). The reason is logged either way - "why was this
     NOT auto-approved" is the question that gets asked in practice."""
@@ -91,23 +132,24 @@ def decide(pending: dict) -> tuple[bool, str]:
 
     db = SessionLocal()
     try:
-        settings = db.get(models.BotSettings, 1)
+        settings, own_override = _effective_settings(db, pending)
+        scope_note = " (تنظیمات اختصاصی فروشنده)" if own_override else ""
         if settings is None or not settings.auto_approve_enabled:
-            return False, "تایید خودکار خاموش است"
+            return False, f"تایید خودکار خاموش است{scope_note}"
 
         now = dt.datetime.utcnow()
         if not _in_window(settings, now):
-            return False, "خارج از ساعات تایید خودکار"
+            return False, f"خارج از ساعات تایید خودکار{scope_note}"
 
         cap = int(settings.auto_approve_max_amount or 0)
         amount = _amount_of(pending)
         if cap and amount > cap:
-            return False, f"مبلغ {amount:,} از سقف {cap:,} بیشتر است"
+            return False, f"مبلغ {amount:,} از سقف {cap:,} بیشتر است{scope_note}"
 
         if settings.auto_approve_returning_only and not _is_returning(db, pending):
-            return False, "مشتری خرید تاییدشده‌ی قبلی ندارد"
+            return False, f"مشتری خرید تاییدشده‌ی قبلی ندارد{scope_note}"
 
-        return True, f"مبلغ {amount:,} - همه شرط‌ها برقرار است"
+        return True, f"مبلغ {amount:,} - همه شرط‌ها برقرار است{scope_note}"
     except Exception:
         # A failure to decide is a decision not to approve.
         logger.exception("auto-approve check failed - falling back to manual approval")

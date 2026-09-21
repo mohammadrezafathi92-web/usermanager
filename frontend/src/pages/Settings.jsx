@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { KeyRound, Info, Plus, Trash2, Copy, Power, CreditCard, Bot, RefreshCw, DatabaseBackup, Download, Server, Eye, EyeOff, Upload, Repeat, ChevronDown, Clock, ShieldAlert } from "lucide-react";
+import { KeyRound, Info, Plus, Trash2, Copy, Power, CreditCard, Bot, RefreshCw, DatabaseBackup, Download, Server, Eye, EyeOff, Upload, Repeat, ChevronDown, Clock, ShieldAlert, ShieldCheck } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
 import TelegramTunnelCard from "../components/TelegramTunnelCard.jsx";
@@ -29,6 +29,8 @@ import {
   restartTelegramBot,
   fetchMyBot,
   updateMyBot,
+  fetchMyAutoApprove,
+  updateMyAutoApprove,
   fetchMyPayment,
   updateMyPayment,
   fetchMyPaymentCards,
@@ -1449,6 +1451,7 @@ export default function Settings() {
           Packages.jsx's seller price editor) - only superadmin is excluded
           (they have the shared/global bot instead). */}
       {!isSuperadmin && <OwnBotCard t={t} />}
+      {!isSuperadmin && <OwnAutoApproveCard t={t} />}
         </>
       )}
 
@@ -1931,6 +1934,152 @@ function OwnBotCard({ t }) {
         <button type="button" className="btn-primary" disabled={saving} onClick={save}>
           {saving ? t("common.saving") : t("settings.saveAndRestartMyBot")}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// Per-Admin/Seller override of «تایید خودکار رسید» (see
+// services/auto_approve.py, models.AdminUser.own_auto_approve_enabled) -
+// independent card/save action from OwnBotCard above so saving one never
+// touches the other's fields. `configured` tracks whether this reseller
+// has ever saved their own override (enabled !== null) - while
+// unconfigured, their customers' receipts follow the shared bot's global
+// setting exactly like before this existed, and the card shows that
+// plainly instead of a misleading unchecked box.
+function OwnAutoApproveCard({ t }) {
+  const [status, setStatus] = useState(null);
+  const [enabled, setEnabled] = useState(false);
+  const [ignoreHours, setIgnoreHours] = useState(false);
+  const [fromHour, setFromHour] = useState(9);
+  const [toHour, setToHour] = useState(23);
+  const [maxAmount, setMaxAmount] = useState(0);
+  const [returningOnly, setReturningOnly] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  const applyStatus = (data) => {
+    setStatus(data);
+    setEnabled(data.enabled === true);
+    setIgnoreHours(!!data.ignore_hours);
+    setFromHour(data.from_hour ?? 9);
+    setToHour(data.to_hour ?? 23);
+    setMaxAmount(data.max_amount ?? 0);
+    setReturningOnly(data.returning_only !== false);
+  };
+
+  useEffect(() => {
+    fetchMyAutoApprove().then((res) => applyStatus(res.data)).catch(() => {});
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setMsg(null);
+    try {
+      const res = await updateMyAutoApprove({
+        enabled,
+        ignore_hours: ignoreHours,
+        from_hour: fromHour,
+        to_hour: toHour,
+        max_amount: maxAmount,
+        returning_only: returningOnly,
+      });
+      applyStatus(res.data);
+      setMsg({ type: "ok", text: t("settings.myAutoApproveSaved") });
+    } catch (err) {
+      setMsg({ type: "err", text: err?.response?.data?.detail || t("settings.myAutoApproveSaveError") });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const resetToDefault = async () => {
+    setResetting(true);
+    setMsg(null);
+    try {
+      const res = await updateMyAutoApprove({ enabled: null });
+      applyStatus(res.data);
+      setMsg({ type: "ok", text: t("settings.myAutoApproveReset") });
+    } catch (err) {
+      setMsg({ type: "err", text: err?.response?.data?.detail || t("settings.myAutoApproveSaveError") });
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  if (!status) return null;
+  const configured = status.enabled !== null;
+
+  return (
+    <div className="card mb-4">
+      <div className="flex items-center gap-2 mb-4">
+        <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+          <ShieldCheck size={15} />
+        </span>
+        <h3 className="font-bold text-gray-700">{t("settings.myAutoApproveTitle")}</h3>
+      </div>
+      <p className="text-xs text-gray-400 mb-4">{t("settings.myAutoApproveDescription")}</p>
+      <div className="text-xs text-sky-600 bg-sky-50 dark:bg-sky-500/10 dark:text-sky-400 rounded-lg px-3 py-2 mb-4">
+        {configured ? t("settings.myAutoApproveConfiguredHint") : t("settings.myAutoApproveFollowingSharedHint")}
+      </div>
+
+      <div className="rounded-xl border border-amber-200 dark:border-amber-500/30 bg-amber-50/60 dark:bg-amber-500/10 p-4">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+          <span className="text-sm font-medium text-gray-800">{t("settings.autoApproveLabel")}</span>
+        </label>
+        <div className="text-xs text-gray-500 mt-1">{t("settings.autoApproveHint")}</div>
+
+        <div className={`mt-4 ${enabled ? "" : "opacity-50 pointer-events-none"}`}>
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <input type="checkbox" checked={ignoreHours} onChange={(e) => setIgnoreHours(e.target.checked)} />
+            {t("settings.autoApproveIgnoreHours")}
+          </label>
+        </div>
+
+        <div className={`grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4 ${enabled ? "" : "opacity-50 pointer-events-none"}`}>
+          <div className={ignoreHours ? "opacity-40 pointer-events-none" : ""}>
+            <label className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveFromHour")}</label>
+            <select className="input input-sm" value={fromHour} onChange={(e) => setFromHour(Number(e.target.value))}>
+              {HOURS.map((h) => <option key={h} value={h}>{String(h).padStart(2, "0")}:00</option>)}
+            </select>
+          </div>
+          <div className={ignoreHours ? "opacity-40 pointer-events-none" : ""}>
+            <label className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveToHour")}</label>
+            <select className="input input-sm" value={toHour} onChange={(e) => setToHour(Number(e.target.value))}>
+              {HOURS.map((h) => <option key={h} value={h}>{String(h).padStart(2, "0")}:00</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveMaxAmount")}</label>
+            <MoneyInput small value={maxAmount} onChange={(v) => setMaxAmount(v === "" ? 0 : Number(v))} />
+            <div className="hint">{t("settings.autoApproveMaxAmountHint")}</div>
+          </div>
+          <div className="flex items-start pt-5">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={returningOnly} onChange={(e) => setReturningOnly(e.target.checked)} />
+              <span className="text-sm text-gray-700">{t("settings.autoApproveReturningOnly")}</span>
+            </label>
+          </div>
+        </div>
+        <div className={`text-xs text-gray-500 mt-3 ${enabled ? "" : "opacity-50"}`}>{t("settings.autoApproveWindowNote")}</div>
+      </div>
+
+      {msg && (
+        <div className={`text-sm rounded-lg px-3 py-2 mt-4 ${msg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
+          {msg.text}
+        </div>
+      )}
+      <div className="flex items-center gap-2 mt-4">
+        <button type="button" className="btn-primary" disabled={saving} onClick={save}>
+          {saving ? t("common.saving") : t("settings.myAutoApproveSave")}
+        </button>
+        {configured && (
+          <button type="button" className="btn-secondary" disabled={resetting} onClick={resetToDefault}>
+            {resetting ? t("common.saving") : t("settings.myAutoApproveResetButton")}
+          </button>
+        )}
       </div>
     </div>
   );

@@ -229,6 +229,33 @@ class AdminUser(Base):
     own_bot_token = Column(String(255), nullable=True)
     own_bot_enabled = Column(Boolean, nullable=False, default=True)
 
+    # ---------- Per-admin/seller override of «تایید خودکار رسید» ----------
+    # Same six knobs as BotSettings.auto_approve_* (see services/
+    # auto_approve.py) but scoped to THIS Admin's/Seller's own customers,
+    # so each reseller can decide their own risk tolerance instead of being
+    # bound by whatever the superadmin set on the shared bot. Requested
+    # 2026-09-21 ("هر کدوم از فروشندگان ... بتونن تایید خودکار رسید هاشون
+    # رو خودشون تنظیم کنن").
+    #
+    # own_auto_approve_enabled is the discriminator: NULL means this
+    # Admin/Seller has never opened/saved their own override, so their
+    # customers' receipts keep following the single global BotSettings row
+    # exactly like before this existed (see auto_approve._effective_settings)
+    # - zero behavior change for every account that never touches this.
+    # Once saved (via PUT /api/telegram-bot/my-bot/auto-approve), it becomes
+    # an explicit True/False that fully replaces the global settings for
+    # this admin's own pending requests, not just a fallback per-field
+    # overlay like own_payment_card_number - the six auto-approve knobs are
+    # one coherent policy, not independently meaningful fields. Explicitly
+    # setting it back to NULL (the panel's "reset to shared default"
+    # action) restores the fallback.
+    own_auto_approve_enabled = Column(Boolean, nullable=True, default=None)
+    own_auto_approve_ignore_hours = Column(Boolean, nullable=False, default=False)
+    own_auto_approve_from_hour = Column(Integer, nullable=False, default=9)
+    own_auto_approve_to_hour = Column(Integer, nullable=False, default=23)
+    own_auto_approve_max_amount = Column(Integer, nullable=False, default=0)
+    own_auto_approve_returning_only = Column(Boolean, nullable=False, default=True)
+
     # ---------- Per-admin own card-to-card payment info (3-tier hierarchy) ----------
     # A level-2 Admin's OR level-3 Seller's OWN "پرداخت کارت‌به‌کارت" info,
     # shown to customers in THEIR OWN bot at checkout/top-up instead of the

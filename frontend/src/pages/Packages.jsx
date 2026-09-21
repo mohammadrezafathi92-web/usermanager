@@ -504,6 +504,9 @@ export default function Packages() {
                       <span className={p.bot_enabled ? "badge-success" : "badge-neutral"}>
                         {t("packages.bot")}: {p.bot_enabled ? t("status.active") : t("status.disabled")}
                       </span>
+                      <span className={p.miniapp_enabled ? "badge-success" : "badge-neutral"}>
+                        {t("packages.miniapp")}: {p.miniapp_enabled ? t("status.active") : t("status.disabled")}
+                      </span>
                       {!isSeller && (
                         <span className={p.seller_visible ? "badge-success" : "badge-neutral"}>
                           {t("packages.sellers")}: {p.seller_visible ? t("status.active") : t("status.disabled")}
@@ -658,6 +661,9 @@ export default function Packages() {
                 </span>
                 <span className={p.bot_enabled ? "badge-success" : "badge-neutral"}>
                   {t("packages.bot")}: {p.bot_enabled ? t("status.active") : t("status.disabled")}
+                </span>
+                <span className={p.miniapp_enabled ? "badge-success" : "badge-neutral"}>
+                  {t("packages.miniapp")}: {p.miniapp_enabled ? t("status.active") : t("status.disabled")}
                 </span>
                 {!isSeller && (
                   <span className={p.seller_visible ? "badge-success" : "badge-neutral"}>

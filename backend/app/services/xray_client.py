@@ -109,6 +109,24 @@ class XrayClient:
         return out, err, exit_code
 
     # ------------------------------------------------------------------
+    def _read_file(self, path: str) -> str:
+        try:
+            sftp = self._client.open_sftp()
+        except Exception as exc:
+            raise XrayError(
+                f"کانال SFTP با سرور برقرار نشد (احتمالاً SFTP روی این سرور SSH غیرفعال است): {exc}"
+            ) from exc
+        try:
+            try:
+                with sftp.open(path, "r") as f:
+                    return f.read().decode("utf-8")
+            except FileNotFoundError:
+                raise
+            except Exception as exc:
+                raise XrayError(f"خواندن فایل کانفیگ از روی سرور ناموفق بود: {exc}") from exc
+        finally:
+            sftp.close()
+
     def read_config(self) -> dict:
         # Every step below used to be able to raise a raw paramiko/IO/JSON
         # exception straight out of this method - connect() above wraps its
@@ -121,25 +139,97 @@ class XrayClient:
         # complaint this was found from (2026-09-21). Every failure mode
         # here now becomes a normal XrayError with a specific message.
         try:
-            sftp = self._client.open_sftp()
-        except Exception as exc:
-            raise XrayError(
-                f"کانال SFTP با سرور برقرار نشد (احتمالاً SFTP روی این سرور SSH غیرفعال است): {exc}"
-            ) from exc
-        try:
-            try:
-                with sftp.open(self.config_path, "r") as f:
-                    data = f.read().decode("utf-8")
-            except FileNotFoundError as exc:
-                raise XrayError(f"فایل کانفیگ در مسیر «{self.config_path}» روی سرور پیدا نشد") from exc
-            except Exception as exc:
-                raise XrayError(f"خواندن فایل کانفیگ از روی سرور ناموفق بود: {exc}") from exc
-        finally:
-            sftp.close()
+            data = self._read_file(self.config_path)
+        except FileNotFoundError:
+            # The configured path is wrong for this server - most real
+            # installs don't actually use the official install script's
+            # default (/usr/local/etc/xray/config.json, this class's own
+            # default too), so rather than just failing here we ask the
+            # server itself where its running xray/v2ray actually reads
+            # its config from and retry once with that path. On success the
+            # corrected path is kept on `self.config_path` so every later
+            # call in this same session (add_client/write_config/...) uses
+            # it too - callers with DB access (routers/nodes.py test_node,
+            # quota_manager.poll_xray_node) persist it back onto
+            # Node.xr_config_path so future connections don't repeat this.
+            discovered = self.discover_config_path()
+            self.config_path = discovered
+            data = self._read_file(discovered)
         try:
             return json.loads(data)
         except ValueError as exc:
             raise XrayError(f"فایل کانفیگ روی سرور یک JSON معتبر نیست: {exc}") from exc
+
+    _CONFIG_ARG_RE = re.compile(r"-(?:c|config)\s+(\S+)")
+    _CANDIDATE_CONFIG_PATHS = [
+        "/usr/local/etc/xray/config.json",
+        "/etc/xray/config.json",
+        "/usr/local/etc/v2ray/config.json",
+        "/etc/v2ray/config.json",
+        "/opt/xray/config.json",
+        "/opt/v2ray/config.json",
+        "/etc/xray/conf/config.json",
+        "/usr/local/x-ui/bin/config.json",
+    ]
+
+    def discover_config_path(self) -> str:
+        """Best-effort autodetection of this node's real xray config.json
+        path, used by read_config() when the configured xr_config_path is
+        wrong. Tries, in order: (1) asking systemd what command line the
+        running xray/v2ray service actually uses - the one source of truth,
+        since restart_service() restarts exactly that service; (2) a list
+        of paths used by common install methods; (3) a shallow filesystem
+        search as a last resort. Raises XrayError with a clear explanation
+        if nothing conclusive is found, rather than ever guessing silently.
+        """
+        tried: list[str] = []
+        for svc in dict.fromkeys([self.service_name, "xray", "v2ray"]):
+            out, _err, _code = self._exec(f"systemctl show -p ExecStart --no-pager {svc} 2>/dev/null; true")
+            if not out.strip():
+                continue
+            if "-confdir" in out:
+                raise XrayError(
+                    f"سرویس «{svc}» روی این سرور با آرگومان «-confdir» (چند فایل کانفیگ داخل یک پوشه) اجرا "
+                    "می‌شود، نه یک فایل config.json تکی - این قابلیت فعلاً فقط از یک فایل واحد پشتیبانی "
+                    "می‌کند، پس مسیر را باید دستی در تنظیمات این سرور مشخص کنید."
+                )
+            m = self._CONFIG_ARG_RE.search(out)
+            if not m:
+                continue
+            path = m.group(1).strip("'\"")
+            if path in tried:
+                continue
+            tried.append(path)
+            check, _err2, _code2 = self._exec(f"test -f {path} && echo __FOUND__")
+            if "__FOUND__" in check:
+                return path
+
+        for path in self._CANDIDATE_CONFIG_PATHS:
+            if path in tried:
+                continue
+            tried.append(path)
+            check, _err, _code = self._exec(f"test -f {path} && echo __FOUND__")
+            if "__FOUND__" in check:
+                return path
+
+        found, _err, _code = self._exec(
+            "find / -xdev -maxdepth 6 -iname 'config.json' "
+            "\\( -ipath '*xray*' -o -ipath '*v2ray*' \\) 2>/dev/null | head -5"
+        )
+        candidates = [p.strip() for p in found.splitlines() if p.strip()]
+        if len(candidates) == 1:
+            return candidates[0]
+        if candidates:
+            raise XrayError(
+                "چند فایل کانفیگ احتمالی روی سرور پیدا شد و نمی‌شود مطمئن بود کدام درست است: "
+                + "، ".join(candidates)
+                + " - مسیر درست را دستی در تنظیمات این سرور وارد کنید."
+            )
+        raise XrayError(
+            f"فایل کانفیگ در مسیر «{self.config_path}» روی سرور پیدا نشد و مسیر واقعی هم به‌صورت خودکار "
+            "پیدا نشد (سرویس‌های systemd و مسیرهای رایج نصب بررسی شدند) - مسیر را دستی در تنظیمات این "
+            "سرور وارد کنید."
+        )
 
     def write_config(self, config: dict):
         try:

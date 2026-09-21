@@ -14,7 +14,67 @@ from ..services import accounting, hierarchy, jalali, system_stats
 # long enough to act on and short enough that the number stays meaningful.
 EXPIRING_SOON_DAYS = 7
 
+# Usage-chart time ranges the frontend tabs switch between: how far back to
+# look and how coarse to bucket. Hourly for 24h stays readable at 24 points;
+# 7d/30d would be 168/720 points at hourly resolution, so those bucket by
+# day instead (7 and 30 points respectively).
+USAGE_RANGES = {
+    "24h": {"hours": 24, "step": dt.timedelta(hours=1), "fmt": "%Y-%m-%d %H:00"},
+    "7d": {"hours": 24 * 7, "step": dt.timedelta(days=1), "fmt": "%Y-%m-%d"},
+    "30d": {"hours": 24 * 30, "step": dt.timedelta(days=1), "fmt": "%Y-%m-%d"},
+}
+
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"], dependencies=[Depends(get_current_admin)])
+
+
+def _usage_buckets(db: Session, visibility, range_key: str) -> "OrderedDict[str, int]":
+    """Sums UsageLog.delta_bytes into fixed-width time buckets covering the
+    requested range, oldest first, with every bucket present (zero-filled)
+    even if no traffic happened in it - the frontend chart depends on a
+    stable, gap-free x-axis. Only a single total per bucket: UsageLog never
+    recorded which direction (upload/download) a delta was, so there's
+    nothing to split historically - see delta_bytes' docstring in models.py.
+    """
+    spec = USAGE_RANGES[range_key]
+    step = spec["step"]
+    num_buckets = spec["hours"] // int(step.total_seconds() // 3600)
+    now = dt.datetime.utcnow()
+    # Floor "now" to the bucket width - current (partial) hour/day is its
+    # own bucket, same as the original 24h-only version of this code did.
+    anchor = now.replace(minute=0, second=0, microsecond=0) if step == dt.timedelta(hours=1) \
+        else now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    buckets: "OrderedDict[str, int]" = OrderedDict()
+    for i in range(num_buckets - 1, -1, -1):
+        buckets[(anchor - i * step).strftime(spec["fmt"])] = 0
+    since = anchor - (num_buckets - 1) * step
+
+    logs = (
+        db.query(models.UsageLog.created_at, models.UsageLog.delta_bytes)
+        .join(models.User, models.User.id == models.UsageLog.user_id)
+        .filter(models.UsageLog.created_at >= since, visibility)
+        .all()
+    )
+    for created_at, delta_bytes in logs:
+        key_dt = created_at.replace(minute=0, second=0, microsecond=0) if step == dt.timedelta(hours=1) \
+            else created_at.replace(hour=0, minute=0, second=0, microsecond=0)
+        key = key_dt.strftime(spec["fmt"])
+        if key in buckets:
+            buckets[key] += int(delta_bytes or 0)
+    return buckets
+
+
+@router.get("/usage-history")
+def usage_history(range: str = "24h", db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    """Backs the dashboard usage chart's time-range tabs. Kept separate from
+    /stats so switching tabs doesn't re-run every other dashboard query -
+    /stats still returns its own usage_last_24h (unchanged) for the initial
+    24h view before the user touches a tab."""
+    if range not in USAGE_RANGES:
+        range = "24h"
+    visibility = hierarchy.user_visibility_clause(db, admin)
+    buckets = _usage_buckets(db, visibility, range)
+    return {"range": range, "buckets": [{"bucket": k, "bytes": v} for k, v in buckets.items()]}
 
 
 def _debt_toman(admin: models.AdminUser) -> int:
@@ -83,24 +143,9 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
         or 0
     )
 
-    since = dt.datetime.utcnow() - dt.timedelta(hours=24)
-    logs_q = (
-        db.query(models.UsageLog.created_at, models.UsageLog.delta_bytes)
-        .join(models.User, models.User.id == models.UsageLog.user_id)
-        .filter(models.UsageLog.created_at >= since, visibility)
-    )
-    logs = logs_q.all()
-
-    # Bucket in Python so this works identically on sqlite/postgres/mysql.
-    buckets: "OrderedDict[str, int]" = OrderedDict()
-    now = dt.datetime.utcnow().replace(minute=0, second=0, microsecond=0)
-    for i in range(23, -1, -1):
-        bucket_time = now - dt.timedelta(hours=i)
-        buckets[bucket_time.strftime("%Y-%m-%d %H:00")] = 0
-    for created_at, delta_bytes in logs:
-        key = created_at.replace(minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:00")
-        if key in buckets:
-            buckets[key] += int(delta_bytes or 0)
+    # Bucket in Python so this works identically on sqlite/postgres/mysql -
+    # shared with the /usage-history endpoint the chart's 7d/30d tabs call.
+    buckets = _usage_buckets(db, visibility, "24h")
 
     # Distinct users currently connected via either path: an open RADIUS
     # session (openvpn/l2tp, pushed live by the RADIUS server on
@@ -146,6 +191,26 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
     for conn_type, count in protocol_rows:
         key = conn_type.value if hasattr(conn_type, "value") else conn_type
         protocol_counts[key] = count
+
+    # Same grid, but how many of each protocol are online RIGHT NOW - same
+    # "online" definition as online_users_now above (open RADIUS session or
+    # Connection.online), just grouped by type instead of collapsed to one
+    # number.
+    protocol_online_counts = {p.value: 0 for p in models.ConnectionType}
+    protocol_online_rows = (
+        db.query(models.Connection.type, func.count(func.distinct(models.Connection.id)))
+        .outerjoin(models.RadiusActiveSession, models.RadiusActiveSession.connection_id == models.Connection.id)
+        .join(models.User, models.User.id == models.Connection.user_id)
+        .filter(
+            or_(models.RadiusActiveSession.id.isnot(None), models.Connection.online.is_(True)),
+            visibility,
+        )
+        .group_by(models.Connection.type)
+        .all()
+    )
+    for conn_type, count in protocol_online_rows:
+        key = conn_type.value if hasattr(conn_type, "value") else conn_type
+        protocol_online_counts[key] = count
 
     # Host system stats (CPU/RAM/disk of THIS server) - shared
     # infrastructure, not tenant data, so only shown to a superadmin or
@@ -253,6 +318,7 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
         ),
         avg_speed_bps=avg_speed_bps,
         protocol_connection_counts=protocol_counts,
+        protocol_online_counts=protocol_online_counts,
         system_cpu_percent=sys_stats["cpu_percent"] if sys_stats else None,
         system_cpu_cores=sys_stats["cpu_cores"] if sys_stats else None,
         system_ram_used_bytes=sys_stats["ram_used_bytes"] if sys_stats else None,

@@ -6,11 +6,11 @@ import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import StatCard from "../components/StatCard.jsx";
 import UsageBar from "../components/UsageBar.jsx";
-import { fetchDashboard } from "../api/client.js";
-import { formatBytes, formatBitrate, formatUptime, toDisplayDate, formatToman, formatGb } from "../utils.js";
+import { fetchDashboard, fetchUsageHistory } from "../api/client.js";
+import { formatBytes, formatBitrate, formatUptime, toDisplayDate, formatDate, formatToman, formatGb } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
-const PROTOCOL_LABELS = { wireguard: "WireGuard", openvpn: "OpenVPN", l2tp: "L2TP", ikev2: "IKEv2", sstp: "SSTP", xray: "V2Ray/Xray" };
+const PROTOCOL_LABELS = { wireguard: "WireGuard", openvpn: "OpenVPN", l2tp: "L2TP", ikev2: "IKEv2", sstp: "SSTP", pptp: "PPTP", xray: "V2Ray/Xray" };
 
 
 // One actionable tile: a number that means "go do something", with the page
@@ -87,8 +87,19 @@ function HeroStat({ icon: Icon, value, label }) {
   );
 }
 
+// Tabs for the usage chart's time range - kept as an ordered array (not just
+// an object) so the buttons render in a fixed, deliberate order regardless
+// of insertion order in translations.js.
+const USAGE_RANGES = [
+  { key: "24h", labelKey: "dashboard.range24h" },
+  { key: "7d", labelKey: "dashboard.range7d" },
+  { key: "30d", labelKey: "dashboard.range30d" },
+];
+
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
+  const [usageRange, setUsageRange] = useState("24h");
+  const [usageBuckets, setUsageBuckets] = useState(null);
   const navigate = useNavigate();
   const { t, language } = useLanguage();
 
@@ -100,17 +111,40 @@ export default function Dashboard() {
     return () => clearInterval(timer);
   }, []);
 
-  // The bucket keys are UTC hours ("2026-08-13 14:00"). Slicing the hour
-  // straight out of the string labelled the axis in UTC, so the traffic peak
-  // appeared 3.5 hours away from when it actually happened locally. The space
-  // becomes a "T" first so toDisplayDate gets a value Date can parse.
-  const chartData = (stats?.usage_last_24h || []).map((d) => {
-    const at = toDisplayDate(String(d.bucket).replace(" ", "T"));
-    return {
-      time: at ? `${String(at.getUTCHours()).padStart(2, "0")}:00` : d.bucket.slice(11, 16),
-      bytes: d.bytes,
-      label: formatBytes(d.bytes),
-    };
+  // /stats already carries the 24h view (usage_last_24h, unchanged), so the
+  // default tab needs no extra request - only switching to 7d/30d fetches
+  // from the dedicated /usage-history endpoint. Re-fetches the active range
+  // every 15s too, so tab switches stay live like the rest of the page.
+  useEffect(() => {
+    if (usageRange === "24h") {
+      setUsageBuckets(null);
+      return undefined;
+    }
+    const loadRange = () => fetchUsageHistory(usageRange).then((res) => setUsageBuckets(res.data.buckets));
+    loadRange();
+    const timer = setInterval(loadRange, 15000);
+    return () => clearInterval(timer);
+  }, [usageRange]);
+
+  const rawBuckets = usageRange === "24h" ? stats?.usage_last_24h : usageBuckets;
+
+  // The bucket keys are UTC ("2026-08-13 14:00" for 24h, "2026-08-13" for
+  // 7d/30d). Slicing the hour straight out of the string labelled the axis
+  // in UTC, so the traffic peak appeared 3.5 hours away from when it
+  // actually happened locally. The space becomes a "T" first so
+  // toDisplayDate gets a value Date can parse.
+  const chartData = (rawBuckets || []).map((d) => {
+    if (usageRange === "24h") {
+      const at = toDisplayDate(String(d.bucket).replace(" ", "T"));
+      return {
+        time: at ? `${String(at.getUTCHours()).padStart(2, "0")}:00` : d.bucket.slice(11, 16),
+        bytes: d.bytes,
+        label: formatBytes(d.bytes),
+      };
+    }
+    // 7d/30d buckets are date-only ("2026-08-13") - formatDate wants a
+    // full timestamp to run through toDisplayDate/gregorianToJalali.
+    return { time: formatDate(`${d.bucket}T00:00:00`, language), bytes: d.bytes, label: formatBytes(d.bytes) };
   });
 
   return (
@@ -382,6 +416,7 @@ export default function Dashboard() {
               <div className="grid grid-cols-2 gap-2.5">
                 {Object.entries(PROTOCOL_LABELS).map(([key, label]) => {
                   const count = stats.protocol_connection_counts?.[key] || 0;
+                  const online = stats.protocol_online_counts?.[key] || 0;
                   const active = count > 0;
                   return (
                     <div
@@ -400,13 +435,23 @@ export default function Dashboard() {
                         )}
                         {label}
                       </span>
-                      <span
-                        className={`text-xs font-medium ${
-                          active ? "text-emerald-600 dark:text-emerald-400" : "text-gray-300 dark:text-gray-600"
-                        }`}
-                        dir="ltr"
-                      >
-                        {count}
+                      <span className="flex items-center gap-1.5" dir="ltr">
+                        {online > 0 && (
+                          <span
+                            className="inline-flex items-center gap-1 text-[10px] font-medium text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-500/10 rounded-full px-1.5 py-0.5"
+                            title={t("dashboard.onlineCount", { count: online })}
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse" />
+                            {online}
+                          </span>
+                        )}
+                        <span
+                          className={`text-xs font-medium ${
+                            active ? "text-emerald-600 dark:text-emerald-400" : "text-gray-300 dark:text-gray-600"
+                          }`}
+                        >
+                          {count}
+                        </span>
                       </span>
                     </div>
                   );
@@ -416,12 +461,30 @@ export default function Dashboard() {
           </div>
 
           <div className="card">
-            <h3 className="flex items-center gap-2 font-bold text-gray-700 dark:text-gray-300 mb-4">
-              <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center">
-                <TrendingUp size={14} />
-              </span>
-              {t("dashboard.usageLast24h")}
-            </h3>
+            <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
+              <h3 className="flex items-center gap-2 font-bold text-gray-700 dark:text-gray-300">
+                <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center">
+                  <TrendingUp size={14} />
+                </span>
+                {t(usageRange === "24h" ? "dashboard.usageLast24h" : "dashboard.usageChartTitle")}
+              </h3>
+              <div className="flex items-center gap-1 bg-gray-100 dark:bg-slate-800 rounded-xl p-1">
+                {USAGE_RANGES.map((r) => (
+                  <button
+                    key={r.key}
+                    type="button"
+                    onClick={() => setUsageRange(r.key)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                      usageRange === r.key
+                        ? "bg-white dark:bg-slate-700 text-brand-600 dark:text-brand-400 shadow-sm"
+                        : "text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                    }`}
+                  >
+                    {t(r.labelKey)}
+                  </button>
+                ))}
+              </div>
+            </div>
             {/* recharts renders its own inline SVG styles and doesn't see
                 Tailwind's dark: variants - it's themed here off the --rc-*
                 custom properties defined in index.css instead, which flip
@@ -445,7 +508,7 @@ export default function Dashboard() {
                 />
                 <Tooltip
                   formatter={(v) => formatBytes(v)}
-                  labelFormatter={(l) => t("dashboard.hourLabel", { value: l })}
+                  labelFormatter={(l) => (usageRange === "24h" ? t("dashboard.hourLabel", { value: l }) : l)}
                   contentStyle={{ background: "var(--rc-tooltip-bg)", border: "1px solid var(--rc-tooltip-border)", borderRadius: 12 }}
                   labelStyle={{ color: "var(--rc-tooltip-fg)" }}
                   itemStyle={{ color: "var(--rc-tooltip-fg)" }}

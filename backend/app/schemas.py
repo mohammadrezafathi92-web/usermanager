@@ -741,6 +741,11 @@ class DashboardStats(BaseModel):
     # connections yet, never omitted, so the frontend can render a fixed
     # grid without guessing which keys might be missing.
     protocol_connection_counts: dict = {}
+    # Same shape/keys as protocol_connection_counts, but only connections
+    # currently online (same "online" definition as online_users_now: an
+    # open RADIUS session or Connection.online) - powers the small
+    # per-protocol online count next to each row in that same grid.
+    protocol_online_counts: dict = {}
     # This panel server's OWN host resource usage (services/system_stats.py) -
     # shared infrastructure, not per-tenant data, so only populated for a
     # superadmin or level-2 Admin (same admin_or_above rule the Nodes page

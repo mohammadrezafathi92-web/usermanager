@@ -8,7 +8,8 @@ import Modal from "../components/Modal.jsx";
 import ReferralLoyaltyCard from "../components/ReferralLoyaltyCard.jsx";
 import { useConfirm } from "../components/ConfirmDialog.jsx";
 import { fetchDiscountCodes, createDiscountCode, updateDiscountCode, deleteDiscountCode, fetchDiscountCodeRedemptions } from "../api/client.js";
-import { formatDateTime, formatToman } from "../utils.js";
+import { formatDateTime, formatToman, sortRows } from "../utils.js";
+import SortableTh from "../components/SortableTh.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 
@@ -38,13 +39,25 @@ export default function DiscountCodes() {
   const [redemptions, setRedemptions] = useState([]);
   const [redemptionsLoading, setRedemptionsLoading] = useState(false);
   const [searchInput, setSearchInput] = useState("");
+  const [sortBy, setSortBy] = useState(null);
+  const [sortDir, setSortDir] = useState("asc");
+  const handleHeaderSort = (key) => {
+    if (sortBy === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(key);
+      setSortDir("asc");
+    }
+  };
   const filteredCodes = useMemo(() => {
     const q = searchInput.trim().toLowerCase();
-    if (!q) return codes;
-    return codes.filter(
-      (c) => (c.code || "").toLowerCase().includes(q) || (c.note || "").toLowerCase().includes(q)
-    );
-  }, [codes, searchInput]);
+    const base = !q
+      ? codes
+      : codes.filter(
+          (c) => (c.code || "").toLowerCase().includes(q) || (c.note || "").toLowerCase().includes(q)
+        );
+    return sortRows(base, sortBy, sortDir, (c, key) => (key === "used_count" ? c.used_count : c[key]));
+  }, [codes, searchInput, sortBy, sortDir]);
 
   const openRedemptions = (c) => {
     setRedemptionsFor(c);
@@ -149,12 +162,12 @@ export default function DiscountCodes() {
           <table>
             <thead>
               <tr>
-                <th>{t("discountCodes.colCode")}</th>
+                <SortableTh label={t("discountCodes.colCode")} sortKey="code" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
                 {showOwnerColumn && <th>{t("discountCodes.colOwner")}</th>}
-                <th>{t("discountCodes.colValue")}</th>
-                <th>{t("discountCodes.colUsage")}</th>
-                <th>{t("discountCodes.colExpires")}</th>
-                <th>{t("discountCodes.colStatus")}</th>
+                <SortableTh label={t("discountCodes.colValue")} sortKey="value" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
+                <SortableTh label={t("discountCodes.colUsage")} sortKey="used_count" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
+                <SortableTh label={t("discountCodes.colExpires")} sortKey="expires_at" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
+                <SortableTh label={t("discountCodes.colStatus")} sortKey="enabled" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
                 <th>{t("discountCodes.colNote")}</th>
                 <th></th>
               </tr>

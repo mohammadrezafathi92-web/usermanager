@@ -4,6 +4,8 @@ import Layout from "../components/Layout.jsx";
 import { useConfirm } from "../components/ConfirmDialog.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
+import SortableTh from "../components/SortableTh.jsx";
+import { sortRows } from "../utils.js";
 import {
   fetchTutorials,
   createTutorial,
@@ -41,13 +43,25 @@ export default function Tutorials() {
   const confirm = useConfirm();
   const [items, setItems] = useState([]);
   const [searchInput, setSearchInput] = useState("");
+  const [sortBy, setSortBy] = useState(null);
+  const [sortDir, setSortDir] = useState("asc");
+  const handleHeaderSort = (key) => {
+    if (sortBy === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(key);
+      setSortDir("asc");
+    }
+  };
   const filteredItems = useMemo(() => {
     const q = searchInput.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter(
-      (item) => (item.title || "").toLowerCase().includes(q) || (item.text || "").toLowerCase().includes(q)
-    );
-  }, [items, searchInput]);
+    const base = !q
+      ? items
+      : items.filter(
+          (item) => (item.title || "").toLowerCase().includes(q) || (item.text || "").toLowerCase().includes(q)
+        );
+    return sortRows(base, sortBy, sortDir, (item, key) => item[key]);
+  }, [items, searchInput, sortBy, sortDir]);
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm);
@@ -246,10 +260,10 @@ export default function Tutorials() {
           <table>
             <thead>
               <tr>
-                <th>{t("tutorials.colTitle")}</th>
+                <SortableTh label={t("tutorials.colTitle")} sortKey="title" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
                 <th>{t("tutorials.colMedia")}</th>
-                <th>{t("tutorials.colOrder")}</th>
-                <th>{t("tutorials.colStatus")}</th>
+                <SortableTh label={t("tutorials.colOrder")} sortKey="sort_order" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
+                <SortableTh label={t("tutorials.colStatus")} sortKey="enabled" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
                 <th>{t("tutorials.colActions")}</th>
               </tr>
             </thead>

@@ -20,7 +20,8 @@ import {
   setAdminNodes,
   reparentAdmin,
 } from "../api/client.js";
-import { formatDateTime, formatToman as formatTomanUtil, formatGb as formatGbUtil } from "../utils.js";
+import { formatDateTime, formatToman as formatTomanUtil, formatGb as formatGbUtil, sortRows } from "../utils.js";
+import SortableTh from "../components/SortableTh.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 
@@ -74,15 +75,30 @@ export default function Admins() {
   const confirm = useConfirm();
   const [items, setItems] = useState([]);
   const [searchInput, setSearchInput] = useState("");
+  const [sortBy, setSortBy] = useState(null);
+  const [sortDir, setSortDir] = useState("asc");
+  const handleHeaderSort = (key) => {
+    if (sortBy === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(key);
+      setSortDir("asc");
+    }
+  };
   const filteredItems = useMemo(() => {
     const q = searchInput.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter(
-      (a) =>
-        (a.username || "").toLowerCase().includes(q) ||
-        (a.parent_admin_username || "").toLowerCase().includes(q)
-    );
-  }, [items, searchInput]);
+    const base = !q
+      ? items
+      : items.filter(
+          (a) =>
+            (a.username || "").toLowerCase().includes(q) ||
+            (a.parent_admin_username || "").toLowerCase().includes(q)
+        );
+    return sortRows(base, sortBy, sortDir, (a, key) => {
+      if (key === "role") return a.is_superadmin ? "superadmin" : a.role || "seller";
+      return a[key];
+    });
+  }, [items, searchInput, sortBy, sortDir]);
   const [choices, setChoices] = useState({});
   const [permGroups, setPermGroups] = useState({});
   const [open, setOpen] = useState(false);
@@ -480,11 +496,11 @@ export default function Admins() {
           <table>
             <thead>
               <tr>
-                <th>{t("admins.colUsername")}</th>
-                <th>{t("admins.colRole")}</th>
+                <SortableTh label={t("admins.colUsername")} sortKey="username" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
+                <SortableTh label={t("admins.colRole")} sortKey="role" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
                 <th>{t("admins.colPermissions")}</th>
-                <th>{t("admins.colUsersCount")}</th>
-                <th>{t("admins.colBalance")}</th>
+                <SortableTh label={t("admins.colUsersCount")} sortKey="users_count" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
+                <SortableTh label={t("admins.colBalance")} sortKey="balance" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
                 <th>{t("admins.colTelegramBot")}</th>
                 <th>{t("admins.colLoginLink")}</th>
                 <th>{t("admins.colActions")}</th>

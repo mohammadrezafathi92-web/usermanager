@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Plus, Search, Trash2, RotateCcw, Network, Layers, PencilLine, ChevronRight, ChevronLeft, X, ArrowUpDown, FileDown, Wand2, CheckSquare, Send, Lock } from "lucide-react";
+import SortableTh from "../components/SortableTh.jsx";
 
 // یوزرنیم رندوم برای دکمه "تولید خودکار" کاربر - فقط حروف/عدد لاتین (مشابه
 // همون تابع تو Admins.jsx، اینجا مستقل تعریف شده چون دو صفحه جدان).
@@ -281,6 +282,20 @@ export default function Users() {
   }, [search, statusFilter, onlineOnly, ownerAdminFilter, packageFilter]);
 
   const toggleSortDir = () => setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+
+  // کلیک روی فلش کنار عنوان ستون: اگه همون ستونیه که الان سورت شده، فقط
+  // جهتش برعکس می‌شه؛ اگه ستون جدیده، همونی می‌شه و جهت پیش‌فرض صعودیه
+  // (همون رفتاری که select+toggle قدیمی هم داشت، فقط حالا هر ستون فلش
+  // خودش رو داره). سرچ/فیلتر هم پیج رو ۱ می‌کنه چون نتیجه عوض می‌شه.
+  const handleHeaderSort = (key) => {
+    if (sortBy === key) {
+      toggleSortDir();
+    } else {
+      setSortBy(key);
+      setSortDir("asc");
+    }
+    setPage(1);
+  };
 
   const clearFilters = () => {
     setStatusFilter("");
@@ -739,12 +754,19 @@ export default function Users() {
                 <th className="w-8">
                   <input type="checkbox" checked={allOnPageSelected} onChange={toggleAllOnPage} />
                 </th>
-                <th>{t("users.colUser")}</th>
+                <SortableTh label={t("users.colUser")} sortKey="username" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
                 {isSuperadmin && <th>{t("users.colAdmin")}</th>}
-                <th>{t("users.colStatus")}</th>
-                <th className="w-56">{t("users.colUsage")}</th>
+                <SortableTh label={t("users.colStatus")} sortKey="status" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
+                <SortableTh
+                  className="w-56"
+                  label={t("users.colUsage")}
+                  sortKey="used_bytes"
+                  sortBy={sortBy}
+                  sortDir={sortDir}
+                  onSort={handleHeaderSort}
+                />
                 <th>{t("users.colConnections")}</th>
-                <th>{t("users.colExpiry")}</th>
+                <SortableTh label={t("users.colExpiry")} sortKey="expire_at" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
                 <th>{t("users.colActions")}</th>
               </tr>
             </thead>

@@ -371,3 +371,29 @@ export function errorText(err, fallback = "خطا") {
   if (res.status === 403) return "برای این کار دسترسی ندارید.";
   return `${fallback} (کد ${res.status})`;
 }
+
+/**
+ * سورت سمت کلاینت برای صفحات لیستی‌ای که همه‌ی آیتم‌ها رو یکجا فچ می‌کنن
+ * (بدون سورت سمت سرور - برخلاف Users.jsx). `getValue` مقدار همون ستون رو
+ * از آیتم در می‌آره؛ null/undefined همیشه ته لیست می‌مونه (صرف‌نظر از جهت)
+ * چون معمولاً یعنی "مقداری تنظیم نشده"، نه کوچیک‌ترین مقدار ممکن.
+ * رشته‌ها با فارسی/انگلیسی مخلوط از localeCompare استفاده می‌کنن تا ترتیب
+ * الفبایی درست باشه، نه بایت‌به‌بایت.
+ */
+export function sortRows(rows, sortBy, sortDir, getValue) {
+  if (!sortBy) return rows;
+  const dir = sortDir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const va = getValue(a, sortBy);
+    const vb = getValue(b, sortBy);
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    if (typeof va === "string" || typeof vb === "string") {
+      return String(va).localeCompare(String(vb), "fa") * dir;
+    }
+    if (va < vb) return -1 * dir;
+    if (va > vb) return 1 * dir;
+    return 0;
+  });
+}

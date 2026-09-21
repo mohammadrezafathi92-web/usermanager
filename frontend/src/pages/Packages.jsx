@@ -22,7 +22,8 @@ import {
 } from "../api/client.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
-import { formatToman as formatTomanUtil, errorText } from "../utils.js";
+import { formatToman as formatTomanUtil, errorText, sortRows } from "../utils.js";
+import SortableTh from "../components/SortableTh.jsx";
 
 const emptyForm = {
   name: "",
@@ -85,13 +86,25 @@ export default function Packages() {
   const isSeller = role === "seller";
   const [items, setItems] = useState([]);
   const [searchInput, setSearchInput] = useState("");
+  const [sortBy, setSortBy] = useState(null);
+  const [sortDir, setSortDir] = useState("asc");
+  const handleHeaderSort = (key) => {
+    if (sortBy === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(key);
+      setSortDir("asc");
+    }
+  };
   const filteredItems = useMemo(() => {
     const q = searchInput.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter(
-      (p) => (p.name || "").toLowerCase().includes(q) || (p.description || "").toLowerCase().includes(q)
-    );
-  }, [items, searchInput]);
+    const base = !q
+      ? items
+      : items.filter(
+          (p) => (p.name || "").toLowerCase().includes(q) || (p.description || "").toLowerCase().includes(q)
+        );
+    return sortRows(base, sortBy, sortDir, (p, key) => p[key]);
+  }, [items, searchInput, sortBy, sortDir]);
   const [nodes, setNodes] = useState([]);
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -241,6 +254,7 @@ export default function Packages() {
         cooperation_price: form.cooperation_price === "" ? null : Number(form.cooperation_price),
         max_concurrent_sessions: form.max_concurrent_sessions === "" ? null : Number(form.max_concurrent_sessions),
         speed_limit_mbps: form.speed_limit_mbps === "" ? null : Number(form.speed_limit_mbps),
+        trial_daily_cap: form.trial_daily_cap === "" ? null : Number(form.trial_daily_cap),
         connections: form.connections.filter((c) => c.node_id),
       };
       if (editingId) {
@@ -363,11 +377,11 @@ export default function Packages() {
           <table className="w-full text-sm min-w-[48rem]">
             <thead>
               <tr>
-                <th>{t("packages.colName")}</th>
-                <th>{t("packages.colQuota")}</th>
-                <th>{t("packages.colDuration")}</th>
-                <th>{t("packages.colPrice")}</th>
-                <th>{t("packages.colStatus")}</th>
+                <SortableTh label={t("packages.colName")} sortKey="name" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
+                <SortableTh label={t("packages.colQuota")} sortKey="quota_gb" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
+                <SortableTh label={t("packages.colDuration")} sortKey="duration_days" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
+                <SortableTh label={t("packages.colPrice")} sortKey="price" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
+                <SortableTh label={t("packages.colStatus")} sortKey="enabled" sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort} />
                 <th>{t("packages.colActions")}</th>
               </tr>
             </thead>

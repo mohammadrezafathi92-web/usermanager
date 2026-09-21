@@ -6,8 +6,9 @@ import Modal from "../components/Modal.jsx";
 import UsageBar from "../components/UsageBar.jsx";
 import { useConfirm } from "../components/ConfirmDialog.jsx";
 import { useToast } from "../components/Toast.jsx";
+import SortSelect from "../components/SortSelect.jsx";
 import { fetchNodes, fetchNodeResources, createNode, updateNode, deleteNode, testNode, pushRadiusConfig, pushSstpConfig, pushL2tpConfig, pushIkev2Config, importPppUsers, importUserManagerUsers, import3xuiClients, rebuildNodeClients } from "../api/client.js";
-import { formatDateTime } from "../utils.js";
+import { formatDateTime, sortRows } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 
@@ -83,11 +84,18 @@ export default function Nodes() {
   const toast = useToast();
   const [nodes, setNodes] = useState([]);
   const [searchInput, setSearchInput] = useState("");
+  const [sortBy, setSortBy] = useState("name");
+  const [sortDir, setSortDir] = useState("asc");
+  const SORT_OPTIONS = [
+    { value: "name", label: t("nodes.sortByName") },
+    { value: "type", label: t("nodes.sortByType") },
+    { value: "enabled", label: t("nodes.sortByStatus") },
+  ];
   const filteredNodes = useMemo(() => {
     const q = searchInput.trim().toLowerCase();
-    if (!q) return nodes;
-    return nodes.filter((n) => (n.name || "").toLowerCase().includes(q));
-  }, [nodes, searchInput]);
+    const base = !q ? nodes : nodes.filter((n) => (n.name || "").toLowerCase().includes(q));
+    return sortRows(base, sortBy, sortDir, (n, key) => n[key]);
+  }, [nodes, searchInput, sortBy, sortDir]);
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm);
@@ -437,9 +445,21 @@ export default function Nodes() {
             onChange={(e) => setSearchInput(e.target.value)}
           />
         </div>
-        <button className="btn-primary" onClick={openCreate}>
-          <Plus size={16} /> {t("nodes.addServer")}
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <SortSelect
+            value={sortBy}
+            dir={sortDir}
+            onChangeValue={setSortBy}
+            onToggleDir={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+            options={SORT_OPTIONS}
+            selectTitle={t("users.sortBy")}
+            ascTitle={t("users.ascending")}
+            descTitle={t("users.descending")}
+          />
+          <button className="btn-primary" onClick={openCreate}>
+            <Plus size={16} /> {t("nodes.addServer")}
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

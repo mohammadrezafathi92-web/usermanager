@@ -8,8 +8,9 @@ import {
   updateAdPost, deleteAdPost, previewAdPost, sendAdPostNow, uploadAdPostImage, deleteAdPostImage, fetchAdSchedule,
   fetchPackages, fetchDiscountCodes, importDefaultAds,
 } from "../api/client.js";
-import { formatDateTime } from "../utils.js";
+import { formatDateTime, sortRows } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
+import SortSelect from "../components/SortSelect.jsx";
 
 const EMPTY = { title: "", body: "", package_id: null, discount_code_id: null, button_text: "🛒 خرید و اطلاعات بیشتر", enabled: true };
 
@@ -29,13 +30,21 @@ export default function Ads() {
   const [importing, setImporting] = useState(false);
   const [schedule, setSchedule] = useState(null);
   const [searchInput, setSearchInput] = useState("");
+  const [sortBy, setSortBy] = useState("title");
+  const [sortDir, setSortDir] = useState("asc");
+  const SORT_OPTIONS = [
+    { value: "title", label: t("ads.sortByTitle") },
+    { value: "enabled", label: t("ads.sortByStatus") },
+  ];
   const filteredPosts = useMemo(() => {
     const q = searchInput.trim().toLowerCase();
-    if (!q) return posts;
-    return posts.filter(
-      (p) => (p.title || "").toLowerCase().includes(q) || (p.body || "").toLowerCase().includes(q)
-    );
-  }, [posts, searchInput]);
+    const base = !q
+      ? posts
+      : posts.filter(
+          (p) => (p.title || "").toLowerCase().includes(q) || (p.body || "").toLowerCase().includes(q)
+        );
+    return sortRows(base, sortBy, sortDir, (p, key) => p[key]);
+  }, [posts, searchInput, sortBy, sortDir]);
 
   // The schedule is derived from the channel settings AND the posts, so it
   // is refreshed alongside them rather than on its own timer - a stale
@@ -273,6 +282,16 @@ export default function Ads() {
               onChange={(e) => setSearchInput(e.target.value)}
             />
           </div>
+          <SortSelect
+            value={sortBy}
+            dir={sortDir}
+            onChangeValue={setSortBy}
+            onToggleDir={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+            options={SORT_OPTIONS}
+            selectTitle={t("users.sortBy")}
+            ascTitle={t("users.ascending")}
+            descTitle={t("users.descending")}
+          />
           {/* Imported adverts arrive DISABLED - see the endpoint's docstring. */}
           <button className="btn-secondary" disabled={importing} onClick={doImportDefaults}>
             <Download size={16} /> {importing ? t("common.loading") : t("ads.importDefaults")}

@@ -94,28 +94,67 @@ class XrayClient:
 
     def _exec(self, command: str) -> tuple[str, str, int]:
         assert self._client is not None
-        stdin, stdout, stderr = self._client.exec_command(command, timeout=self.timeout)
-        exit_code = stdout.channel.recv_exit_status()
-        out = stdout.read().decode("utf-8", errors="replace")
-        err = stderr.read().decode("utf-8", errors="replace")
+        # A command that dies mid-flight (connection dropped, exec channel
+        # timeout) raises a raw paramiko/socket exception here, not an
+        # XrayError - same unreported-500 failure mode as read_config/
+        # write_config above, just on the command-execution path instead of
+        # the SFTP one.
+        try:
+            stdin, stdout, stderr = self._client.exec_command(command, timeout=self.timeout)
+            exit_code = stdout.channel.recv_exit_status()
+            out = stdout.read().decode("utf-8", errors="replace")
+            err = stderr.read().decode("utf-8", errors="replace")
+        except Exception as exc:
+            raise XrayError(f"اجرای دستور روی سرور از طریق SSH ناموفق بود: {exc}") from exc
         return out, err, exit_code
 
     # ------------------------------------------------------------------
     def read_config(self) -> dict:
-        sftp = self._client.open_sftp()
+        # Every step below used to be able to raise a raw paramiko/IO/JSON
+        # exception straight out of this method - connect() above wraps its
+        # own failures into XrayError, but this one didn't, so a bad
+        # config_path, a disabled SFTP subsystem, or a corrupt config.json
+        # fell all the way through to FastAPI's default 500 handler: no
+        # `detail` the panel's "تست اتصال" button or last_error field could
+        # show, just a blank/generic failure with the real reason only in
+        # the backend's own logs - exactly the "می‌خوره اما معلوم نیست چرا"
+        # complaint this was found from (2026-09-21). Every failure mode
+        # here now becomes a normal XrayError with a specific message.
         try:
-            with sftp.open(self.config_path, "r") as f:
-                data = f.read().decode("utf-8")
+            sftp = self._client.open_sftp()
+        except Exception as exc:
+            raise XrayError(
+                f"کانال SFTP با سرور برقرار نشد (احتمالاً SFTP روی این سرور SSH غیرفعال است): {exc}"
+            ) from exc
+        try:
+            try:
+                with sftp.open(self.config_path, "r") as f:
+                    data = f.read().decode("utf-8")
+            except FileNotFoundError as exc:
+                raise XrayError(f"فایل کانفیگ در مسیر «{self.config_path}» روی سرور پیدا نشد") from exc
+            except Exception as exc:
+                raise XrayError(f"خواندن فایل کانفیگ از روی سرور ناموفق بود: {exc}") from exc
         finally:
             sftp.close()
-        return json.loads(data)
+        try:
+            return json.loads(data)
+        except ValueError as exc:
+            raise XrayError(f"فایل کانفیگ روی سرور یک JSON معتبر نیست: {exc}") from exc
 
     def write_config(self, config: dict):
-        sftp = self._client.open_sftp()
+        try:
+            sftp = self._client.open_sftp()
+        except Exception as exc:
+            raise XrayError(
+                f"کانال SFTP با سرور برقرار نشد (احتمالاً SFTP روی این سرور SSH غیرفعال است): {exc}"
+            ) from exc
         try:
             tmp_path = self.config_path + ".tmp"
-            with sftp.open(tmp_path, "w") as f:
-                f.write(json.dumps(config, indent=2, ensure_ascii=False))
+            try:
+                with sftp.open(tmp_path, "w") as f:
+                    f.write(json.dumps(config, indent=2, ensure_ascii=False))
+            except Exception as exc:
+                raise XrayError(f"نوشتن فایل کانفیگ موقت روی سرور ناموفق بود: {exc}") from exc
             # atomic-ish replace + keep a backup
             out, err, code = self._exec(
                 f"cp {self.config_path} {self.config_path}.bak 2>/dev/null; mv {tmp_path} {self.config_path}"

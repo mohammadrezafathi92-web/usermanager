@@ -220,7 +220,23 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
     def _sum(q):
         return int(q.with_entities(func.coalesce(func.sum(models.LedgerEntry.amount), 0)).scalar() or 0)
 
-    sales_today = _sum(ledger_q.filter(models.LedgerEntry.created_at >= today_start))
+    # "Today" is meant as a cash-reconciliation figure (what actually landed
+    # on a real bank card today), not total revenue recognized - so unlike
+    # sales_month/sales_prev_month below it's narrowed to card payments that
+    # landed on one of the superadmin's own cards (PaymentCard.owner_admin_id
+    # IS NULL - the panel-wide pool; see models.PaymentCard's docstring).
+    # Wallet payments and sales paid onto another admin's own dedicated card
+    # never put cash in the superadmin's hand, so they're excluded here.
+    superadmin_card_ids = [
+        cid for (cid,) in db.query(models.PaymentCard.id).filter(models.PaymentCard.owner_admin_id.is_(None)).all()
+    ]
+    sales_today = _sum(
+        ledger_q.filter(
+            models.LedgerEntry.created_at >= today_start,
+            models.LedgerEntry.payment_method == "card",
+            models.LedgerEntry.payment_card_id.in_(superadmin_card_ids),
+        )
+    )
     sales_month = _sum(ledger_q.filter(models.LedgerEntry.created_at >= month_start))
     sales_prev_month = _sum(
         ledger_q.filter(

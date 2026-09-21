@@ -816,6 +816,9 @@ export default function UserDetail() {
                 <span className="badge bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400">
                   {t("userDetail.uploadLast24h", { value: formatBytes(usage24h.upload) })}
                 </span>
+                <span className="badge bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400">
+                  {t("userDetail.totalLast24h", { value: formatBytes(usage24h.download + usage24h.upload) })}
+                </span>
               </>
             )}
             <span className="badge bg-gray-50 text-gray-600 dark:bg-slate-800 dark:text-gray-300">

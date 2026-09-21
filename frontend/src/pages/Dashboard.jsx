@@ -502,6 +502,10 @@ export default function Dashboard() {
                 <span className="w-2.5 h-2.5 rounded-full" style={{ background: "var(--rc-upload-stroke)" }} />
                 {t("dashboard.upload")}
               </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ background: "var(--rc-total-stroke)" }} />
+                {t("dashboard.totalUsage")}
+              </span>
             </div>
             {/* recharts renders its own inline SVG styles and doesn't see
                 Tailwind's dark: variants - it's themed here off the --rc-*
@@ -518,6 +522,10 @@ export default function Dashboard() {
                     <stop offset="5%" stopColor="var(--rc-upload-fill)" stopOpacity={0.4} />
                     <stop offset="95%" stopColor="var(--rc-upload-fill)" stopOpacity={0} />
                   </linearGradient>
+                  <linearGradient id="colorTotal" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--rc-total-fill)" stopOpacity={0.25} />
+                    <stop offset="95%" stopColor="var(--rc-total-fill)" stopOpacity={0} />
+                  </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rc-grid)" />
                 <XAxis dataKey="time" tick={{ fontSize: 12, fill: "var(--rc-tick)" }} axisLine={{ stroke: "var(--rc-grid)" }} tickLine={{ stroke: "var(--rc-grid)" }} />
@@ -529,12 +537,16 @@ export default function Dashboard() {
                   width={70}
                 />
                 <Tooltip
-                  formatter={(v, name) => [formatBytes(v), name === "download_bytes" ? t("dashboard.download") : t("dashboard.upload")]}
+                  formatter={(v, name) => {
+                    const label = name === "download_bytes" ? t("dashboard.download") : name === "upload_bytes" ? t("dashboard.upload") : t("dashboard.totalUsage");
+                    return [formatBytes(v), label];
+                  }}
                   labelFormatter={(l) => (usageRange === "24h" ? t("dashboard.hourLabel", { value: l }) : l)}
                   contentStyle={{ background: "var(--rc-tooltip-bg)", border: "1px solid var(--rc-tooltip-border)", borderRadius: 12 }}
                   labelStyle={{ color: "var(--rc-tooltip-fg)" }}
                   itemStyle={{ color: "var(--rc-tooltip-fg)" }}
                 />
+                <Area type="monotone" dataKey="bytes" name={t("dashboard.totalUsage")} stroke="var(--rc-total-stroke)" fill="url(#colorTotal)" strokeWidth={2} strokeDasharray="4 3" />
                 <Area type="monotone" dataKey="download_bytes" name={t("dashboard.download")} stroke="var(--rc-download-stroke)" fill="url(#colorDownload)" strokeWidth={2.5} />
                 <Area type="monotone" dataKey="upload_bytes" name={t("dashboard.upload")} stroke="var(--rc-upload-stroke)" fill="url(#colorUpload)" strokeWidth={2.5} />
               </AreaChart>

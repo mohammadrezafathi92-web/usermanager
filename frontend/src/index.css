@@ -54,6 +54,8 @@
     --rc-download-fill: #6366f1;
     --rc-upload-stroke: #f59e0b;
     --rc-upload-fill: #f59e0b;
+    --rc-total-stroke: #10b981;
+    --rc-total-fill: #10b981;
   }
   .dark {
     --rc-grid: rgba(148, 163, 184, 0.14);
@@ -67,6 +69,8 @@
     --rc-download-fill: #818cf8;
     --rc-upload-stroke: #fbbf24;
     --rc-upload-fill: #fbbf24;
+    --rc-total-stroke: #34d399;
+    --rc-total-fill: #34d399;
   }
 
   body {

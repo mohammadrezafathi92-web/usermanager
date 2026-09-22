@@ -7,6 +7,7 @@ import asyncio
 import logging
 
 from aiogram import Router, F, Bot
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -39,6 +40,24 @@ router.message.filter(_is_admin_filter)
 router.callback_query.filter(_is_admin_filter)
 
 SEND_DELAY_SECONDS = 0.05  # ~20 messages/sec - well under Telegram's bot rate limits
+
+
+def _send_failure_reason(exc: Exception) -> str:
+    """A `telegram_id` on the User record proves the customer linked
+    Telegram SOMEWHERE - the shared bot, a different reseller's dedicated
+    bot, or typed in by hand on the panel - not that they ever pressed
+    Start on THIS bot. Telegram refuses to let any bot message a chat it
+    hasn't been started from, on a level-2 Admin's/Seller's own dedicated
+    bot that is the common case, not the exception, and it is a completely
+    different situation from an actual block. Distinguishing the two by the
+    raw Telegram description (aiogram collapses both into
+    TelegramForbiddenError) so the admin isn't told "probably blocked" for
+    a customer who simply never opened this specific bot."""
+    if isinstance(exc, TelegramForbiddenError) and "initiate conversation" in str(exc):
+        return "این مشتری هنوز روی همین ربات (ربات مخصوص شما) دکمه‌ی Start را نزده - تلگرام اجازه نمی‌دهد بدون آن پیامی برایش فرستاده شود، حتی اگر تلگرامش جای دیگری (ربات دیگر یا پنل) به حسابش وصل شده باشد."
+    if isinstance(exc, TelegramForbiddenError):
+        return "این مشتری ربات را بلاک کرده است."
+    return "خطای نامشخص در ارسال - جزئیات در لاگ ربات ثبت شد."
 
 
 def _confirm_kb():
@@ -105,6 +124,7 @@ async def cb_broadcast_send(call: CallbackQuery, state: FSMContext, bot: Bot) ->
     await call.answer()
 
     sent = 0
+    never_started = 0  # linked a telegram id somewhere, but never opened THIS bot - see _send_failure_reason
     failed = 0
     for tg_id in telegram_ids:
         if tg_id == call.from_user.id:
@@ -117,13 +137,23 @@ async def cb_broadcast_send(call: CallbackQuery, state: FSMContext, bot: Bot) ->
             # to tell a bad message apart from blocked/deleted accounts.
             await bot.send_message(tg_id, text, parse_mode=None)
             sent += 1
+        except TelegramForbiddenError as exc:
+            if "initiate conversation" in str(exc):
+                never_started += 1
+            else:
+                failed += 1
+            logger.warning("broadcast send to %s failed: %s", tg_id, exc)
         except Exception as exc:
             failed += 1
             logger.warning("broadcast send to %s failed: %s", tg_id, exc)
         await asyncio.sleep(SEND_DELAY_SECONDS)
 
     await call.message.answer(
-        f"✅ پیام همگانی ارسال شد.\n\nموفق: {sent}\nناموفق: {failed}\nمجموع: {len(telegram_ids)}",
+        f"✅ پیام همگانی ارسال شد.\n\n"
+        f"موفق: {sent}\n"
+        f"هنوز این ربات را Start نکرده‌اند: {never_started}\n"
+        f"ناموفق (بلاک/سایر خطاها): {failed}\n"
+        f"مجموع: {len(telegram_ids)}",
         reply_markup=home_kb(),
     )
 
@@ -228,7 +258,7 @@ async def receive_dm_text(message: Message, state: FSMContext, bot: Bot) -> None
     except Exception as exc:
         logger.warning("direct message to %s (%s) failed: %s", username, tg_id, exc)
         await message.answer(
-            f"❌ ارسال پیام به «{username}» ناموفق بود (احتمالا ربات را بلاک کرده است).",
+            f"❌ ارسال پیام به «{username}» ناموفق بود.\n\n{_send_failure_reason(exc)}",
             reply_markup=home_kb(),
         )
         return

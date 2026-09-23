@@ -27,6 +27,7 @@ def now():
 class NodeType(str, enum.Enum):
     mikrotik = "mikrotik"
     xray = "xray"
+    softether = "softether"
 
 
 class ConnectionType(str, enum.Enum):
@@ -49,6 +50,7 @@ class ConnectionType(str, enum.Enum):
     # services/link_builder.py's build_pptp_info.
     pptp = "pptp"  # hosted on a MikroTik node (PPP secret) - INSECURE, see above
     xray = "xray"  # vless/vmess/trojan hosted on an Xray node
+    softether = "softether"  # hosted on a SoftEther node (SSL-VPN / L2TP user)
 
 
 class UserStatus(str, enum.Enum):
@@ -590,6 +592,24 @@ class Node(Base):
     # before.
     xr_link_template = Column(Text, nullable=True)
 
+    # --- SoftEther connection method ---
+    # Managed over SoftEther's own JSON-RPC 2.0 admin API (HTTPS POST to
+    # https://{se_host}:{se_port}/api/), authenticated with the
+    # X-VPNADMIN-HUBNAME / X-VPNADMIN-PASSWORD headers (hub password, not the
+    # server-wide admin password) rather than SSH or a 3rd-party panel. The
+    # panel only manages users inside one existing Virtual Hub - creating the
+    # hub itself, and enabling whichever tunneling modes (SSTP/L2TP/SSL-VPN)
+    # are wanted, is done directly on the SoftEther server by the admin, same
+    # philosophy as MikroTik's OpenVPN/L2TP fields above.
+    se_host = Column(String(255), nullable=True)
+    se_port = Column(Integer, nullable=True, default=443)  # admin JSON-RPC port
+    se_hub_name = Column(String(128), nullable=True, default="DEFAULT")
+    se_admin_password = Column(String(255), nullable=True)  # hub (or server-admin) password
+    # public info clients need to actually connect
+    se_public_host = Column(String(255), nullable=True)
+    se_public_port = Column(Integer, nullable=True, default=443)
+    se_verify_tls = Column(Boolean, default=False)  # SoftEther admin certs are self-signed by default; off = don't verify
+
     last_seen = Column(DateTime, nullable=True)
     last_error = Column(Text, nullable=True)
 
@@ -1005,7 +1025,10 @@ class Connection(Base):
     wg_private_key = Column(String(128), nullable=True)  # shown once to the user
     wg_client_address = Column(String(64), nullable=True)  # e.g. 10.66.66.5/32
 
-    # OpenVPN / L2TP specific (RouterOS PPP secret / RADIUS credential)
+    # OpenVPN / L2TP specific (RouterOS PPP secret / RADIUS credential) -
+    # also reused as-is for SoftEther (a Password-auth hub user is the same
+    # plain username+password shape, no key material, so no separate se_*
+    # columns were added here).
     ppp_username = Column(String(128), nullable=True, index=True)
     ppp_password = Column(String(128), nullable=True)
 

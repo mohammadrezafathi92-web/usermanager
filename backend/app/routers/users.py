@@ -959,6 +959,17 @@ def add_xray_connection(
     return user_ops.provision_xray(db, user, node, payload.flow or "")
 
 
+@router.post("/{user_id}/connections/softether", response_model=schemas.ConnectionOut)
+def add_softether_connection(
+    user_id: int,
+    payload: schemas.ConnectionCreateSoftether,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+ _perm=_may_manage_connections):
+    user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
+    return user_ops.provision_softether(db, user, node)
+
+
 @router.post("/{user_id}/apply-package", response_model=schemas.UserOut)
 def apply_package(
     user_id: int,

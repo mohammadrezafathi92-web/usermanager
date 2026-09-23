@@ -149,6 +149,7 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 # protocols_kb) and the panel's package form now offers.
 MIKROTIK_PROTOCOLS = {"wireguard", "openvpn", "l2tp", "ikev2", "sstp", "pptp"}
 XRAY_PROTOCOLS = {"xray"}
+SOFTETHER_PROTOCOLS = {"softether"}
 
 
 def _sync_connections(db: Session, pkg: models.Package, specs: list[schemas.PackageConnectionSpec]) -> None:
@@ -166,9 +167,17 @@ def _sync_connections(db: Session, pkg: models.Package, specs: list[schemas.Pack
         node = db.get(models.Node, spec.node_id)
         if node is None:
             raise HTTPException(400, f"سرور انتخاب‌شده (id={spec.node_id}) پیدا نشد")
-        allowed = XRAY_PROTOCOLS if node.type == models.NodeType.xray else MIKROTIK_PROTOCOLS
+        allowed = (
+            XRAY_PROTOCOLS if node.type == models.NodeType.xray
+            else SOFTETHER_PROTOCOLS if node.type == models.NodeType.softether
+            else MIKROTIK_PROTOCOLS
+        )
         if spec.protocol not in allowed:
-            kind = "Xray" if node.type == models.NodeType.xray else "میکروتیک"
+            kind = (
+                "Xray" if node.type == models.NodeType.xray
+                else "SoftEther" if node.type == models.NodeType.softether
+                else "میکروتیک"
+            )
             raise HTTPException(
                 400,
                 f"سرور «{node.name}» از نوع {kind} است و پروتکل «{spec.protocol}» را پشتیبانی نمی‌کند",

@@ -210,6 +210,8 @@ export const addPptpConnection = (userId, nodeId, maxConcurrentSessions = 1) =>
   client.post(`/users/${userId}/connections/pptp`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });
 export const addXrayConnection = (userId, nodeId, flow = "") =>
   client.post(`/users/${userId}/connections/xray`, { node_id: nodeId, flow });
+export const addSoftetherConnection = (userId, nodeId) =>
+  client.post(`/users/${userId}/connections/softether`, { node_id: nodeId });
 export const deleteConnection = (userId, connectionId) =>
   client.delete(`/users/${userId}/connections/${connectionId}`);
 export const getShareLink = (userId, connectionId) =>

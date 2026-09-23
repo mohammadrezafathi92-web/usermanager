@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import QRCode from "qrcode";
-import { Wifi, Globe, ShieldCheck, Lock, KeyRound, ShieldEllipsis, Copy, Check, Download, Gift, Wallet, CalendarClock, ChevronDown, ChevronUp } from "lucide-react";
+import { Wifi, Globe, Network, ShieldCheck, Lock, KeyRound, ShieldEllipsis, Copy, Check, Download, Gift, Wallet, CalendarClock, ChevronDown, ChevronUp } from "lucide-react";
 import { fetchPublicSubscriptionInfo } from "../api/client.js";
 import { formatBytes, formatDateTime, statusLabel, STATUS_STYLES, copyText } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
@@ -17,6 +17,7 @@ function buildTypeMeta() {
     ikev2: { label: "IKEv2/IPsec", icon: KeyRound, color: "bg-sky-50 text-sky-600" },
     sstp: { label: "SSTP", icon: ShieldEllipsis, color: "bg-rose-50 text-rose-600" },
     xray: { label: "V2Ray / Xray", icon: Globe, color: "bg-purple-50 text-purple-600" },
+    softether: { label: "SoftEther", icon: Network, color: "bg-sky-50 text-sky-600" },
   };
 }
 

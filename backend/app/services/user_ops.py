@@ -20,6 +20,7 @@ from .. import models
 from . import hierarchy
 from .mikrotik_client import MikrotikClient, MikrotikError
 from .xray_client import XrayError, client_for_node
+from .softether_client import SoftEtherError, client_for_node as softether_client_for_node
 from .keys import generate_wireguard_keypair, generate_password
 from .link_builder import (
     build_wireguard_config,
@@ -29,6 +30,7 @@ from .link_builder import (
     build_ikev2_info,
     build_pptp_info,
     build_sstp_info,
+    build_softether_info,
 )
 
 logger = logging.getLogger("user_ops")
@@ -1138,6 +1140,55 @@ def provision_xray(
     return conn
 
 
+# ----------------------------------------------------------------- softether
+def provision_softether(
+    db: Session,
+    user: models.User,
+    node: models.Node,
+    max_concurrent_sessions: Optional[int] = 1,
+    purchase_batch: Optional[str] = None,
+    package_name: Optional[str] = None,
+    speed_limit_mbps: Optional[int] = None,
+) -> models.Connection:
+    """A hybrid of provision_xray's shape and _provision_ppp's data: like
+    xray, this makes a real remote call at provision time (CreateUser on
+    the SoftEther hub over JSON-RPC) rather than just writing to our own
+    DB; like PPP, what's stored is a plain username+password pair (reused
+    ppp_username/ppp_password columns - see their comment in models.py),
+    since a SoftEther Password-auth user has no key material of its own.
+
+    speed_limit_mbps is stored but never pushed anywhere - SoftEther's
+    per-user bandwidth policy (policy:MaxUpload_u32/MaxDownload_u32) is not
+    wired up here, same "no enforcement path" situation as xray - see
+    models.Connection.speed_limit_mbps's docstring."""
+    if node.type != models.NodeType.softether:
+        raise HTTPException(400, "نود SoftEther معتبر نیست")
+
+    username = f"{user.username[:12]}{uuid.uuid4().hex[:4]}"
+    password = generate_password()
+    try:
+        with softether_client_for_node(node) as sc:
+            sc.add_client(username, password)
+    except SoftEtherError as exc:
+        raise HTTPException(400, str(exc))
+
+    conn = models.Connection(
+        user_id=user.id,
+        node_id=node.id,
+        type=models.ConnectionType.softether,
+        ppp_username=username,
+        ppp_password=password,
+        max_concurrent_sessions=max_concurrent_sessions if max_concurrent_sessions is not None else 1,
+        purchase_batch=purchase_batch,
+        package_name_snapshot=package_name,
+        speed_limit_mbps=speed_limit_mbps or None,
+    )
+    db.add(conn)
+    db.commit()
+    db.refresh(conn)
+    return conn
+
+
 def provision_package_connections(db: Session, user: models.User, package: models.Package) -> dict:
     """Provisions every server/service bundled into a package for this
     user in one go - used when a user is created "with a package" from the
@@ -1505,6 +1556,8 @@ def provision_connection(
         return provision_sstp(db, user, node, max_concurrent_sessions, purchase_batch, package_name, speed_limit_mbps)
     if protocol == models.ConnectionType.xray:
         return provision_xray(db, user, node, flow, purchase_batch, package_name)
+    if protocol == models.ConnectionType.softether:
+        return provision_softether(db, user, node, max_concurrent_sessions, purchase_batch, package_name, speed_limit_mbps)
     raise HTTPException(400, "پروتکل نامعتبر است")
 
 
@@ -1552,7 +1605,10 @@ def deprovision_connection(connection: models.Connection):
         elif connection.type == models.ConnectionType.xray:
             with client_for_node(node) as xc:
                 xc.remove_client(node.xr_inbound_tag, connection.xr_email, connection.xr_uuid)
-    except (MikrotikError, XrayError) as exc:
+        elif connection.type == models.ConnectionType.softether:
+            with softether_client_for_node(node) as sc:
+                sc.remove_client(connection.ppp_username)
+    except (MikrotikError, XrayError, SoftEtherError) as exc:
         raise HTTPException(400, str(exc))
 
 
@@ -1640,6 +1696,19 @@ def kick_connection(db: Session, connection: models.Connection) -> bool:
                 xc.set_client_enabled(node.xr_inbound_tag, connection.xr_email, connection.xr_uuid, connection.xr_flow or "", False)
                 xc.set_client_enabled(node.xr_inbound_tag, connection.xr_email, connection.xr_uuid, connection.xr_flow or "", True)
         except XrayError as exc:
+            raise HTTPException(400, str(exc))
+        connection.online = False
+        db.commit()
+        return True
+
+    if connection.type == models.ConnectionType.softether:
+        if not connection.online:
+            return False
+        try:
+            with softether_client_for_node(node) as sc:
+                sc.set_client_enabled(connection.ppp_username, connection.ppp_password, False)
+                sc.set_client_enabled(connection.ppp_username, connection.ppp_password, True)
+        except SoftEtherError as exc:
             raise HTTPException(400, str(exc))
         connection.online = False
         db.commit()
@@ -2319,6 +2388,14 @@ def get_connection_share(connection: models.Connection) -> dict:
         return {
             "kind": "sstp", "link": None, "config_text": text,
             "server": node.mt_endpoint_host, "port": node.mt_sstp_port or 443,
+            "username": connection.ppp_username, "password": connection.ppp_password, "psk": None,
+        }
+
+    if connection.type == models.ConnectionType.softether:
+        text = build_softether_info(connection, node)
+        return {
+            "kind": "softether", "link": None, "config_text": text,
+            "server": node.se_public_host or node.se_host, "port": node.se_public_port or 443,
             "username": connection.ppp_username, "password": connection.ppp_password, "psk": None,
         }
 

@@ -221,3 +221,22 @@ def build_sstp_info(connection: models.Connection, node: models.Node) -> str:
         "(سرور SSTP و سرتیفیکیت آن مستقیما روی خود میکروتیک تنظیم شده؛ پنل فقط یوزر/پسورد را می‌سازد.)",
     ]
     return "\n".join(lines)
+
+
+def build_softether_info(connection: models.Connection, node: models.Node) -> str:
+    """Same shape as build_openvpn_config/build_sstp_info: the panel only
+    manages the username/password of a Password-auth user inside one
+    existing Virtual Hub over SoftEther's JSON-RPC admin API - the hub
+    itself and which client modes it accepts (SSTP/L2TP/OpenVPN/SSL-VPN)
+    are configured directly on the SoftEther server by the admin."""
+    lines = [
+        f"آدرس سرور: {node.se_public_host or node.se_host}",
+        f"پورت: {node.se_public_port or 443}",
+        f"نام هاب (Hub): {node.se_hub_name or 'DEFAULT'}",
+        f"نام کاربری: {connection.ppp_username}",
+        f"رمز عبور: {connection.ppp_password}",
+        "نوع VPN: SoftEther (SSL-VPN)",
+        "(برای اتصال، نرم‌افزار SoftEther VPN Client یا VPN Gate Client را نصب کنید و هاب بالا را وارد نمایید. "
+        "این سرور از SSTP/L2TP هم پشتیبانی می‌کند - در صورت فعال بودن روی سرور، با همین یوزر/پسورد قابل استفاده است.)",
+    ]
+    return "\n".join(lines)

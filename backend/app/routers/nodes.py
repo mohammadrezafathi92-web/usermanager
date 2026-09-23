@@ -9,6 +9,7 @@ from ..database import get_db
 from ..deps import get_current_admin, require_permission, require_confirm_password
 from ..services.mikrotik_client import MikrotikClient, MikrotikError
 from ..services.xray_client import XrayError, client_for_node
+from ..services.softether_client import SoftEtherError, client_for_node as softether_client_for_node
 from ..services import user_ops, hierarchy, node_monitor
 from ..services.keys import generate_password
 
@@ -199,6 +200,9 @@ def test_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUs
         if node.type == models.NodeType.mikrotik:
             with MikrotikClient.for_node(node) as mt:
                 mt.list_peers()
+        elif node.type == models.NodeType.softether:
+            with softether_client_for_node(node) as sc:
+                sc.test_connection()
         else:
             with client_for_node(node) as xc:
                 xc.test_connection()
@@ -220,7 +224,7 @@ def test_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUs
                             node.xr_sni = info["sni"]
                         db.commit()
         return {"ok": True, "message": "اتصال با موفقیت برقرار شد"}
-    except (MikrotikError, XrayError) as exc:
+    except (MikrotikError, XrayError, SoftEtherError) as exc:
         raise HTTPException(400, str(exc))
 
 

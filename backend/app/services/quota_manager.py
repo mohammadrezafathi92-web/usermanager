@@ -14,6 +14,7 @@ from ..database import SessionLocal
 from .mikrotik_client import MikrotikClient, MikrotikError, parse_ros_duration_seconds
 from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
 from .xray_client import XrayError, client_for_node
+from .softether_client import SoftEtherError, client_for_node as softether_client_for_node
 
 logger = logging.getLogger("quota_manager")
 
@@ -657,9 +658,18 @@ def _set_connection_enabled(db: Session, connection: models.Connection, enabled:
                         "will retry next poll cycle",
                         "enabled" if enabled else "disabled", node.id, connection.id, connection.xr_email,
                     )
+        elif connection.type == models.ConnectionType.softether:
+            with softether_client_for_node(node) as sc:
+                applied = sc.set_client_enabled(connection.ppp_username, connection.ppp_password, enabled)
+                if not applied:
+                    logger.warning(
+                        "softether user could not be %s on node %s for connection %s (ppp_username=%r); "
+                        "will retry next poll cycle",
+                        "enabled" if enabled else "disabled", node.id, connection.id, connection.ppp_username,
+                    )
         if applied:
             connection.enabled = enabled
-    except (MikrotikError, XrayError) as exc:
+    except (MikrotikError, XrayError, SoftEtherError) as exc:
         logger.warning("failed to toggle connection %s: %s", connection.id, exc)
 
 
@@ -698,7 +708,7 @@ def _reconcile_connection_enabled_state(db: Session, now: dt.datetime) -> int:
         db.query(models.Connection.id, models.Purchase.quota_bytes, models.Purchase.used_bytes,
                   models.Purchase.expire_at, models.Connection.enabled)
         .join(models.Purchase, models.Connection.purchase_id == models.Purchase.id)
-        .filter(models.Connection.type.in_((models.ConnectionType.wireguard, models.ConnectionType.xray)))
+        .filter(models.Connection.type.in_((models.ConnectionType.wireguard, models.ConnectionType.xray, models.ConnectionType.softether)))
         .filter(models.Connection.session_limited.is_(False))
         .filter(models.Purchase.status != models.UserStatus.disabled)
         .all()
@@ -716,7 +726,7 @@ def _reconcile_connection_enabled_state(db: Session, now: dt.datetime) -> int:
                   models.User.expire_at, models.Connection.enabled)
         .join(models.User, models.Connection.user_id == models.User.id)
         .filter(models.Connection.purchase_id.is_(None))
-        .filter(models.Connection.type.in_((models.ConnectionType.wireguard, models.ConnectionType.xray)))
+        .filter(models.Connection.type.in_((models.ConnectionType.wireguard, models.ConnectionType.xray, models.ConnectionType.softether)))
         .filter(models.Connection.session_limited.is_(False))
         .filter(models.User.status != models.UserStatus.disabled)
         .all()
@@ -894,6 +904,47 @@ def poll_xray_node(db: Session, node: models.Node):
         logger.warning("xray node %s error: %s", node.id, exc)
 
 
+def poll_softether_node(db: Session, node: models.Node):
+    """Mirrors poll_xray_node exactly - one bulk EnumUser call for traffic,
+    one bulk EnumSession call for the live online set, keyed by username
+    instead of email."""
+    connections = [c for c in node.connections if c.type == models.ConnectionType.softether]
+    if not connections:
+        return
+    try:
+        with softether_client_for_node(node) as sc:
+            stats = sc.query_all_user_stats()
+            for conn in connections:
+                bucket = stats.get(conn.ppp_username)
+                if not bucket:
+                    continue
+                # SoftEtherClient's own naming already matches _apply_delta's
+                # (download, upload) order - see its query_all_user_stats
+                # docstring for the Recv/Send -> uplink/downlink mapping.
+                _apply_delta(db, conn, download_bytes=bucket.get("downlink", 0), upload_bytes=bucket.get("uplink", 0))
+
+            online_usernames = sc.get_online_emails()
+            for conn in connections:
+                conn.online = bool(conn.ppp_username) and conn.ppp_username in online_usernames
+                if conn.online:
+                    # Same first-use activation as poll_xray_node - a
+                    # SoftEther login has no separate RADIUS-style event of
+                    # its own, so being seen online here is it.
+                    user = conn.user
+                    if user.expire_at is None and user.expire_days_after_first_use:
+                        user.expire_at = dt.datetime.utcnow() + dt.timedelta(days=user.expire_days_after_first_use)
+                        user.expire_days_after_first_use = None
+                        logger.info(
+                            "softether poll: activated first-use expiry for user=%r -> expire_at=%s",
+                            user.username, user.expire_at.isoformat(),
+                        )
+        node.last_seen = dt.datetime.utcnow()
+        node.last_error = None
+    except SoftEtherError as exc:
+        node.last_error = str(exc)
+        logger.warning("softether node %s error: %s", node.id, exc)
+
+
 def poll_all():
     db = SessionLocal()
     try:
@@ -916,6 +967,8 @@ def poll_all():
                     poll_mikrotik_node(db, node)
                 elif node.type == models.NodeType.xray:
                     poll_xray_node(db, node)
+                elif node.type == models.NodeType.softether:
+                    poll_softether_node(db, node)
                 db.commit()
             except Exception:
                 logger.exception("poll_all: node %s failed, rolling back only this node's changes", node.id)

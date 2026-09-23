@@ -39,6 +39,7 @@ PROTOCOL_LABELS = {
     "sstp": "🔐 SSTP",
     "pptp": "⚠️ PPTP (قدیمی)",
     "xray": "⚡ V2Ray/Xray",
+    "softether": "🔷 SoftEther",
 }
 
 
@@ -342,7 +343,7 @@ def confirm_delete_kb(username: str) -> InlineKeyboardMarkup:
 def nodes_kb(nodes: list[dict]) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for n in nodes:
-        icon = "🌐" if n["type"] == "mikrotik" else "⚡"
+        icon = "🌐" if n["type"] == "mikrotik" else "🔷" if n["type"] == "softether" else "⚡"
         kb.button(text=f"{icon} {n['name']}", callback_data=NodeCB(node_id=n["id"]))
     kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))
     kb.adjust(1)
@@ -358,11 +359,16 @@ def nodes_kb(nodes: list[dict]) -> InlineKeyboardMarkup:
 # offerable in the bot and not in the panel).
 MIKROTIK_PROTOCOLS = ["wireguard", "openvpn", "l2tp", "ikev2", "sstp", "pptp"]
 XRAY_PROTOCOLS = ["xray"]
+SOFTETHER_PROTOCOLS = ["softether"]
 
 
 def protocols_kb(node_type: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    protocols = XRAY_PROTOCOLS if node_type == "xray" else MIKROTIK_PROTOCOLS
+    protocols = (
+        XRAY_PROTOCOLS if node_type == "xray"
+        else SOFTETHER_PROTOCOLS if node_type == "softether"
+        else MIKROTIK_PROTOCOLS
+    )
     for p in protocols:
         kb.button(text=PROTOCOL_LABELS.get(p, p), callback_data=ProtocolCB(protocol=p))
     kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))

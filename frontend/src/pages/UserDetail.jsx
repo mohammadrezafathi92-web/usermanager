@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import QRCode from "qrcode";
-import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, ShieldCheck, Lock, Save, KeyRound, Power, ShieldEllipsis, ShieldAlert, RefreshCw, Pencil, Package, LogOut, Send } from "lucide-react";
+import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, Network, ShieldCheck, Lock, Save, KeyRound, Power, ShieldEllipsis, ShieldAlert, RefreshCw, Pencil, Package, LogOut, Send } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import JalaliDateInput from "../components/JalaliDateInput.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
@@ -22,6 +22,7 @@ import {
   addSstpConnection,
   addPptpConnection,
   addXrayConnection,
+  addSoftetherConnection,
   deleteConnection,
   getShareLink,
   updateConnection,
@@ -58,6 +59,7 @@ function buildTypeMeta(t) {
     // label is that this one is not like the others.
     pptp: { label: `PPTP ⚠️ (${t("userDetail.mikrotikLabel")})`, icon: ShieldAlert, color: "bg-orange-50 text-orange-600 dark:bg-orange-500/10 dark:text-orange-400" },
     xray: { label: "V2Ray / Xray", icon: Globe, color: "bg-purple-50 text-purple-600 dark:bg-purple-500/10 dark:text-purple-400" },
+    softether: { label: "SoftEther", icon: Network, color: "bg-sky-50 text-sky-600 dark:bg-sky-500/10 dark:text-sky-400" },
   };
 }
 
@@ -501,6 +503,8 @@ export default function UserDetail() {
         await addSstpConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 0);
       } else if (protocol === "pptp") {
         await addPptpConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 0);
+      } else if (protocol === "softether") {
+        await addSoftetherConnection(user.id, Number(connNodeId));
       } else {
         await addXrayConnection(user.id, Number(connNodeId), connFlow);
       }
@@ -1729,7 +1733,7 @@ export default function UserDetail() {
               <option value="">{t("userDetail.selectPlaceholder")}</option>
               {nodes.map((n) => (
                 <option key={n.id} value={n.id}>
-                  {n.name} ({n.type === "mikrotik" ? t("userDetail.mikrotikLabel") : "V2Ray/Xray"})
+                  {n.name} ({n.type === "mikrotik" ? t("userDetail.mikrotikLabel") : n.type === "softether" ? "SoftEther" : "V2Ray/Xray"})
                 </option>
               ))}
             </select>
@@ -1786,6 +1790,12 @@ export default function UserDetail() {
           {selectedNode?.type === "xray" && (
             <button disabled={saving} className="btn-primary w-full" onClick={() => addConnection("xray")}>
               <Globe size={16} /> {t("userDetail.addVlessButton")}
+            </button>
+          )}
+
+          {selectedNode?.type === "softether" && (
+            <button disabled={saving} className="btn-primary w-full" onClick={() => addConnection("softether")}>
+              <Network size={16} /> SoftEther
             </button>
           )}
 

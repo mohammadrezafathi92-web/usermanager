@@ -7,7 +7,7 @@ from .models import NodeType, ConnectionType, UserStatus
 
 _PORT_FIELDS = (
     "mt_port", "mt_api_ssl_port", "mt_endpoint_port", "mt_ovpn_port", "mt_sstp_port",
-    "xr_ssh_port", "xr_public_port",
+    "xr_ssh_port", "xr_public_port", "se_port", "se_public_port",
 )
 
 
@@ -72,6 +72,14 @@ class NodeBase(BaseModel):
     xr_external_port: Optional[int] = None
     # A working client URI used as the source of truth for generated configs.
     xr_link_template: Optional[str] = None
+
+    se_host: Optional[str] = None
+    se_port: Optional[int] = 443
+    se_hub_name: Optional[str] = "DEFAULT"
+    se_admin_password: Optional[str] = None
+    se_public_host: Optional[str] = None
+    se_public_port: Optional[int] = 443
+    se_verify_tls: Optional[bool] = False
 
     @field_validator(*_PORT_FIELDS)
     @classmethod
@@ -183,6 +191,10 @@ class ConnectionCreateSstp(BaseModel):
 class ConnectionCreateXray(BaseModel):
     node_id: int
     flow: Optional[str] = ""
+
+
+class ConnectionCreateSoftether(BaseModel):
+    node_id: int
 
 
 class ApplyPackageRequest(BaseModel):

@@ -38,10 +38,11 @@ db = sessionmaker(bind=engine)()
 
 mt = models.Node(name="mikro-1", type=models.NodeType.mikrotik)
 xr = models.Node(name="xray-1", type=models.NodeType.xray)
+se = models.Node(name="softether-1", type=models.NodeType.softether)
 pkg = models.Package(name="p", price=1)
-db.add_all([mt, xr, pkg])
+db.add_all([mt, xr, se, pkg])
 db.commit()
-for row in (mt, xr, pkg):
+for row in (mt, xr, se, pkg):
     db.refresh(row)
 
 
@@ -74,6 +75,16 @@ check("xray + xray", sync([(xr, "xray")]), (True, None))
 for proto in ("wireguard", "openvpn", "l2tp", "ikev2", "sstp"):
     ok, _ = sync([(xr, proto)])
     check(f"xray + {proto} is refused", ok, False)
+
+print("\n--- what a SoftEther node can carry ---")
+check("softether + softether", sync([(se, "softether")]), (True, None))
+for proto in ("wireguard", "openvpn", "l2tp", "ikev2", "sstp", "xray"):
+    ok, _ = sync([(se, proto)])
+    check(f"softether + {proto} is refused", ok, False)
+ok, _ = sync([(mt, "softether")])
+check("mikrotik + softether is refused", ok, False)
+ok, _ = sync([(xr, "softether")])
+check("xray + softether is refused", ok, False)
 
 print("\n--- the whole submission is judged, not just the first row ---")
 ok, detail = sync([(mt, "wireguard"), (xr, "l2tp")])
@@ -110,12 +121,24 @@ from app.telegram_bot import keyboards
 # protocol to both places and forgetting the test was the ONLY way to fail
 # it - the reverse of what it is for. Now a protocol added to one side and
 # not the other fails immediately.
-for node_type in ("xray", "mikrotik"):
-    bot_side = set(keyboards.XRAY_PROTOCOLS if node_type == "xray"
-                   else keyboards.MIKROTIK_PROTOCOLS)
-    panel_side = set(packages_router.XRAY_PROTOCOLS if node_type == "xray"
-                     else packages_router.MIKROTIK_PROTOCOLS)
-    check(f"{node_type}: same set on both sides", panel_side, bot_side)
+def _bot_side(node_type):
+    if node_type == "xray":
+        return set(keyboards.XRAY_PROTOCOLS)
+    if node_type == "softether":
+        return set(keyboards.SOFTETHER_PROTOCOLS)
+    return set(keyboards.MIKROTIK_PROTOCOLS)
+
+
+def _panel_side(node_type):
+    if node_type == "xray":
+        return set(packages_router.XRAY_PROTOCOLS)
+    if node_type == "softether":
+        return set(packages_router.SOFTETHER_PROTOCOLS)
+    return set(packages_router.MIKROTIK_PROTOCOLS)
+
+
+for node_type in ("xray", "mikrotik", "softether"):
+    check(f"{node_type}: same set on both sides", _panel_side(node_type), _bot_side(node_type))
 
 # And both sides against the enum, so a protocol can never be offered that
 # the database cannot store.
@@ -123,7 +146,7 @@ from app import models as _models  # noqa: E402
 
 known = {c.value for c in _models.ConnectionType}
 check("every offered protocol is a real ConnectionType",
-      (set(keyboards.MIKROTIK_PROTOCOLS) | set(keyboards.XRAY_PROTOCOLS)) - known, set())
+      (set(keyboards.MIKROTIK_PROTOCOLS) | set(keyboards.XRAY_PROTOCOLS) | set(keyboards.SOFTETHER_PROTOCOLS)) - known, set())
 
 print("\n" + "=" * 60)
 if failures:

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Plus, Trash2, Pencil, Wifi, Globe, PlugZap, CheckCircle2, XCircle, Power, X, Cpu, MemoryStick, HardDrive, Clock, Search } from "lucide-react";
+import { Plus, Trash2, Pencil, Wifi, Globe, Network, PlugZap, CheckCircle2, XCircle, Power, X, Cpu, MemoryStick, HardDrive, Clock, Search } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
@@ -56,6 +56,13 @@ const emptyForm = {
   xr_external_host: "",
   xr_external_port: null,
   xr_link_template: "",
+  se_host: "",
+  se_port: 443,
+  se_hub_name: "DEFAULT",
+  se_admin_password: "",
+  se_public_host: "",
+  se_public_port: 443,
+  se_verify_tls: false,
 };
 
 // Live node resource monitor helpers (see services/node_monitor.py).
@@ -211,21 +218,26 @@ export default function Nodes() {
   // The import step only exists while editing: those panels are all guarded by
   // `editingId` (you cannot read users off a router that hasn't been saved
   // yet), so on a brand-new node it would render an empty step.
-  const stepsFor = (type) =>
-    type === "mikrotik"
-      ? [
-          { key: "basic", label: t("nodes.stepBasic") },
-          { key: "connection", label: t("nodes.stepConnection") },
-          { key: "wireguard", label: t("nodes.stepWireguard") },
-          { key: "radius", label: t("nodes.stepRadius") },
-          { key: "protocols", label: t("nodes.stepProtocols") },
-          ...(editingId ? [{ key: "import", label: t("nodes.stepImport") }] : []),
-        ]
-      : [
-          { key: "basic", label: t("nodes.stepBasic") },
-          { key: "connection", label: t("nodes.stepConnection") },
-          { key: "public", label: t("nodes.stepPublic") },
-        ];
+  const stepsFor = (type) => {
+    if (type === "mikrotik") {
+      return [
+        { key: "basic", label: t("nodes.stepBasic") },
+        { key: "connection", label: t("nodes.stepConnection") },
+        { key: "wireguard", label: t("nodes.stepWireguard") },
+        { key: "radius", label: t("nodes.stepRadius") },
+        { key: "protocols", label: t("nodes.stepProtocols") },
+        ...(editingId ? [{ key: "import", label: t("nodes.stepImport") }] : []),
+      ];
+    }
+    // xray and softether share the same lean 3-step shape: basic,
+    // connection (how the panel talks to the server), public (what
+    // clients connect to).
+    return [
+      { key: "basic", label: t("nodes.stepBasic") },
+      { key: "connection", label: t("nodes.stepConnection") },
+      { key: "public", label: t("nodes.stepPublic") },
+    ];
+  };
   const steps = stepsFor(form.type);
 
   // Only the fields that are already marked `required` on their <input>
@@ -237,6 +249,10 @@ export default function Nodes() {
     if (form.type === "mikrotik") {
       if (key === "connection") {
         return !!form.mt_host.trim() && !!form.mt_username.trim() && !!form.mt_password.trim() && !!form.mt_endpoint_host.trim();
+      }
+    } else if (form.type === "softether") {
+      if (key === "connection") {
+        return !!form.se_host.trim() && !!form.se_hub_name.trim() && !!form.se_admin_password.trim();
       }
     } else if (key === "connection") {
       return form.xr_panel_mode === "3xui" ? !!form.xr_panel_base_url.trim() : !!form.xr_ssh_host.trim();
@@ -470,8 +486,8 @@ export default function Nodes() {
           <div key={n.id} className={`card ${!n.enabled ? "opacity-60" : ""}`}>
             <div className="flex items-start justify-between mb-3">
               <div className="flex items-center gap-2">
-                <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${n.type === "mikrotik" ? "bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-400" : "bg-purple-50 text-purple-600 dark:bg-purple-500/10 dark:text-purple-400"}`}>
-                  {n.type === "mikrotik" ? <Wifi size={18} /> : <Globe size={18} />}
+                <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${n.type === "mikrotik" ? "bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-400" : n.type === "softether" ? "bg-sky-50 text-sky-600 dark:bg-sky-500/10 dark:text-sky-400" : "bg-purple-50 text-purple-600 dark:bg-purple-500/10 dark:text-purple-400"}`}>
+                  {n.type === "mikrotik" ? <Wifi size={18} /> : n.type === "softether" ? <Network size={18} /> : <Globe size={18} />}
                 </div>
                 <div>
                   <div className="font-medium text-gray-800 flex items-center gap-2">
@@ -485,7 +501,7 @@ export default function Nodes() {
                       </span>
                     )}
                   </div>
-                  <div className="text-xs text-gray-400">{n.type === "mikrotik" ? t("nodes.mikrotikType") : t("nodes.xrayType")}</div>
+                  <div className="text-xs text-gray-400">{n.type === "mikrotik" ? t("nodes.mikrotikType") : n.type === "softether" ? t("nodes.softetherType") : t("nodes.xrayType")}</div>
                 </div>
               </div>
               {/* Superadmin only, matching the backend (routers/nodes.py's
@@ -512,7 +528,7 @@ export default function Nodes() {
             </div>
 
             <div className="text-xs text-gray-500 space-y-1 mb-3">
-              <div>{t("nodes.address", { value: n.type === "mikrotik" ? `${n.mt_host}:${n.mt_use_ssl ? n.mt_api_ssl_port : n.mt_port}${n.mt_use_ssl ? " (SSL)" : ""}` : (n.xr_panel_mode === "3xui" ? `${n.xr_panel_base_url} (${t("nodes.threexuiPanel")})` : n.xr_ssh_host) })}</div>
+              <div>{t("nodes.address", { value: n.type === "mikrotik" ? `${n.mt_host}:${n.mt_use_ssl ? n.mt_api_ssl_port : n.mt_port}${n.mt_use_ssl ? " (SSL)" : ""}` : n.type === "softether" ? `${n.se_host}:${n.se_port}` : (n.xr_panel_mode === "3xui" ? `${n.xr_panel_base_url} (${t("nodes.threexuiPanel")})` : n.xr_ssh_host) })}</div>
               <div>{t("nodes.lastSeen", { value: formatDateTime(n.last_seen, language) })}</div>
               {n.last_error && <div className="text-red-500 dark:text-red-400">{t("nodes.error", { value: n.last_error })}</div>}
               {!n.enabled && <div className="text-amber-600 dark:text-amber-400">{t("nodes.disabledNote")}</div>}
@@ -603,6 +619,9 @@ export default function Nodes() {
                 </button>
                 <button type="button" disabled={!!editingId} onClick={() => set("type", "xray")} className={`flex-1 rounded-xl border py-2 text-sm font-medium disabled:opacity-60 ${form.type === "xray" ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400" : "border-gray-200 text-gray-500"}`}>
                   {t("nodes.xrayType")}
+                </button>
+                <button type="button" disabled={!!editingId} onClick={() => set("type", "softether")} className={`flex-1 rounded-xl border py-2 text-sm font-medium disabled:opacity-60 ${form.type === "softether" ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400" : "border-gray-200 text-gray-500"}`}>
+                  {t("nodes.softetherType")}
                 </button>
               </div>
             </>
@@ -895,7 +914,7 @@ export default function Nodes() {
               </div>
               )}
             </div>
-          ) : (
+          ) : form.type === "xray" ? (
             <div className="space-y-4">
               {step === 1 && (
               <>
@@ -1102,6 +1121,53 @@ export default function Nodes() {
                   />
                 </div>
               </div>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {step === 1 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldSeHost")}</label>
+                    <input className="input" required value={form.se_host} onChange={(e) => set("se_host", e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldSePort")}</label>
+                    <input type="number" className="input" value={form.se_port} onChange={(e) => set("se_port", Number(e.target.value))} />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldSeHubName")}</label>
+                    <input className="input" required value={form.se_hub_name} onChange={(e) => set("se_hub_name", e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldSeAdminPassword")}</label>
+                    <input type="password" className="input" required value={form.se_admin_password} onChange={(e) => set("se_admin_password", e.target.value)} />
+                  </div>
+                </div>
+              )}
+
+              {step === 2 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldSePublicHost")}</label>
+                    <input className="input" value={form.se_public_host} onChange={(e) => set("se_public_host", e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldSePublicPort")}</label>
+                    <input type="number" className="input" value={form.se_public_port} onChange={(e) => set("se_public_port", Number(e.target.value))} />
+                  </div>
+                  <div className="col-span-2 flex items-center gap-2">
+                    <input
+                      type="checkbox" id="se_verify_tls" className="h-4 w-4"
+                      checked={!!form.se_verify_tls}
+                      onChange={(e) => set("se_verify_tls", e.target.checked)}
+                    />
+                    <label htmlFor="se_verify_tls" className="text-sm text-gray-600">{t("nodes.fieldSeVerifyTls")}</label>
+                  </div>
+                  <div className="col-span-2">
+                    <p className="hint">{t("nodes.seVerifyTlsHint")}</p>
+                  </div>
+                </div>
               )}
             </div>
           )}

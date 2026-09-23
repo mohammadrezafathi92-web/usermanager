@@ -59,7 +59,7 @@ function formatFileSize(bytes) {
 // the answer depends entirely on which server it is.
 const emptyConn = { node_id: "", protocol: "", flow: "" };
 
-const PROTOCOL_LABELS = { wireguard: "WireGuard", openvpn: "OpenVPN", l2tp: "L2TP", ikev2: "IKEv2", sstp: "SSTP", pptp: "PPTP ⚠️", xray: "V2Ray/Xray" };
+const PROTOCOL_LABELS = { wireguard: "WireGuard", openvpn: "OpenVPN", l2tp: "L2TP", ikev2: "IKEv2", sstp: "SSTP", pptp: "PPTP ⚠️", xray: "V2Ray/Xray", softether: "SoftEther" };
 
 // Which protocols a server can actually carry. Same split the bot already
 // applies (telegram_bot/keyboards.py's protocols_kb) - a MikroTik cannot
@@ -72,7 +72,9 @@ const PROTOCOL_LABELS = { wireguard: "WireGuard", openvpn: "OpenVPN", l2tp: "L2T
 // models.ConnectionType.pptp.
 const MIKROTIK_PROTOCOLS = ["wireguard", "openvpn", "l2tp", "ikev2", "sstp", "pptp"];
 const XRAY_PROTOCOLS = ["xray"];
-const protocolsForType = (type) => (type === "xray" ? XRAY_PROTOCOLS : MIKROTIK_PROTOCOLS);
+const SOFTETHER_PROTOCOLS = ["softether"];
+const protocolsForType = (type) =>
+  type === "xray" ? XRAY_PROTOCOLS : type === "softether" ? SOFTETHER_PROTOCOLS : MIKROTIK_PROTOCOLS;
 
 export default function Packages() {
   const { t, language } = useLanguage();

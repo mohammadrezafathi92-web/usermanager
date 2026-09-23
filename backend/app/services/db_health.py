@@ -13,28 +13,57 @@ leave a dangling reference behind with no error at the time it happened -
 it only surfaces later, as a confusing 500 or a customer who silently
 vanished from every list. This module finds those after the fact.
 
-Deliberately READ-ONLY. It reports; it does not repair anything - a
-mismatched tree_path or an orphaned Connection can have more than one
-correct fix depending on what actually happened, and guessing wrong here
-would turn a visible, fixable problem into a silent, wrong "fix". Nothing
-in routers/db_health.py has a POST for repairs; that stays a human
-decision, made with the specific row in front of them.
+run_health_check() is deliberately READ-ONLY. It reports; it does not
+repair anything - a mismatched tree_path or an orphaned Connection can
+have more than one correct fix depending on what actually happened, and
+guessing wrong here would turn a visible, fixable problem into a silent,
+wrong "fix". That stays a human decision, made with the specific row in
+front of them.
 
 Bounded on purpose: EVERY check loads at most a handful of whole tables'
 worth of ids into memory (never full rows) and returns at most
 EXAMPLES_PER_ISSUE example rows per finding - this runs on demand, from a
 button in Settings, and must stay cheap even on the panel's biggest
 installs (see the 20k-customer stress test elsewhere in this project).
+
+optimize_database() (Settings > data tab, "بهینه‌سازی دیتابیس" button,
+added 2026-09-23) is the one exception to "read-only", and deliberately
+narrow about it: it only ever deletes rows that are pure operational
+exhaust with no business meaning of their own -
+- UsageLog / RadiusLimitEventLog rows older than their existing retention
+  window (quota_manager.cleanup_old_usage_logs /
+  radius_server.cleanup_old_radius_limit_logs - normally run once a day by
+  the scheduler; this just lets an admin trigger them immediately instead
+  of waiting).
+- RadiusActiveSession rows that are stale (cleanup_stale_radius_sessions)
+  or dangling (pointing at a Connection that no longer exists) - purely
+  transient "is this session currently open" state, never a record of
+  anything that needs to be kept.
+It never touches Users/Connections/Purchases/AdminUsers or any
+ledger/log table with real business or financial meaning (LedgerEntry,
+AdminBalanceLog, AdminLoginLog, IpBan, ...) - those are exactly the rows
+run_health_check's orphan checks surface for a human to look at, on
+purpose, rather than silently deleting. After the safe deletes,
+optimize_database also runs VACUUM (SQLite) or OPTIMIZE TABLE (MySQL) +
+ANALYZE, since deleting rows alone never shrinks a SQLite file or refreshes
+the query planner's statistics on its own.
 """
 from __future__ import annotations
 
 import datetime as dt
+import logging
+import os
+import time
 from dataclasses import dataclass, field
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..database import engine, is_sqlite, is_mysql
 from . import hierarchy
+
+logger = logging.getLogger(__name__)
 
 EXAMPLES_PER_ISSUE = 20
 
@@ -361,3 +390,103 @@ def run_health_check(db: Session) -> dict:
         "warning_count": warning_count,
         "issues": [i.to_dict() for i in issues],
     }
+
+
+def _sqlite_file_size() -> int | None:
+    """Best-effort size of the live .db file, for the before/after freed-
+    space figure - None (not 0) when it can't be determined, so the caller
+    can tell "not applicable" apart from "vacuum reclaimed nothing"."""
+    try:
+        url = str(engine.url)
+        path = url.split("sqlite:///", 1)[1] if "sqlite:///" in url else None
+        if not path or not os.path.isfile(path):
+            return None
+        return os.path.getsize(path)
+    except Exception:
+        return None
+
+
+def _delete_dangling_radius_sessions(db: Session) -> int:
+    """RadiusActiveSession rows whose connection_id no longer matches any
+    Connection - the same orphan_radius_active_session category
+    run_health_check already flags, just actually removed here. Unlike a
+    stale (not-recently-refreshed) session, a dangling one can never be
+    refreshed again by a real Stop/Interim-Update packet - the connection
+    it belonged to is simply gone - so there is no ambiguity in deleting
+    it."""
+    connection_ids = {row[0] for row in db.query(models.Connection.id).all()}
+    rows = db.query(models.RadiusActiveSession).all()
+    dangling_ids = [r.id for r in rows if r.connection_id not in connection_ids]
+    if not dangling_ids:
+        return 0
+    deleted = (
+        db.query(models.RadiusActiveSession)
+        .filter(models.RadiusActiveSession.id.in_(dangling_ids))
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return deleted
+
+
+def optimize_database(db: Session) -> dict:
+    """"بهینه‌سازی دیتابیس" button (Settings > data tab, superadmin only) -
+    see the module docstring's optimize_database() section for exactly what
+    is and is not touched. Safe to call on demand as often as an admin
+    likes; every step it takes is either idempotent (a second VACUUM on an
+    already-compact file is just a cheap no-op) or already run
+    automatically on its own schedule (main.py's scheduler jobs) - this
+    only makes it happen right now instead of at the next scheduled tick.
+    """
+    from . import quota_manager, radius_server  # local import: avoids a
+    # module-load-order cycle, same reason routers already import services
+    # lazily inside handler functions in a few places in this codebase.
+
+    started = time.monotonic()
+    size_before = _sqlite_file_size() if is_sqlite else None
+
+    deleted_usage_logs = quota_manager.cleanup_old_usage_logs()
+    deleted_radius_limit_logs = radius_server.cleanup_old_radius_limit_logs()
+    deleted_stale_sessions = radius_server.cleanup_stale_radius_sessions()
+    deleted_dangling_sessions = _delete_dangling_radius_sessions(db)
+
+    vacuumed = False
+    try:
+        with engine.connect() as conn:
+            # VACUUM/OPTIMIZE can't run inside a transaction - AUTOCOMMIT
+            # takes this connection out of SQLAlchemy's normal
+            # begin/commit handling for the duration of the `with` block.
+            raw = conn.execution_options(isolation_level="AUTOCOMMIT")
+            if is_sqlite:
+                raw.execute(text("PRAGMA optimize"))
+                raw.execute(text("VACUUM"))
+            elif is_mysql:
+                for row in raw.execute(text("SHOW TABLES")).fetchall():
+                    table = row[0]
+                    raw.execute(text(f"OPTIMIZE TABLE `{table}`"))
+            else:
+                raw.execute(text("ANALYZE"))
+            vacuumed = True
+    except Exception:
+        logger.exception("database optimize step (VACUUM/OPTIMIZE) failed")
+
+    size_after = _sqlite_file_size() if is_sqlite else None
+    freed_bytes = (size_before - size_after) if (size_before is not None and size_after is not None) else None
+
+    result = {
+        "ran_at": dt.datetime.utcnow().isoformat(),
+        "duration_seconds": round(time.monotonic() - started, 2),
+        "deleted": {
+            "usage_logs": deleted_usage_logs,
+            "radius_limit_event_logs": deleted_radius_limit_logs,
+            "stale_radius_sessions": deleted_stale_sessions,
+            "dangling_radius_sessions": deleted_dangling_sessions,
+        },
+        "total_deleted": (
+            deleted_usage_logs + deleted_radius_limit_logs
+            + deleted_stale_sessions + deleted_dangling_sessions
+        ),
+        "vacuumed": vacuumed,
+        "freed_bytes": freed_bytes,
+    }
+    logger.info("database optimize finished: %s", result)
+    return result

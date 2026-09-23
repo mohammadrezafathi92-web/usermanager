@@ -15,13 +15,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from ..admin_scope import resolve_admin_scope
-from ..callbacks import ConnectionCB, MenuCB, PurchaseCB, RenameCB, SwitchAccountCB
+from ..callbacks import ConnectionCB, DeleteCB, DeleteConfirmCB, MenuCB, PurchaseCB, RenameCB, SwitchAccountCB
 from ..connection_sender import send_connection
 from ..panel_bridge import api, ApiError
 from ..states import CustomerRenameStates
 from ..keyboards import (
     cancel_kb,
     connections_list_kb,
+    delete_confirm_kb,
     group_connections_by_purchase,
     home_kb,
     main_menu_kb,
@@ -340,6 +341,79 @@ async def rename_receive(message: Message, state: FSMContext) -> None:
         "✅ نام سرویس به‌روزرسانی شد.\n\n" + _account_text(user),
         reply_markup=purchases_kb(groups) if groups else home_kb(),
     )
+
+
+@router.callback_query(DeleteCB.filter())
+async def cb_delete_start(call: CallbackQuery, callback_data: DeleteCB, state: FSMContext) -> None:
+    """«🗑» beside an already expired/exhausted purchase in "👤 اکانت من" -
+    asks for confirmation before removing it (see keyboards.delete_confirm_kb).
+    Requested 2026-09-23: "گزینه حذف پکیج رو هم برای بات بزار تا اکانت های
+    تموم شده که استفاده ندارن بتونن از توی تلگرام حذف کنن" - a customer can
+    now clear out a service they can no longer use themselves, instead of
+    it sitting in their list forever or needing an admin. Deliberately
+    scoped to already-unusable services (see keyboards.group_connections_by_purchase's
+    "deletable" flag and routers/bot.py's own server-side re-check) - an
+    active/paid-for service still needs an admin to remove."""
+    user = await _resolve_account(call, state, call.from_user.id, "cust_account")
+    if user == "ambiguous":
+        return
+    if not user:
+        await call.answer("حساب شما پیدا نشد", show_alert=True)
+        return
+    groups = group_connections_by_purchase(user["connections"])
+    group = next((g for g in groups if g["key"] == callback_data.key), None)
+    if not group:
+        await call.message.edit_text(_account_text(user), reply_markup=purchases_kb(groups) if groups else home_kb())
+        await call.answer("لیست به‌روزرسانی شد")
+        return
+    if not group["deletable"]:
+        # Stale list (e.g. the service got renewed/reactivated after the
+        # menu was opened but before this tap landed) - refuse rather than
+        # even offering a confirmation for something no longer eligible.
+        await call.message.edit_text(_account_text(user), reply_markup=purchases_kb(groups))
+        await call.answer("این سرویس دیگر قابل حذف نیست - لیست به‌روزرسانی شد", show_alert=True)
+        return
+    await call.message.edit_text(
+        f"⚠️ آیا از حذف «{group['label']}» مطمئن هستید؟\n\n"
+        "این سرویس تمام‌شده/منقضی است و پس از حذف قابل بازگشت نیست.",
+        reply_markup=delete_confirm_kb(callback_data.key),
+    )
+    await call.answer()
+
+
+@router.callback_query(DeleteConfirmCB.filter())
+async def cb_delete_confirm(call: CallbackQuery, callback_data: DeleteConfirmCB, state: FSMContext) -> None:
+    user = await _resolve_account(call, state, call.from_user.id, "cust_account")
+    if user == "ambiguous":
+        return
+    if not user:
+        await call.answer("حساب شما پیدا نشد", show_alert=True)
+        return
+    groups = group_connections_by_purchase(user["connections"])
+    group = next((g for g in groups if g["key"] == callback_data.key), None)
+    if not group:
+        await call.message.edit_text(_account_text(user), reply_markup=purchases_kb(groups) if groups else home_kb())
+        await call.answer("این سرویس قبلاً حذف شده")
+        return
+    # A single-connection group only has purchase_id set once the absorb-
+    # legacy-pool migration has run for it (same check cb_rename_start uses)
+    # - fall back to deleting the one connection directly when it hasn't.
+    purchase_id = next((c.get("purchase_id") for c in group["connections"] if c.get("purchase_id")), None)
+    try:
+        if purchase_id:
+            await api.delete_purchase(user["username"], purchase_id)
+        else:
+            await api.delete_connection(user["username"], group["connections"][0]["id"])
+    except ApiError as exc:
+        await call.answer(f"خطا: {exc}", show_alert=True)
+        return
+    user = await api.get_user(user["username"])
+    groups = group_connections_by_purchase(user["connections"]) if user["connections"] else []
+    await call.message.edit_text(
+        "✅ سرویس حذف شد.\n\n" + _account_text(user),
+        reply_markup=purchases_kb(groups) if groups else home_kb(),
+    )
+    await call.answer()
 
 
 @router.callback_query(ConnectionCB.filter())

@@ -140,6 +140,24 @@ class RenameCB(CallbackData, prefix="ren"):
     key: str
 
 
+class DeleteCB(CallbackData, prefix="del"):
+    # "🗑" beside an already-expired/exhausted purchase group in "👤 اکانت
+    # من" (see keyboards.purchases_kb's eligibility check and
+    # handlers/customer_account.py's cb_delete_start, added 2026-09-23) -
+    # asks for confirmation before anything is actually removed. `key` is
+    # the same PurchaseCB.key (a purchase_batch, or "c<connection_id>" for
+    # a standalone connection with no batch).
+    key: str
+
+
+class DeleteConfirmCB(CallbackData, prefix="delok"):
+    # "بله، حذف کن" on the confirmation screen DeleteCB opens - actually
+    # deletes. A second tap of a stale/already-answered confirmation is
+    # harmless: cb_delete_confirm re-validates the group still exists and
+    # is still eligible before doing anything.
+    key: str
+
+
 class SwitchAccountCB(CallbackData, prefix="swacc"):
     # Picked from the account-picker shown when a telegram_id resolves to
     # more than one panel User (see telegram_bot/handlers/customer.py's

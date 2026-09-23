@@ -441,6 +441,7 @@ export const deleteLicenseKey = () => client.delete("/license/key");
 // Database health report (services/db_health.py) - superadmin-only,
 // read-only. Run on demand from Settings > data.
 export const runDbHealthCheck = () => client.get("/db-health/check");
+export const optimizeDatabase = () => client.post("/db-health/optimize");
 
 // Discount/promo codes (کد تخفیف) - panel-wide, see routers/discount_codes.py.
 export const fetchDiscountCodes = () => client.get("/discount-codes");

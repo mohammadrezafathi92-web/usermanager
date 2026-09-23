@@ -1066,6 +1066,75 @@ def rename_purchase(
     return info
 
 
+# Both delete endpoints below are the customer's own self-service "🗑 حذف"
+# (handlers/customer_account.py, added 2026-09-23) - unlike the admin
+# panel's DELETE /users/{id}/purchases/{id} (routers/users.py), there is no
+# password confirmation here (the bot has no admin session to confirm
+# with), so eligibility is checked server-side instead of trusting the
+# caller: only a service that is ALREADY expired/quota-exceeded (i.e. the
+# customer gets no further use out of it either way) can be removed this
+# way. A customer who wants to delete something still active has to ask an
+# admin, same as before this feature existed.
+def _ensure_deletable_purchase(purchase: models.Purchase) -> None:
+    if purchase.status not in (models.UserStatus.expired, models.UserStatus.quota_exceeded):
+        raise HTTPException(400, "این سرویس هنوز فعال است - فقط سرویس‌های تمام‌شده یا منقضی قابل حذف هستند")
+
+
+@router.delete("/users/{username}/purchases/{purchase_id}")
+def delete_purchase(
+    username: str, purchase_id: int,
+    db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
+):
+    """Deletes one of the customer's own expired/exhausted services (all of
+    its connections, deprovisioned from their nodes, then the Purchase row
+    itself) - same underlying work as the admin panel's own delete-purchase
+    button (routers/users.py's delete_purchase), just self-service and
+    scoped to services that are already unusable (see
+    _ensure_deletable_purchase)."""
+    user = _get_user_or_404(db, username, owner_admin_id)
+    purchase = db.get(models.Purchase, purchase_id)
+    if not purchase or purchase.user_id != user.id:
+        raise HTTPException(404, "سرویس پیدا نشد")
+    _ensure_deletable_purchase(purchase)
+    removed = 0
+    failed: list[str] = []
+    for conn in list(purchase.connections):
+        try:
+            user_ops.delete_connection(db, conn)
+            removed += 1
+        except Exception as exc:  # noqa: BLE001 - one unreachable node must
+            # not strand the whole service half-deleted; report and go on.
+            failed.append(f"{conn.type.value}: {exc}")
+    db.delete(purchase)
+    db.commit()
+    return {"ok": True, "connections_removed": removed, "failed": failed}
+
+
+@router.delete("/users/{username}/connections/{connection_id}")
+def delete_connection(
+    username: str, connection_id: int,
+    db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
+):
+    """Same self-service delete as delete_purchase above, for a connection
+    that predates the Purchase feature (or was added one-at-a-time) and so
+    has no purchase_id of its own - governed by the user's own combined
+    status instead of a Purchase's (see models.Purchase's docstring)."""
+    user = _get_user_or_404(db, username, owner_admin_id)
+    conn = db.get(models.Connection, connection_id)
+    if not conn or conn.user_id != user.id:
+        raise HTTPException(404, "کانکشن پیدا نشد")
+    if conn.purchase_id is not None:
+        # Has its own Purchase after all - the customer's client is out of
+        # sync (it should have called delete_purchase instead); refuse
+        # rather than silently deleting just one connection of a service
+        # that might have several.
+        raise HTTPException(400, "این اتصال بخشی از یک سرویس است - حذف باید از طریق همان سرویس انجام شود")
+    if user.status not in (models.UserStatus.expired, models.UserStatus.quota_exceeded):
+        raise HTTPException(400, "این سرویس هنوز فعال است - فقط سرویس‌های تمام‌شده یا منقضی قابل حذف هستند")
+    user_ops.delete_connection(db, conn)
+    return {"ok": True}
+
+
 @router.get("/users/{username}/subscription-link", response_model=schemas.BotSubscriptionLinkOut)
 def get_bot_subscription_link(username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None):
     """Bot counterpart of routers/users.py's get_subscription_link, for the

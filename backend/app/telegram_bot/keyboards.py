@@ -24,6 +24,8 @@ from .callbacks import (
     PayCB,
     ApprovalCB,
     ConnectionCB,
+    DeleteCB,
+    DeleteConfirmCB,
     PurchaseCB,
     RenameCB,
     SwitchAccountCB,
@@ -532,6 +534,16 @@ def group_connections_by_purchase(connections: list[dict]) -> list[dict]:
 
     for g in result:
         conns = g["connections"]
+        # Client-side hint only for whether to show "🗑" at all (every
+        # connection quota/expiry enforcement already disabled - see
+        # services/quota_manager.py's _enforce_purchase_limits/
+        # _enforce_user_limits, which disable every connection of a service
+        # the moment it goes expired/quota_exceeded). The actual gate lives
+        # server-side (routers/bot.py's delete_purchase/delete_connection,
+        # checked against Purchase.status/User.status directly) - a button
+        # shown from a stale list just gets a polite error back instead of
+        # silently deleting something still in use.
+        g["deletable"] = bool(conns) and all(not c.get("enabled") for c in conns)
         # Jalali, not the raw ISO/Gregorian prefix - this string is
         # customer-facing (purchase-date line under "📊 مصرف" and every
         # purchase button label), and a Persian customer reading
@@ -573,22 +585,46 @@ def purchases_kb(groups: list[dict]) -> InlineKeyboardMarkup:
     handlers/customer_account.py's cb_rename_start) - added 2026-09-23 so a
     customer can replace the auto "اکانت N" label with their own text
     without that disturbing the main button's existing tap behavior (single
-    -> straight to the connection, multi -> the submenu)."""
+    -> straight to the connection, multi -> the submenu). An already
+    expired/exhausted group (g["deletable"] - see group_connections_by_purchase)
+    also gets a "🗑" (DeleteCB, cb_delete_start) beside those two, added the
+    same day, so a customer can clear out a service they can no longer use
+    instead of it sitting in the list forever."""
     kb = InlineKeyboardBuilder()
+    row_sizes = []
     for g in groups:
         if len(g["connections"]) == 1:
             kb.button(text=g["label"], callback_data=ConnectionCB(connection_id=g["connections"][0]["id"]))
         else:
             kb.button(text=g["label"], callback_data=PurchaseCB(key=g["key"]))
         kb.button(text="✏️", callback_data=RenameCB(key=g["key"]))
+        row = 2
+        if g["deletable"]:
+            kb.button(text="🗑", callback_data=DeleteCB(key=g["key"]))
+            row = 3
+        row_sizes.append(row)
     # One link per CUSTOMER (covers every Xray/VLESS service combined - see
     # routers/subscription.py), not per purchase/connection, so it sits
     # here at the account level rather than inside any one group's submenu.
     kb.button(text="🔗 دریافت لینک ساب", callback_data=MenuCB(action="cust_sublink"))
     kb.button(text="🏠 منوی اصلی", callback_data=MenuCB(action="home"))
-    # Pairs first (label + ✏️ per group), then the two trailing full-width
-    # buttons - a fixed [1] would smash the pairs down onto separate rows.
-    kb.adjust(*([2] * len(groups) + [1, 1]))
+    # Each group's own row first (2 or 3, depending on whether it got a "🗑"),
+    # then the two trailing full-width buttons - a fixed size would either
+    # smash a group's buttons onto separate rows or misalign the ones next
+    # to it.
+    kb.adjust(*(row_sizes + [1, 1]))
+    return kb.as_markup()
+
+
+def delete_confirm_kb(key: str) -> InlineKeyboardMarkup:
+    """"⚠️ آیا مطمئن هستید؟" screen opened by DeleteCB (see
+    handlers/customer_account.py's cb_delete_start) before a service is
+    actually removed - same "ask before an irreversible action" shape as
+    the rest of this file's flows."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🗑 بله، حذف کن", callback_data=DeleteConfirmCB(key=key))
+    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cust_account"))
+    kb.adjust(1)
     return kb.as_markup()
 
 

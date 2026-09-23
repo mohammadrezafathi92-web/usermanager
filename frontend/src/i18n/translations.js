@@ -1234,6 +1234,11 @@ export const translations = {
     "dbHealth.severityError": "خطا",
     "dbHealth.severityWarning": "هشدار",
     "dbHealth.examplesHint": "نمایش {shown} نمونه از {total} مورد",
+    "dbHealth.optimizeButton": "بهینه‌سازی دیتابیس",
+    "dbHealth.optimizing": "در حال بهینه‌سازی...",
+    "dbHealth.optimizeError": "خطا در بهینه‌سازی دیتابیس",
+    "dbHealth.optimizeDone": "{count} رکورد اضافی پاک شد و دیتابیس بهینه‌سازی شد",
+    "dbHealth.optimizeFreed": "حدود {size} فضای دیسک آزاد شد",
 
     "discountCodes.title": "کدهای تخفیف",
     "discountCodes.subtitle": "کدهای تخفیف قابل استفاده در ربات فروش هنگام خرید/تمدید پکیج",
@@ -2716,6 +2721,11 @@ export const translations = {
     "dbHealth.severityError": "Error",
     "dbHealth.severityWarning": "Warning",
     "dbHealth.examplesHint": "Showing {shown} of {total} examples",
+    "dbHealth.optimizeButton": "Optimize database",
+    "dbHealth.optimizing": "Optimizing...",
+    "dbHealth.optimizeError": "Failed to optimize the database",
+    "dbHealth.optimizeDone": "{count} extra record(s) removed and the database was optimized",
+    "dbHealth.optimizeFreed": "About {size} of disk space freed",
 
     "discountCodes.title": "Discount Codes",
     "discountCodes.subtitle": "Promo codes customers can use in the sales bot at checkout",

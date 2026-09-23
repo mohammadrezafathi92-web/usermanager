@@ -116,7 +116,15 @@ check("approval id persisted on the per-admin pool too", own_card.approval_teleg
 
 
 # ------------------------------------------------- _notify_targets routing
+# customer.py used to be one file, so patching `customer_handlers.api`
+# reached the same global `_notify_targets` itself read. It's since been
+# split (see customer_common.py's module docstring) and `_notify_targets`
+# now lives in customer_common.py - a function resolves a bare name against
+# the module it's LEXICALLY DEFINED in, not the module it's imported into,
+# so the patch target has to be customer_common.api, not customer_handlers.api
+# (which is just customer.py's own, separate `api` import of the same name).
 from app.telegram_bot.handlers import customer as customer_handlers  # noqa: E402
+from app.telegram_bot.handlers import customer_common  # noqa: E402
 from app.telegram_bot.config import config  # noqa: E402
 
 
@@ -135,41 +143,41 @@ class FakeApi:
 
 
 async def run_notify_tests():
-    real_api = customer_handlers.api
+    real_api = customer_common.api
     real_targets = config.approval_targets
     try:
         config.approval_targets = lambda: {111}
 
         print("\n--- a card WITH an approval id ADDS it to the normal targets ---")
-        customer_handlers.api = FakeApi(cards={7: {"id": 7, "approval_telegram_id": 42424242}})
+        customer_common.api = FakeApi(cards={7: {"id": 7, "approval_telegram_id": 42424242}})
         targets = await customer_handlers._notify_targets({"payment_card_id": 7})
         check("normal target still present", 111 in targets, True)
         check("card's approval id added too", 42424242 in targets, True)
         check("exactly these two, nothing extra", targets, {111, 42424242})
 
         print("\n--- a card with NO approval id set changes nothing ---")
-        customer_handlers.api = FakeApi(cards={8: {"id": 8, "approval_telegram_id": None}})
+        customer_common.api = FakeApi(cards={8: {"id": 8, "approval_telegram_id": None}})
         targets2 = await customer_handlers._notify_targets({"payment_card_id": 8})
         check("only the normal target", targets2, {111})
 
         print("\n--- no payment_card_id at all (e.g. a 'link' request) is a no-op, no crash ---")
-        customer_handlers.api = FakeApi()
+        customer_common.api = FakeApi()
         targets3 = await customer_handlers._notify_targets({"owner_admin_id": None})
         check("only the normal target, no crash", targets3, {111})
 
         print("\n--- a payment_card_id for a card that no longer exists is a no-op, no crash ---")
-        customer_handlers.api = FakeApi(cards={})
+        customer_common.api = FakeApi(cards={})
         targets4 = await customer_handlers._notify_targets({"payment_card_id": 999})
         check("only the normal target, no crash", targets4, {111})
 
         print("\n--- combines correctly with the existing owner-telegram-id addition ---")
-        customer_handlers.api = FakeApi(
+        customer_common.api = FakeApi(
             admin_tg={5: 606060}, cards={9: {"id": 9, "approval_telegram_id": 707070}},
         )
         targets5 = await customer_handlers._notify_targets({"owner_admin_id": 5, "payment_card_id": 9})
         check("has the normal target, the owner's, and the card's", targets5, {111, 606060, 707070})
     finally:
-        customer_handlers.api = real_api
+        customer_common.api = real_api
         config.approval_targets = real_targets
 
 

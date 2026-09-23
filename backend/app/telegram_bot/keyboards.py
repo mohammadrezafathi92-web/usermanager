@@ -48,29 +48,32 @@ PROTOCOL_LABELS = {
 # routers/telegram_bot_settings.py's BotSettings.customer_menu_disabled_items)
 # and used here to filter which buttons actually get built.
 CUSTOMER_MENU_ITEMS = [
-    # A colored circle AS each item's own icon - requested 2026-09-23:
-    # "رنگی‌تر باشه، تو چشم‌تر" (make it more colorful, more eye-catching).
-    # Telegram gives bots no actual button-color API (a ReplyKeyboardMarkup/
-    # InlineKeyboardMarkup button's background is drawn entirely by the
-    # client, not stylable per-button) - this circle is the closest real
-    # equivalent. First tried as a circle ADDED next to the item's existing
-    # pictograph (🔵 👤 اکانت من) - rejected the same day: "یه دایره ابی
-    # اومده کنارش اون نباشه خود گزینه رنگی بشه" (a blue circle showed up
-    # next to it, don't want that - the option itself should be colored).
-    # So the circle now REPLACES the old icon rather than sitting beside
-    # it - one colored marker per button, not two. Still doubles as a
-    # quick visual grouping cue (e.g. "اکانت من" and "آیدی عددی من" share
-    # 🔵 since both are identity/account lookups).
-    ("cust_account", "🔵 اکانت من"),
-    ("cust_usage", "🟣 مصرف سرویس‌ها"),
-    ("cust_renew", "🟢 تمدید سرویس"),
-    ("cust_buy", "🟠 خرید اکانت جدید"),
-    ("cust_topup", "🟡 افزایش اعتبار"),
-    ("cust_tutorials", "🟤 آموزش"),
-    ("cust_referral", "🔴 دعوت دوستان"),
-    ("cust_support", "⚪ پشتیبانی"),
-    ("cust_link", "⚫ وصل کردن حساب قبلی"),
-    ("cust_myid", "🔵 آیدی عددی من"),
+    # A colored SQUARE as each item's own icon - requested 2026-09-23,
+    # through three rounds of feedback:
+    #  1) "رنگی‌تر باشه، تو چشم‌تر" (more colorful, more eye-catching) -
+    #     first try was a circle prefix (🔵 👤 اکانت من).
+    #  2) "یه دایره ابی اومده کنارش اون نباشه خود گزینه رنگی بشه" (a blue
+    #     circle showed up NEXT TO it - don't want that, the option itself
+    #     should be colored) - the circle replaced the old icon instead of
+    #     sitting beside it (🔵 اکانت من).
+    #  3) "خوده دکمه باید رنگی بشه نه ایتم رنگی توش باشه" (the BUTTON
+    #     itself should look colored, not [just] have a colored item
+    #     inside it) - a small circle glyph still reads as "text with a
+    #     dot", not "a colored button". Squares render larger/more solid
+    #     than circles at Telegram's button font size, closer to an actual
+    #     tinted button. Same message also asked for the 4 most important
+    #     ones to be JUST colored - see _CUSTOMER_ICON_ONLY_ACTIONS below:
+    #     for those four the label IS the square, no text at all.
+    ("cust_account", "🟦"),
+    ("cust_usage", "🟪 مصرف سرویس‌ها"),
+    ("cust_renew", "🟩"),
+    ("cust_buy", "🟧"),
+    ("cust_topup", "🟨"),
+    ("cust_tutorials", "🟫 آموزش"),
+    ("cust_referral", "🟥 دعوت دوستان"),
+    ("cust_support", "⬜ پشتیبانی"),
+    ("cust_link", "⬛ وصل کردن حساب قبلی"),
+    ("cust_myid", "🟦 آیدی عددی من"),
 ]
 
 # Same idea as CUSTOMER_MENU_ITEMS, one list per admin tier so main_menu_kb
@@ -81,24 +84,27 @@ CUSTOMER_MENU_ITEMS = [
 # some hidden" - "📋 لیست کاربران" vs "📋 لیست کاربران من" is a different
 # label for what's still the same admin_list action.
 ADMIN_MENU_ITEMS_FULL = [
-    # Same colored-circle-as-icon idea as CUSTOMER_MENU_ITEMS above - kept
+    # Same colored-square-as-icon idea as CUSTOMER_MENU_ITEMS above - kept
     # the same color per action across both tiers below (admin_create is
-    # 🟢 in both lists, etc.) so a seller promoted to admin sees a familiar
-    # bar rather than everything reshuffling.
-    ("admin_create", "🟢 ساخت کاربر"),
-    ("admin_list", "🔵 لیست کاربران"),
-    ("admin_pending", "🟠 درخواست‌های در انتظار"),
-    ("admin_broadcast", "🟣 پیام همگانی"),
-    ("admin_dm", "🟡 پیام به یک کاربر"),
-    ("admin_search", "⚪ جستجوی کاربر"),
-    ("admin_stats", "🟤 گزارش فروش"),
-    ("admin_history", "⚫ تاریخچه درخواست‌ها"),
+    # 🟩 in both lists, etc.) so a seller promoted to admin sees a familiar
+    # bar rather than everything reshuffling. Admin actions all keep their
+    # text (unlike the 4 icon-only customer ones) - an admin picking the
+    # wrong action by mistake is a heavier mistake than a customer doing
+    # so, so these stay unambiguous.
+    ("admin_create", "🟩 ساخت کاربر"),
+    ("admin_list", "🟦 لیست کاربران"),
+    ("admin_pending", "🟧 درخواست‌های در انتظار"),
+    ("admin_broadcast", "🟪 پیام همگانی"),
+    ("admin_dm", "🟨 پیام به یک کاربر"),
+    ("admin_search", "⬜ جستجوی کاربر"),
+    ("admin_stats", "🟫 گزارش فروش"),
+    ("admin_history", "⬛ تاریخچه درخواست‌ها"),
 ]
 
 ADMIN_MENU_ITEMS_SELLER = [
-    ("admin_create", "🟢 ساخت کاربر"),
-    ("admin_list", "🔵 لیست کاربران من"),
-    ("admin_search", "⚪ جستجوی کاربر"),
+    ("admin_create", "🟩 ساخت کاربر"),
+    ("admin_list", "🟦 لیست کاربران من"),
+    ("admin_search", "⬜ جستجوی کاربر"),
 ]
 
 

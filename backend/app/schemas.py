@@ -381,7 +381,14 @@ class SubscriptionConnectionOut(BaseModel):
     share_error: Optional[str] = None
 
 
-class SubscriptionInfo(BaseModel):
+class SubscriptionAccountOut(BaseModel):
+    """One User row's worth of the public subscription page - status,
+    usage, expiry, balance and its own services, all independent per
+    account (see User.telegram_id's docstring: a customer can have more
+    than one). SubscriptionInfo.accounts is a list of these rather than
+    SubscriptionInfo itself repeating this shape, so the page can render
+    each account as its own collapsible section - see SubscriptionInfo's
+    docstring for why this replaced the old single-account shape."""
     username: str
     full_name: Optional[str] = None
     status: UserStatus
@@ -392,6 +399,22 @@ class SubscriptionInfo(BaseModel):
     balance: int = 0
     referral_code: Optional[str] = None
     connections: List[SubscriptionConnectionOut] = []
+
+
+class SubscriptionInfo(BaseModel):
+    """Reported 2026-09-23: a customer with more than one purchase can end
+    up with several separate User rows sharing one telegram_id (same case
+    routers/subscription.py's get_subscription_app_import already
+    combines - see its own docstring). This used to be flat, ONE account's
+    fields at the top level, so a repeat customer's second/third account
+    never showed up on their subscription page at all. Now it is always a
+    list, even for the common single-account case (`accounts` has one
+    entry then) - simpler for the frontend than branching on count, and
+    "شود صفحه خیلی بزرگ" (the page gets huge with many accounts, panel
+    owner's own worry) is exactly why Subscription.jsx renders each entry
+    as a collapsed-by-default section instead of dumping every account's
+    services flat on one page."""
+    accounts: List[SubscriptionAccountOut] = []
 
 
 class SubscriptionLinkOut(BaseModel):

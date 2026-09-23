@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import QRCode from "qrcode";
-import { Wifi, Globe, ShieldCheck, Lock, KeyRound, ShieldEllipsis, Copy, Check, Download, Gift, Wallet, CalendarClock } from "lucide-react";
+import { Wifi, Globe, ShieldCheck, Lock, KeyRound, ShieldEllipsis, Copy, Check, Download, Gift, Wallet, CalendarClock, ChevronDown, ChevronUp } from "lucide-react";
 import { fetchPublicSubscriptionInfo } from "../api/client.js";
 import { formatBytes, formatDateTime, statusLabel, STATUS_STYLES, copyText } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
@@ -160,6 +160,94 @@ function ServiceCard({ conn, meta, token }) {
   );
 }
 
+// One customer can hold several separate accounts (see backend/app/routers/
+// subscription.py's _linked_users docstring - repeat purchases under
+// different usernames share one telegram_id but stay separate User rows).
+// Reported 2026-09-23: "اگر تعداد اکانت زیاد بشاه خیلی صفحه بزرگ میشه" (the
+// page gets huge with many accounts) - each account is now its own
+// collapsed-by-default section here, opened by tapping its header, instead
+// of every account's services being dumped flat on one page.
+function AccountSection({ account, token, TYPE_META, defaultOpen }) {
+  const { t, language } = useLanguage();
+  const [open, setOpen] = useState(defaultOpen);
+  const groups = groupByPurchase(account.connections || []);
+
+  return (
+    <div className="card overflow-hidden">
+      <button
+        type="button"
+        className="w-full flex items-center justify-between gap-3 p-5 text-right"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="min-w-0">
+            <div className="text-lg font-semibold text-gray-800 truncate">{account.full_name || account.username}</div>
+            <div className="text-xs text-gray-400">@{account.username}</div>
+          </div>
+          <span className={`shrink-0 text-xs px-3 py-1 rounded-full ${STATUS_STYLES[account.status] || "bg-gray-100 text-gray-500"}`}>
+            {statusLabel(account.status, language)}
+          </span>
+        </div>
+        {open ? <ChevronUp size={18} className="text-gray-400 shrink-0" /> : <ChevronDown size={18} className="text-gray-400 shrink-0" />}
+      </button>
+
+      {open && (
+        <div className="px-5 pb-5 space-y-4 border-t border-gray-100 pt-4">
+          <div>
+            <div className="flex justify-between text-xs text-gray-500 mb-1">
+              <span>{t("subscription.usage")}</span>
+              <span>{account.total_quota_bytes ? `${formatBytes(account.used_bytes)} / ${formatBytes(account.total_quota_bytes)}` : t("subscription.unlimited")}</span>
+            </div>
+            <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
+              {account.total_quota_bytes ? (
+                <div
+                  className="h-full bg-brand-600 transition-all"
+                  style={{ width: `${Math.min(100, Math.round((account.used_bytes / account.total_quota_bytes) * 100))}%` }}
+                />
+              ) : (
+                <div className="h-full bg-gray-200 w-1/4" />
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+            <div className="flex items-center gap-2 text-gray-600">
+              <CalendarClock size={16} className="text-gray-400" />
+              <span>{account.expire_at ? formatDateTime(account.expire_at, language) : t("subscription.noExpiry")}</span>
+            </div>
+            <div className="flex items-center gap-2 text-gray-600">
+              <Wallet size={16} className="text-gray-400" />
+              <span>{(account.balance || 0).toLocaleString()} {t("subscription.toman")}</span>
+            </div>
+            {account.referral_code && (
+              <div className="flex items-center gap-2 text-gray-600 col-span-2">
+                <Gift size={16} className="text-gray-400" />
+                <span>{t("subscription.referralCode")}: <span className="font-mono">{account.referral_code}</span></span>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            <div className="font-medium text-sm text-gray-800 px-1">{t("subscription.myServices")}</div>
+            {groups.length === 0 && <div className="text-sm text-gray-400 text-center py-4">{t("subscription.noServices")}</div>}
+            {groups.map((g) => (
+              <div key={g.key} className="space-y-2">
+                {g.packageName && <div className="text-xs text-gray-400 px-1">{g.packageName}</div>}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {g.connections.map((conn) => (
+                    <ServiceCard key={conn.id} conn={conn} meta={TYPE_META[conn.type] || TYPE_META.xray} token={token} />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Subscription() {
   const { token } = useParams();
   const { t, language } = useLanguage();
@@ -217,57 +305,11 @@ export default function Subscription() {
     );
   }
 
-  const groups = groupByPurchase(data.connections || []);
+  const accounts = data.accounts || [];
 
   return (
     <div className="min-h-screen bg-gray-50 py-6 px-4">
       <div className="max-w-2xl mx-auto space-y-4">
-        <div className="card p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-lg font-semibold text-gray-800">{data.full_name || data.username}</div>
-              <div className="text-xs text-gray-400">@{data.username}</div>
-            </div>
-            <span className={`text-xs px-3 py-1 rounded-full ${STATUS_STYLES[data.status] || "bg-gray-100 text-gray-500"}`}>
-              {statusLabel(data.status, language)}
-            </span>
-          </div>
-
-          <div>
-            <div className="flex justify-between text-xs text-gray-500 mb-1">
-              <span>{t("subscription.usage")}</span>
-              <span>{data.total_quota_bytes ? `${formatBytes(data.used_bytes)} / ${formatBytes(data.total_quota_bytes)}` : t("subscription.unlimited")}</span>
-            </div>
-            <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
-              {data.total_quota_bytes ? (
-                <div
-                  className="h-full bg-brand-600 transition-all"
-                  style={{ width: `${Math.min(100, Math.round((data.used_bytes / data.total_quota_bytes) * 100))}%` }}
-                />
-              ) : (
-                <div className="h-full bg-gray-200 w-1/4" />
-              )}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-            <div className="flex items-center gap-2 text-gray-600">
-              <CalendarClock size={16} className="text-gray-400" />
-              <span>{data.expire_at ? formatDateTime(data.expire_at, language) : t("subscription.noExpiry")}</span>
-            </div>
-            <div className="flex items-center gap-2 text-gray-600">
-              <Wallet size={16} className="text-gray-400" />
-              <span>{(data.balance || 0).toLocaleString()} {t("subscription.toman")}</span>
-            </div>
-            {data.referral_code && (
-              <div className="flex items-center gap-2 text-gray-600 col-span-2">
-                <Gift size={16} className="text-gray-400" />
-                <span>{t("subscription.referralCode")}: <span className="font-mono">{data.referral_code}</span></span>
-              </div>
-            )}
-          </div>
-        </div>
-
         <div className="card p-5 space-y-2">
           <div className="font-medium text-sm text-gray-800">{t("subscription.appSubscribeTitle")}</div>
           <div className="text-xs text-gray-500">{t("subscription.appSubscribeHint")}</div>
@@ -281,17 +323,20 @@ export default function Subscription() {
         </div>
 
         <div className="space-y-3">
-          <div className="font-medium text-sm text-gray-800 px-1">{t("subscription.myServices")}</div>
-          {groups.length === 0 && <div className="card p-5 text-sm text-gray-400 text-center">{t("subscription.noServices")}</div>}
-          {groups.map((g) => (
-            <div key={g.key} className="space-y-2">
-              {g.packageName && <div className="text-xs text-gray-400 px-1">{g.packageName}</div>}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {g.connections.map((conn) => (
-                  <ServiceCard key={conn.id} conn={conn} meta={TYPE_META[conn.type] || TYPE_META.xray} token={token} />
-                ))}
-              </div>
+          {accounts.length > 1 && (
+            <div className="px-1">
+              <div className="font-medium text-sm text-gray-800">{t("subscription.accounts")}</div>
+              <div className="text-xs text-gray-400">{t("subscription.accountsHint")}</div>
             </div>
+          )}
+          {accounts.map((acc) => (
+            <AccountSection
+              key={acc.username}
+              account={acc}
+              token={token}
+              TYPE_META={TYPE_META}
+              defaultOpen={accounts.length <= 1}
+            />
           ))}
         </div>
       </div>

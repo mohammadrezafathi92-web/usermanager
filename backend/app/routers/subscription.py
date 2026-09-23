@@ -37,22 +37,44 @@ def _get_user_by_token(token: str, db: Session) -> models.User:
     return user
 
 
+def _linked_users(user: models.User, db: Session) -> list[models.User]:
+    """`user` plus every OTHER User row sharing its telegram_id, token
+    owner first - the "same customer, several purchases" case (see
+    User.telegram_id's docstring). Shared by get_subscription_info and
+    get_subscription_app_import so both "the whole customer" views agree
+    on who that customer's accounts are. Accounts never linked to a chat
+    (telegram_id is NULL) just get themselves back, unchanged from before
+    this existed."""
+    users = [user]
+    if user.telegram_id:
+        users += (
+            db.query(models.User)
+            .filter(models.User.telegram_id == user.telegram_id, models.User.id != user.id)
+            .order_by(models.User.id)
+            .all()
+        )
+    return users
+
+
 @router.get("/{token}/info", response_model=schemas.SubscriptionInfo)
 def get_subscription_info(token: str, db: Session = Depends(get_db)):
     user = _get_user_by_token(token, db)
-    connections = user_ops.build_subscription_connections(user)
-    return schemas.SubscriptionInfo(
-        username=user.username,
-        full_name=user.full_name,
-        status=user.status,
-        total_quota_bytes=user.total_quota_bytes,
-        used_bytes=user.used_bytes,
-        remaining_bytes=user.remaining_bytes,
-        expire_at=user.expire_at,
-        balance=user.balance,
-        referral_code=user.referral_code,
-        connections=connections,
-    )
+    accounts = [
+        schemas.SubscriptionAccountOut(
+            username=u.username,
+            full_name=u.full_name,
+            status=u.status,
+            total_quota_bytes=u.total_quota_bytes,
+            used_bytes=u.used_bytes,
+            remaining_bytes=u.remaining_bytes,
+            expire_at=u.expire_at,
+            balance=u.balance,
+            referral_code=u.referral_code,
+            connections=user_ops.build_subscription_connections(u),
+        )
+        for u in _linked_users(user, db)
+    ]
+    return schemas.SubscriptionInfo(accounts=accounts)
 
 
 @router.get("/{token}/config/{connection_id}")
@@ -123,15 +145,8 @@ def get_subscription_app_import(token: str, db: Session = Depends(get_db)):
     combined list. Accounts with no telegram_id (panel-created, never
     linked to a chat) are unaffected - `siblings` is simply empty."""
     user = _get_user_by_token(token, db)
-    users = [user]
-    if user.telegram_id:
-        users += (
-            db.query(models.User)
-            .filter(models.User.telegram_id == user.telegram_id, models.User.id != user.id)
-            .all()
-        )
     links = []
-    for u in users:
+    for u in _linked_users(user, db):
         for conn in u.connections:
             if conn.type != models.ConnectionType.xray:
                 continue

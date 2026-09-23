@@ -483,11 +483,19 @@ def group_connections_by_purchase(connections: list[dict]) -> list[dict]:
                 "key": key,
                 "connections": [],
                 "package_name": c.get("package_name"),
+                # models.Purchase.comment - the label a customer/admin gave
+                # THIS service ("اکانت 1", or their own text) specifically
+                # so two otherwise-identical purchases don't look like one.
+                # Every connection sharing this batch belongs to the same
+                # Purchase, so the first non-empty one found is it.
+                "comment": None,
                 "created_at": c.get("created_at") or "",
             }
             order.append(key)
         g = groups[key]
         g["connections"].append(c)
+        if not g["comment"] and c.get("comment"):
+            g["comment"] = c["comment"]
         created = c.get("created_at") or ""
         if created and (not g["created_at"] or created < g["created_at"]):
             g["created_at"] = created
@@ -505,8 +513,17 @@ def group_connections_by_purchase(connections: list[dict]) -> list[dict]:
         g["date_label"] = date_label  # kept separate from label - see standalone_usage_text, which
         # shows the package name on its own line instead of joined with the date (button labels
         # below still use the combined single-line `label`, since a button can't wrap nicely).
-        if g["package_name"]:
-            suffix = f" ({len(conns)} سرویس)" if len(conns) > 1 else ""
+        suffix = f" ({len(conns)} سرویس)" if len(conns) > 1 else ""
+        if g["comment"]:
+            # The comment IS the point of this button - it is what the
+            # customer actually typed (or the auto "اکانت N" fallback, see
+            # services/user_ops._auto_service_label) to tell this purchase
+            # apart from their others, so it leads even when a package name
+            # is also known - the package name repeats on every purchase of
+            # the same package and tells two of them apart from each other
+            # exactly as well as showing nothing at all does.
+            g["label"] = f"🧾 {g['comment']}{suffix} — {date_label}"
+        elif g["package_name"]:
             g["label"] = f"🧾 {g['package_name']}{suffix} — {date_label}"
         elif len(conns) > 1:
             g["label"] = f"🧾 خرید {date_label} ({len(conns)} سرویس)"
@@ -571,21 +588,27 @@ def standalone_usage_text(connections: list[dict], expire_at=None) -> str:
         group_total = sum(c.get("total_bytes") or 0 for c in conns)
         grand_total += group_total
         lines.append("")
-        # Package name gets its own line (instead of joined with the
-        # purchase date on one line) so it's readable on narrow screens.
-        if g["package_name"]:
-            lines.append(f"🧾 <b>{g['package_name']}</b>")
+        # The comment (see group_connections_by_purchase) leads exactly as
+        # it does in the button label above - it's the customer's own name
+        # for this purchase. Package name, when known, follows as a second,
+        # more technical line rather than being dropped - unlike the button
+        # label there's room here to show both.
+        heading = g["comment"] or g["package_name"]
+        if heading:
+            lines.append(f"🧾 <b>{heading}</b>")
+            if g["comment"] and g["package_name"]:
+                lines.append(g["package_name"])
             if g["date_label"]:
                 lines.append(f"تاریخ خرید: {g['date_label']}")
         if len(conns) == 1:
-            single_line = g["label"] if not g["package_name"] else (
+            single_line = g["label"] if not heading else (
                 f"{'✅' if conns[0].get('enabled') else '⛔️'} "
                 + PROTOCOL_LABELS.get(conns[0]["type"], conns[0]["type"])
                 + (f" — {conns[0]['node_name']}" if (conns[0].get("node_name") or "").strip() else "")
             )
             lines.append(f"{single_line}: {fmt_bytes(group_total)}")
         else:
-            if not g["package_name"]:
+            if not heading:
                 lines.append(f"<b>{g['label']}</b>")
             for c in conns:
                 label = PROTOCOL_LABELS.get(c["type"], c["type"])

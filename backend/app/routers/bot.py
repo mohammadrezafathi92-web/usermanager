@@ -69,6 +69,10 @@ def _connection_info(conn: models.Connection) -> schemas.BotConnectionInfo:
         created_at=conn.created_at,
         purchase_batch=conn.purchase_batch,
         package_name=conn.package_name_snapshot,
+        # conn.purchase is None for a connection never turned into its own
+        # Purchase (still on the user's combined legacy pool) - comment
+        # stays None there too, same as it always has.
+        comment=conn.purchase.comment if conn.purchase else None,
     )
 
 

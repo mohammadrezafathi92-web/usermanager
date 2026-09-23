@@ -1509,6 +1509,13 @@ class BotConnectionInfo(BaseModel):
     # bot group "اکانت من" by purchase instead of one flat list of services.
     purchase_batch: Optional[str] = None
     package_name: Optional[str] = None
+    # models.Purchase.comment - the per-service label ("اکانت 1", or
+    # whatever the customer/admin typed) that already distinguishes
+    # otherwise-identical services on the public subscription page. Added
+    # here 2026-09-23 so the bot's own "اکانت من"/"مصرف سرویس‌ها" screens
+    # show the same label instead of leaving two same-package purchases
+    # looking identical - see keyboards.group_connections_by_purchase.
+    comment: Optional[str] = None
 
 
 class BotUserResponse(BaseModel):

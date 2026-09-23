@@ -1479,6 +1479,14 @@ class BotLinkTelegramRequest(BaseModel):
     telegram_id: int
 
 
+class BotRenamePurchaseRequest(BaseModel):
+    # New models.Purchase.comment - what "👤 اکانت من" leads with for this
+    # service (see keyboards.group_connections_by_purchase). Blank clears
+    # back to the auto "اکانت N" fallback rather than leaving nothing -
+    # see user_ops.rename_purchase.
+    comment: str = ""
+
+
 class BotConnectionInfo(BaseModel):
     id: int
     type: ConnectionType
@@ -1516,6 +1524,12 @@ class BotConnectionInfo(BaseModel):
     # show the same label instead of leaving two same-package purchases
     # looking identical - see keyboards.group_connections_by_purchase.
     comment: Optional[str] = None
+    # models.Purchase.id - None for a connection still on the user's shared
+    # legacy pool (no Purchase yet), same condition as `comment` above.
+    # Lets the bot's rename flow (handlers/customer_account.py's
+    # cb_rename_start) call POST .../purchases/{purchase_id}/rename without
+    # a second lookup.
+    purchase_id: Optional[int] = None
 
 
 class BotUserResponse(BaseModel):

@@ -49,7 +49,7 @@ from ..keyboards import (
     CUSTOMER_MENU_ITEMS,
     persistent_menu_kb,
 )
-from ..panel_bridge import api, ApiError
+from ..panel_bridge import get_customer_menu_disabled_items_cached
 from . import admin_broadcast, admin_pending, admin_users, customer, tutorials
 
 logger = logging.getLogger("telegram_bot")
@@ -196,15 +196,12 @@ async def on_menu_tap(message: Message, state: FSMContext, bot: Bot) -> None:
         # Respects the same «منوی مشتری» checkboxes the inline menu does,
         # so an item the panel owner switched off cannot be reached by
         # typing its label either.
-        try:
-            if action in set(await api.get_customer_menu_disabled_items()):
-                # Switched off in «منوی مشتری» while this chat still shows
-                # the bar. Said out loud, because a button that answers
-                # nothing is indistinguishable from a broken bot.
-                await message.answer("این بخش در حال حاضر غیرفعال است.")
-                return
-        except ApiError:
-            pass
+        if action in set(await get_customer_menu_disabled_items_cached()):
+            # Switched off in «منوی مشتری» while this chat still shows
+            # the bar. Said out loud, because a button that answers
+            # nothing is indistinguishable from a broken bot.
+            await message.answer("این بخش در حال حاضر غیرفعال است.")
+            return
 
     await state.clear()
     handler, needs = entry

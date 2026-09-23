@@ -53,6 +53,18 @@ class FakeMessage:
         return self
 
 
+async def _isolated(coro):
+    """Runs a coroutine in its own Task - the same per-update context
+    isolation aiogram's real polling dispatcher gives every incoming update
+    (see panel_bridge.py's _menu_disabled_cache docstring: a Task starts
+    from a COPY of the context active when it was created). This test's own
+    `run()` coroutine is otherwise all ONE task from start to finish, so
+    without this, the very first get_customer_menu_disabled_items_cached()
+    call below would cache its answer for the rest of the test run instead
+    of just the one simulated "update" it belongs to."""
+    return await asyncio.create_task(coro)
+
+
 async def run():
     print("--- one list of items feeds both menus ---")
     # Optimization #2 (2026-09-23): the bar is now ONE combined
@@ -76,7 +88,7 @@ async def run():
     keyboards_api = keyboards.__dict__
     from app.telegram_bot import panel_bridge
     panel_bridge.api.get_customer_menu_disabled_items = AsyncMock(return_value=[])
-    kb = await keyboards.persistent_menu_kb()
+    kb = await _isolated(keyboards.persistent_menu_kb())
     labels = [b.text for row in kb.keyboard for b in row]
     check("all ten items when nothing is disabled", len(labels), len(keyboards.CUSTOMER_MENU_ITEMS))
     check("two per row", all(len(r) <= 2 for r in kb.keyboard), True)
@@ -85,7 +97,7 @@ async def run():
 
     panel_bridge.api.get_customer_menu_disabled_items = AsyncMock(
         return_value=["cust_topup", "cust_myid", "cust_link"])
-    kb2 = await keyboards.persistent_menu_kb()
+    kb2 = await _isolated(keyboards.persistent_menu_kb())
     labels2 = [b.text for row in kb2.keyboard for b in row]
     check("a switched-off item is not on the bar either",
           any("افزایش اعتبار" in l for l in labels2), False)
@@ -94,7 +106,7 @@ async def run():
     panel_bridge.api.get_customer_menu_disabled_items = AsyncMock(
         return_value=[a for a, _ in keyboards.CUSTOMER_MENU_ITEMS])
     check("everything off means no bar at all, not an empty one",
-          await keyboards.persistent_menu_kb(), None)
+          await _isolated(keyboards.persistent_menu_kb()), None)
     panel_bridge.api.get_customer_menu_disabled_items = AsyncMock(return_value=[])
 
     print("\n--- a tap runs the inline handler, unchanged ---")
@@ -105,9 +117,9 @@ async def run():
         called["buy"] = call
 
     persistent_menu._ACTIONS["cust_buy"] = (fake_buy, ("state",))
-    msg = FakeMessage("🛒 خرید اکانت جدید")
+    msg = FakeMessage("🟠 🛒 خرید اکانت جدید")
     state = AsyncMock()
-    await persistent_menu.on_menu_tap(msg, state=state, bot=object())
+    await _isolated(persistent_menu.on_menu_tap(msg, state=state, bot=object()))
     check("the matching handler ran", "buy" in called, True)
     check("...and the FSM state was cleared on the way", state.clear.await_count, 1)
 
@@ -134,13 +146,13 @@ async def run():
     # vanished with no reply. The bar is pinned to a CHAT, not a role, so
     # whoever has it must get an answer from it.
     called.clear()
-    await persistent_menu.on_menu_tap(FakeMessage("🛒 خرید اکانت جدید"), state=AsyncMock(), bot=object())
+    await _isolated(persistent_menu.on_menu_tap(FakeMessage("🟠 🛒 خرید اکانت جدید"), state=AsyncMock(), bot=object()))
     check("an admin gets the same handler, not nothing", "buy" in called, True)
 
     print("\n--- a disabled item cannot be reached by typing its label ---")
     panel_bridge.api.get_customer_menu_disabled_items = AsyncMock(return_value=["cust_buy"])
     called.clear()
-    await persistent_menu.on_menu_tap(FakeMessage("🛒 خرید اکانت جدید"), state=AsyncMock(), bot=object())
+    await _isolated(persistent_menu.on_menu_tap(FakeMessage("🟠 🛒 خرید اکانت جدید"), state=AsyncMock(), bot=object()))
     check("switched off means off, however it is reached", called, {})
     panel_bridge.api.get_customer_menu_disabled_items = AsyncMock(return_value=[])
 
@@ -160,12 +172,12 @@ async def run():
 
     persistent_menu._ACTIONS["admin_create"] = (fake_admin_create, ("state", "acting_scope"))
     called.clear()
-    await persistent_menu.on_menu_tap(FakeMessage("➕ ساخت کاربر"), state=AsyncMock(), bot=object())
+    await persistent_menu.on_menu_tap(FakeMessage("🟢 ➕ ساخت کاربر"), state=AsyncMock(), bot=object())
     check("the handler got the freshly-resolved scope", called.get("admin_create"), seller_scope)
 
     print("\n--- a full-admin-only item refuses a seller, not silently ---")
     called.clear()
-    msg = FakeMessage("📢 پیام همگانی")
+    msg = FakeMessage("🟣 📢 پیام همگانی")
     await persistent_menu.on_menu_tap(msg, state=AsyncMock(), bot=object())
     check("the broadcast handler did not run", "admin_broadcast" in called, False)
     check("...and the seller was told why, not left with silence",
@@ -174,7 +186,7 @@ async def run():
     print("\n--- a non-admin typing an admin label also gets a refusal ---")
     persistent_menu.resolve_admin_scope = AsyncMock(return_value=None)  # not an admin at all
     called.clear()
-    msg = FakeMessage("➕ ساخت کاربر")
+    msg = FakeMessage("🟢 ➕ ساخت کاربر")
     await persistent_menu.on_menu_tap(msg, state=AsyncMock(), bot=object())
     check("admin_create did not run for a plain customer", "admin_create" in called, False)
     check("...they were told it's admin-only, not left with silence",

@@ -15,10 +15,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from ..admin_scope import resolve_admin_scope
-from ..callbacks import ConnectionCB, MenuCB, PurchaseCB, SwitchAccountCB
+from ..callbacks import ConnectionCB, MenuCB, PurchaseCB, RenameCB, SwitchAccountCB
 from ..connection_sender import send_connection
 from ..panel_bridge import api, ApiError
+from ..states import CustomerRenameStates
 from ..keyboards import (
+    cancel_kb,
     connections_list_kb,
     group_connections_by_purchase,
     home_kb,
@@ -263,6 +265,71 @@ async def cb_view_purchase(call: CallbackQuery, callback_data: PurchaseCB, state
         reply_markup=connections_list_kb(group["connections"], back_to_purchases=True),
     )
     await call.answer()
+
+
+@router.callback_query(RenameCB.filter())
+async def cb_rename_start(call: CallbackQuery, callback_data: RenameCB, state: FSMContext) -> None:
+    """«✏️» beside a purchase in "👤 اکانت من" - asks for the new label,
+    stored as models.Purchase.comment (see keyboards.purchases_kb and
+    services/user_ops.rename_purchase). Requested 2026-09-23 alongside the
+    auto "اکانت N" fallback landing in the bot's own screens - customers
+    could tell their services apart at that point, but only an admin could
+    give one an actual name; this is that same field, editable by the
+    customer who owns it."""
+    user = await _resolve_account(call, state, call.from_user.id, "cust_account")
+    if user == "ambiguous":
+        return
+    if not user:
+        await call.answer("حساب شما پیدا نشد", show_alert=True)
+        return
+    groups = group_connections_by_purchase(user["connections"])
+    group = next((g for g in groups if g["key"] == callback_data.key), None)
+    if not group:
+        await call.message.edit_text(_account_text(user), reply_markup=purchases_kb(groups) if groups else home_kb())
+        await call.answer("لیست به‌روزرسانی شد")
+        return
+    purchase_id = next((c.get("purchase_id") for c in group["connections"] if c.get("purchase_id")), None)
+    if not purchase_id:
+        # Still on the shared legacy pool (see absorb_legacy_pool_into_purchase) -
+        # self-heals on the next backend restart/poll; nothing to rename yet.
+        await call.answer("این سرویس هنوز آماده نام‌گذاری نیست - کمی دیگر دوباره امتحان کنید.", show_alert=True)
+        return
+    await state.update_data(
+        rename_purchase_id=purchase_id, rename_username=user["username"], rename_key=callback_data.key,
+    )
+    await state.set_state(CustomerRenameStates.waiting_name)
+    current = group.get("comment") or ""
+    await call.message.edit_text(
+        f"✏️ نام فعلی: <b>{current or '—'}</b>\n\n"
+        "نام جدید را تایپ کنید، یا برای بازگشت به نام خودکار «-» را بفرستید.",
+        reply_markup=cancel_kb(),
+    )
+    await call.answer()
+
+
+@router.message(CustomerRenameStates.waiting_name, F.text)
+async def rename_receive(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    purchase_id = data.get("rename_purchase_id")
+    username = data.get("rename_username")
+    if not purchase_id or not username:
+        await _clear_state_keep_account(state)
+        await message.answer("این عملیات دیگر معتبر نیست - از «👤 اکانت من» دوباره تلاش کنید.", reply_markup=home_kb())
+        return
+    text = (message.text or "").strip()
+    comment = "" if text == "-" else text[:255]
+    try:
+        await api.rename_purchase(username, purchase_id, comment)
+    except ApiError as exc:
+        await message.answer(f"خطا: {exc}", reply_markup=cancel_kb())
+        return
+    await _clear_state_keep_account(state)
+    user = await api.get_user(username)
+    groups = group_connections_by_purchase(user["connections"]) if user["connections"] else []
+    await message.answer(
+        "✅ نام سرویس به‌روزرسانی شد.\n\n" + _account_text(user),
+        reply_markup=purchases_kb(groups) if groups else home_kb(),
+    )
 
 
 @router.callback_query(ConnectionCB.filter())

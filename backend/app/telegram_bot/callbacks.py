@@ -132,6 +132,14 @@ class PurchaseCB(CallbackData, prefix="purc"):
     key: str
 
 
+class RenameCB(CallbackData, prefix="ren"):
+    # Picks one purchase group in "👤 اکانت من" to rename (see
+    # keyboards.group_connections_by_purchase / handlers/customer_account.py's
+    # cb_rename_start) - `key` is the same PurchaseCB.key (a purchase_batch,
+    # or "c<connection_id>" for a standalone connection with no batch).
+    key: str
+
+
 class SwitchAccountCB(CallbackData, prefix="swacc"):
     # Picked from the account-picker shown when a telegram_id resolves to
     # more than one panel User (see telegram_bot/handlers/customer.py's

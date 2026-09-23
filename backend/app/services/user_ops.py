@@ -1187,6 +1187,28 @@ def _auto_service_label(db: Session, user_id: int) -> str:
     return f"اکانت {n}"
 
 
+def rename_purchase(db: Session, purchase: models.Purchase, comment: str) -> models.Purchase:
+    """Sets/changes what a customer sees for this ONE service in the bot's
+    "👤 اکانت من"/"📊 مصرف سرویس‌ها" screens (keyboards.
+    group_connections_by_purchase leads with Purchase.comment whenever it's
+    set - see that function's docstring). Requested 2026-09-23: the
+    auto-generated "اکانت N" fallback (_auto_service_label above) told two
+    services apart but meant nothing to the customer themselves; this lets
+    them replace it with their own text the same way UserDetail.jsx already
+    lets an admin do from the panel.
+
+    Blank clears back to the auto-numbered fallback rather than leaving the
+    label empty (which would make group_connections_by_purchase fall
+    through to the package name/protocol instead - a silent, confusing
+    change from the customer's point of view right after they asked to
+    rename something)."""
+    text = (comment or "").strip()[:255]
+    purchase.comment = text or _auto_service_label(db, purchase.user_id)
+    db.commit()
+    db.refresh(purchase)
+    return purchase
+
+
 def absorb_legacy_pool_into_purchase(db: Session, user: models.User, comment: Optional[str] = None) -> Optional[models.Purchase]:
     """Moves a customer's leftover shared-pool connections into a Purchase
     of their own, carrying the user-level quota/usage/expiry across 1:1.

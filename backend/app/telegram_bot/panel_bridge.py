@@ -18,6 +18,7 @@ get_user, renew, ...) need no extra handling."""
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import os
 from typing import Optional
 
@@ -441,6 +442,12 @@ class PanelBridge:
         )
         return _dump(await _call(bot_router.renew_service, username, purchase_id, payload, owner_admin_id=_scope(owner_admin_id)))
 
+    async def rename_purchase(self, username: str, purchase_id: int, comment: str, owner_admin_id: Optional[int] = None) -> dict:
+        """Sets/changes what "👤 اکانت من" shows for ONE service - see
+        routers/bot.py's rename_purchase."""
+        payload = schemas.BotRenamePurchaseRequest(comment=comment)
+        return _dump(await _call(bot_router.rename_purchase, username, purchase_id, payload, owner_admin_id=_scope(owner_admin_id)))
+
     async def renew(
         self, username: str, add_gb: float = 0, add_days: int = 0, reset_usage: bool = False,
         owner_admin_id: Optional[int] = None, package_id: Optional[int] = None,
@@ -504,3 +511,36 @@ if _panel_api_url:
     api = RemoteBridge(_panel_api_url, os.environ.get("PANEL_API_KEY", "").strip())
 else:
     api = PanelBridge()
+
+
+# Per-update cache for api.get_customer_menu_disabled_items() - checked on
+# every single menu render AND every bar tap (keyboards.py's
+# persistent_menu_kb/main_menu_kb, handlers/persistent_menu.py's
+# on_menu_tap, handlers/customer_common.py's _menu_item_enabled), so a
+# single "👤 اکانت من" tap could hit it 2-3 times over. Safe to cache for
+# the lifetime of ONE incoming update and only that long: aiogram's polling
+# dispatcher (aiogram/dispatcher/dispatcher.py) hands each update to its own
+# `asyncio.create_task(...)`, and a Task starts from a COPY of the context
+# active when it was created - so _menu_disabled_cache.set() inside one
+# update's task never leaks into another update's task, even though they
+# share the same PanelBridge/RemoteBridge instance and the same interpreter.
+# Deliberately NOT "fetch once at bot startup / refresh on restart_bot()":
+# a remotely-deployed bot (PANEL_API_URL set, see the mode switch above)
+# runs as its own long-lived process that only the mother panel restarts on
+# an actual code update - an admin toggling a menu item off from Settings
+# would otherwise sit there doing nothing until the next redeploy.
+_menu_disabled_cache: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
+    "customer_menu_disabled_items_cache", default=None
+)
+
+
+async def get_customer_menu_disabled_items_cached() -> list[str]:
+    cached = _menu_disabled_cache.get()
+    if cached is not None:
+        return cached
+    try:
+        items = await api.get_customer_menu_disabled_items()
+    except ApiError:
+        items = []  # same fallback every existing call site already applies on its own try/except
+    _menu_disabled_cache.set(items)
+    return items

@@ -95,13 +95,12 @@ async def _menu_item_enabled(action: str) -> bool:
     reaching the flow anyway. Call this at the top of every entry point a
     toggleable CUSTOMER_MENU_ITEMS action maps to, so disabling it in
     Settings actually blocks the feature instead of just hiding its
-    button. Fails OPEN (returns True) on an ApiError so a transient
-    panel-connectivity hiccup never falsely locks customers out of a
-    feature that's actually still enabled."""
-    try:
-        disabled = await api.get_customer_menu_disabled_items()
-    except ApiError:
-        return True
+    button. Fails OPEN (returns True) on an ApiError - get_customer_menu_
+    disabled_items_cached already swallows that into an empty list, which
+    reads as "nothing disabled" here, same net effect."""
+    from ..panel_bridge import get_customer_menu_disabled_items_cached
+
+    disabled = await get_customer_menu_disabled_items_cached()
     return action not in disabled
 
 

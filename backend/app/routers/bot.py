@@ -73,6 +73,7 @@ def _connection_info(conn: models.Connection) -> schemas.BotConnectionInfo:
         # Purchase (still on the user's combined legacy pool) - comment
         # stays None there too, same as it always has.
         comment=conn.purchase.comment if conn.purchase else None,
+        purchase_id=conn.purchase_id,
     )
 
 
@@ -1044,6 +1045,25 @@ def list_user_purchases(username: str, db: Session = Depends(get_db), owner_admi
         info.connection_count = len(p.connections)
         out.append(info)
     return out
+
+
+@router.post("/users/{username}/purchases/{purchase_id}/rename", response_model=schemas.BotPurchaseInfo)
+def rename_purchase(
+    username: str, purchase_id: int, payload: schemas.BotRenamePurchaseRequest,
+    db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
+):
+    """Bot counterpart of the panel's own "📝 یادداشت/نام سرویس" field on
+    UserDetail.jsx - lets the customer set/change it themselves instead of
+    only an admin being able to (see handlers/customer_account.py's
+    «✏️ تغییر نام» flow)."""
+    user = _get_user_or_404(db, username, owner_admin_id)
+    purchase = db.get(models.Purchase, purchase_id)
+    if not purchase or purchase.user_id != user.id:
+        raise HTTPException(404, "سرویس پیدا نشد")
+    purchase = user_ops.rename_purchase(db, purchase, payload.comment)
+    info = schemas.BotPurchaseInfo.model_validate(purchase)
+    info.connection_count = len(purchase.connections)
+    return info
 
 
 @router.get("/users/{username}/subscription-link", response_model=schemas.BotSubscriptionLinkOut)

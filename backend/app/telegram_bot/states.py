@@ -52,6 +52,13 @@ class CustomerPurchaseStates(StatesGroup):
     waiting_receipt = State()   # a photo message expected
 
 
+class CustomerRenameStates(StatesGroup):
+    # «✏️ تغییر نام» on one purchase in "👤 اکانت من" (handlers/
+    # customer_account.py) - free text, or "-" to clear back to the
+    # auto-numbered "اکانت N" fallback (see user_ops.rename_purchase).
+    waiting_name = State()
+
+
 class CustomerTopupStates(StatesGroup):
     picking_amount = State()       # TopupAmountCB callback expected
     waiting_custom_amount = State()  # a text message with a number expected

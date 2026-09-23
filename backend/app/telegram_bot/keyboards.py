@@ -25,6 +25,7 @@ from .callbacks import (
     ApprovalCB,
     ConnectionCB,
     PurchaseCB,
+    RenameCB,
     SwitchAccountCB,
 )
 
@@ -47,16 +48,24 @@ PROTOCOL_LABELS = {
 # routers/telegram_bot_settings.py's BotSettings.customer_menu_disabled_items)
 # and used here to filter which buttons actually get built.
 CUSTOMER_MENU_ITEMS = [
-    ("cust_account", "👤 اکانت من"),
-    ("cust_usage", "📊 مصرف سرویس‌ها"),
-    ("cust_renew", "🔄 تمدید سرویس"),
-    ("cust_buy", "🛒 خرید اکانت جدید"),
-    ("cust_topup", "💰 افزایش اعتبار"),
-    ("cust_tutorials", "📚 آموزش"),
-    ("cust_referral", "🎁 دعوت دوستان"),
-    ("cust_support", "🎧 پشتیبانی"),
-    ("cust_link", "🔗 وصل کردن حساب قبلی"),
-    ("cust_myid", "🆔 آیدی عددی من"),
+    # A colored-circle prefix ahead of each item's own icon - requested
+    # 2026-09-23: "رنگی‌تر باشه، تو چشم‌تر" (make it more colorful, more
+    # eye-catching). Telegram gives bots no actual button-color API (a
+    # ReplyKeyboardMarkup/InlineKeyboardMarkup button's background is drawn
+    # entirely by the client, not stylable per-button) - this circle is the
+    # closest real equivalent, and doubles as a quick visual grouping cue
+    # (e.g. "👤 اکانت من" and "🆔 آیدی عددی من" share 🔵 since both are
+    # identity/account lookups).
+    ("cust_account", "🔵 👤 اکانت من"),
+    ("cust_usage", "🟣 📊 مصرف سرویس‌ها"),
+    ("cust_renew", "🟢 🔄 تمدید سرویس"),
+    ("cust_buy", "🟠 🛒 خرید اکانت جدید"),
+    ("cust_topup", "🟡 💰 افزایش اعتبار"),
+    ("cust_tutorials", "🟤 📚 آموزش"),
+    ("cust_referral", "🔴 🎁 دعوت دوستان"),
+    ("cust_support", "⚪ 🎧 پشتیبانی"),
+    ("cust_link", "⚫ 🔗 وصل کردن حساب قبلی"),
+    ("cust_myid", "🔵 🆔 آیدی عددی من"),
 ]
 
 # Same idea as CUSTOMER_MENU_ITEMS, one list per admin tier so main_menu_kb
@@ -67,20 +76,24 @@ CUSTOMER_MENU_ITEMS = [
 # some hidden" - "📋 لیست کاربران" vs "📋 لیست کاربران من" is a different
 # label for what's still the same admin_list action.
 ADMIN_MENU_ITEMS_FULL = [
-    ("admin_create", "➕ ساخت کاربر"),
-    ("admin_list", "📋 لیست کاربران"),
-    ("admin_pending", "📥 درخواست‌های در انتظار"),
-    ("admin_broadcast", "📢 پیام همگانی"),
-    ("admin_dm", "✉️ پیام به یک کاربر"),
-    ("admin_search", "🔎 جستجوی کاربر"),
-    ("admin_stats", "📊 گزارش فروش"),
-    ("admin_history", "🗂 تاریخچه درخواست‌ها"),
+    # Same colored-circle idea as CUSTOMER_MENU_ITEMS above - kept the same
+    # color per action across both tiers below (admin_create is 🟢 in both
+    # lists, etc.) so a seller promoted to admin sees a familiar bar rather
+    # than everything reshuffling.
+    ("admin_create", "🟢 ➕ ساخت کاربر"),
+    ("admin_list", "🔵 📋 لیست کاربران"),
+    ("admin_pending", "🟠 📥 درخواست‌های در انتظار"),
+    ("admin_broadcast", "🟣 📢 پیام همگانی"),
+    ("admin_dm", "🟡 ✉️ پیام به یک کاربر"),
+    ("admin_search", "⚪ 🔎 جستجوی کاربر"),
+    ("admin_stats", "🟤 📊 گزارش فروش"),
+    ("admin_history", "⚫ 🗂 تاریخچه درخواست‌ها"),
 ]
 
 ADMIN_MENU_ITEMS_SELLER = [
-    ("admin_create", "➕ ساخت کاربر"),
-    ("admin_list", "📋 لیست کاربران من"),
-    ("admin_search", "🔎 جستجوی کاربر"),
+    ("admin_create", "🟢 ➕ ساخت کاربر"),
+    ("admin_list", "🔵 📋 لیست کاربران من"),
+    ("admin_search", "⚪ 🔎 جستجوی کاربر"),
 ]
 
 
@@ -113,12 +126,9 @@ async def main_menu_kb(scope: dict | None) -> InlineKeyboardMarkup:
     else:
         # local import - avoids a circular import at module load (panel_bridge
         # imports from routers, which don't import keyboards.py)
-        from .panel_bridge import api, ApiError
+        from .panel_bridge import get_customer_menu_disabled_items_cached
 
-        try:
-            disabled = set(await api.get_customer_menu_disabled_items())
-        except ApiError:
-            disabled = set()
+        disabled = set(await get_customer_menu_disabled_items_cached())
         shown = 0
         for action, label in CUSTOMER_MENU_ITEMS:
             if action not in disabled:
@@ -158,12 +168,9 @@ async def persistent_menu_kb(scope: dict | None = None) -> ReplyKeyboardMarkup |
     nothing enabled): an empty bar is worse than none, and Telegram will
     not accept one anyway.
     """
-    from .panel_bridge import api, ApiError
+    from .panel_bridge import get_customer_menu_disabled_items_cached
 
-    try:
-        disabled = set(await api.get_customer_menu_disabled_items())
-    except ApiError:
-        disabled = set()
+    disabled = set(await get_customer_menu_disabled_items_cached())
     admin_items = []
     if scope and scope.get("is_full_admin"):
         admin_items = ADMIN_MENU_ITEMS_FULL
@@ -540,19 +547,28 @@ def purchases_kb(groups: list[dict]) -> InlineKeyboardMarkup:
     group_connections_by_purchase). Tapping a single-service group sends
     that service directly (handled in handlers/customer.py exactly like the
     old flat ConnectionCB list); tapping a multi-service group opens the
-    submenu built by connections_list_kb(..., back_to_purchases=True)."""
+    submenu built by connections_list_kb(..., back_to_purchases=True).
+
+    Each group also gets a small "✏️" button beside its main one (RenameCB,
+    handlers/customer_account.py's cb_rename_start) - added 2026-09-23 so a
+    customer can replace the auto "اکانت N" label with their own text
+    without that disturbing the main button's existing tap behavior (single
+    -> straight to the connection, multi -> the submenu)."""
     kb = InlineKeyboardBuilder()
     for g in groups:
         if len(g["connections"]) == 1:
             kb.button(text=g["label"], callback_data=ConnectionCB(connection_id=g["connections"][0]["id"]))
         else:
             kb.button(text=g["label"], callback_data=PurchaseCB(key=g["key"]))
+        kb.button(text="✏️", callback_data=RenameCB(key=g["key"]))
     # One link per CUSTOMER (covers every Xray/VLESS service combined - see
     # routers/subscription.py), not per purchase/connection, so it sits
     # here at the account level rather than inside any one group's submenu.
     kb.button(text="🔗 دریافت لینک ساب", callback_data=MenuCB(action="cust_sublink"))
     kb.button(text="🏠 منوی اصلی", callback_data=MenuCB(action="home"))
-    kb.adjust(1)
+    # Pairs first (label + ✏️ per group), then the two trailing full-width
+    # buttons - a fixed [1] would smash the pairs down onto separate rows.
+    kb.adjust(*([2] * len(groups) + [1, 1]))
     return kb.as_markup()
 
 

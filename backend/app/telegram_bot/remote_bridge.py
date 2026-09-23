@@ -313,6 +313,11 @@ class RemoteBridge:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         return await self._call("POST", f"/users/{username}/renew", json=payload, params=params)
 
+    async def rename_purchase(self, username: str, purchase_id: int, comment: str, owner_admin_id: Optional[int] = None) -> dict:
+        payload = {"comment": comment}
+        params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
+        return await self._call("POST", f"/users/{username}/purchases/{purchase_id}/rename", json=payload, params=params)
+
     async def reset_usage(self, username: str, owner_admin_id: Optional[int] = None) -> dict:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         return await self._call("POST", f"/users/{username}/reset-usage", params=params)

@@ -160,6 +160,42 @@ function ServiceCard({ conn, meta, token }) {
   );
 }
 
+// A single account can itself carry several purchases/packages at once
+// (e.g. one username bought 4 different packages over time - each its own
+// purchase_batch, see groupByPurchase above). Reported 2026-09-23, same
+// "page gets huge" concern one level deeper than the account split below:
+// each purchase group is its own collapsed-by-default row inside an open
+// account, instead of every one of that account's services being dumped
+// flat as soon as the account itself is opened.
+function PurchaseGroupSection({ group, token, TYPE_META, defaultOpen }) {
+  const { t } = useLanguage();
+  const [open, setOpen] = useState(defaultOpen);
+
+  return (
+    <div className="rounded-xl border border-gray-100 overflow-hidden">
+      <button
+        type="button"
+        className="w-full flex items-center justify-between gap-2 px-3 py-2.5 text-right bg-gray-50 hover:bg-gray-100"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+      >
+        <div className="min-w-0">
+          {group.packageName && <div className="text-xs text-gray-600 font-medium truncate">{group.packageName}</div>}
+          <div className="text-[11px] text-gray-400">{t("subscription.servicesCount", { count: group.connections.length })}</div>
+        </div>
+        {open ? <ChevronUp size={16} className="text-gray-400 shrink-0" /> : <ChevronDown size={16} className="text-gray-400 shrink-0" />}
+      </button>
+      {open && (
+        <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {group.connections.map((conn) => (
+            <ServiceCard key={conn.id} conn={conn} meta={TYPE_META[conn.type] || TYPE_META.xray} token={token} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // One customer can hold several separate accounts (see backend/app/routers/
 // subscription.py's _linked_users docstring - repeat purchases under
 // different usernames share one telegram_id but stay separate User rows).
@@ -231,16 +267,19 @@ function AccountSection({ account, token, TYPE_META, defaultOpen }) {
           <div className="space-y-3">
             <div className="font-medium text-sm text-gray-800 px-1">{t("subscription.myServices")}</div>
             {groups.length === 0 && <div className="text-sm text-gray-400 text-center py-4">{t("subscription.noServices")}</div>}
-            {groups.map((g) => (
-              <div key={g.key} className="space-y-2">
-                {g.packageName && <div className="text-xs text-gray-400 px-1">{g.packageName}</div>}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {g.connections.map((conn) => (
-                    <ServiceCard key={conn.id} conn={conn} meta={TYPE_META[conn.type] || TYPE_META.xray} token={token} />
-                  ))}
-                </div>
+            {groups.length === 1 ? (
+              // A single purchase on this account - a nested collapse would
+              // just be one more tap to see the only thing there is to see.
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {groups[0].connections.map((conn) => (
+                  <ServiceCard key={conn.id} conn={conn} meta={TYPE_META[conn.type] || TYPE_META.xray} token={token} />
+                ))}
               </div>
-            ))}
+            ) : (
+              groups.map((g) => (
+                <PurchaseGroupSection key={g.key} group={g} token={token} TYPE_META={TYPE_META} defaultOpen={false} />
+              ))
+            )}
           </div>
         </div>
       )}

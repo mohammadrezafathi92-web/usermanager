@@ -48,27 +48,31 @@ PROTOCOL_LABELS = {
 # routers/telegram_bot_settings.py's BotSettings.customer_menu_disabled_items)
 # and used here to filter which buttons actually get built.
 CUSTOMER_MENU_ITEMS = [
-    # A colored SQUARE as each item's own icon - requested 2026-09-23,
-    # through three rounds of feedback:
+    # A colored SQUARE prefix on each item - requested 2026-09-23, through
+    # several rounds of feedback landing on this:
     #  1) "رنگی‌تر باشه، تو چشم‌تر" (more colorful, more eye-catching) -
-    #     first try was a circle prefix (🔵 👤 اکانت من).
+    #     first try was a circle prefix next to the old icon.
     #  2) "یه دایره ابی اومده کنارش اون نباشه خود گزینه رنگی بشه" (a blue
-    #     circle showed up NEXT TO it - don't want that, the option itself
-    #     should be colored) - the circle replaced the old icon instead of
-    #     sitting beside it (🔵 اکانت من).
-    #  3) "خوده دکمه باید رنگی بشه نه ایتم رنگی توش باشه" (the BUTTON
-    #     itself should look colored, not [just] have a colored item
-    #     inside it) - a small circle glyph still reads as "text with a
-    #     dot", not "a colored button". Squares render larger/more solid
-    #     than circles at Telegram's button font size, closer to an actual
-    #     tinted button. Same message also asked for the 4 most important
-    #     ones to be JUST colored - see _CUSTOMER_ICON_ONLY_ACTIONS below:
-    #     for those four the label IS the square, no text at all.
-    ("cust_account", "🟦"),
+    #     circle showed up NEXT TO it - don't want that) - the circle
+    #     replaced the old icon instead of sitting beside it.
+    #  3) "خوده دکمه باید رنگی بشه" (the button itself should look
+    #     colored) - upgraded circle to a bigger/more solid square, AND
+    #     (misreading this instruction) dropped the text entirely on 4
+    #     "important" buttons, leaving just a colored glyph.
+    #  4) "جای اسم‌ها چهارتا ایکون رنگی اومده" (four colored icons showed
+    #     up INSTEAD OF THE NAMES) - that #3 tradeoff was wrong: the Bot
+    #     API (both InlineKeyboardButton and KeyboardButton) has no color
+    #     field at all - text/emoji is the entire button, there is no way
+    #     to tint a button's background regardless of what's typed into
+    #     its label. A label with no text is just an unreadable button,
+    #     not "a colored option". Reverted - every item keeps its square
+    #     AND its name; the square is as close to "a colored button" as
+    #     this API allows, full stop.
+    ("cust_account", "🟦 اکانت من"),
     ("cust_usage", "🟪 مصرف سرویس‌ها"),
-    ("cust_renew", "🟩"),
-    ("cust_buy", "🟧"),
-    ("cust_topup", "🟨"),
+    ("cust_renew", "🟩 تمدید سرویس"),
+    ("cust_buy", "🟧 خرید اکانت جدید"),
+    ("cust_topup", "🟨 افزایش اعتبار"),
     ("cust_tutorials", "🟫 آموزش"),
     ("cust_referral", "🟥 دعوت دوستان"),
     ("cust_support", "⬜ پشتیبانی"),
@@ -84,13 +88,12 @@ CUSTOMER_MENU_ITEMS = [
 # some hidden" - "📋 لیست کاربران" vs "📋 لیست کاربران من" is a different
 # label for what's still the same admin_list action.
 ADMIN_MENU_ITEMS_FULL = [
-    # Same colored-square-as-icon idea as CUSTOMER_MENU_ITEMS above - kept
+    # Same colored-square prefix idea as CUSTOMER_MENU_ITEMS above - kept
     # the same color per action across both tiers below (admin_create is
     # 🟩 in both lists, etc.) so a seller promoted to admin sees a familiar
-    # bar rather than everything reshuffling. Admin actions all keep their
-    # text (unlike the 4 icon-only customer ones) - an admin picking the
-    # wrong action by mistake is a heavier mistake than a customer doing
-    # so, so these stay unambiguous.
+    # bar rather than everything reshuffling. Every button keeps its text,
+    # same as the customer list now does - see CUSTOMER_MENU_ITEMS's own
+    # comment for why an icon-only button was reverted.
     ("admin_create", "🟩 ساخت کاربر"),
     ("admin_list", "🟦 لیست کاربران"),
     ("admin_pending", "🟧 درخواست‌های در انتظار"),

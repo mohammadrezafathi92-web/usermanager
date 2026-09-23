@@ -117,7 +117,7 @@ async def run():
         called["buy"] = call
 
     persistent_menu._ACTIONS["cust_buy"] = (fake_buy, ("state",))
-    msg = FakeMessage("🟧")
+    msg = FakeMessage("🟧 خرید اکانت جدید")
     state = AsyncMock()
     await _isolated(persistent_menu.on_menu_tap(msg, state=state, bot=object()))
     check("the matching handler ran", "buy" in called, True)
@@ -146,13 +146,13 @@ async def run():
     # vanished with no reply. The bar is pinned to a CHAT, not a role, so
     # whoever has it must get an answer from it.
     called.clear()
-    await _isolated(persistent_menu.on_menu_tap(FakeMessage("🟧"), state=AsyncMock(), bot=object()))
+    await _isolated(persistent_menu.on_menu_tap(FakeMessage("🟧 خرید اکانت جدید"), state=AsyncMock(), bot=object()))
     check("an admin gets the same handler, not nothing", "buy" in called, True)
 
     print("\n--- a disabled item cannot be reached by typing its label ---")
     panel_bridge.api.get_customer_menu_disabled_items = AsyncMock(return_value=["cust_buy"])
     called.clear()
-    await _isolated(persistent_menu.on_menu_tap(FakeMessage("🟧"), state=AsyncMock(), bot=object()))
+    await _isolated(persistent_menu.on_menu_tap(FakeMessage("🟧 خرید اکانت جدید"), state=AsyncMock(), bot=object()))
     check("switched off means off, however it is reached", called, {})
     panel_bridge.api.get_customer_menu_disabled_items = AsyncMock(return_value=[])
 

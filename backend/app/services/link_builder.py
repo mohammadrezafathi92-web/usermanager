@@ -226,17 +226,56 @@ def build_sstp_info(connection: models.Connection, node: models.Node) -> str:
 def build_softether_info(connection: models.Connection, node: models.Node) -> str:
     """Same shape as build_openvpn_config/build_sstp_info: the panel only
     manages the username/password of a Password-auth user inside one
-    existing Virtual Hub over SoftEther's JSON-RPC admin API - the hub
-    itself and which client modes it accepts (SSTP/L2TP/OpenVPN/SSL-VPN)
-    are configured directly on the SoftEther server by the admin."""
+    existing Virtual Hub over SoftEther's JSON-RPC admin API. That one user
+    authenticates the same way no matter which listener carries the
+    traffic, so this prints connection instructions for the SoftEther
+    client PLUS every standard protocol the admin has actually enabled on
+    the node (se_enable_openvpn/l2tp/sstp) - no separate hub user or
+    provisioning step per protocol."""
+    host = node.se_public_host or node.se_host
+    username = connection.ppp_username
+    password = connection.ppp_password
     lines = [
-        f"آدرس سرور: {node.se_public_host or node.se_host}",
+        f"آدرس سرور: {host}",
         f"پورت: {node.se_public_port or 443}",
         f"نام هاب (Hub): {node.se_hub_name or 'DEFAULT'}",
-        f"نام کاربری: {connection.ppp_username}",
-        f"رمز عبور: {connection.ppp_password}",
+        f"نام کاربری: {username}",
+        f"رمز عبور: {password}",
         "نوع VPN: SoftEther (SSL-VPN)",
-        "(برای اتصال، نرم‌افزار SoftEther VPN Client یا VPN Gate Client را نصب کنید و هاب بالا را وارد نمایید. "
-        "این سرور از SSTP/L2TP هم پشتیبانی می‌کند - در صورت فعال بودن روی سرور، با همین یوزر/پسورد قابل استفاده است.)",
+        "(برای اتصال با این روش، نرم‌افزار SoftEther VPN Client یا VPN Gate Client را نصب کنید و هاب بالا را وارد نمایید.)",
     ]
+
+    if node.se_enable_openvpn:
+        lines += [
+            "",
+            "--- اتصال با OpenVPN ---",
+            f"آدرس: {host}",
+            f"پورت: {node.se_openvpn_port or 1194} (UDP/TCP)",
+            f"نام کاربری: {username}",
+            f"رمز عبور: {password}",
+            "(فایل ovpn را از پنل مدیریت سرور SoftEther، بخش OpenVPN Clone Server، بگیرید و فقط یوزر/پسورد بالا را در آن وارد کنید.)",
+        ]
+
+    if node.se_enable_l2tp:
+        lines += [
+            "",
+            "--- اتصال با L2TP/IPsec ---",
+            f"آدرس: {host}",
+            f"کلید اشتراکی (Pre-shared key): {node.se_l2tp_psk or '(روی سرور تنظیم نشده)'}",
+            f"نام کاربری: {username}",
+            f"رمز عبور: {password}",
+            "(از VPN داخلی ویندوز/اندروید/آیفون با نوع L2TP/IPsec PSK قابل اتصال است.)",
+        ]
+
+    if node.se_enable_sstp:
+        lines += [
+            "",
+            "--- اتصال با SSTP ---",
+            f"آدرس: {host}",
+            f"پورت: {node.se_public_port or 443}",
+            f"نام کاربری: {username}",
+            f"رمز عبور: {password}",
+            "(از VPN داخلی ویندوز با نوع SSTP قابل اتصال است.)",
+        ]
+
     return "\n".join(lines)

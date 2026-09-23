@@ -7,7 +7,7 @@ from .models import NodeType, ConnectionType, UserStatus
 
 _PORT_FIELDS = (
     "mt_port", "mt_api_ssl_port", "mt_endpoint_port", "mt_ovpn_port", "mt_sstp_port",
-    "xr_ssh_port", "xr_public_port", "se_port", "se_public_port",
+    "xr_ssh_port", "xr_public_port", "se_port", "se_public_port", "se_openvpn_port",
 )
 
 
@@ -80,6 +80,11 @@ class NodeBase(BaseModel):
     se_public_host: Optional[str] = None
     se_public_port: Optional[int] = 443
     se_verify_tls: Optional[bool] = False
+    se_enable_openvpn: Optional[bool] = False
+    se_openvpn_port: Optional[int] = 1194
+    se_enable_l2tp: Optional[bool] = False
+    se_l2tp_psk: Optional[str] = None
+    se_enable_sstp: Optional[bool] = False
 
     @field_validator(*_PORT_FIELDS)
     @classmethod

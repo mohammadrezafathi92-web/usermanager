@@ -63,6 +63,11 @@ const emptyForm = {
   se_public_host: "",
   se_public_port: 443,
   se_verify_tls: false,
+  se_enable_openvpn: false,
+  se_openvpn_port: 1194,
+  se_enable_l2tp: false,
+  se_l2tp_psk: "",
+  se_enable_sstp: false,
 };
 
 // Live node resource monitor helpers (see services/node_monitor.py).
@@ -1166,6 +1171,56 @@ export default function Nodes() {
                   </div>
                   <div className="col-span-2">
                     <p className="hint">{t("nodes.seVerifyTlsHint")}</p>
+                  </div>
+
+                  {/* SoftEther authenticates the same hub user no matter
+                      which listener carries the traffic - these just tell
+                      the panel which of the server's OTHER protocol
+                      listeners are actually turned on, so it can print
+                      matching instructions to the customer. Nothing here
+                      changes how the account itself is provisioned. */}
+                  <div className="sm:col-span-2 pt-3 mt-1 border-t border-gray-100 dark:border-slate-800">
+                    <div className="section-title mb-1">{t("nodes.seOtherProtocolsTitle")}</div>
+                    <div className="hint mb-3">{t("nodes.seOtherProtocolsHint")}</div>
+                  </div>
+
+                  <div className="col-span-2 flex items-center gap-2">
+                    <input
+                      type="checkbox" id="se_enable_openvpn" className="h-4 w-4"
+                      checked={!!form.se_enable_openvpn}
+                      onChange={(e) => set("se_enable_openvpn", e.target.checked)}
+                    />
+                    <label htmlFor="se_enable_openvpn" className="text-sm text-gray-600">{t("nodes.fieldSeEnableOpenvpn")}</label>
+                  </div>
+                  {form.se_enable_openvpn && (
+                    <div>
+                      <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldSeOpenvpnPort")}</label>
+                      <input type="number" className="input" value={form.se_openvpn_port} onChange={(e) => set("se_openvpn_port", Number(e.target.value))} />
+                    </div>
+                  )}
+
+                  <div className="col-span-2 flex items-center gap-2">
+                    <input
+                      type="checkbox" id="se_enable_l2tp" className="h-4 w-4"
+                      checked={!!form.se_enable_l2tp}
+                      onChange={(e) => set("se_enable_l2tp", e.target.checked)}
+                    />
+                    <label htmlFor="se_enable_l2tp" className="text-sm text-gray-600">{t("nodes.fieldSeEnableL2tp")}</label>
+                  </div>
+                  {form.se_enable_l2tp && (
+                    <div className="col-span-2">
+                      <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldSeL2tpPsk")}</label>
+                      <input className="input" dir="ltr" value={form.se_l2tp_psk} onChange={(e) => set("se_l2tp_psk", e.target.value)} />
+                    </div>
+                  )}
+
+                  <div className="col-span-2 flex items-center gap-2">
+                    <input
+                      type="checkbox" id="se_enable_sstp" className="h-4 w-4"
+                      checked={!!form.se_enable_sstp}
+                      onChange={(e) => set("se_enable_sstp", e.target.checked)}
+                    />
+                    <label htmlFor="se_enable_sstp" className="text-sm text-gray-600">{t("nodes.fieldSeEnableSstp")}</label>
                   </div>
                 </div>
               )}

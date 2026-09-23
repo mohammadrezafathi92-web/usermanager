@@ -610,6 +610,18 @@ class Node(Base):
     se_public_port = Column(Integer, nullable=True, default=443)
     se_verify_tls = Column(Boolean, default=False)  # SoftEther admin certs are self-signed by default; off = don't verify
 
+    # Which of SoftEther's other standard-protocol listeners the admin has
+    # actually turned on for this server (VPN Server Manager -> Listener
+    # List / IPsec / OpenVPN settings) - a SoftEther Hub user authenticates
+    # the same way no matter which tunnel carries it, so no separate
+    # provisioning happens per protocol; this only controls what gets
+    # printed into the customer's connection info (build_softether_info).
+    se_enable_openvpn = Column(Boolean, default=False)
+    se_openvpn_port = Column(Integer, nullable=True, default=1194)
+    se_enable_l2tp = Column(Boolean, default=False)
+    se_l2tp_psk = Column(String(255), nullable=True)  # IPsec pre-shared key, set server-wide on SoftEther
+    se_enable_sstp = Column(Boolean, default=False)  # rides the same HTTPS port as se_public_port
+
     last_seen = Column(DateTime, nullable=True)
     last_error = Column(Text, nullable=True)
 

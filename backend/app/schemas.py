@@ -45,7 +45,7 @@ class NodeBase(BaseModel):
     mt_sstp_port: Optional[int] = 443
     mt_sstp_certificate: Optional[str] = None
 
-    xr_panel_mode: Optional[str] = "ssh"  # "ssh" یا "3xui"
+    xr_panel_mode: Optional[str] = "ssh"  # "ssh" یا "3xui" یا "marzban" یا "hiddify" یا "marzneshin" یا "sui"
     xr_panel_base_url: Optional[str] = None
     xr_panel_api_token: Optional[str] = None
     xr_panel_username: Optional[str] = None

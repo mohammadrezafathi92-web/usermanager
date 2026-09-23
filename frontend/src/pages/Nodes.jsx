@@ -260,7 +260,9 @@ export default function Nodes() {
         return !!form.se_host.trim() && !!form.se_hub_name.trim() && !!form.se_admin_password.trim();
       }
     } else if (key === "connection") {
-      return form.xr_panel_mode === "3xui" ? !!form.xr_panel_base_url.trim() : !!form.xr_ssh_host.trim();
+      return form.xr_panel_mode === "3xui" || form.xr_panel_mode === "marzban" || form.xr_panel_mode === "hiddify" || form.xr_panel_mode === "marzneshin" || form.xr_panel_mode === "sui"
+        ? !!form.xr_panel_base_url.trim()
+        : !!form.xr_ssh_host.trim();
     }
     return true; // wireguard/radius/public steps have no required fields
   };
@@ -533,7 +535,7 @@ export default function Nodes() {
             </div>
 
             <div className="text-xs text-gray-500 space-y-1 mb-3">
-              <div>{t("nodes.address", { value: n.type === "mikrotik" ? `${n.mt_host}:${n.mt_use_ssl ? n.mt_api_ssl_port : n.mt_port}${n.mt_use_ssl ? " (SSL)" : ""}` : n.type === "softether" ? `${n.se_host}:${n.se_port}` : (n.xr_panel_mode === "3xui" ? `${n.xr_panel_base_url} (${t("nodes.threexuiPanel")})` : n.xr_ssh_host) })}</div>
+              <div>{t("nodes.address", { value: n.type === "mikrotik" ? `${n.mt_host}:${n.mt_use_ssl ? n.mt_api_ssl_port : n.mt_port}${n.mt_use_ssl ? " (SSL)" : ""}` : n.type === "softether" ? `${n.se_host}:${n.se_port}` : (n.xr_panel_mode === "3xui" ? `${n.xr_panel_base_url} (${t("nodes.threexuiPanel")})` : n.xr_panel_mode === "marzban" ? `${n.xr_panel_base_url} (${t("nodes.marzbanPanel")})` : n.xr_panel_mode === "hiddify" ? `${n.xr_panel_base_url} (${t("nodes.hiddifyPanel")})` : n.xr_panel_mode === "marzneshin" ? `${n.xr_panel_base_url} (${t("nodes.marzneshinPanel")})` : n.xr_panel_mode === "sui" ? `${n.xr_panel_base_url} (${t("nodes.suiPanel")})` : n.xr_ssh_host) })}</div>
               <div>{t("nodes.lastSeen", { value: formatDateTime(n.last_seen, language) })}</div>
               {n.last_error && <div className="text-red-500 dark:text-red-400">{t("nodes.error", { value: n.last_error })}</div>}
               {!n.enabled && <div className="text-amber-600 dark:text-amber-400">{t("nodes.disabledNote")}</div>}
@@ -929,7 +931,7 @@ export default function Nodes() {
                   <button
                     type="button"
                     onClick={() => set("xr_panel_mode", "ssh")}
-                    className={`flex-1 rounded-xl border py-2 text-sm font-medium ${form.xr_panel_mode !== "3xui" ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400" : "border-gray-200 text-gray-500"}`}
+                    className={`flex-1 rounded-xl border py-2 text-sm font-medium ${form.xr_panel_mode === "ssh" || !form.xr_panel_mode ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400" : "border-gray-200 text-gray-500"}`}
                   >
                     {t("nodes.sshMethod")}
                   </button>
@@ -940,10 +942,58 @@ export default function Nodes() {
                   >
                     {t("nodes.threexuiMethod")}
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => set("xr_panel_mode", "marzban")}
+                    className={`flex-1 rounded-xl border py-2 text-sm font-medium ${form.xr_panel_mode === "marzban" ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400" : "border-gray-200 text-gray-500"}`}
+                  >
+                    {t("nodes.marzbanMethod")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => set("xr_panel_mode", "hiddify")}
+                    className={`flex-1 rounded-xl border py-2 text-sm font-medium ${form.xr_panel_mode === "hiddify" ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400" : "border-gray-200 text-gray-500"}`}
+                  >
+                    {t("nodes.hiddifyMethod")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => set("xr_panel_mode", "marzneshin")}
+                    className={`flex-1 rounded-xl border py-2 text-sm font-medium ${form.xr_panel_mode === "marzneshin" ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400" : "border-gray-200 text-gray-500"}`}
+                  >
+                    {t("nodes.marzneshinMethod")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => set("xr_panel_mode", "sui")}
+                    className={`flex-1 rounded-xl border py-2 text-sm font-medium ${form.xr_panel_mode === "sui" ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400" : "border-gray-200 text-gray-500"}`}
+                  >
+                    {t("nodes.suiMethod")}
+                  </button>
                 </div>
                 {form.xr_panel_mode === "3xui" && (
                   <p className="hint">
                     {t("nodes.threexuiHint")}
+                  </p>
+                )}
+                {form.xr_panel_mode === "marzban" && (
+                  <p className="hint">
+                    {t("nodes.marzbanHint")}
+                  </p>
+                )}
+                {form.xr_panel_mode === "hiddify" && (
+                  <p className="hint">
+                    {t("nodes.hiddifyHint")}
+                  </p>
+                )}
+                {form.xr_panel_mode === "marzneshin" && (
+                  <p className="hint">
+                    {t("nodes.marzneshinHint")}
+                  </p>
+                )}
+                {form.xr_panel_mode === "sui" && (
+                  <p className="hint">
+                    {t("nodes.suiHint")}
                   </p>
                 )}
               </div>
@@ -1036,6 +1086,117 @@ export default function Nodes() {
                     </div>
                   )}
                 </div>
+              ) : form.xr_panel_mode === "marzban" ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="col-span-2">
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldPanelUrl")}</label>
+                    <input
+                      className="input"
+                      placeholder="http://1.2.3.4:8000"
+                      required
+                      value={form.xr_panel_base_url}
+                      onChange={(e) => set("xr_panel_base_url", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldPanelUsername")}</label>
+                    <input className="input" value={form.xr_panel_username} onChange={(e) => set("xr_panel_username", e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldPanelPassword")}</label>
+                    <input type="password" className="input" value={form.xr_panel_password} onChange={(e) => set("xr_panel_password", e.target.value)} />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldInboundTag")}</label>
+                    <input className="input" value={form.xr_inbound_tag} onChange={(e) => set("xr_inbound_tag", e.target.value)} />
+                  </div>
+                </div>
+              ) : form.xr_panel_mode === "hiddify" ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="col-span-2">
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldPanelUrl")}</label>
+                    <input
+                      className="input" dir="ltr"
+                      placeholder="http://domain.com/admin_secret_path"
+                      required
+                      value={form.xr_panel_base_url}
+                      onChange={(e) => set("xr_panel_base_url", e.target.value)}
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldHiddifyApiKey")}</label>
+                    <input
+                      className="input" dir="ltr"
+                      value={form.xr_panel_api_token}
+                      onChange={(e) => set("xr_panel_api_token", e.target.value)}
+                    />
+                  </div>
+                </div>
+              ) : form.xr_panel_mode === "marzneshin" ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="col-span-2">
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldPanelUrl")}</label>
+                    <input
+                      className="input" dir="ltr"
+                      placeholder="http://1.2.3.4:8000"
+                      required
+                      value={form.xr_panel_base_url}
+                      onChange={(e) => set("xr_panel_base_url", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldPanelUsername")}</label>
+                    <input className="input" value={form.xr_panel_username} onChange={(e) => set("xr_panel_username", e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldPanelPassword")}</label>
+                    <input type="password" className="input" value={form.xr_panel_password} onChange={(e) => set("xr_panel_password", e.target.value)} />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldMarzneshinServiceId")}</label>
+                    <input
+                      type="number"
+                      className="input"
+                      placeholder={t("nodes.marzneshinServiceIdPlaceholder")}
+                      value={form.xr_panel_inbound_id ?? ""}
+                      onChange={(e) => set("xr_panel_inbound_id", e.target.value ? Number(e.target.value) : null)}
+                    />
+                    <p className="hint mt-1">{t("nodes.marzneshinServiceIdHint")}</p>
+                  </div>
+                </div>
+              ) : form.xr_panel_mode === "sui" ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="col-span-2">
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldPanelUrl")}</label>
+                    <input
+                      className="input" dir="ltr"
+                      placeholder="http://1.2.3.4:2095"
+                      required
+                      value={form.xr_panel_base_url}
+                      onChange={(e) => set("xr_panel_base_url", e.target.value)}
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldSuiApiToken")}</label>
+                    <input
+                      className="input" dir="ltr"
+                      value={form.xr_panel_api_token}
+                      onChange={(e) => set("xr_panel_api_token", e.target.value)}
+                    />
+                    <p className="hint mt-1">{t("nodes.suiApiTokenHint")}</p>
+                  </div>
+                  <div className="col-span-2">
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldSuiInboundId")}</label>
+                    <input
+                      type="number"
+                      className="input"
+                      placeholder={t("nodes.suiInboundIdPlaceholder")}
+                      value={form.xr_panel_inbound_id ?? ""}
+                      onChange={(e) => set("xr_panel_inbound_id", e.target.value ? Number(e.target.value) : null)}
+                    />
+                    <p className="hint mt-1">{t("nodes.suiInboundIdHint")}</p>
+                  </div>
+                </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
@@ -1076,6 +1237,46 @@ export default function Nodes() {
               )}
 
               {step === 2 && (
+              form.xr_panel_mode === "hiddify" ? (
+                <div className="grid grid-cols-1 gap-3">
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldHiddifySubBase")}</label>
+                    <input
+                      className="input" dir="ltr"
+                      placeholder="https://domain.com/user_secret_path"
+                      value={form.xr_public_host || ""}
+                      onChange={(e) => set("xr_public_host", e.target.value)}
+                    />
+                    <p className="hint mt-1">{t("nodes.hiddifySubBaseHint")}</p>
+                  </div>
+                </div>
+              ) : form.xr_panel_mode === "marzneshin" ? (
+                <div className="grid grid-cols-1 gap-3">
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldMarzneshinSubBase")}</label>
+                    <input
+                      className="input" dir="ltr"
+                      placeholder="https://domain.com"
+                      value={form.xr_public_host || ""}
+                      onChange={(e) => set("xr_public_host", e.target.value)}
+                    />
+                    <p className="hint mt-1">{t("nodes.marzneshinSubBaseHint")}</p>
+                  </div>
+                </div>
+              ) : form.xr_panel_mode === "sui" ? (
+                <div className="grid grid-cols-1 gap-3">
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldSuiSubBase")}</label>
+                    <input
+                      className="input" dir="ltr"
+                      placeholder="https://domain.com"
+                      value={form.xr_public_host || ""}
+                      onChange={(e) => set("xr_public_host", e.target.value)}
+                    />
+                    <p className="hint mt-1">{t("nodes.suiSubBaseHint")}</p>
+                  </div>
+                </div>
+              ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm text-gray-600 mb-1">{t("nodes.fieldPublicHost")}</label>
@@ -1126,6 +1327,7 @@ export default function Nodes() {
                   />
                 </div>
               </div>
+              )
               )}
             </div>
           ) : (

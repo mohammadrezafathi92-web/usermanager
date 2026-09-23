@@ -206,12 +206,12 @@ def test_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUs
         else:
             with client_for_node(node) as xc:
                 xc.test_connection()
-                # For 3X-UI nodes, sync the real host/port/network/security/
-                # sni from the panel itself so generated vless:// links are
-                # correct even if the admin never filled these in by hand
-                # (they otherwise silently default to port 443 + tls, which
-                # produces a broken link).
-                if getattr(node, "xr_panel_mode", "ssh") == "3xui" and hasattr(xc, "get_link_settings"):
+                # For panel-API nodes (3X-UI, Marzban, ...), sync the real
+                # host/port/network/security/sni from the panel itself so
+                # generated vless:// links are correct even if the admin
+                # never filled these in by hand (they otherwise silently
+                # default to port 443 + tls, which produces a broken link).
+                if getattr(node, "xr_panel_mode", "ssh") != "ssh" and hasattr(xc, "get_link_settings"):
                     info = xc.get_link_settings()
                     if info:
                         if info.get("host"):

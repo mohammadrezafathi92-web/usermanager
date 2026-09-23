@@ -20,6 +20,7 @@ from .. import models
 from . import hierarchy
 from .mikrotik_client import MikrotikClient, MikrotikError
 from .xray_client import XrayError, client_for_node
+from .marzneshin_client import sanitize_username as marzneshin_sanitize_username
 from .softether_client import SoftEtherError, client_for_node as softether_client_for_node
 from .keys import generate_wireguard_keypair, generate_password
 from .link_builder import (
@@ -2397,6 +2398,57 @@ def get_connection_share(connection: models.Connection) -> dict:
             "kind": "softether", "link": None, "config_text": text,
             "server": node.se_public_host or node.se_host, "port": node.se_public_port or 443,
             "username": connection.ppp_username, "password": connection.ppp_password, "psk": None,
+        }
+
+    # xray - Hiddify: one panel "user" (identified by its own uuid) drives
+    # every protocol at once, so there's no single vless:// URI to build the
+    # way 3X-UI/Marzban/SSH nodes have. Customers get the panel's own
+    # subscription URL instead: {sub_base}/{uuid}/. xr_public_host is safe
+    # to reuse here as the sub-base-URL field because HiddifyClient defines
+    # no get_link_settings(), so routers/nodes.py never auto-syncs/overwrites
+    # it for this panel mode - see hiddify_client.py's module docstring.
+    if node.xr_panel_mode == "hiddify":
+        sub_base = (node.xr_public_host or "").strip().rstrip("/")
+        link = f"{sub_base}/{connection.xr_uuid}/" if sub_base and connection.xr_uuid else None
+        return {
+            "kind": "hiddify_sub", "link": link, "config_text": None,
+            "server": None, "port": None, "username": None, "password": None, "psk": None,
+        }
+
+    # xray - Marzneshin: same "no single vless URI" situation as Hiddify
+    # above (see marzneshin_client.py's module docstring) - customers get
+    # the panel's own subscription URL, {sub_base}/sub/{username}/{key}.
+    # We chose connection.xr_uuid as the panel's `key` at creation time
+    # specifically so this can be rebuilt locally with no live API call;
+    # sanitize_username() deterministically recomputes the same panel
+    # username add_client() derived from connection.xr_email. xr_public_host
+    # is safe to reuse here for the same reason as the Hiddify branch -
+    # MarzneshinClient also defines no get_link_settings().
+    if node.xr_panel_mode == "marzneshin":
+        sub_base = (node.xr_public_host or node.xr_panel_base_url or "").strip().rstrip("/")
+        link = None
+        if sub_base and connection.xr_uuid and connection.xr_email:
+            username = marzneshin_sanitize_username(connection.xr_email)
+            link = f"{sub_base}/sub/{username}/{connection.xr_uuid}"
+        return {
+            "kind": "marzneshin_sub", "link": link, "config_text": None,
+            "server": None, "port": None, "username": None, "password": None, "psk": None,
+        }
+
+    # xray - s-ui: same "no single vless URI" situation as Hiddify/Marzneshin
+    # above (see sui_client.py's module docstring) - s-ui's subscription
+    # endpoint runs on its own separately-configured listener/port, so
+    # xr_public_host (never auto-synced for this mode, since SuiClient also
+    # defines no get_link_settings()) must hold that listener's own reachable
+    # base URL. The path segment is just connection.xr_email as-is - s-ui's
+    # Client.Name has no character-set restriction, so add_client() stores
+    # the email there unmodified (no sanitize step needed, unlike Marzneshin).
+    if node.xr_panel_mode == "sui":
+        sub_base = (node.xr_public_host or "").strip().rstrip("/")
+        link = f"{sub_base}/{connection.xr_email}" if sub_base and connection.xr_email else None
+        return {
+            "kind": "sui_sub", "link": link, "config_text": None,
+            "server": None, "port": None, "username": None, "password": None, "psk": None,
         }
 
     # xray

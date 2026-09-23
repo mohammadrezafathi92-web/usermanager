@@ -373,12 +373,17 @@ class XrayClient:
 
 
 def client_for_node(node):
-    """Returns an XrayClient or ThreeXUIClient for the given node, picked by
-    node.xr_panel_mode. Both classes expose the same
-    add_client/remove_client/set_client_enabled/query_all_user_stats
-    interface plus connect()/close()/context-manager support, so call sites
-    don't need to know which backend they're talking to."""
-    if getattr(node, "xr_panel_mode", "ssh") == "3xui":
+    """Returns an XrayClient, ThreeXUIClient, MarzbanClient, HiddifyClient,
+    MarzneshinClient, or SuiClient for the given node, picked by
+    node.xr_panel_mode. All these classes expose the same add_client/
+    remove_client/set_client_enabled/query_all_user_stats interface plus
+    connect()/close()/context-manager support, so call sites don't need to
+    know which backend they're talking to. HiddifyClient, MarzneshinClient,
+    and SuiClient are the exceptions that don't implement
+    get_link_settings() (see their module docstrings) - callers that use
+    that method already guard with hasattr()."""
+    panel_mode = getattr(node, "xr_panel_mode", "ssh")
+    if panel_mode == "3xui":
         from .threexui_client import ThreeXUIClient
 
         return ThreeXUIClient(
@@ -387,6 +392,39 @@ def client_for_node(node):
             node.xr_panel_password,
             node.xr_panel_inbound_id,
             api_token=node.xr_panel_api_token,
+        )
+    if panel_mode == "marzban":
+        from .marzban_client import MarzbanClient
+
+        return MarzbanClient(
+            node.xr_panel_base_url,
+            node.xr_panel_username,
+            node.xr_panel_password,
+            node.xr_inbound_tag,
+        )
+    if panel_mode == "hiddify":
+        from .hiddify_client import HiddifyClient
+
+        return HiddifyClient(
+            node.xr_panel_base_url,
+            node.xr_panel_api_token,
+        )
+    if panel_mode == "marzneshin":
+        from .marzneshin_client import MarzneshinClient
+
+        return MarzneshinClient(
+            node.xr_panel_base_url,
+            node.xr_panel_username,
+            node.xr_panel_password,
+            node.xr_panel_inbound_id,
+        )
+    if panel_mode == "sui":
+        from .sui_client import SuiClient
+
+        return SuiClient(
+            node.xr_panel_base_url,
+            node.xr_panel_api_token,
+            node.xr_panel_inbound_id,
         )
     return XrayClient(
         node.xr_ssh_host, node.xr_ssh_username, node.xr_ssh_port,

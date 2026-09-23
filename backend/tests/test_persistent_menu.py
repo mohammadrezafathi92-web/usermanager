@@ -117,7 +117,7 @@ async def run():
         called["buy"] = call
 
     persistent_menu._ACTIONS["cust_buy"] = (fake_buy, ("state",))
-    msg = FakeMessage("🟠 🛒 خرید اکانت جدید")
+    msg = FakeMessage("🟠 خرید اکانت جدید")
     state = AsyncMock()
     await _isolated(persistent_menu.on_menu_tap(msg, state=state, bot=object()))
     check("the matching handler ran", "buy" in called, True)
@@ -146,13 +146,13 @@ async def run():
     # vanished with no reply. The bar is pinned to a CHAT, not a role, so
     # whoever has it must get an answer from it.
     called.clear()
-    await _isolated(persistent_menu.on_menu_tap(FakeMessage("🟠 🛒 خرید اکانت جدید"), state=AsyncMock(), bot=object()))
+    await _isolated(persistent_menu.on_menu_tap(FakeMessage("🟠 خرید اکانت جدید"), state=AsyncMock(), bot=object()))
     check("an admin gets the same handler, not nothing", "buy" in called, True)
 
     print("\n--- a disabled item cannot be reached by typing its label ---")
     panel_bridge.api.get_customer_menu_disabled_items = AsyncMock(return_value=["cust_buy"])
     called.clear()
-    await _isolated(persistent_menu.on_menu_tap(FakeMessage("🟠 🛒 خرید اکانت جدید"), state=AsyncMock(), bot=object()))
+    await _isolated(persistent_menu.on_menu_tap(FakeMessage("🟠 خرید اکانت جدید"), state=AsyncMock(), bot=object()))
     check("switched off means off, however it is reached", called, {})
     panel_bridge.api.get_customer_menu_disabled_items = AsyncMock(return_value=[])
 
@@ -172,12 +172,12 @@ async def run():
 
     persistent_menu._ACTIONS["admin_create"] = (fake_admin_create, ("state", "acting_scope"))
     called.clear()
-    await persistent_menu.on_menu_tap(FakeMessage("🟢 ➕ ساخت کاربر"), state=AsyncMock(), bot=object())
+    await persistent_menu.on_menu_tap(FakeMessage("🟢 ساخت کاربر"), state=AsyncMock(), bot=object())
     check("the handler got the freshly-resolved scope", called.get("admin_create"), seller_scope)
 
     print("\n--- a full-admin-only item refuses a seller, not silently ---")
     called.clear()
-    msg = FakeMessage("🟣 📢 پیام همگانی")
+    msg = FakeMessage("🟣 پیام همگانی")
     await persistent_menu.on_menu_tap(msg, state=AsyncMock(), bot=object())
     check("the broadcast handler did not run", "admin_broadcast" in called, False)
     check("...and the seller was told why, not left with silence",
@@ -186,7 +186,7 @@ async def run():
     print("\n--- a non-admin typing an admin label also gets a refusal ---")
     persistent_menu.resolve_admin_scope = AsyncMock(return_value=None)  # not an admin at all
     called.clear()
-    msg = FakeMessage("🟢 ➕ ساخت کاربر")
+    msg = FakeMessage("🟢 ساخت کاربر")
     await persistent_menu.on_menu_tap(msg, state=AsyncMock(), bot=object())
     check("admin_create did not run for a plain customer", "admin_create" in called, False)
     check("...they were told it's admin-only, not left with silence",

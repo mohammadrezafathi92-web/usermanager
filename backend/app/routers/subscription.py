@@ -109,18 +109,38 @@ def get_subscription_app_import(token: str, db: Session = Depends(get_db)):
     this link is *the* V2Ray subscription link). Other protocol types
     (WireGuard/OpenVPN/L2TP/IKEv2/SSTP) aren't representable in this
     format at all and are skipped - they're delivered as downloadable
-    config files instead (see download_connection_config above)."""
+    config files instead (see download_connection_config above).
+
+    Reported 2026-09-23: a customer with more than one purchase can end up
+    with more than one User row under the same telegram_id (see User.
+    telegram_id's docstring - NOT unique, the bot shows an account picker
+    for exactly this case). The bot's own "این لینک ... همه‌ی سرویس‌های
+    V2ray/Xray شما را با هم نشان می‌دهد" promise only held for whichever
+    ONE account's token was fetched - a service bought under a second
+    username never showed up. Fixed here, not in the bot: every sibling
+    User row sharing this token-owner's telegram_id is folded in too, so
+    ANY of that customer's per-account tokens now returns the same
+    combined list. Accounts with no telegram_id (panel-created, never
+    linked to a chat) are unaffected - `siblings` is simply empty."""
     user = _get_user_by_token(token, db)
+    users = [user]
+    if user.telegram_id:
+        users += (
+            db.query(models.User)
+            .filter(models.User.telegram_id == user.telegram_id, models.User.id != user.id)
+            .all()
+        )
     links = []
-    for conn in user.connections:
-        if conn.type != models.ConnectionType.xray:
-            continue
-        try:
-            share = user_ops.get_connection_share(conn)
-        except Exception:
-            continue
-        if share.get("link"):
-            links.append(share["link"])
+    for u in users:
+        for conn in u.connections:
+            if conn.type != models.ConnectionType.xray:
+                continue
+            try:
+                share = user_ops.get_connection_share(conn)
+            except Exception:
+                continue
+            if share.get("link"):
+                links.append(share["link"])
     body = "\n".join(links)
     encoded = base64.b64encode(body.encode("utf-8")).decode("ascii")
     return PlainTextResponse(encoded)

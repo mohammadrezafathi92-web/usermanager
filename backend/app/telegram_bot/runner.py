@@ -130,7 +130,10 @@ CUSTOMER_COMMANDS = [
 ADMIN_EXTRA_COMMANDS = [
     BotCommand(command="newuser", description="➕ ساخت کاربر"),
     BotCommand(command="users", description="📋 لیست کاربران"),
+    BotCommand(command="search", description="🔎 جستجوی کاربر"),
     BotCommand(command="pending", description="📥 درخواست‌های در انتظار"),
+    BotCommand(command="history", description="🗂 تاریخچه درخواست‌ها"),
+    BotCommand(command="stats", description="📊 گزارش فروش"),
     BotCommand(command="broadcast", description="📢 پیام همگانی"),
     BotCommand(command="dm", description="✉️ پیام به یک کاربر"),
 ]

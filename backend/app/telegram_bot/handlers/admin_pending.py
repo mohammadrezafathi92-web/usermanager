@@ -520,6 +520,18 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
     await call.answer("تایید شد")
 
 
+def _history_text(items: list) -> str:
+    lines = ["🗂 <b>آخرین درخواست‌های رسیدگی‌شده</b>", ""]
+    for p in items:
+        icon = "✅" if p["status"] == "approved" else "❌"
+        kind_txt = {"new": "خرید جدید", "renew": "تمدید", "topup": "افزایش اعتبار", "link": "اتصال حساب"}.get(p["kind"], p["kind"])
+        amount = p.get("final_price") if p.get("final_price") is not None else p.get("price")
+        when = fmt_date_jalali(p.get("created_at"))
+        lines.append(f"{icon} #{p['id']} · {kind_txt} · {p['target_username']}")
+        lines.append(f"    {amount:,} تومان · {when}")
+    return "\n".join(lines)
+
+
 @router.callback_query(MenuCB.filter(F.action == "admin_history"))
 async def cb_admin_history(call: CallbackQuery) -> None:
     """«🗂 تاریخچه درخواست‌ها» - what was approved/rejected recently. The
@@ -531,13 +543,16 @@ async def cb_admin_history(call: CallbackQuery) -> None:
         await call.message.edit_text("هنوز درخواست رسیدگی‌شده‌ای ثبت نشده.", reply_markup=home_kb())
         await call.answer()
         return
-    lines = ["🗂 <b>آخرین درخواست‌های رسیدگی‌شده</b>", ""]
-    for p in items:
-        icon = "✅" if p["status"] == "approved" else "❌"
-        kind_txt = {"new": "خرید جدید", "renew": "تمدید", "topup": "افزایش اعتبار", "link": "اتصال حساب"}.get(p["kind"], p["kind"])
-        amount = p.get("final_price") if p.get("final_price") is not None else p.get("price")
-        when = fmt_date_jalali(p.get("created_at"))
-        lines.append(f"{icon} #{p['id']} · {kind_txt} · {p['target_username']}")
-        lines.append(f"    {amount:,} تومان · {when}")
-    await call.message.edit_text("\n".join(lines), reply_markup=home_kb())
+    await call.message.edit_text(_history_text(items), reply_markup=home_kb())
     await call.answer()
+
+
+@router.message(Command("history"))
+async def cmd_admin_history(message: Message) -> None:
+    """Slash-command shortcut for "🗂 تاریخچه درخواست‌ها"."""
+    owner_ids, include_unowned = _filters(await _scope_of(message))
+    items = storage.list_recent(owner_ids=owner_ids, include_unowned=include_unowned)
+    if not items:
+        await message.answer("هنوز درخواست رسیدگی‌شده‌ای ثبت نشده.", reply_markup=home_kb())
+        return
+    await message.answer(_history_text(items), reply_markup=home_kb())

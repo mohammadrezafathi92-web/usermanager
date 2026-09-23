@@ -648,6 +648,13 @@ async def cb_admin_search_start(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
 
 
+@router.message(Command("search"))
+async def cmd_admin_search(message: Message, state: FSMContext) -> None:
+    """Slash-command shortcut for "🔎 جستجو"."""
+    await state.set_state(AdminSearchStates.waiting_username)
+    await message.answer("بخشی از نام کاربری را بفرستید تا جستجو کنم:", reply_markup=cancel_kb())
+
+
 @router.message(AdminSearchStates.waiting_username, F.text)
 async def admin_search_query(message: Message, state: FSMContext, acting_scope: dict) -> None:
     query = (message.text or "").strip()
@@ -659,6 +666,22 @@ async def admin_search_query(message: Message, state: FSMContext, acting_scope: 
 
 
 # ------------------------------------------------------- گزارش فروش
+def _sales_stats_text(stats: dict) -> str:
+    def _row(label: str, key: str) -> str:
+        row = stats.get(key) or {}
+        return f"{label}: {row.get('total', 0):,} تومان ({row.get('count', 0)} فروش)"
+
+    return "\n".join([
+        "📊 <b>گزارش فروش</b>",
+        "",
+        _row("امروز", "today"),
+        _row("۷ روز اخیر", "week"),
+        _row("۳۰ روز اخیر", "month"),
+        "",
+        f"کاربران: {stats.get('users_total', 0)} (فعال: {stats.get('users_active', 0)})",
+    ])
+
+
 @router.callback_query(MenuCB.filter(F.action == "admin_stats"))
 async def cb_admin_stats(call: CallbackQuery, acting_scope: dict) -> None:
     try:
@@ -669,19 +692,19 @@ async def cb_admin_stats(call: CallbackQuery, acting_scope: dict) -> None:
     if not stats:
         await call.answer("آماری موجود نیست", show_alert=True)
         return
-
-    def _row(label: str, key: str) -> str:
-        row = stats.get(key) or {}
-        return f"{label}: {row.get('total', 0):,} تومان ({row.get('count', 0)} فروش)"
-
-    text = "\n".join([
-        "📊 <b>گزارش فروش</b>",
-        "",
-        _row("امروز", "today"),
-        _row("۷ روز اخیر", "week"),
-        _row("۳۰ روز اخیر", "month"),
-        "",
-        f"کاربران: {stats.get('users_total', 0)} (فعال: {stats.get('users_active', 0)})",
-    ])
-    await call.message.edit_text(text, reply_markup=home_kb())
+    await call.message.edit_text(_sales_stats_text(stats), reply_markup=home_kb())
     await call.answer()
+
+
+@router.message(Command("stats"))
+async def cmd_admin_stats(message: Message, acting_scope: dict) -> None:
+    """Slash-command shortcut for "📊 گزارش فروش"."""
+    try:
+        stats = await api.get_sales_stats(owner_admin_id=acting_scope["owner_admin_id"])
+    except ApiError as exc:
+        await message.answer(f"خطا: {exc}")
+        return
+    if not stats:
+        await message.answer("آماری موجود نیست")
+        return
+    await message.answer(_sales_stats_text(stats), reply_markup=home_kb())

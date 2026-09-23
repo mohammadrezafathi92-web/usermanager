@@ -55,11 +55,22 @@ class FakeMessage:
 
 async def run():
     print("--- one list of items feeds both menus ---")
-    check("every bar label comes from CUSTOMER_MENU_ITEMS",
-          sorted(persistent_menu._LABEL_TO_ACTION.values()),
-          sorted(a for a, _ in keyboards.CUSTOMER_MENU_ITEMS))
+    # Optimization #2 (2026-09-23): the bar is now ONE combined
+    # ReplyKeyboardMarkup for admins/sellers too (see keyboards.
+    # persistent_menu_kb's docstring for why a separate admin-only bar was
+    # rejected), so _LABEL_TO_ACTION covers all three item lists, not just
+    # the customer one - admin_list appears in both admin lists under
+    # different label text ("...کاربران" vs "...کاربران من"), so the set of
+    # ACTIONS still has no duplicates even though the label count is one
+    # bigger than the action count.
+    all_items = [
+        *keyboards.CUSTOMER_MENU_ITEMS, *keyboards.ADMIN_MENU_ITEMS_FULL, *keyboards.ADMIN_MENU_ITEMS_SELLER,
+    ]
+    check("every bar label comes from one of the three item lists",
+          sorted(set(persistent_menu._LABEL_TO_ACTION.values())),
+          sorted({a for a, _ in all_items}))
     check("and every item has a handler behind it",
-          [a for a, _ in keyboards.CUSTOMER_MENU_ITEMS if a not in persistent_menu._ACTIONS], [])
+          [a for a, _ in all_items if a not in persistent_menu._ACTIONS], [])
 
     print("\n--- the bar is built from the same on/off switches ---")
     keyboards_api = keyboards.__dict__
@@ -137,6 +148,37 @@ async def run():
     called.clear()
     await persistent_menu.on_menu_tap(FakeMessage("mohammad1234"), state=AsyncMock(), bot=object())
     check("a username is not a menu tap", called, {})
+
+    print("\n--- an admin item tap resolves and passes acting_scope ---")
+    seller_scope = {"owner_admin_id": 9, "role": "seller", "is_full_admin": False,
+                     "is_unscoped": False, "username": "s", "owner_ids": {9},
+                     "include_unowned": False, "sell_block_reason": None}
+    persistent_menu.resolve_admin_scope = AsyncMock(return_value=seller_scope)
+
+    async def fake_admin_create(call, state=None, acting_scope=None):
+        called["admin_create"] = acting_scope
+
+    persistent_menu._ACTIONS["admin_create"] = (fake_admin_create, ("state", "acting_scope"))
+    called.clear()
+    await persistent_menu.on_menu_tap(FakeMessage("➕ ساخت کاربر"), state=AsyncMock(), bot=object())
+    check("the handler got the freshly-resolved scope", called.get("admin_create"), seller_scope)
+
+    print("\n--- a full-admin-only item refuses a seller, not silently ---")
+    called.clear()
+    msg = FakeMessage("📢 پیام همگانی")
+    await persistent_menu.on_menu_tap(msg, state=AsyncMock(), bot=object())
+    check("the broadcast handler did not run", "admin_broadcast" in called, False)
+    check("...and the seller was told why, not left with silence",
+          any("مخصوص مدیران" in a[0] for a in msg.answers), True)
+
+    print("\n--- a non-admin typing an admin label also gets a refusal ---")
+    persistent_menu.resolve_admin_scope = AsyncMock(return_value=None)  # not an admin at all
+    called.clear()
+    msg = FakeMessage("➕ ساخت کاربر")
+    await persistent_menu.on_menu_tap(msg, state=AsyncMock(), bot=object())
+    check("admin_create did not run for a plain customer", "admin_create" in called, False)
+    check("...they were told it's admin-only, not left with silence",
+          any("مخصوص مدیران" in a[0] for a in msg.answers), True)
 
 
 asyncio.run(run())

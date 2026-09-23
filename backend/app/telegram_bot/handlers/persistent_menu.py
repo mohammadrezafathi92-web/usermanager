@@ -17,6 +17,12 @@ button press those handlers already expect - so both routes run exactly
 the same code, and a change to «خرید اشتراک» can never apply to one and
 not the other.
 
+An admin or seller gets the same bar plus their own quick-actions prepended
+ahead of the shop items - see keyboards.persistent_menu_kb's docstring for
+why this is one combined bar rather than a separate admin-only one. Below,
+_ACTIONS and _LABEL_TO_ACTION cover both label sets, and on_menu_tap tells
+the two apart by the "admin_"/"cust_" action prefix.
+
 Two ordering rules this router depends on, both load-bearing:
 
   * it is registered BEFORE customer.router, so a tap is not swallowed by
@@ -36,9 +42,15 @@ from aiogram import Bot, Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from ..keyboards import CUSTOMER_MENU_ITEMS, persistent_menu_kb
+from ..admin_scope import resolve_admin_scope
+from ..keyboards import (
+    ADMIN_MENU_ITEMS_FULL,
+    ADMIN_MENU_ITEMS_SELLER,
+    CUSTOMER_MENU_ITEMS,
+    persistent_menu_kb,
+)
 from ..panel_bridge import api, ApiError
-from . import customer, tutorials
+from . import admin_broadcast, admin_pending, admin_users, customer, tutorials
 
 logger = logging.getLogger("telegram_bot")
 
@@ -106,9 +118,37 @@ _ACTIONS = {
     "cust_support": (customer.cb_support, ()),
     "cust_link": (customer.cb_link_start, ("state",)),
     "cust_myid": (customer.cb_myid, ()),
+    # Admin/seller entries. "acting_scope" is a third `needs` kwarg (on top
+    # of the "state"/"bot" the customer entries already use) because these
+    # handlers normally get it from admin_users.router's own filter-based DI
+    # (see admin_users.py's router.message.filter(_admin_scope_filter)) -
+    # called directly like this bypasses that filter chain entirely, so
+    # on_menu_tap resolves and passes it itself.
+    "admin_create": (admin_users.cb_admin_create, ("state", "acting_scope")),
+    "admin_list": (admin_users.cb_admin_list, ("state", "acting_scope")),
+    "admin_search": (admin_users.cb_admin_search_start, ("state",)),
+    "admin_pending": (admin_pending.cb_admin_pending, ()),
+    "admin_history": (admin_pending.cb_admin_history, ()),
+    "admin_stats": (admin_users.cb_admin_stats, ("acting_scope",)),
+    "admin_broadcast": (admin_broadcast.cb_broadcast_start, ("state",)),
+    "admin_dm": (admin_broadcast.cb_dm_start, ("state",)),
 }
 
-_LABEL_TO_ACTION = {label: action for action, label in CUSTOMER_MENU_ITEMS}
+# Full-admin-only actions - the ones ADMIN_MENU_ITEMS_SELLER leaves out.
+# Kept as a set rather than reading is_full_admin off keyboards.py's lists
+# directly so a seller who somehow still has the label (a stale bar from
+# before a demotion, say) gets a clear refusal instead of AdminScope's own
+# checks failing in a more confusing way three calls deep.
+_ADMIN_FULL_ONLY_ACTIONS = {
+    action
+    for action, _ in ADMIN_MENU_ITEMS_FULL
+    if action not in {a for a, _ in ADMIN_MENU_ITEMS_SELLER}
+}
+
+_LABEL_TO_ACTION = {
+    label: action
+    for action, label in [*CUSTOMER_MENU_ITEMS, *ADMIN_MENU_ITEMS_FULL, *ADMIN_MENU_ITEMS_SELLER]
+}
 
 
 @router.message(F.text.in_(set(_LABEL_TO_ACTION)))
@@ -128,28 +168,43 @@ async def on_menu_tap(message: Message, state: FSMContext, bot: Bot) -> None:
     can honestly mean. An admin with no customer account of their own simply
     gets "you have no account yet" from the same handler a customer would -
     an answer, not silence.
+
+    Admin labels are new (2026-09-23, optimization #2) and get the same
+    "answer, not silence" treatment for the mirror-image case: the bar is
+    pinned to a CHAT, so someone demoted or unlinked after the bar was sent
+    still has the buttons in front of them. resolve_admin_scope is asked
+    fresh on every tap (never trusted from an earlier one), exactly like
+    the inline admin menu does.
     """
     action = _LABEL_TO_ACTION.get(message.text or "")
     entry = _ACTIONS.get(action or "")
     if entry is None:
-        # Only reachable if CUSTOMER_MENU_ITEMS grows an item and _ACTIONS
-        # does not. Logged rather than ignored - a dead button is invisible
-        # to whoever added it and maddening to whoever taps it.
+        # Only reachable if CUSTOMER_MENU_ITEMS/ADMIN_MENU_ITEMS_* grows an
+        # item and _ACTIONS does not. Logged rather than ignored - a dead
+        # button is invisible to whoever added it and maddening to whoever
+        # taps it.
         logger.warning("منوی پایین: برای «%s» هیچ هندلری ثبت نشده است", message.text)
         return
 
-    # Respects the same «منوی مشتری» checkboxes the inline menu does, so an
-    # item the panel owner switched off cannot be reached by typing its
-    # label either.
-    try:
-        if action in set(await api.get_customer_menu_disabled_items()):
-            # Switched off in «منوی مشتری» while this chat still shows the
-            # bar. Said out loud, because a button that answers nothing is
-            # indistinguishable from a broken bot.
-            await message.answer("این بخش در حال حاضر غیرفعال است.")
+    acting_scope: dict | None = None
+    if (action or "").startswith("admin_"):
+        acting_scope = await resolve_admin_scope(message.from_user.id)
+        if not acting_scope or (action in _ADMIN_FULL_ONLY_ACTIONS and not acting_scope["is_full_admin"]):
+            await message.answer("این بخش مخصوص مدیران است.")
             return
-    except ApiError:
-        pass
+    else:
+        # Respects the same «منوی مشتری» checkboxes the inline menu does,
+        # so an item the panel owner switched off cannot be reached by
+        # typing its label either.
+        try:
+            if action in set(await api.get_customer_menu_disabled_items()):
+                # Switched off in «منوی مشتری» while this chat still shows
+                # the bar. Said out loud, because a button that answers
+                # nothing is indistinguishable from a broken bot.
+                await message.answer("این بخش در حال حاضر غیرفعال است.")
+                return
+        except ApiError:
+            pass
 
     await state.clear()
     handler, needs = entry
@@ -158,15 +213,22 @@ async def on_menu_tap(message: Message, state: FSMContext, bot: Bot) -> None:
         kwargs["state"] = state
     if "bot" in needs:
         kwargs["bot"] = bot
+    if "acting_scope" in needs:
+        kwargs["acting_scope"] = acting_scope
     await handler(_MenuTap(message), **kwargs)
 
 
-async def send_menu_bar(message: Message) -> None:
+async def send_menu_bar(message: Message, scope: dict | None = None) -> None:
     """Puts the bar in place. Telegram only shows a ReplyKeyboardMarkup
     once a message carries one, and it then persists for this chat until
     something replaces it - so this is sent once on /start rather than
-    stapled to every reply."""
-    kb = await persistent_menu_kb()
+    stapled to every reply.
+
+    `scope` is start.py's already-resolved resolve_admin_scope() result -
+    passed straight through to persistent_menu_kb() so an admin/seller's
+    bar gets their quick-actions prepended without a second lookup here.
+    """
+    kb = await persistent_menu_kb(scope)
     if kb is None:
         return
     await message.answer("👇 از منوی پایین هر وقت خواستید استفاده کنید.", reply_markup=kb)

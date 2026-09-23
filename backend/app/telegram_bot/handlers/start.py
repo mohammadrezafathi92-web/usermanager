@@ -67,7 +67,8 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     scope = await resolve_admin_scope(message.from_user.id)
     text = await _welcome_text(message.from_user, scope)
     await message.answer(text, reply_markup=await main_menu_kb(scope))
-    # The shop bar goes under the text box for EVERYONE, admins included.
+    # The shop bar goes under the text box for EVERYONE, admins included -
+    # with their own quick-actions prepended (see keyboards.persistent_menu_kb).
     # It is pinned to a chat, not to a role, so restricting who receives it
     # does not stop anyone having it - it only creates chats where the bar
     # is present and does nothing, which is how the buttons came to be
@@ -78,7 +79,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     # keyboard and a reply keyboard on the same one.
     from .persistent_menu import send_menu_bar
 
-    await send_menu_bar(message)
+    await send_menu_bar(message, scope)
 
 
 @router.message(Command("help"))

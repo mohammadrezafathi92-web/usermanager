@@ -59,6 +59,30 @@ CUSTOMER_MENU_ITEMS = [
     ("cust_myid", "🆔 آیدی عددی من"),
 ]
 
+# Same idea as CUSTOMER_MENU_ITEMS, one list per admin tier so main_menu_kb
+# below and handlers/persistent_menu.py's admin bar always show the exact
+# same buttons - see CUSTOMER_MENU_ITEMS's own comment for why that has to
+# be one shared list instead of two that can drift apart. Two lists (not
+# one filtered by a flag) because the seller tier isn't "the full list with
+# some hidden" - "📋 لیست کاربران" vs "📋 لیست کاربران من" is a different
+# label for what's still the same admin_list action.
+ADMIN_MENU_ITEMS_FULL = [
+    ("admin_create", "➕ ساخت کاربر"),
+    ("admin_list", "📋 لیست کاربران"),
+    ("admin_pending", "📥 درخواست‌های در انتظار"),
+    ("admin_broadcast", "📢 پیام همگانی"),
+    ("admin_dm", "✉️ پیام به یک کاربر"),
+    ("admin_search", "🔎 جستجوی کاربر"),
+    ("admin_stats", "📊 گزارش فروش"),
+    ("admin_history", "🗂 تاریخچه درخواست‌ها"),
+]
+
+ADMIN_MENU_ITEMS_SELLER = [
+    ("admin_create", "➕ ساخت کاربر"),
+    ("admin_list", "📋 لیست کاربران من"),
+    ("admin_search", "🔎 جستجوی کاربر"),
+]
+
 
 async def main_menu_kb(scope: dict | None) -> InlineKeyboardMarkup:
     """`scope` is the dict returned by telegram_bot/admin_scope.py's
@@ -79,19 +103,12 @@ async def main_menu_kb(scope: dict | None) -> InlineKeyboardMarkup:
     decisions - that is how they drifted apart in the first place."""
     kb = InlineKeyboardBuilder()
     if scope and scope.get("is_full_admin"):
-        kb.button(text="➕ ساخت کاربر", callback_data=MenuCB(action="admin_create"))
-        kb.button(text="📋 لیست کاربران", callback_data=MenuCB(action="admin_list"))
-        kb.button(text="📥 درخواست‌های در انتظار", callback_data=MenuCB(action="admin_pending"))
-        kb.button(text="📢 پیام همگانی", callback_data=MenuCB(action="admin_broadcast"))
-        kb.button(text="✉️ پیام به یک کاربر", callback_data=MenuCB(action="admin_dm"))
-        kb.button(text="🔎 جستجوی کاربر", callback_data=MenuCB(action="admin_search"))
-        kb.button(text="📊 گزارش فروش", callback_data=MenuCB(action="admin_stats"))
-        kb.button(text="🗂 تاریخچه درخواست‌ها", callback_data=MenuCB(action="admin_history"))
+        for action, label in ADMIN_MENU_ITEMS_FULL:
+            kb.button(text=label, callback_data=MenuCB(action=action))
         kb.adjust(2, 2, 2, 2)
     elif scope:
-        kb.button(text="➕ ساخت کاربر", callback_data=MenuCB(action="admin_create"))
-        kb.button(text="📋 لیست کاربران من", callback_data=MenuCB(action="admin_list"))
-        kb.button(text="🔎 جستجوی کاربر", callback_data=MenuCB(action="admin_search"))
+        for action, label in ADMIN_MENU_ITEMS_SELLER:
+            kb.button(text=label, callback_data=MenuCB(action=action))
         kb.adjust(1)
     else:
         # local import - avoids a circular import at module load (panel_bridge
@@ -118,7 +135,7 @@ async def main_menu_kb(scope: dict | None) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-async def persistent_menu_kb() -> ReplyKeyboardMarkup | None:
+async def persistent_menu_kb(scope: dict | None = None) -> ReplyKeyboardMarkup | None:
     """The bar pinned under the text box in a customer's chat.
 
     Same items, same order and the same «منوی مشتری» on/off switches as the
@@ -126,8 +143,20 @@ async def persistent_menu_kb() -> ReplyKeyboardMarkup | None:
     two lists of shop buttons would drift apart the first time someone added
     a feature. See handlers/persistent_menu.py for how a tap gets routed.
 
-    None when the panel owner has switched every item off: an empty bar is
-    worse than none, and Telegram will not accept one anyway.
+    `scope` (telegram_bot/admin_scope.py's resolve_admin_scope() result)
+    prepends that tier's ADMIN_MENU_ITEMS_FULL/SELLER labels ahead of the
+    shop items instead of replacing them. Telegram allows exactly one
+    ReplyKeyboardMarkup per chat, and start.py's cmd_start sends the shop
+    bar to admins on purpose (so the panel owner can test their own shop
+    without switching accounts) - a bar with admin-only items would
+    silently take that away again the same way the very first version of
+    this bar silently ate admin taps (see on_menu_tap's docstring). One
+    combined bar keeps both true at once.
+
+    None when the panel owner has switched every customer item off AND
+    there are no admin items to show either (i.e. a plain customer with
+    nothing enabled): an empty bar is worse than none, and Telegram will
+    not accept one anyway.
     """
     from .panel_bridge import api, ApiError
 
@@ -135,7 +164,14 @@ async def persistent_menu_kb() -> ReplyKeyboardMarkup | None:
         disabled = set(await api.get_customer_menu_disabled_items())
     except ApiError:
         disabled = set()
-    labels = [label for action, label in CUSTOMER_MENU_ITEMS if action not in disabled]
+    admin_items = []
+    if scope and scope.get("is_full_admin"):
+        admin_items = ADMIN_MENU_ITEMS_FULL
+    elif scope:
+        admin_items = ADMIN_MENU_ITEMS_SELLER
+    labels = [label for _, label in admin_items] + [
+        label for action, label in CUSTOMER_MENU_ITEMS if action not in disabled
+    ]
     if not labels:
         return None
     rows = [

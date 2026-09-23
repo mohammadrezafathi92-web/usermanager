@@ -123,10 +123,20 @@ async def cb_account(call: CallbackQuery, state: FSMContext, bot: Bot) -> None:
 
 @router.callback_query(MenuCB.filter(F.action == "cust_sublink"))
 async def cb_sublink(call: CallbackQuery, state: FSMContext) -> None:
-    """Sends the customer their OWN subscription link (see routers/
-    subscription.py) - one link that always reflects every Xray/VLESS
-    service on this account combined, for pasting straight into a V2ray-
-    family client instead of importing each service's link by hand.
+    """Sends the customer their OWN subscription PAGE link (routers/
+    subscription.py's web_url, "/s/{token}") - a normal browser page
+    listing every service on the account (status, usage, per-service
+    config/QR), not the raw vless:// "app_url" meant for pasting into a
+    V2ray client's Subscribe field.
+
+    Was app_url until 2026-09-23: "منظورم اینه این لینک رو نشون بده نه
+    لینک ساب وی‌توری" (send THIS link [the panel page], not the V2ray-
+    client one) - the panel owner wants something they can actually open
+    and look at, not an opaque machine URL. app_url is still generated
+    and reachable (link_builder/subscription.py's V2ray import endpoint is
+    unchanged) for whoever wants to paste it into a client by hand; this
+    screen just no longer surfaces it.
+
     Deliberately account-level (see keyboards.py's purchases_kb), since the
     underlying endpoint is inherently per-User, not per-connection."""
     user = await _resolve_account(call, state, call.from_user.id, "cust_account")
@@ -140,8 +150,8 @@ async def cb_sublink(call: CallbackQuery, state: FSMContext) -> None:
     except ApiError as exc:
         await call.answer(f"خطا: {exc}", show_alert=True)
         return
-    app_url = link.get("app_url")
-    if not app_url:
+    web_url = link.get("web_url")
+    if not web_url:
         await call.answer(
             "لینک ساب هنوز توسط پشتیبانی تنظیم نشده - لطفاً با پشتیبانی تماس بگیرید.",
             show_alert=True,
@@ -149,9 +159,9 @@ async def cb_sublink(call: CallbackQuery, state: FSMContext) -> None:
         return
     text = (
         "🔗 <b>لینک ساب شما</b>\n\n"
-        "این لینک همیشه ثابت است و همه‌ی سرویس‌های V2ray/Xray شما را با هم نشان می‌دهد - "
-        "کافی است آن را در برنامه‌ی وی‌پی‌ان خود به‌عنوان Subscribe اضافه کنید:\n\n"
-        f"<code>{app_url}</code>"
+        "این لینک همیشه ثابت است و همه‌ی سرویس‌های شما را با هم نشان می‌دهد - "
+        "کافی است روی آن بزنید:\n\n"
+        f"<code>{web_url}</code>"
     )
     await call.message.answer(text)
     await call.answer()

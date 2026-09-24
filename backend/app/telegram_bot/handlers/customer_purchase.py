@@ -188,7 +188,12 @@ async def cb_renew(call: CallbackQuery, state: FSMContext) -> None:
         await state.set_state(CustomerPurchaseStates.picking_service)
         rows = []
         for p in purchases:
-            name = p.get("package_name_snapshot") or "سرویس"
+            package_name = p.get("package_name_snapshot") or "سرویس"
+            # The customer's own label for this service (the same one
+            # "👤 اکانت من" shows - models.Purchase.comment) leads, so two
+            # purchases of the same package don't look identical here.
+            comment = (p.get("comment") or "").strip()
+            name = f"🧾 {comment} — {package_name}" if comment else package_name
             if p.get("quota_bytes"):
                 remaining = max(0, (p["quota_bytes"] - (p.get("used_bytes") or 0))) / (1024 ** 3)
                 detail = f"{remaining:.1f} GB مانده"

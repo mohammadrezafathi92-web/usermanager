@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   Store, Wallet, Layers, AlertTriangle, Check, Upload, X, Loader2, Gift, Globe,
-  Copy, ShoppingBag, Plus, RefreshCw,
+  Copy, ShoppingBag, Plus, RefreshCw, Clock,
 } from "lucide-react";
 import {
   fetchMiniAppHome, miniAppCheckout, miniAppCheckoutReceipt, miniAppTopupReceipt,
@@ -117,7 +117,51 @@ function useTelegram() {
 // ---------------------------------------------------------------- surfaces
 
 const BG = "var(--tg-theme-bg-color,#0b0f14)";
-const CARD = "bg-white/[0.04] border border-white/[0.07]";
+const CARD = "bg-[var(--mi-card)] border border-[color:var(--mi-line)]";
+
+// ------------------------------------------------------------------- theme
+//
+// Surfaces, lines and accents are CSS variables rather than the white/N% and
+// *-400 utilities they used to be. Those were tuned for a dark background
+// only: in Telegram's LIGHT theme the card fills (white at 4%) vanished into
+// a white page, the hairlines disappeared, and the -400 accent text sat at
+// roughly 2:1 on white. The wrapper's data-scheme (Telegram's own
+// colorScheme) picks the set; the dark values are the ones the app shipped
+// with, unchanged.
+const MI_CSS = `
+.mi{--mi-card:rgba(255,255,255,.05);--mi-soft:rgba(255,255,255,.07);--mi-line:rgba(255,255,255,.1);
+--mi-sky:#38bdf8;--mi-emerald:#34d399;--mi-amber:#fbbf24;--mi-red:#f87171;--mi-violet:#a78bfa;}
+.mi[data-scheme="light"]{--mi-card:rgba(0,0,0,.04);--mi-soft:rgba(0,0,0,.06);--mi-line:rgba(0,0,0,.12);
+--mi-sky:#0369a1;--mi-emerald:#047857;--mi-amber:#b45309;--mi-red:#b91c1c;--mi-violet:#6d28d9}
+.mi button,.mi [role=button]{-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+.mi button:focus-visible,.mi input:focus-visible{outline:2px solid var(--mi-sky);outline-offset:2px}
+@keyframes mi-sheet{from{transform:translateY(28px);opacity:0}to{transform:none;opacity:1}}
+@keyframes mi-fade{from{opacity:0}to{opacity:1}}
+@keyframes mi-pulse{0%,100%{opacity:.55}50%{opacity:1}}
+.mi-sheet{animation:mi-sheet .22s ease-out both}
+.mi-fade{animation:mi-fade .18s ease-out both}
+.mi-skel{background:var(--mi-soft);animation:mi-pulse 1.4s ease-in-out infinite}
+@media (prefers-reduced-motion:reduce){.mi-sheet,.mi-fade,.mi-skel{animation:none}}
+`;
+
+/** Telegram's own bottom inset when it reports one, the OS's otherwise. */
+const SAFE_BOTTOM = "max(1.25rem, env(safe-area-inset-bottom), var(--tg-safe-area-inset-bottom, 0px))";
+
+/** Root of every screen: theme variables, the Telegram colours, RTL. */
+function Shell({ scheme, children, className = "", center = false }) {
+  return (
+    <div
+      className={`mi min-h-screen text-[var(--tg-theme-text-color,#fff)] ${center ? "flex items-center justify-center p-6" : ""} ${className}`}
+      style={{ background: BG }}
+      data-scheme={scheme === "light" ? "light" : "dark"}
+      dir="rtl"
+    >
+      <style>{MI_CSS}</style>
+      {children}
+    </div>
+  );
+}
+
 
 function Card({ children, className = "" }) {
   return <div className={`rounded-2xl ${CARD} p-4 ${className}`}>{children}</div>;
@@ -128,9 +172,9 @@ function Card({ children, className = "" }) {
  *  starting wherever its content happens to. */
 function IconTile({ icon: Icon, tone = "sky" }) {
   const tones = {
-    sky: "bg-sky-500/15 text-sky-400",
-    emerald: "bg-emerald-500/15 text-emerald-400",
-    violet: "bg-violet-500/15 text-violet-400",
+    sky: "bg-sky-500/15 text-[color:var(--mi-sky)]",
+    emerald: "bg-emerald-500/15 text-[color:var(--mi-emerald)]",
+    violet: "bg-violet-500/15 text-[color:var(--mi-violet)]",
   };
   return (
     <div className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 ${tones[tone]}`}>
@@ -142,10 +186,10 @@ function IconTile({ icon: Icon, tone = "sky" }) {
 function Badge({ children, tone = "emerald" }) {
   const tones = {
     emerald: "bg-emerald-500 text-white",
-    slate: "bg-white/10 text-white/70",
+    slate: "bg-[var(--mi-soft)] opacity-80",
   };
   return (
-    <span className={`text-[10px] px-2 py-1 rounded-lg font-medium ${tones[tone]}`}>{children}</span>
+    <span className={`text-[11px] px-2 py-1 rounded-lg font-medium ${tones[tone]}`}>{children}</span>
   );
 }
 
@@ -153,7 +197,7 @@ function PageTitle({ title, subtitle }) {
   return (
     <div className="mb-5">
       <h1 className="text-2xl font-bold">{title}</h1>
-      {subtitle && <p className="text-xs opacity-50 mt-1.5 leading-relaxed">{subtitle}</p>}
+      {subtitle && <p className="text-xs opacity-60 mt-1.5 leading-relaxed">{subtitle}</p>}
     </div>
   );
 }
@@ -204,7 +248,7 @@ function ReferralCard({ code, payment, botUsername }) {
         <IconTile icon={Gift} tone="violet" />
         <div className="min-w-0 flex-1">
           <div className="font-bold text-[15px]">با دعوت دوستان اعتبار بگیرید</div>
-          <div className="text-xs opacity-55 mt-2 space-y-1 leading-relaxed">
+          <div className="text-xs opacity-60 mt-2 space-y-1 leading-relaxed">
             {reward(myCredit, myGb) && <div>شما بابت هر دعوت {reward(myCredit, myGb)} می‌گیرید.</div>}
             {reward(credit, gb) && <div>دوستتان هم {reward(credit, gb)} هدیه می‌گیرد.</div>}
           </div>
@@ -214,15 +258,16 @@ function ReferralCard({ code, payment, botUsername }) {
         <button
           type="button"
           onClick={share}
-          className="flex-1 py-2.5 rounded-xl bg-sky-500 active:bg-sky-600 text-white text-sm font-medium"
+          className="flex-1 min-h-[44px] rounded-xl bg-sky-500 active:bg-sky-600 text-white text-sm font-medium flex items-center justify-center gap-1.5"
         >
-          {copied ? "کپی شد ✓" : "دعوت دوستان"}
+          {copied && <Check size={15} />}
+          {copied ? "کپی شد" : "دعوت دوستان"}
         </button>
         <div
-          className="px-3 py-2.5 rounded-xl bg-white/5 text-xs font-mono flex items-center gap-2"
+          className="px-3 min-h-[44px] rounded-xl bg-[var(--mi-soft)] text-xs font-mono flex items-center gap-2"
           dir="ltr"
         >
-          <Copy size={13} className="opacity-40" />
+          <Copy size={13} className="opacity-60" />
           {code}
         </div>
       </div>
@@ -254,7 +299,7 @@ function TrialBanner({ trial, busy, onTake }) {
         <IconTile icon={Gift} tone="violet" />
         <div className="min-w-0 flex-1">
           <div className="font-bold text-[15px]">{trial.name}</div>
-          <div className="text-xs opacity-55 mt-1">
+          <div className="text-xs opacity-60 mt-1">
             {trial.quota_gb
               ? `${fa(Math.round(trial.quota_gb * 1024))} مگابایت`
               : "حجم نامحدود"}
@@ -269,7 +314,7 @@ function TrialBanner({ trial, busy, onTake }) {
         type="button"
         disabled={busy}
         onClick={() => onTake(trial)}
-        className="w-full mt-3.5 py-3 rounded-xl bg-violet-500 active:bg-violet-600 disabled:opacity-50 text-white text-sm font-medium flex items-center justify-center gap-2"
+        className="w-full mt-3.5 min-h-[48px] rounded-xl bg-violet-500 active:bg-violet-600 disabled:opacity-50 text-white text-sm font-medium flex items-center justify-center gap-2"
       >
         {busy ? <Loader2 size={16} className="animate-spin" /> : <Gift size={16} />}
         دریافت رایگان
@@ -324,7 +369,7 @@ function PackagePicker({ packages, onBuy }) {
       {/* The names. Horizontally scrollable rather than wrapped: a wrapping
           row changes height as the selection moves, which makes the whole
           card jump under the thumb that just tapped it. */}
-      <div className="flex gap-2 overflow-x-auto p-3 pb-3 border-b border-white/[0.07]">
+      <div className="flex gap-2 overflow-x-auto p-3 pb-3 border-b border-[color:var(--mi-line)]">
         {packages.map((p) => {
           const active = p.id === pkg.id;
           return (
@@ -332,8 +377,9 @@ function PackagePicker({ packages, onBuy }) {
               key={p.id}
               type="button"
               onClick={() => setSelectedId(p.id)}
-              className={`shrink-0 px-3.5 py-2 rounded-xl text-xs font-medium whitespace-nowrap transition-colors ${
-                active ? "bg-sky-500 text-white" : "bg-white/[0.05] opacity-60"
+              aria-pressed={active}
+              className={`shrink-0 min-h-[44px] px-3.5 rounded-xl text-xs font-medium whitespace-nowrap transition-colors ${
+                active ? "bg-sky-500 text-white" : "bg-[var(--mi-soft)] opacity-80"
               }`}
             >
               {p.name}
@@ -353,7 +399,7 @@ function PackagePicker({ packages, onBuy }) {
               <div className="font-bold text-[15px] truncate">{pkg.name}</div>
               {pkg.id === recommended.id && <Badge>پیشنهاد ما</Badge>}
             </div>
-            <div className="text-xs opacity-50 mt-1">
+            <div className="text-xs opacity-60 mt-1">
               {pkg.quota_gb ? `${fa(pkg.quota_gb)} گیگابایت` : "حجم نامحدود"}
               {" · "}
               {pkg.duration_days ? `${fa(pkg.duration_days)} روز` : "بدون انقضا"}
@@ -368,7 +414,7 @@ function PackagePicker({ packages, onBuy }) {
             they are aiming for is never where it was a moment ago. */}
         <div className="min-h-[3.5rem] mt-3">
           {pkg.description && (
-            <p className="text-xs opacity-45 leading-relaxed">{pkg.description}</p>
+            <p className="text-xs opacity-60 leading-relaxed">{pkg.description}</p>
           )}
         </div>
 
@@ -377,7 +423,7 @@ function PackagePicker({ packages, onBuy }) {
             {protocols.map((protocol) => (
               <span
                 key={protocol}
-                className="text-[10px] px-2 py-1 rounded-lg bg-white/[0.06] opacity-70"
+                className="text-[11px] px-2 py-1 rounded-lg bg-[var(--mi-soft)] opacity-80"
                 dir="ltr"
               >
                 {protocol}
@@ -393,7 +439,7 @@ function PackagePicker({ packages, onBuy }) {
           <button
             type="button"
             onClick={() => onBuy(pkg, { free: true })}
-            className="w-full mt-4 py-3 rounded-xl bg-violet-500 active:bg-violet-600 text-sm font-medium text-white flex items-center justify-center gap-2"
+            className="w-full mt-4 min-h-[48px] rounded-xl bg-violet-500 active:bg-violet-600 text-sm font-medium text-white flex items-center justify-center gap-2"
           >
             <Gift size={16} />
             دریافت رایگان
@@ -414,7 +460,7 @@ function PackagePicker({ packages, onBuy }) {
             <span className="flex-1 text-center">خرید</span>
           </button>
         ) : (
-          <div className="text-xs opacity-40 mt-4 text-center py-3">
+          <div className="text-xs opacity-60 mt-4 text-center py-3">
             خرید این پلن فعلاً از داخل خود ربات انجام می‌شود.
           </div>
         )}
@@ -433,18 +479,42 @@ function fmtDate(value) {
 }
 
 const STATUS = {
-  active: ["فعال", "text-emerald-400 bg-emerald-500/10"],
-  disabled: ["غیرفعال", "text-red-400 bg-red-500/10"],
-  quota_exceeded: ["اتمام حجم", "text-amber-400 bg-amber-500/10"],
-  expired: ["منقضی", "text-gray-400 bg-white/5"],
+  active: ["فعال", "text-[color:var(--mi-emerald)] bg-emerald-500/10"],
+  disabled: ["غیرفعال", "text-[color:var(--mi-red)] bg-red-500/10"],
+  quota_exceeded: ["اتمام حجم", "text-[color:var(--mi-amber)] bg-amber-500/10"],
+  expired: ["منقضی", "text-[color:var(--tg-theme-hint-color,#9ca3af)] bg-[var(--mi-soft)]"],
 };
+
+/** Whole days until `value`, or null for no expiry / unparseable. */
+function daysUntil(value) {
+  if (!value) return null;
+  const ms = new Date(value).getTime() - Date.now();
+  if (Number.isNaN(ms)) return null;
+  return Math.ceil(ms / 86400000);
+}
 
 function ServiceCard({ service, onRenew }) {
   const used = service.used_bytes || 0;
   const total = service.quota_bytes || 0;
   const pct = total ? Math.min(100, Math.round((used / total) * 100)) : 0;
-  const [label, colour] = STATUS[service.status] || [service.status, "text-gray-400 bg-white/5"];
+  const [label, colour] = STATUS[service.status] || [service.status, "text-[color:var(--mi-amber)] bg-[var(--mi-soft)]"];
   const reserved = (service.reserved_quota_bytes || 0) + (service.reserved_duration_days || 0);
+  const days = daysUntil(service.expire_at);
+
+  // What the customer most needs to notice on this card, in one line, in
+  // words - not only in a bar colour. The renew button below is promoted
+  // exactly when this fires, so the screen leads with the next action instead
+  // of making them work out from three numbers that it is time.
+  const attention =
+    service.status === "expired" || (days !== null && days <= 0)
+      ? "این سرویس منقضی شده است."
+      : service.status === "quota_exceeded" || (total && pct >= 100)
+        ? "حجم این سرویس تمام شده است."
+        : days !== null && days <= 3
+          ? `فقط ${fa(days)} روز به پایان سرویس مانده است.`
+          : total && pct >= 90
+            ? "حجم این سرویس رو به اتمام است."
+            : "";
 
   return (
     <Card className="mb-3">
@@ -453,22 +523,32 @@ function ServiceCard({ service, onRenew }) {
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
             <div className="font-bold text-[15px] truncate">{service.name}</div>
-            <span className={`text-[10px] px-2 py-1 rounded-lg shrink-0 ${colour}`}>{label}</span>
+            <span className={`text-xs px-2 py-1 rounded-lg shrink-0 ${colour}`}>{label}</span>
           </div>
-          <div className="text-xs opacity-50 mt-1">انقضا: {fmtDate(service.expire_at)}</div>
+          <div className="text-xs opacity-60 mt-1">
+            انقضا: {fmtDate(service.expire_at)}
+            {days !== null && days > 0 ? ` · ${fa(days)} روز مانده` : ""}
+          </div>
         </div>
       </div>
 
       <div className="mt-4">
-        <div className="h-1.5 rounded-full bg-white/[0.07] overflow-hidden">
+        <div
+          role="progressbar"
+          aria-label="حجم مصرف‌شده"
+          aria-valuemin={0}
+          aria-valuemax={total || 100}
+          aria-valuenow={total ? Math.min(used, total) : 0}
+          className="h-2 rounded-full bg-[var(--mi-soft)] overflow-hidden"
+        >
           <div
             className={`h-full rounded-full ${
               pct > 90 ? "bg-red-400" : pct > 70 ? "bg-amber-400" : "bg-sky-400"
             }`}
-            style={{ width: total ? `${pct}%` : "100%" }}
+            style={{ width: total ? `${pct}%` : "100%", opacity: total ? 1 : 0.35 }}
           />
         </div>
-        <div className="flex items-center justify-between text-xs opacity-50 mt-2">
+        <div className="flex items-center justify-between text-xs opacity-65 mt-2">
           <span dir="ltr">
             {total ? `${formatBytes(used)} / ${formatBytes(total)}` : formatBytes(used)}
           </span>
@@ -476,33 +556,165 @@ function ServiceCard({ service, onRenew }) {
         </div>
       </div>
 
+      {attention && (
+        <div className="text-xs text-[color:var(--mi-amber)] bg-amber-500/10 rounded-lg px-3 py-2 mt-3 flex items-center gap-2">
+          <AlertTriangle size={14} className="shrink-0" />
+          {attention}
+        </div>
+      )}
+
       {/* A renewal already paid for, waiting for this one to run out. Without
           it, a customer who has just renewed sees nothing change and buys
           again. */}
       {reserved > 0 && (
-        <div className="text-xs text-sky-400 mt-3 bg-sky-500/10 rounded-lg px-3 py-2">
-          ⏳ تمدید رزروشده
-          {service.reserved_quota_bytes ? ` · ${formatBytes(service.reserved_quota_bytes)}` : ""}
-          {service.reserved_duration_days ? ` · ${fa(service.reserved_duration_days)} روز` : ""}
+        <div className="text-xs text-[color:var(--mi-sky)] mt-3 bg-sky-500/10 rounded-lg px-3 py-2 flex items-center gap-2">
+          <Clock size={14} className="shrink-0" />
+          <span>
+            تمدید رزروشده
+            {service.reserved_quota_bytes ? ` · ${formatBytes(service.reserved_quota_bytes)}` : ""}
+            {service.reserved_duration_days ? ` · ${fa(service.reserved_duration_days)} روز` : ""}
+          </span>
         </div>
       )}
 
       {service.connection_count > 0 && (
-        <div className="text-xs opacity-35 mt-3">{fa(service.connection_count)} اتصال</div>
+        <div className="text-xs opacity-60 mt-3">{fa(service.connection_count)} اتصال</div>
       )}
 
       {/* Renewal continues THIS service (same connections, same links) - the
-          bot's «تمدید سرویس». It used to exist only there; the Mini App had
-          nowhere to renew, so a customer had to leave it to do so. */}
+          bot's «تمدید سرویس». Solid when the card has just said something is
+          wrong, quiet otherwise. */}
       <button
         type="button"
         onClick={() => onRenew(service)}
-        className="w-full mt-4 py-2.5 rounded-xl bg-sky-500/15 text-sky-400 active:bg-sky-500/25 text-sm font-medium flex items-center justify-center gap-2"
+        className={`w-full mt-4 min-h-[44px] rounded-xl text-sm font-medium flex items-center justify-center gap-2 ${
+          attention
+            ? "bg-sky-500 active:bg-sky-600 text-white"
+            : "bg-sky-500/15 text-[color:var(--mi-sky)] active:bg-sky-500/25"
+        }`}
       >
         <RefreshCw size={15} />
         تمدید این سرویس
       </button>
     </Card>
+  );
+}
+
+/**
+ * The bottom sheet all three flows share (renewal plan, checkout, top-up).
+ *
+ * It was written out three times, which is how the three drifted: a close
+ * button ~28px square and unlabelled, no dialog semantics for a screen
+ * reader, the page behind still scrolling under the thumb, no way to
+ * dismiss it with Telegram's own back button, and a bottom padding that
+ * ignored the phone's home indicator. Fixed once, here.
+ *
+ * `dismissible` is false while a request is in flight: closing then would
+ * leave the customer unsure whether the payment went through.
+ */
+function Sheet({ title, subtitle, onClose, dismissible = true, children }) {
+  const closeRef = useRef(onClose);
+  closeRef.current = dismissible ? onClose : () => {};
+
+  useEffect(() => {
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const onKey = (e) => {
+      if (e.key === "Escape") closeRef.current();
+    };
+    document.addEventListener("keydown", onKey);
+
+    // Telegram's own back arrow closes the sheet - what a phone user reaches
+    // for first. Guarded: on a webview where the script never arrived there
+    // is no BackButton and nothing here may throw.
+    const back = window.Telegram?.WebApp?.BackButton;
+    const onBack = () => closeRef.current();
+    try {
+      back?.show?.();
+      back?.onClick?.(onBack);
+    } catch {
+      /* older client - the visible close button still works */
+    }
+
+    return () => {
+      document.body.style.overflow = previous;
+      document.removeEventListener("keydown", onKey);
+      try {
+        back?.offClick?.(onBack);
+        back?.hide?.();
+      } catch {
+        /* see above */
+      }
+    };
+  }, []);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end" dir="rtl">
+      <div className="mi-fade absolute inset-0 bg-black/60" onClick={dismissible ? onClose : undefined} />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="mi-sheet relative w-full max-w-lg mx-auto rounded-t-3xl border-t border-[color:var(--mi-line)] px-5 pt-3 max-h-[88vh] overflow-y-auto overscroll-contain"
+        style={{ background: "var(--tg-theme-secondary-bg-color,#151b23)", paddingBottom: SAFE_BOTTOM }}
+      >
+        <div className="w-10 h-1 rounded-full bg-[var(--mi-line)] mx-auto mb-3" />
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div className="min-w-0 pt-1.5">
+            <div className="font-bold">{title}</div>
+            {subtitle && <div className="text-xs opacity-60 mt-1">{subtitle}</div>}
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={!dismissible}
+            aria-label="بستن"
+            className="shrink-0 w-11 h-11 -mt-1 -me-2 rounded-full flex items-center justify-center opacity-60 active:bg-[var(--mi-soft)] disabled:opacity-25"
+          >
+            <X size={20} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The card number, with something to do about it. It used to be text with
+ * `select-all` - which in a phone webview means a long-press, a drag of the
+ * selection handles and a menu, for the one string the customer has to move
+ * into their banking app to pay. One tap now.
+ */
+function CardNumber({ number, holder, amountHint }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(String(number).replace(/\s+/g, ""));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* clipboard blocked - the number is still on screen and selectable */
+    }
+  };
+  return (
+    <div className="rounded-xl bg-[var(--mi-card)] border border-[color:var(--mi-line)] p-3.5 text-sm mb-3">
+      {amountHint && <div className="text-xs opacity-60 mb-2">{amountHint}</div>}
+      <div className="flex items-center justify-between gap-3">
+        <div dir="ltr" className="font-mono text-base tracking-wider select-all">{number}</div>
+        <button
+          type="button"
+          onClick={copy}
+          aria-label="کپی شماره کارت"
+          className="shrink-0 min-h-[44px] px-3 rounded-lg bg-[var(--mi-soft)] active:opacity-70 text-xs flex items-center gap-1.5"
+        >
+          {copied ? <Check size={14} className="text-[color:var(--mi-emerald)]" /> : <Copy size={14} />}
+          {copied ? "کپی شد" : "کپی"}
+        </button>
+      </div>
+      {holder && <div className="opacity-70 text-xs mt-2">{holder}</div>}
+    </div>
   );
 }
 
@@ -515,50 +727,33 @@ function ServiceCard({ service, onRenew }) {
  */
 function RenewPicker({ service, packages, onPick, onClose }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-end" dir="rtl">
-      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-      <div
-        className="relative w-full max-w-lg mx-auto rounded-t-3xl border-t border-white/10 p-5 pb-8 max-h-[88vh] overflow-y-auto"
-        style={{ background: "var(--tg-theme-secondary-bg-color,#151b23)" }}
-      >
-        <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-4" />
-        <div className="flex items-start justify-between gap-3 mb-4">
-          <div className="min-w-0">
-            <div className="font-bold">تمدید {service.name}</div>
-            <div className="text-xs opacity-50 mt-1">پلن تمدید را انتخاب کنید.</div>
-          </div>
-          <button type="button" onClick={onClose} className="opacity-50 p-1 -m-1">
-            <X size={20} />
-          </button>
-        </div>
-
-        {packages.length === 0 && (
-          <div className="text-sm opacity-50 text-center py-6">پلنی برای تمدید موجود نیست.</div>
-        )}
-        <div className="space-y-2">
-          {packages.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => onPick(p)}
-              className="w-full rounded-xl bg-white/[0.05] active:bg-white/[0.09] p-3.5 flex items-center justify-between gap-3 text-start"
-            >
-              <div className="min-w-0">
-                <div className="text-sm font-medium truncate">{p.name}</div>
-                <div className="text-xs opacity-50 mt-1">
-                  {p.quota_gb ? `${fa(p.quota_gb)} گیگابایت` : "حجم نامحدود"}
-                  {" · "}
-                  {p.duration_days ? `${fa(p.duration_days)} روز` : "بدون انقضا"}
-                </div>
+    <Sheet title={`تمدید ${service.name}`} subtitle="پلن تمدید را انتخاب کنید." onClose={onClose}>
+      {packages.length === 0 && (
+        <div className="text-sm opacity-60 text-center py-6">پلنی برای تمدید موجود نیست.</div>
+      )}
+      <div className="space-y-2">
+        {packages.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() => onPick(p)}
+            className="w-full min-h-[56px] rounded-xl bg-[var(--mi-card)] border border-[color:var(--mi-line)] active:bg-[var(--mi-soft)] p-3.5 flex items-center justify-between gap-3 text-start"
+          >
+            <div className="min-w-0">
+              <div className="text-sm font-medium truncate">{p.name}</div>
+              <div className="text-xs opacity-60 mt-1">
+                {p.quota_gb ? `${fa(p.quota_gb)} گیگابایت` : "حجم نامحدود"}
+                {" · "}
+                {p.duration_days ? `${fa(p.duration_days)} روز` : "بدون انقضا"}
               </div>
-              <span className="shrink-0 text-xs bg-sky-500/15 text-sky-400 rounded-lg px-2.5 py-1.5">
-                {formatToman(p.price || 0, "fa")} تومان
-              </span>
-            </button>
-          ))}
-        </div>
+            </div>
+            <span className="shrink-0 text-xs bg-sky-500/15 text-[color:var(--mi-sky)] rounded-lg px-2.5 py-1.5">
+              {formatToman(p.price || 0, "fa")} تومان
+            </span>
+          </button>
+        ))}
       </div>
-    </div>
+    </Sheet>
   );
 }
 
@@ -587,7 +782,7 @@ function CheckoutSheet({ pkg, wallet, account, payment, initData, renew, onClose
       const res = await miniAppCheckout(initData, {
         package_id: pkg.id, account, renew_purchase_id: renew?.id,
       });
-      onDone(res.data.message);
+      onDone(res.data.message, res.data.status);
     } catch (err) {
       fail(err);
     } finally {
@@ -603,7 +798,7 @@ function CheckoutSheet({ pkg, wallet, account, payment, initData, renew, onClose
       const res = await miniAppCheckoutReceipt(initData, {
         packageId: pkg.id, account, file, renewPurchaseId: renew?.id,
       });
-      onDone(res.data.message);
+      onDone(res.data.message, res.data.status);
     } catch (err) {
       fail(err);
     } finally {
@@ -612,113 +807,99 @@ function CheckoutSheet({ pkg, wallet, account, payment, initData, renew, onClose
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end" dir="rtl">
-      <div className="absolute inset-0 bg-black/70" onClick={busy ? undefined : onClose} />
-      <div
-        className="relative w-full max-w-lg mx-auto rounded-t-3xl border-t border-white/10 p-5 pb-8 max-h-[88vh] overflow-y-auto"
-        style={{ background: "var(--tg-theme-secondary-bg-color,#151b23)" }}
-      >
-        {/* The grab handle. Costs four lines and tells the customer, without
-            words, that this is a sheet they can dismiss. */}
-        <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-4" />
+    <Sheet
+      title={renew ? `تمدید ${renew.name}` : pkg.name}
+      subtitle={`${renew ? `${pkg.name} · ` : ""}${formatToman(price, "fa")} تومان`}
+      onClose={onClose}
+      dismissible={!busy}
+    >
+      <div className="rounded-xl bg-[var(--mi-card)] px-3 py-3 text-xs flex items-center justify-between mb-4">
+        <span className="opacity-60">موجودی کیف پول</span>
+        <span>{formatToman(wallet, "fa")} تومان</span>
+      </div>
 
-        <div className="flex items-start justify-between gap-3 mb-4">
-          <div className="min-w-0">
-            <div className="font-bold">{renew ? `تمدید ${renew.name}` : pkg.name}</div>
-            <div className="text-xs opacity-50 mt-1">
-              {renew ? `${pkg.name} · ` : ""}{formatToman(price, "fa")} تومان
-            </div>
+      {canPayFromWallet && (
+        <button
+          type="button"
+          onClick={payFromWallet}
+          disabled={busy}
+          className="w-full min-h-[48px] rounded-xl bg-emerald-500 active:bg-emerald-600 disabled:opacity-50 text-white text-sm font-medium flex items-center justify-center gap-2"
+        >
+          {busy ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
+          پرداخت از کیف پول
+        </button>
+      )}
+
+      <div className={canPayFromWallet ? "mt-5 pt-5 border-t border-[color:var(--mi-line)]" : ""}>
+        <div className="text-sm font-medium mb-3">
+          {canPayFromWallet ? "یا پرداخت کارت‌به‌کارت" : "پرداخت کارت‌به‌کارت"}
+        </div>
+        {!canPayFromWallet && wallet > 0 && (
+          <div className="text-xs text-[color:var(--mi-amber)] bg-amber-500/10 rounded-lg px-3 py-2 mb-3">
+            موجودی کیف پول برای این پلن کافی نیست.
           </div>
-          <button type="button" onClick={onClose} disabled={busy} className="opacity-50 p-1 -m-1">
-            <X size={20} />
-          </button>
-        </div>
-
-        <div className="rounded-xl bg-white/[0.04] px-3 py-3 text-xs flex items-center justify-between mb-4">
-          <span className="opacity-50">موجودی کیف پول</span>
-          <span>{formatToman(wallet, "fa")} تومان</span>
-        </div>
-
-        {canPayFromWallet && (
-          <button
-            type="button"
-            onClick={payFromWallet}
-            disabled={busy}
-            className="w-full py-3.5 rounded-xl bg-emerald-500 active:bg-emerald-600 disabled:opacity-50 text-white text-sm font-medium flex items-center justify-center gap-2"
-          >
-            {busy ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
-            پرداخت از کیف پول
-          </button>
         )}
 
-        <div className="mt-5 pt-5 border-t border-white/[0.07]">
-          <div className="text-sm font-medium mb-3">
-            {canPayFromWallet ? "یا پرداخت کارت‌به‌کارت" : "پرداخت کارت‌به‌کارت"}
-          </div>
-          {!canPayFromWallet && wallet > 0 && (
-            <div className="text-xs text-amber-400 bg-amber-500/10 rounded-lg px-3 py-2 mb-3">
-              موجودی کیف پول برای این پلن کافی نیست.
-            </div>
-          )}
-
-          {payment?.payment_card_number ? (
-            <div className="rounded-xl bg-white/[0.04] p-3.5 text-sm space-y-2 mb-3">
-              <div className="text-xs opacity-50">
-                مبلغ {formatToman(price, "fa")} تومان را به این کارت واریز کنید:
-              </div>
-              <div dir="ltr" className="font-mono text-base tracking-wider select-all">
-                {payment.payment_card_number}
-              </div>
-              {payment.payment_card_holder && (
-                <div className="opacity-60 text-xs">{payment.payment_card_holder}</div>
-              )}
-            </div>
-          ) : (
-            <div className="text-xs opacity-50 mb-3">
-              هنوز روش پرداخت تنظیم نشده - با پشتیبانی تماس بگیرید.
-            </div>
-          )}
-
-          {/* A plain file input is unstyleable and, in Telegram's webview,
-              easy to miss entirely. The button drives it instead. */}
-          <input
-            ref={fileInput}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => {
-              setFile(e.target.files?.[0] || null);
-              setError("");
-            }}
+        {payment?.payment_card_number ? (
+          <CardNumber
+            number={payment.payment_card_number}
+            holder={payment.payment_card_holder}
+            amountHint={`مبلغ ${formatToman(price, "fa")} تومان را به این کارت واریز کنید:`}
           />
-          <button
-            type="button"
-            onClick={() => fileInput.current?.click()}
-            disabled={busy}
-            className={`w-full py-3 rounded-xl border text-sm flex items-center justify-center gap-2 disabled:opacity-50 ${
-              file ? "border-emerald-500/40 text-emerald-400 bg-emerald-500/5" : "border-white/15"
-            }`}
-          >
-            {file ? <Check size={15} /> : <Upload size={15} />}
-            {file ? "عکس رسید انتخاب شد" : "انتخاب عکس رسید"}
-          </button>
+        ) : (
+          <div className="text-xs opacity-60 mb-3">
+            هنوز روش پرداخت تنظیم نشده - با پشتیبانی تماس بگیرید.
+          </div>
+        )}
 
-          <button
-            type="button"
-            onClick={sendReceipt}
-            disabled={busy || !file}
-            className="w-full mt-2 py-3.5 rounded-xl bg-sky-500 active:bg-sky-600 disabled:opacity-30 text-white text-sm font-medium flex items-center justify-center gap-2"
-          >
-            {busy ? <Loader2 size={16} className="animate-spin" /> : null}
-            ارسال رسید
-          </button>
-        </div>
+        {/* A plain file input is unstyleable and, in Telegram's webview,
+            easy to miss entirely. The button drives it instead. */}
+        <input
+          ref={fileInput}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            setFile(e.target.files?.[0] || null);
+            setError("");
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => fileInput.current?.click()}
+          disabled={busy}
+          className={`w-full min-h-[48px] rounded-xl border text-sm flex items-center justify-center gap-2 disabled:opacity-50 ${
+            file
+              ? "border-emerald-500/40 text-[color:var(--mi-emerald)] bg-emerald-500/5"
+              : "border-[color:var(--mi-line)]"
+          }`}
+        >
+          {file ? <Check size={15} /> : <Upload size={15} />}
+          <span className="truncate max-w-[70%]">{file ? file.name : "انتخاب عکس رسید"}</span>
+        </button>
 
-        {error && (
-          <div className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2.5 mt-4">{error}</div>
+        <button
+          type="button"
+          onClick={sendReceipt}
+          disabled={busy || !file}
+          className="w-full mt-2 min-h-[48px] rounded-xl bg-sky-500 active:bg-sky-600 disabled:opacity-40 text-white text-sm font-medium flex items-center justify-center gap-2"
+        >
+          {busy ? <Loader2 size={16} className="animate-spin" /> : null}
+          ارسال رسید
+        </button>
+        {!file && (
+          <div className="text-xs opacity-60 mt-2 text-center">
+            بعد از واریز، عکس رسید را انتخاب کنید تا دکمه فعال شود.
+          </div>
         )}
       </div>
-    </div>
+
+      {error && (
+        <div role="alert" className="text-xs text-[color:var(--mi-red)] bg-red-500/10 rounded-lg px-3 py-2.5 mt-4">
+          {error}
+        </div>
+      )}
+    </Sheet>
   );
 }
 
@@ -761,7 +942,7 @@ function TopupSheet({ wallet, account, payment, initData, onClose, onDone }) {
     setError("");
     try {
       const res = await miniAppTopupReceipt(initData, { amount: value, account, file });
-      onDone(res.data.message);
+      onDone(res.data.message, res.data.status);
     } catch (err) {
       setError(err?.response?.data?.detail || "انجام نشد. دوباره تلاش کنید.");
     } finally {
@@ -770,116 +951,108 @@ function TopupSheet({ wallet, account, payment, initData, onClose, onDone }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end" dir="rtl">
-      <div className="absolute inset-0 bg-black/70" onClick={busy ? undefined : onClose} />
-      <div
-        className="relative w-full max-w-lg mx-auto rounded-t-3xl border-t border-white/10 p-5 pb-8 max-h-[88vh] overflow-y-auto"
-        style={{ background: "var(--tg-theme-secondary-bg-color,#151b23)" }}
-      >
-        <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-4" />
-
-        <div className="flex items-start justify-between gap-3 mb-4">
-          <div>
-            <div className="font-bold">افزایش اعتبار</div>
-            <div className="text-xs opacity-50 mt-1">
-              موجودی فعلی: {formatToman(wallet, "fa")} تومان
-            </div>
-          </div>
-          <button type="button" onClick={onClose} disabled={busy} className="opacity-50 p-1 -m-1">
-            <X size={20} />
-          </button>
+    <Sheet
+      title="افزایش اعتبار"
+      subtitle={`موجودی فعلی: ${formatToman(wallet, "fa")} تومان`}
+      onClose={onClose}
+      dismissible={!busy}
+    >
+      <label htmlFor="mi-topup-amount" className="block text-sm font-medium mb-2">چه مبلغی؟</label>
+      {presets.length > 0 && (
+        <div className="flex gap-2 overflow-x-auto pb-1 mb-2">
+          {presets.map((preset) => (
+            <button
+              key={preset}
+              type="button"
+              onClick={() => setAmount(String(preset))}
+              aria-pressed={value === preset}
+              className={`shrink-0 min-h-[40px] px-3.5 rounded-xl text-xs font-medium ${
+                value === preset ? "bg-sky-500 text-white" : "bg-[var(--mi-soft)] opacity-80"
+              }`}
+            >
+              {formatToman(preset, "fa")}
+            </button>
+          ))}
         </div>
+      )}
+      {/* inputMode rather than type="number": a numeric keypad without the
+          spinner arrows, and without a browser quietly reformatting what
+          was typed. */}
+      <input
+        id="mi-topup-amount"
+        className="w-full min-h-[48px] rounded-xl bg-[var(--mi-card)] px-3.5 text-sm outline-none border border-[color:var(--mi-line)] focus:border-sky-500 placeholder:opacity-50"
+        inputMode="numeric"
+        placeholder="مبلغ به تومان"
+        value={amount}
+        disabled={busy}
+        onChange={(e) => {
+          setAmount(e.target.value.replace(/[^0-9]/g, ""));
+          setError("");
+        }}
+      />
+      {value > 0 && (
+        <div className="text-xs opacity-60 mt-2">{formatToman(value, "fa")} تومان</div>
+      )}
 
-        <div className="text-sm font-medium mb-2">چه مبلغی؟</div>
-        {presets.length > 0 && (
-          <div className="flex gap-2 overflow-x-auto pb-1 mb-2">
-            {presets.map((preset) => (
-              <button
-                key={preset}
-                type="button"
-                onClick={() => setAmount(String(preset))}
-                className={`shrink-0 px-3.5 py-2 rounded-xl text-xs font-medium ${
-                  value === preset ? "bg-sky-500 text-white" : "bg-white/[0.05] opacity-60"
-                }`}
-              >
-                {formatToman(preset, "fa")}
-              </button>
-            ))}
+      <div className="mt-5 pt-5 border-t border-[color:var(--mi-line)]">
+        {payment?.payment_card_number ? (
+          <CardNumber
+            number={payment.payment_card_number}
+            holder={payment.payment_card_holder}
+            amountHint="مبلغ را به این کارت واریز کنید:"
+          />
+        ) : (
+          <div className="text-xs opacity-60 mb-3">
+            هنوز روش پرداخت تنظیم نشده - با پشتیبانی تماس بگیرید.
           </div>
         )}
-        {/* inputMode rather than type="number": a numeric keypad without the
-            spinner arrows, and without a browser quietly reformatting what
-            was typed. */}
+
         <input
-          className="w-full rounded-xl bg-white/[0.05] px-3.5 py-3 text-sm outline-none border border-white/10 focus:border-sky-500"
-          inputMode="numeric"
-          placeholder="مبلغ به تومان"
-          value={amount}
-          disabled={busy}
+          ref={fileInput}
+          type="file"
+          accept="image/*"
+          className="hidden"
           onChange={(e) => {
-            setAmount(e.target.value.replace(/[^0-9]/g, ""));
+            setFile(e.target.files?.[0] || null);
             setError("");
           }}
         />
-        {value > 0 && (
-          <div className="text-xs opacity-50 mt-2">{formatToman(value, "fa")} تومان</div>
-        )}
+        <button
+          type="button"
+          onClick={() => fileInput.current?.click()}
+          disabled={busy}
+          className={`w-full min-h-[48px] rounded-xl border text-sm flex items-center justify-center gap-2 disabled:opacity-50 ${
+            file
+              ? "border-emerald-500/40 text-[color:var(--mi-emerald)] bg-emerald-500/5"
+              : "border-[color:var(--mi-line)]"
+          }`}
+        >
+          {file ? <Check size={15} /> : <Upload size={15} />}
+          <span className="truncate max-w-[70%]">{file ? file.name : "انتخاب عکس رسید"}</span>
+        </button>
 
-        <div className="mt-5 pt-5 border-t border-white/[0.07]">
-          {payment?.payment_card_number ? (
-            <div className="rounded-xl bg-white/[0.04] p-3.5 text-sm space-y-2 mb-3">
-              <div className="text-xs opacity-50">مبلغ را به این کارت واریز کنید:</div>
-              <div dir="ltr" className="font-mono text-base tracking-wider select-all">
-                {payment.payment_card_number}
-              </div>
-              {payment.payment_card_holder && (
-                <div className="opacity-60 text-xs">{payment.payment_card_holder}</div>
-              )}
-            </div>
-          ) : (
-            <div className="text-xs opacity-50 mb-3">
-              هنوز روش پرداخت تنظیم نشده - با پشتیبانی تماس بگیرید.
-            </div>
-          )}
-
-          <input
-            ref={fileInput}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => {
-              setFile(e.target.files?.[0] || null);
-              setError("");
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => fileInput.current?.click()}
-            disabled={busy}
-            className={`w-full py-3 rounded-xl border text-sm flex items-center justify-center gap-2 disabled:opacity-50 ${
-              file ? "border-emerald-500/40 text-emerald-400 bg-emerald-500/5" : "border-white/15"
-            }`}
-          >
-            {file ? <Check size={15} /> : <Upload size={15} />}
-            {file ? "عکس رسید انتخاب شد" : "انتخاب عکس رسید"}
-          </button>
-
-          <button
-            type="button"
-            onClick={send}
-            disabled={busy || !value || !file}
-            className="w-full mt-2 py-3.5 rounded-xl bg-sky-500 active:bg-sky-600 disabled:opacity-30 text-white text-sm font-medium flex items-center justify-center gap-2"
-          >
-            {busy ? <Loader2 size={16} className="animate-spin" /> : null}
-            ارسال رسید
-          </button>
-        </div>
-
-        {error && (
-          <div className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2.5 mt-4">{error}</div>
+        <button
+          type="button"
+          onClick={send}
+          disabled={busy || !value || !file}
+          className="w-full mt-2 min-h-[48px] rounded-xl bg-sky-500 active:bg-sky-600 disabled:opacity-40 text-white text-sm font-medium flex items-center justify-center gap-2"
+        >
+          {busy ? <Loader2 size={16} className="animate-spin" /> : null}
+          ارسال رسید
+        </button>
+        {(!value || !file) && (
+          <div className="text-xs opacity-60 mt-2 text-center">
+            {!value ? "مبلغ را وارد کنید" : "عکس رسید را انتخاب کنید"} تا دکمه فعال شود.
+          </div>
         )}
       </div>
-    </div>
+
+      {error && (
+        <div role="alert" className="text-xs text-[color:var(--mi-red)] bg-red-500/10 rounded-lg px-3 py-2.5 mt-4">
+          {error}
+        </div>
+      )}
+    </Sheet>
   );
 }
 
@@ -898,6 +1071,14 @@ export default function MiniApp() {
   const [toppingUp, setToppingUp] = useState(false);
   const [claiming, setClaiming] = useState(null);
   const [done, setDone] = useState("");
+  // "ok" | "pending" | "error" - so a failure is not dressed up as a success.
+  // takePackage's error path used to put the server's refusal in the same
+  // green-tick dialog a completed purchase gets.
+  const [doneTone, setDoneTone] = useState("ok");
+  const notify = (text, tone = "ok") => {
+    setDone(text);
+    setDoneTone(tone);
+  };
 
   // Read once, from the URL, and kept for the retry button. Not derived
   // from webApp: see initDataFromUrl on why the page must not wait for
@@ -953,10 +1134,10 @@ export default function MiniApp() {
     setClaiming(pkg.id);
     miniAppCheckout(initData || webApp?.initData || "", { package_id: pkg.id })
       .then((res) => {
-        setDone(res.data.message);
+        notify(res.data.message);
         load(initData || webApp?.initData || "");
       })
-      .catch((err) => setDone(err?.response?.data?.detail || "انجام نشد. دوباره تلاش کنید."))
+      .catch((err) => notify(err?.response?.data?.detail || "انجام نشد. دوباره تلاش کنید.", "error"))
       .finally(() => setClaiming(null));
   };
 
@@ -989,23 +1170,24 @@ export default function MiniApp() {
   // routers/miniapp.py's _shop_shelves, and re-deriving any of it here
   // would be the same rules written twice, free to disagree.
   const shelves = data?.shop?.groups || [];
+  // Telegram's own answer, not the OS's: the two disagree whenever the
+  // customer picked a theme inside Telegram. Dark until Telegram says
+  // otherwise, which is also what a webview with no script gets.
+  const scheme = webApp?.colorScheme === "light" ? "light" : "dark";
 
   if (error) {
     return (
-      <div
-        className="min-h-screen text-[var(--tg-theme-text-color,#fff)] flex items-center justify-center p-6"
-        style={{ background: BG }}
-        dir="rtl"
-      >
+      <Shell scheme={scheme} center>
         <Card className="text-center max-w-sm">
-          <AlertTriangle className="mx-auto mb-3 text-amber-400" size={28} />
+          <AlertTriangle className="mx-auto mb-3 text-[color:var(--mi-amber)]" size={28} />
+          <span className="sr-only">خطا</span>
           <div className="text-sm">{error}</div>
           {/* Something to tap. An error screen with no control on it is
               indistinguishable from a frozen app - which is exactly how the
               first version was reported ("هیچ کلیکی نمیشه"). */}
           <button
             type="button"
-            className="mt-4 px-4 py-2 rounded-xl bg-sky-500 text-white text-sm"
+            className="mt-4 min-h-[44px] px-5 rounded-xl bg-sky-500 active:bg-sky-600 text-white text-sm"
             onClick={() => load(initData || webApp?.initData || "")}
           >
             تلاش دوباره
@@ -1017,7 +1199,7 @@ export default function MiniApp() {
               could reach from inside Telegram's webview. Names and lengths
               only - never the signature itself, which is a credential. */}
           <details className="mt-4 text-start">
-            <summary className="text-xs opacity-50 cursor-pointer">جزئیات فنی</summary>
+            <summary className="text-xs opacity-60 cursor-pointer min-h-[44px] flex items-center">جزئیات فنی</summary>
             <div className="text-[11px] opacity-70 mt-2 space-y-0.5 font-mono" dir="ltr">
               <div>telegram script: {webApp ? "loaded" : settled ? "absent" : "pending"}</div>
               <div>initData in url: {initData ? `${initData.length} chars` : "no"}</div>
@@ -1027,18 +1209,31 @@ export default function MiniApp() {
             </div>
           </details>
         </Card>
-      </div>
+      </Shell>
     );
   }
 
   if (!data) {
+    // The page's own shape, greyed, instead of a lone spinner on a blank
+    // screen: on the mobile networks this is sold into the first response can
+    // take seconds, and a layout that is already there reads as "loading",
+    // where an empty screen reads as "broken".
     return (
-      <div
-        className="min-h-screen text-[var(--tg-theme-text-color,#fff)] flex items-center justify-center"
-        style={{ background: BG }}
-      >
-        <Loader2 className="animate-spin opacity-40" size={26} />
-      </div>
+      <Shell scheme={scheme}>
+        <div className="px-4 pt-4 max-w-lg mx-auto" role="status" aria-live="polite" aria-label="در حال بارگذاری">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-2.5">
+              <div className="mi-skel w-9 h-9 rounded-full" />
+              <div className="mi-skel h-4 w-24 rounded" />
+            </div>
+            <div className="mi-skel h-9 w-24 rounded-full" />
+          </div>
+          <div className="mi-skel h-7 w-40 rounded mb-2" />
+          <div className="mi-skel h-3 w-56 rounded mb-6" />
+          <div className="mi-skel h-24 rounded-2xl mb-4" />
+          <div className="mi-skel h-56 rounded-2xl" />
+        </div>
+      </Shell>
     );
   }
 
@@ -1050,12 +1245,12 @@ export default function MiniApp() {
   const shopName = data.shop.title || "فروشگاه";
 
   return (
-    <div className="min-h-screen text-[var(--tg-theme-text-color,#fff)]" style={{ background: BG }} dir="rtl">
+    <Shell scheme={scheme}>
       <div className="px-4 pt-4 pb-32 max-w-lg mx-auto">
         {/* Top bar: who this shop is, and what the customer has in it. */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-full bg-sky-500/15 text-sky-400 flex items-center justify-center text-sm font-bold">
+            <div className="w-9 h-9 rounded-full bg-sky-500/15 text-[color:var(--mi-sky)] flex items-center justify-center text-sm font-bold">
               {shopName.slice(0, 1)}
             </div>
             <div className="text-sm font-medium">{shopName}</div>
@@ -1063,10 +1258,11 @@ export default function MiniApp() {
           <button
             type="button"
             onClick={() => setTab("wallet")}
-            className="flex items-center gap-1.5 text-xs bg-white/[0.05] rounded-full ps-3 pe-2 py-2"
+            aria-label={`کیف پول: ${formatToman(data.me.wallet, "fa")} تومان`}
+            className="flex items-center gap-1.5 text-xs bg-[var(--mi-soft)] rounded-full ps-3.5 pe-3 min-h-[44px]"
           >
             {formatToman(data.me.wallet, "fa")}
-            <Wallet size={14} className="opacity-50" />
+            <Wallet size={14} className="opacity-60" />
           </button>
         </div>
 
@@ -1104,7 +1300,7 @@ export default function MiniApp() {
                   <div className="px-1 mb-2.5">
                     <div className="text-sm font-bold">{shelf.name}</div>
                     {shelf.description && (
-                      <div className="text-xs opacity-45 mt-1 leading-relaxed">
+                      <div className="text-xs opacity-60 mt-1 leading-relaxed">
                         {shelf.description}
                       </div>
                     )}
@@ -1129,7 +1325,7 @@ export default function MiniApp() {
                 <button
                   type="button"
                   onClick={() => setTab("shop")}
-                  className="mt-4 px-5 py-2.5 rounded-xl bg-sky-500 text-white text-sm"
+                  className="mt-4 min-h-[48px] px-6 rounded-xl bg-sky-500 active:bg-sky-600 text-white text-sm"
                 >
                   رفتن به فروشگاه
                 </button>
@@ -1145,16 +1341,16 @@ export default function MiniApp() {
           <>
             <PageTitle title="کیف پول" subtitle="موجودی شما و راه افزایش آن." />
             <Card className="mb-3 text-center py-7">
-              <div className="text-xs opacity-45">موجودی</div>
+              <div className="text-xs opacity-60">موجودی</div>
               <div className="text-3xl font-bold mt-2">{formatToman(data.me.wallet, "fa")}</div>
-              <div className="text-xs opacity-45 mt-1">تومان</div>
+              <div className="text-xs opacity-60 mt-1">تومان</div>
             </Card>
             <Card>
               <div className="flex items-start gap-3">
                 <IconTile icon={Wallet} tone="emerald" />
                 <div className="min-w-0 flex-1">
                   <div className="font-bold text-[15px]">افزایش اعتبار</div>
-                  <div className="text-xs opacity-50 mt-1">
+                  <div className="text-xs opacity-60 mt-1">
                     کارت‌به‌کارت کنید و عکس رسید را همین‌جا بفرستید.
                   </div>
                 </div>
@@ -1165,20 +1361,18 @@ export default function MiniApp() {
               <button
                 type="button"
                 onClick={() => setToppingUp(true)}
-                className="w-full mt-4 py-3 rounded-xl bg-emerald-500 active:bg-emerald-600 text-white text-sm font-medium flex items-center justify-center gap-2"
+                className="w-full mt-4 min-h-[48px] rounded-xl bg-emerald-500 active:bg-emerald-600 text-white text-sm font-medium flex items-center justify-center gap-2"
               >
                 <Plus size={16} />
                 افزایش اعتبار
               </button>
               {data.payment?.payment_card_number && (
-                <div className="rounded-xl bg-white/[0.04] p-3.5 mt-3 space-y-2">
-                  <div className="text-xs opacity-50">شماره کارت</div>
-                  <div dir="ltr" className="font-mono text-base tracking-wider select-all">
-                    {data.payment.payment_card_number}
-                  </div>
-                  {data.payment.payment_card_holder && (
-                    <div className="opacity-60 text-xs">{data.payment.payment_card_holder}</div>
-                  )}
+                <div className="mt-3">
+                  <CardNumber
+                    number={data.payment.payment_card_number}
+                    holder={data.payment.payment_card_holder}
+                    amountHint="شماره کارت"
+                  />
                 </div>
               )}
             </Card>
@@ -1191,9 +1385,10 @@ export default function MiniApp() {
           what makes it look like part of an app rather than part of the
           page. Telegram puts its own chrome at the TOP, which is why the
           navigation goes down here where a thumb reaches it. */}
-      <div className="fixed bottom-0 inset-x-0 pb-5 px-4 pointer-events-none">
-        <div
-          className="max-w-xs mx-auto rounded-2xl border border-white/10 grid grid-cols-3 p-1.5 pointer-events-auto shadow-2xl shadow-black/40"
+      <div className="fixed bottom-0 inset-x-0 px-4 pointer-events-none" style={{ paddingBottom: SAFE_BOTTOM }}>
+        <nav
+          aria-label="بخش‌های برنامه"
+          className="max-w-xs mx-auto rounded-2xl border border-[color:var(--mi-line)] grid grid-cols-3 p-1.5 pointer-events-auto shadow-2xl shadow-black/30"
           style={{ background: "var(--tg-theme-secondary-bg-color,#1a212b)" }}
         >
           {tabs.map(({ id, label, icon: Icon }) => (
@@ -1201,15 +1396,16 @@ export default function MiniApp() {
               key={id}
               type="button"
               onClick={() => setTab(id)}
-              className={`py-2 rounded-xl flex flex-col items-center gap-1 text-[10px] ${
-                tab === id ? "bg-sky-500/15 text-sky-400" : "opacity-45"
+              aria-current={tab === id ? "page" : undefined}
+              className={`min-h-[52px] rounded-xl flex flex-col items-center justify-center gap-1 text-xs active:bg-[var(--mi-soft)] ${
+                tab === id ? "bg-sky-500/15 text-[color:var(--mi-sky)] font-medium" : "opacity-65"
               }`}
             >
               <Icon size={18} />
               {label}
             </button>
           ))}
-        </div>
+        </nav>
       </div>
 
       {pickingRenewal && (
@@ -1242,10 +1438,10 @@ export default function MiniApp() {
           payment={data.payment}
           initData={initData || webApp?.initData || ""}
           onClose={() => { setBuying(null); setRenewTarget(null); }}
-          onDone={(message) => {
+          onDone={(message, status) => {
             setBuying(null);
             setRenewTarget(null);
-            setDone(message);
+            notify(message, status === "pending" ? "pending" : "ok");
             // Refetch rather than patch the state by hand: the wallet, the
             // services list and the one-time-package rules all moved, and
             // guessing which is how a screen ends up disagreeing with the
@@ -1262,9 +1458,9 @@ export default function MiniApp() {
           payment={data.payment}
           initData={initData || webApp?.initData || ""}
           onClose={() => setToppingUp(false)}
-          onDone={(message) => {
+          onDone={(message, status) => {
             setToppingUp(false);
-            setDone(message);
+            notify(message, status === "pending" ? "pending" : "ok");
             load(initData || webApp?.initData || "");
           }}
         />
@@ -1272,18 +1468,29 @@ export default function MiniApp() {
 
       {done && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-6" dir="rtl">
-          <div className="absolute inset-0 bg-black/70" onClick={() => setDone("")} />
+          <div className="mi-fade absolute inset-0 bg-black/60" onClick={() => setDone("")} />
           <div
-            className="relative rounded-2xl border border-white/10 p-6 text-center max-w-xs w-full"
+            role="alertdialog"
+            aria-modal="true"
+            aria-label={doneTone === "error" ? "خطا" : "نتیجه"}
+            className="mi-sheet relative rounded-2xl border border-[color:var(--mi-line)] p-6 text-center max-w-xs w-full"
             style={{ background: "var(--tg-theme-secondary-bg-color,#151b23)" }}
           >
-            <div className="w-14 h-14 rounded-full bg-emerald-500/15 text-emerald-400 flex items-center justify-center mx-auto mb-4">
-              <Check size={26} />
+            <div
+              className={`w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-4 ${
+                doneTone === "error"
+                  ? "bg-amber-500/15 text-[color:var(--mi-amber)]"
+                  : doneTone === "pending"
+                    ? "bg-sky-500/15 text-[color:var(--mi-sky)]"
+                    : "bg-emerald-500/15 text-[color:var(--mi-emerald)]"
+              }`}
+            >
+              {doneTone === "error" ? <AlertTriangle size={26} /> : doneTone === "pending" ? <Clock size={26} /> : <Check size={26} />}
             </div>
             <div className="text-sm leading-relaxed">{done}</div>
             <button
               type="button"
-              className="mt-5 w-full py-3 rounded-xl bg-sky-500 text-white text-sm"
+              className="mt-5 w-full min-h-[48px] rounded-xl bg-sky-500 active:bg-sky-600 text-white text-sm"
               onClick={() => setDone("")}
             >
               باشه
@@ -1291,6 +1498,6 @@ export default function MiniApp() {
           </div>
         </div>
       )}
-    </div>
+    </Shell>
   );
 }

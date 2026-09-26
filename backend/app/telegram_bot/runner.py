@@ -943,6 +943,31 @@ def _admin_instance_key(admin_id: int):
     return ("admin", admin_id)
 
 
+def run_on_bot_loop(owner_admin_id: int | None, coro_factory, timeout: float = 120.0):
+    """Runs `coro_factory(bot)` on the event loop of the RUNNING bot that
+    serves `owner_admin_id` (that reseller's own bot if it is up, else the
+    shared one) and returns its result. Blocking - call it from a worker
+    thread (asyncio.to_thread), never from the loop it is about to wait on.
+
+    Exists for the Mini App's auto-approval. The approval code
+    (handlers/admin_pending.perform_approval) needs an aiogram Bot AND that
+    bot thread's own threading.local `config` (db path, bot_owner_admin_id
+    scope) - neither exists on a web worker thread, so calling it there
+    would read the wrong scope. Scheduling it onto the bot's own loop gives
+    it exactly the environment a tap on «تایید» in chat has.
+
+    Raises RuntimeError when no suitable bot is running."""
+    with _registry_lock:
+        inst = _instances.get(_admin_instance_key(owner_admin_id)) if owner_admin_id is not None else None
+        if inst is None or inst.bot is None or inst.loop is None:
+            inst = _instances.get(_MAIN)
+        bot, loop = (inst.bot, inst.loop) if inst is not None else (None, None)
+    if bot is None or loop is None:
+        raise RuntimeError("no running telegram bot to run this on")
+    future = asyncio.run_coroutine_threadsafe(coro_factory(bot), loop)
+    return future.result(timeout)
+
+
 def start_admin_bot(admin_id: int, token: str, telegram_id: int | None) -> None:
     """Starts (or is a no-op if already running) a level-2 Admin's own
     dedicated bot - see AdminUser.own_bot_token/own_bot_enabled and

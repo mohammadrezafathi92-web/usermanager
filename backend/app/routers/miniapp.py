@@ -428,7 +428,7 @@ def _receipt_targets(db: Session, pending: dict) -> set[int]:
 
 
 def _notify_receipt(db: Session, pending: dict, request_id: int, image: bytes,
-                    title: str = "🧾 رسید پرداخت جدید (از مینی‌اپ)") -> None:
+                    title: str = "🧾 رسید پرداخت جدید (از مینی‌اپ)", auto_note: str = "") -> None:
     """Best effort, and loud when it fails. A receipt nobody is shown is a
     customer waiting for ever, so a failure here is logged at warning level
     rather than swallowed - but it never fails the request: the row is
@@ -444,6 +444,11 @@ def _notify_receipt(db: Session, pending: dict, request_id: int, image: bytes,
     except Exception:
         logger.exception("miniapp: could not build the receipt caption")
         caption = f"{title} - درخواست #{request_id}"
+    # Same courtesy the bot's own receipt flow gives (customer_purchase.py):
+    # say WHY a human is still needed, or an owner who switched
+    # auto-approval on can only conclude it is broken.
+    if auto_note:
+        caption += f"\n\n🤖 تایید خودکار انجام نشد: {auto_note}"
 
     token = _owner_bot_token(db, pending.get("owner_admin_id"))
     targets = _receipt_targets(db, pending)
@@ -455,7 +460,7 @@ def _notify_receipt(db: Session, pending: dict, request_id: int, image: bytes,
         )
 
 
-def _notify_owner_of_sale(db: Session, owner: int | None, username: str, pkg, price: int) -> None:
+def _notify_owner_of_sale(db: Session, owner: int | None, username: str, pkg, price: int, label: str = "فروش جدید") -> None:
     """A wallet purchase needs no approval, so without this the owner never
     hears about it at all - the first they would know of a sale is noticing
     the number move on a dashboard."""
@@ -467,7 +472,7 @@ def _notify_owner_of_sale(db: Session, owner: int | None, username: str, pkg, pr
         return
     runner.send_message_sync(
         admin.telegram_id,
-        f"🛍 فروش جدید از مینی‌اپ\n\nکاربر: {username}\nپلن: {pkg.name}\nمبلغ: {price:,} تومان (از کیف پول)",
+        f"🛍 {label} از مینی‌اپ\n\nکاربر: {username}\nپلن: {pkg.name}\nمبلغ: {price:,} تومان (از کیف پول)",
         token=token,
         parse_mode=None,
     )
@@ -477,6 +482,44 @@ class CheckoutRequest(BaseModel):
     package_id: int
     account: str | None = None
     comment: str | None = None
+    # Set = this is a RENEWAL of that one service (models.Purchase.id), not a
+    # new purchase - same meaning as the bot's renew_purchase_id.
+    renew_purchase_id: int | None = None
+
+
+def _own_purchase_or_404(db: Session, owner: int | None, username: str, purchase_id: int):
+    """The renewal target, checked against the visitor's own account. The id
+    comes from the request body, so it is only trusted if it appears among
+    the purchases of an account this Telegram id already proved it holds
+    (see _own_account) - never fetched by id alone."""
+    purchases = bot_router.list_user_purchases(username, db=db, owner_admin_id=owner)
+    purchase = next((p for p in purchases if p.id == purchase_id), None)
+    if purchase is None:
+        raise HTTPException(404, "سرویس پیدا نشد.")
+    return purchase
+
+
+async def _try_auto_approve(pending: dict) -> tuple[bool, str]:
+    """Gives a Mini App receipt the same «تایید خودکار» chance a receipt sent
+    in chat gets (customer_purchase.py). It was never attempted here at all,
+    so every Mini App receipt waited for a human no matter the settings.
+
+    Runs on the owning bot's own event loop (runner.run_on_bot_loop) - the
+    approval needs that bot and its thread-local scope. Fails closed exactly
+    like the bot path: any error just means an admin approves by hand."""
+    from ..services import auto_approve
+    from ..telegram_bot import runner
+
+    def _run():
+        return runner.run_on_bot_loop(
+            pending.get("owner_admin_id"), lambda bot: auto_approve.try_auto_approve(pending, bot)
+        )
+
+    try:
+        return await asyncio.to_thread(_run)
+    except Exception:
+        logger.exception("miniapp: auto-approve raised - falling back to manual approval")
+        return False, "بررسی تایید خودکار با خطا مواجه شد"
 
 
 @router.post("/checkout")
@@ -494,7 +537,9 @@ def checkout(
     """
     owner = visitor["owner_admin_id"]
     pkg = _package_or_404(db, owner, payload.package_id)
-    _require_bundled(pkg)
+    renewing = payload.renew_purchase_id is not None
+    if not renewing:
+        _require_bundled(pkg)  # a renewal creates no connection, so needs no bundle
     price = _price_of(pkg)
 
     account = _own_account(db, visitor, payload.account)
@@ -507,7 +552,7 @@ def checkout(
     # Created through routers/bot.py's create_user, the same single choke
     # point the bot's own signup uses, so the trial's rules, the purchase
     # lock and the referral hook all apply exactly as they do in chat.
-    if account is None and price == 0:
+    if account is None and price == 0 and not renewing:
         created = bot_router.create_user(
             schemas.BotCreateUserRequest(
                 username=f"tg{visitor['telegram_id']}",
@@ -538,19 +583,37 @@ def checkout(
     if (account.balance or 0) < price:
         raise HTTPException(400, "موجودی کیف پول کافی نیست.")
 
+    if renewing:
+        _own_purchase_or_404(db, owner, account.username, payload.renew_purchase_id)
+
     bot_router.add_balance(account.username, schemas.BotAddBalanceRequest(amount=-price), db=db)
     try:
-        result = bot_router.purchase_package(
-            account.username,
-            schemas.BotPurchasePackageRequest(
-                package_id=pkg.id,
-                comment=payload.comment or None,
-                paid_amount=price,
-                payment_method="wallet",
-            ),
-            db=db,
-            owner_admin_id=owner,
-        )
+        if renewing:
+            renewed = bot_router.renew_service(
+                account.username,
+                payload.renew_purchase_id,
+                schemas.BotRenewRequest(
+                    add_gb=float(getattr(pkg, "quota_gb", 0) or 0),
+                    add_days=int(getattr(pkg, "duration_days", 0) or 0),
+                    package_id=pkg.id,
+                    paid_amount=price,
+                    payment_method="wallet",
+                ),
+                db=db,
+                owner_admin_id=owner,
+            )
+        else:
+            result = bot_router.purchase_package(
+                account.username,
+                schemas.BotPurchasePackageRequest(
+                    package_id=pkg.id,
+                    comment=payload.comment or None,
+                    paid_amount=price,
+                    payment_method="wallet",
+                ),
+                db=db,
+                owner_admin_id=owner,
+            )
     except Exception:
         # Put the money back. Without this the customer is charged for a
         # service that was never created, and finds out by comparing a
@@ -561,6 +624,18 @@ def checkout(
         except Exception:
             logger.exception("miniapp: REFUND FAILED for %s (%s tomans)", account.username, price)
         raise
+
+    if renewing:
+        _notify_owner_of_sale(db, owner, account.username, pkg, price, label="تمدید جدید")
+        queued = bool(getattr(renewed, "reserved_quota_gb", None) or getattr(renewed, "reserved_duration_days", None))
+        return {
+            "status": "done",
+            "message": (
+                "سرویس فعلی هنوز اعتبار دارد، پس این تمدید رزرو شد و به محض تمام شدنش خودکار فعال می‌شود."
+                if queued else "سرویس شما تمدید شد."
+            ),
+            "connections": [],
+        }
 
     _notify_owner_of_sale(db, owner, account.username, pkg, price)
     return {
@@ -575,6 +650,7 @@ async def checkout_receipt(
     package_id: int = Form(...),
     account: str | None = Form(None),
     comment: str | None = Form(None),
+    renew_purchase_id: int | None = Form(None),
     photo: UploadFile = File(...),
     visitor: dict = Depends(current_visitor),
     db: Session = Depends(get_db),
@@ -592,7 +668,12 @@ async def checkout_receipt(
 
     owner = visitor["owner_admin_id"]
     pkg = _package_or_404(db, owner, package_id)
-    _require_bundled(pkg)
+    # isinstance, not `is not None`: called as a plain function (the tests do)
+    # an omitted Form(None) default arrives as the Form object itself.
+    renewing = isinstance(renew_purchase_id, int)
+    if not renewing:
+        renew_purchase_id = None
+        _require_bundled(pkg)
     price = _price_of(pkg)
 
     image = await photo.read()
@@ -605,6 +686,10 @@ async def checkout_receipt(
     # Matches customer.py's own fallback for a customer with no account yet:
     # the account itself is created later, by the approval.
     target_username = account_row.username if account_row else f"tg{visitor['telegram_id']}"
+    if renewing:
+        if account_row is None:
+            raise HTTPException(400, "برای تمدید باید حساب داشته باشید.")
+        _own_purchase_or_404(db, owner, account_row.username, renew_purchase_id)
 
     payment = bot_router.get_payment_info(owner_admin_id=owner, db=db)
 
@@ -613,7 +698,8 @@ async def checkout_receipt(
         telegram_id=visitor["telegram_id"],
         telegram_username=visitor["user"].get("username"),
         telegram_name=(visitor["user"].get("first_name") or "").strip(),
-        kind="new",
+        kind="renew" if renewing else "new",
+        renew_purchase_id=renew_purchase_id,
         package={
             "id": pkg.id,
             "name": pkg.name,
@@ -637,7 +723,25 @@ async def checkout_receipt(
     # proxy takes seconds, and this endpoint is `async def` (it has to
     # await the upload) - so doing it inline would hold the whole event
     # loop, and every other request with it, for the duration.
-    await asyncio.to_thread(_notify_receipt, db, storage.get_pending(request_id), request_id, image)
+    pending_row = storage.get_pending(request_id)
+
+    # Attempted BEFORE the admins are shown anything, like the bot's own
+    # receipt flow: a qualifying receipt must not produce an approval prompt
+    # that is already stale. Declined -> the normal prompt, with the reason.
+    approved, reason = await _try_auto_approve(pending_row)
+    if approved:
+        return {
+            "status": "done",
+            "request_id": request_id,
+            "message": (
+                "پرداخت شما تایید شد و سرویس تمدید شد. جزئیات در ربات ارسال شد."
+                if renewing else "پرداخت شما تایید شد و سرویس فعال شد. جزئیات در ربات ارسال شد."
+            ),
+        }
+
+    title = "🧾 رسید تمدید (از مینی‌اپ)" if renewing else "🧾 رسید پرداخت جدید (از مینی‌اپ)"
+    # On a thread, not on the loop - see the note in _notify_receipt's history.
+    await asyncio.to_thread(_notify_receipt, db, pending_row, request_id, image, title, reason)
     return {
         "status": "pending",
         "request_id": request_id,

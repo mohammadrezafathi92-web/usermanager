@@ -566,9 +566,10 @@ export const miniAppCheckout = (initData, body) =>
 // Card-to-card - uploads the receipt photo and joins the bot's existing
 // «درخواست‌های در انتظار» queue. multipart, so no explicit Content-Type:
 // the browser has to set it itself, boundary and all.
-export const miniAppCheckoutReceipt = (initData, { packageId, account, comment, file }) => {
+export const miniAppCheckoutReceipt = (initData, { packageId, account, comment, file, renewPurchaseId }) => {
   const form = new FormData();
   form.append("package_id", packageId);
+  if (renewPurchaseId) form.append("renew_purchase_id", renewPurchaseId);
   if (account) form.append("account", account);
   if (comment) form.append("comment", comment);
   form.append("photo", file);

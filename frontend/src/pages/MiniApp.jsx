@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   Store, Wallet, Layers, AlertTriangle, Check, Upload, X, Loader2, Gift, Globe,
-  Copy, ShoppingBag, Plus,
+  Copy, ShoppingBag, Plus, RefreshCw,
 } from "lucide-react";
 import {
   fetchMiniAppHome, miniAppCheckout, miniAppCheckoutReceipt, miniAppTopupReceipt,
@@ -439,7 +439,7 @@ const STATUS = {
   expired: ["منقضی", "text-gray-400 bg-white/5"],
 };
 
-function ServiceCard({ service }) {
+function ServiceCard({ service, onRenew }) {
   const used = service.used_bytes || 0;
   const total = service.quota_bytes || 0;
   const pct = total ? Math.min(100, Math.round((used / total) * 100)) : 0;
@@ -490,7 +490,75 @@ function ServiceCard({ service }) {
       {service.connection_count > 0 && (
         <div className="text-xs opacity-35 mt-3">{fa(service.connection_count)} اتصال</div>
       )}
+
+      {/* Renewal continues THIS service (same connections, same links) - the
+          bot's «تمدید سرویس». It used to exist only there; the Mini App had
+          nowhere to renew, so a customer had to leave it to do so. */}
+      <button
+        type="button"
+        onClick={() => onRenew(service)}
+        className="w-full mt-4 py-2.5 rounded-xl bg-sky-500/15 text-sky-400 active:bg-sky-500/25 text-sm font-medium flex items-center justify-center gap-2"
+      >
+        <RefreshCw size={15} />
+        تمدید این سرویس
+      </button>
     </Card>
+  );
+}
+
+/**
+ * «کدام پلن؟» for a renewal. Every plan this shop sells, flat - a renewal
+ * queues a plan behind the service the customer already has, so unlike a new
+ * purchase it does not matter whether the plan bundles services (the bot's
+ * renewal list does not filter either). Picking one hands over to the same
+ * CheckoutSheet a purchase uses.
+ */
+function RenewPicker({ service, packages, onPick, onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end" dir="rtl">
+      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
+      <div
+        className="relative w-full max-w-lg mx-auto rounded-t-3xl border-t border-white/10 p-5 pb-8 max-h-[88vh] overflow-y-auto"
+        style={{ background: "var(--tg-theme-secondary-bg-color,#151b23)" }}
+      >
+        <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-4" />
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div className="min-w-0">
+            <div className="font-bold">تمدید {service.name}</div>
+            <div className="text-xs opacity-50 mt-1">پلن تمدید را انتخاب کنید.</div>
+          </div>
+          <button type="button" onClick={onClose} className="opacity-50 p-1 -m-1">
+            <X size={20} />
+          </button>
+        </div>
+
+        {packages.length === 0 && (
+          <div className="text-sm opacity-50 text-center py-6">پلنی برای تمدید موجود نیست.</div>
+        )}
+        <div className="space-y-2">
+          {packages.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => onPick(p)}
+              className="w-full rounded-xl bg-white/[0.05] active:bg-white/[0.09] p-3.5 flex items-center justify-between gap-3 text-start"
+            >
+              <div className="min-w-0">
+                <div className="text-sm font-medium truncate">{p.name}</div>
+                <div className="text-xs opacity-50 mt-1">
+                  {p.quota_gb ? `${fa(p.quota_gb)} گیگابایت` : "حجم نامحدود"}
+                  {" · "}
+                  {p.duration_days ? `${fa(p.duration_days)} روز` : "بدون انقضا"}
+                </div>
+              </div>
+              <span className="shrink-0 text-xs bg-sky-500/15 text-sky-400 rounded-lg px-2.5 py-1.5">
+                {formatToman(p.price || 0, "fa")} تومان
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -502,7 +570,7 @@ function ServiceCard({ service }) {
  * price. An enabled button that answers «موجودی کافی نیست» is a worse way
  * of saying the same thing, one tap later.
  */
-function CheckoutSheet({ pkg, wallet, account, payment, initData, onClose, onDone }) {
+function CheckoutSheet({ pkg, wallet, account, payment, initData, renew, onClose, onDone }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [file, setFile] = useState(null);
@@ -516,7 +584,9 @@ function CheckoutSheet({ pkg, wallet, account, payment, initData, onClose, onDon
     setBusy(true);
     setError("");
     try {
-      const res = await miniAppCheckout(initData, { package_id: pkg.id, account });
+      const res = await miniAppCheckout(initData, {
+        package_id: pkg.id, account, renew_purchase_id: renew?.id,
+      });
       onDone(res.data.message);
     } catch (err) {
       fail(err);
@@ -530,7 +600,9 @@ function CheckoutSheet({ pkg, wallet, account, payment, initData, onClose, onDon
     setBusy(true);
     setError("");
     try {
-      const res = await miniAppCheckoutReceipt(initData, { packageId: pkg.id, account, file });
+      const res = await miniAppCheckoutReceipt(initData, {
+        packageId: pkg.id, account, file, renewPurchaseId: renew?.id,
+      });
       onDone(res.data.message);
     } catch (err) {
       fail(err);
@@ -552,8 +624,10 @@ function CheckoutSheet({ pkg, wallet, account, payment, initData, onClose, onDon
 
         <div className="flex items-start justify-between gap-3 mb-4">
           <div className="min-w-0">
-            <div className="font-bold">{pkg.name}</div>
-            <div className="text-xs opacity-50 mt-1">{formatToman(price, "fa")} تومان</div>
+            <div className="font-bold">{renew ? `تمدید ${renew.name}` : pkg.name}</div>
+            <div className="text-xs opacity-50 mt-1">
+              {renew ? `${pkg.name} · ` : ""}{formatToman(price, "fa")} تومان
+            </div>
           </div>
           <button type="button" onClick={onClose} disabled={busy} className="opacity-50 p-1 -m-1">
             <X size={20} />
@@ -817,6 +891,10 @@ export default function MiniApp() {
   const [error, setError] = useState("");
   const [tab, setTab] = useState("shop");
   const [buying, setBuying] = useState(null);
+  // The service being renewed, when `buying` is a renewal rather than a new
+  // purchase; `pickingRenewal` is the step before that (which plan?).
+  const [renewTarget, setRenewTarget] = useState(null);
+  const [pickingRenewal, setPickingRenewal] = useState(null);
   const [toppingUp, setToppingUp] = useState(false);
   const [claiming, setClaiming] = useState(null);
   const [done, setDone] = useState("");
@@ -1058,7 +1136,7 @@ export default function MiniApp() {
               </Card>
             )}
             {data.services.map((service) => (
-              <ServiceCard key={service.id} service={service} />
+              <ServiceCard key={service.id} service={service} onRenew={setPickingRenewal} />
             ))}
           </>
         )}
@@ -1134,16 +1212,39 @@ export default function MiniApp() {
         </div>
       </div>
 
+      {pickingRenewal && (
+        <RenewPicker
+          service={pickingRenewal}
+          packages={shelves.flatMap((shelf) => shelf.packages || [])}
+          onClose={() => setPickingRenewal(null)}
+          onPick={(pkg) => {
+            setRenewTarget(pickingRenewal);
+            setPickingRenewal(null);
+            setBuying(pkg);
+          }}
+        />
+      )}
+
       {buying && (
         <CheckoutSheet
           pkg={buying}
-          wallet={data.me.wallet}
-          account={data.me.accounts?.[0]?.username || ""}
+          renew={renewTarget}
+          // A renewal is paid from, and belongs to, the account that OWNS the
+          // service - which is not necessarily the first one when the same
+          // Telegram id holds several - so that account's own balance is what
+          // decides whether the wallet button is offered.
+          wallet={
+            renewTarget
+              ? (data.me.accounts || []).find((a) => a.username === renewTarget.account)?.balance ?? 0
+              : data.me.wallet
+          }
+          account={renewTarget ? renewTarget.account : data.me.accounts?.[0]?.username || ""}
           payment={data.payment}
           initData={initData || webApp?.initData || ""}
-          onClose={() => setBuying(null)}
+          onClose={() => { setBuying(null); setRenewTarget(null); }}
           onDone={(message) => {
             setBuying(null);
+            setRenewTarget(null);
             setDone(message);
             // Refetch rather than patch the state by hand: the wallet, the
             // services list and the one-time-package rules all moved, and

@@ -1,8 +1,11 @@
 # تحلیل: عدم وجود owner/scope روی X-API-Key (`/api/bot/*`)
 
-**مرحله:** ۳ (تحلیل + reproduction test فقط - طبق دستور، بدون enforcement/migration)
-**وضعیت:** تحلیل تمام‌شده، منتظر تایید طراحی قبل از پیاده‌سازی
-**تست بازتولید:** `backend/tests/test_bot_api_key_cross_tenant.py` (۱۲ assertion، همه سبز روی HEAD فعلی)
+**مرحله:** ۳ (تحلیل + reproduction test + طراحی BotPrincipal - طبق دستور، بدون enforcement/migration/push)
+**وضعیت:** تحلیل و جدول endpointها تایید شده؛ طراحی نسخه‌ی اول رد شد (۳ نقص معماری)؛ **نسخه‌ی دوم پایین همین سند** با ۴ اصلاح الزامی نوشته شده - منتظر تایید نهایی قبل از پیاده‌سازی Phase A واقعی.
+**تست‌ها (همه سبز روی HEAD فعلی، هیچ‌کدام push نشده):**
+- `backend/tests/test_bot_api_key_cross_tenant.py` (۱۲ assertion) - اثبات cross-tenant با یک کلید معمولی.
+- `backend/tests/test_bot_auth_principal.py` (۳۴ assertion) - تست واحد ماژول طراحی جدید `services/bot_auth.py` (هنوز به هیچ endpointای وصل نشده).
+- `backend/tests/test_bot_inprocess_trust_characterization.py` (۸ assertion) - رفتار امروزِ کالر in-process (`panel_bridge.py`) را مستقل از HTTP مستند می‌کند.
 **رمز مادر:** کاملاً خارج از scope این تحلیل - هیچ فایل/کدی مربوط به آن بررسی یا لمس نشد.
 
 ## خلاصه‌ی مشکل
@@ -78,39 +81,138 @@
 
 `models.ApiKey.key` plaintext در DB ذخیره می‌شود؛ `schemas.ApiKeyOut` (خط ۸۱۰) همین مقدار خام را در `GET /api/api-keys` (لیست کامل) هم برمی‌گرداند - یعنی هر کسی که یک بار به پنل ادمین (یا یک backup دیتابیس) دسترسی پیدا کند، تمام کلیدهای فعال را plaintext می‌بیند، نه فقط لحظه‌ی ساخت. این جدا از مشکل scope است ولی از همان مسیر طراحی (migration به hash + نمایش یک‌بار) قابل حل است.
 
-## طراحی پیشنهادی (فقط طرح - هنوز پیاده‌سازی نشده)
+## طراحی نسخه‌ی اول (رد شد - فقط برای سابقه)
 
-**اصل کلیدی که Product تاکید کرده باید حفظ شود: نه shared bot نه remote bot حتی چند ثانیه قطع نشوند.**
+نسخه‌ی اول این سند فقط یک `owner_admin_id` nullable روی `ApiKey` پیشنهاد داده بود. Product این را با ۳ نقص معماری رد کرد:
 
-1. **Migration additive روی `ApiKey`:**
-   - `owner_admin_id` (nullable - `NULL` = «global»، دقیقاً معادل رفتار امروزِ remote bot/shared bot)
-   - `key_hash` (ستون جدید) + نگه‌داشتن موقت `key` plaintext برای دوره‌ی گذار
-   - `key_prefix`/`last4` برای نمایش در UI بدون افشای کامل کلید
-   - `created_by_admin_id` (اختیاری، فقط برای لاگ)
+1. `owner_admin_id=NULL` هم‌زمان چند معنی دارد (legacy، global، remote bot، بدون‌مالک، integration سوپرادمین) - همان ابهامی که خودِ باگ از آن به وجود آمده بود.
+2. فقط owner scope کافی نیست - یک کلید scoped هنوز داخل تنانت خودش به همه‌چیز (کیف پول، پرداخت، broadcast) دسترسی داشت.
+3. enforcement اگر پخش بین endpointها باشد، دوباره یک endpoint (مثل `add_balance`) فراموش می‌شود.
 
-2. **Compatibility mode (فاز اول - enforcement خاموش):**
-   - کلیدهای موجود همه `owner_admin_id = NULL` می‌گیرند (دقیقاً رفتار فعلی‌شان - چون امروز واقعاً global عمل می‌کنند) - **هیچ کلید قدیمی از کار نمی‌افتد.**
-   - `get_bot_api_key` فقط `owner_admin_id` خودِ کلید را روی خروجی‌اش حمل می‌کند؛ endpointها هنوز فعلاً به caller-supplied owner_admin_id هم اعتماد می‌کنند (رفتار فعلی، بدون تغییر) - این فاز فقط **زیرساخت** را می‌گذارد، رفتار را عوض نمی‌کند.
-   - لاگ (نه رد) هر باری که caller-supplied owner_admin_id با کلید.owner_admin_id (وقتی کلید غیر-NULL است) فرق دارد - برای دیدن قبل از enforcement که آیا اصلاً چنین الگویی در ترافیک واقعی وجود دارد.
+نسخه‌ی دوم پایین همین بخش هر سه را با `key_type` صریح، `capabilities`، و یک `BotPrincipal` مرکزی حل می‌کند.
 
-3. **Enforcement (فاز دوم - بعد از یک دوره‌ی observation):**
-   - اگر کلید `owner_admin_id` غیر-NULL دارد: caller-supplied owner_admin_id باید یا خالی باشد (پیش‌فرض = owner خودِ کلید) یا دقیقاً برابر با آن، وگرنه 403.
-   - اگر کلید `owner_admin_id = NULL` است (کلیدهای legacy + remote bot + shared bot): رفتار فعلی بدون تغییر (چون این دقیقاً معنای «global» است که از قبل هم داشتند).
-   - `link_telegram`/`add_balance`: پارامتر `owner_admin_id` اضافه و از همان مسیر بررسی می‌شود.
-   - Payment cards: بررسی `card.owner_admin_id` در برابر کلید.
+## طراحی نسخه‌ی دوم (فعلی - کد آن نوشته و تست شده، هنوز به هیچ endpointای وصل نشده)
 
-4. **Lifecycle:**
-   - Remote bot: کلید تازه‌اش (`routers/remote_bot.py:90`) همچنان `owner_admin_id=NULL` می‌گیرد - چون امروز هم global است؛ تغییری در deploy/stop لازم نیست.
-   - کلیدهای شخص ثالث آینده: از UI می‌شود هنگام ساخت یک admin مشخص انتخاب کرد (اختیاری) تا از روز اول scoped باشند.
-   - Rotation: یک فیلد `rotated_from_id` یا صرفاً ساخت کلید جدید + غیرفعال‌کردن قدیمی (همان الگویی که `remote_bot.py` از قبل برای خودش دارد) کافی است، بدون نیاز به مکانیزم جدید.
-   - Plaintext: فقط لحظه‌ی create نمایش داده شود؛ `ApiKeyOut` بعد از آن `key_prefix`/`last4` برگرداند، نه `key` کامل.
+**اصل کلیدی که Product تاکید کرده باید حفظ شود: نه shared bot نه remote bot حتی چند ثانیه قطع نشوند.** این نسخه با همین اصل طراحی شده - Phase A زیر رفتار هیچ کلید موجودی را عوض نمی‌کند.
 
-## ریسک deploy این تحلیل (مرحله ۳، همین commit)
+کد طراحی در `backend/app/services/bot_auth.py` نوشته و با `backend/tests/test_bot_auth_principal.py` (۳۴ assertion) تست شده - **ولی از هیچ‌جای production صدا زده نمی‌شود** (تایید شد با `grep` که هیچ فایل دیگری آن را import نمی‌کند). یعنی خودِ طراحی همین الان قابل بررسی/اجراست، بدون این‌که کوچک‌ترین اثری روی رفتار زنده داشته باشد.
 
-**صفر.** هیچ کد production تغییر نکرد - فقط یک فایل تست (`test_bot_api_key_cross_tenant.py`) و همین سند اضافه شد. `shared bot` و `remote bot` برای حتی یک ثانیه هم قطع نشدند چون هیچ فایل اجراشونده‌ای لمس نشده.
+### ۱. `key_type` صریح - رفع ابهام NULL
+
+```text
+KeyType:
+  LEGACY_GLOBAL      # هر کلید موجود امروز - بدون تغییر: unscoped، همه‌ی capabilityها
+  REMOTE_SHARED_BOT  # کلید routers/remote_bot.py:90 - تایید شد فقط برای ربات مشترک/global است
+  TENANT_INTEGRATION # کلید جدید، owner_admin_id اجباری در ساخت
+  GLOBAL_INTEGRATION # کلید جدید بدون تنانت - نیازمند مسیر ساخت جدا + تایید رمز سوپرادمین (Phase B)
+```
+
+هر ۴ نوع کد شده در `bot_auth.KeyType`. `BotPrincipal.from_api_key()` امروز (چون ستون‌های واقعی هنوز روی DB نیستند) هر کلید موجود را دقیقاً `LEGACY_GLOBAL` با `owner_admin_id=None` و همه‌ی capabilityها می‌بیند - یعنی «صادقانه» همان چیزی که امروز واقعاً هست، نه یک حدس.
+
+### ۲. Capability scopes - جدا از owner
+
+```text
+customer_read, customer_write, wallet_write, payment_read,
+payment_write, files_read, broadcast, admin_lookup
+```
+
+هر ۸ مورد در `bot_auth.py` تعریف شده‌اند. `DEFAULT_CAPABILITIES_BY_KEY_TYPE` دقیقاً طبق دستور:
+- `TENANT_INTEGRATION` پیش‌فرض فقط `customer_read`+`customer_write` می‌گیرد - **نه** `wallet_write`، **نه** `broadcast`، **نه** `payment_write` (با تست تایید شده).
+- `REMOTE_SHARED_BOT` دقیقاً همان capabilityهایی را می‌گیرد که ربات تعاملی واقعاً صدا می‌زند (بر اساس متدهای `remote_bridge.py`).
+- `LEGACY_GLOBAL`/`GLOBAL_INTEGRATION` همه‌چیز - چون امروز هم همین‌طورند.
+
+`require_bot_capability(principal, capability)` تنها چیزی است که یک endpoint باید صدا بزند - برای `add_balance` یعنی `require_bot_capability(principal, WALLET_WRITE)`، بدون نیاز به هیچ پارامتر owner_admin_id در امضای خودِ endpoint. این دقیقاً رفع مشکل «add_balance/link_telegram اصلاً جایی برای owner_admin_id ندارند» است - چون capability check اصلاً به آن پارامتر نیاز ندارد.
+
+### ۳. `BotPrincipal` مرکزی - enforcement در یک نقطه
+
+```python
+@dataclass(frozen=True)
+class BotPrincipal:
+    key_id: Optional[int]
+    key_type: str
+    owner_admin_id: Optional[int]
+    capabilities: frozenset[str]
+    label: str
+    is_internal: bool = False
+```
+
+چهار تابع مرکزی، هرکدام تست‌شده روی سناریوهای واقعی hierarchy (نه فرضی):
+
+- `resolve_claimed_owner(principal, claimed_owner_id)` - جایگزین همان چیزی که هر endpoint امروز خودش با `owner_admin_id: Optional[int] = None` انجام می‌دهد؛ برای principal بدون‌اسکوپ رفتار امروز را عینا حفظ می‌کند، برای principal اسکوپ‌دار روی claim نامعتبر 403 می‌دهد (نه override خاموش).
+- `require_bot_capability(principal, capability)`.
+- `require_bot_user_access(db, principal, user)` - از همان `hierarchy.can_see_user` که پنل وب استفاده می‌کند، پس یک بات اسکوپ‌شده هرگز بیشتر از session وب همان تنانت نمی‌بیند.
+- `require_bot_node_access(db, principal, node)` - از همان `hierarchy.accessible_node_ids` که `routers/nodes.py:99` استفاده می‌کند (پایین‌تر بیشتر توضیح داده شده).
+
+هر ۴ تابع با سناریوهای واقعی (سوپرادمین/ادمین/فروشنده، کاربر بی‌مالک، نود owned/granted/بی‌ربط) در `test_bot_auth_principal.py` تست شده‌اند.
+
+### ۴. کالر in-process - همان authorization service، نه یک نسخه‌ی جدا
+
+طبق پیشنهاد خودتان (گزینه‌ی ۱): `panel_bridge.py` باید یک `BotPrincipal.internal(config.bot_owner_admin_id)` بسازد و همان چهار تابع بالا را صدا بزند - نه یک مسیر enforcement جدا برای HTTP و یک مسیر دیگر (یا هیچ) برای in-process.
+
+`BotPrincipal.internal()` در `bot_auth.py` همین الان کد شده: ربات مشترک (`owner_admin_id=None`) بدون‌اسکوپ می‌ماند (دقیقاً رفتار امروز)، ربات اختصاصی یک ادمین (`owner_admin_id=X`) اسکوپ‌دار می‌شود و از همان `resolve_claimed_owner`/`require_bot_user_access` رد می‌شود که HTTP هم رد می‌شود.
+
+**یافته‌ی مهمی که با تست جدید `test_bot_inprocess_trust_characterization.py` (۸ assertion) تایید شد:** مسیر in-process امروز حتی از HTTP هم ضعیف‌تر است - `panel_bridge.py`'s `_scope()` فقط یک **پیش‌فرض** است، نه یک **سقف**؛ اگر کد handler صریح یک `owner_admin_id` دیگر بفرستد، `_scope()` هیچ مانعی ایجاد نمی‌کند (تست ثابت کرد ربات اختصاصی admin_a می‌تواند با فرستادن صریح `owner_admin_id=admin_b.id` مستقیم زیر admin_b کاربر بسازد). این دقیقاً همان چیزی است که `BotPrincipal`/`resolve_claimed_owner` حل می‌کند - چون دیگر فرقی نمی‌کند این claim از کجا آمده، تابع مرکزی رد می‌کند.
+
+### تصمیم درباره‌ی `/nodes` - هنوز حل‌نشده، عمداً
+
+طبق دستور، `/nodes` دیگر «global by design» اعلام نشده. تایید شد:
+- `hierarchy.accessible_node_ids` (`services/hierarchy.py:274`) دقیقاً منطق را دارد: سوپرادمین=`None` (بی‌محدودیت)، ادمین=اتحاد نودهای خودش+grant‌شده، فروشنده=`set()` (هیچ دسترسی مستقیم).
+- `routers/nodes.py:99` (`list_nodes` پنل وب) دقیقاً همین را اعمال می‌کند.
+- `routers/bot.py:321` (`GET /api/bot/nodes`) هیچ‌کدام را اعمال نمی‌کند - همه‌ی نودهای enabled را برمی‌گرداند.
+
+`require_bot_node_access` در `bot_auth.py` نوشته و تست شده (سناریوی owned/granted/بی‌ربط/فروشنده همه پوشش داده شد) **ولی عمداً به هیچ‌جا وصل نیست**. علتش دقیقاً همان نکته‌ای که خودتان اشاره کردید: مسیر خرید پکیج ساده‌ی shared bot امروز به دیدن همه‌ی نودها متکی است تا مشتری یکی را دستی انتخاب کند (`telegram_bot/handlers/customer.py`'s `pick_node`). این باید طراحی جدای خودش را بگیرد (این pick_node باید از مالک پکیج/دسترسی‌های همان تنانت نود استخراج کند، نه از کل پنل) - **در این مرحله فقط helper آماده شده، endpoint هنوز دست نخورده.**
+
+## Migration پیشنهادی (۴ فاز، طبق دستور)
+
+### Phase A - زیرساخت، بدون تغییر رفتار (طراحی/کد آماده، هنوز apply نشده روی models.py)
+
+ستون‌های additive روی `ApiKey`:
+
+```text
+owner_admin_id     nullable
+key_type           str, default 'legacy_global'
+capabilities       متن JSON یا CSV از لیست بالا (nullable = "همه‌چیز"، برای legacy)
+key_hash           نتیجه‌ی sha256، nullable تا لحظه‌ی backfill
+key_prefix / key_last4   برای نمایش در UI
+created_by_admin_id      nullable، فقط لاگ
+scope_enforced     bool, default false
+```
+
+- کلیدهای موجود: `key_type='legacy_global'`، `owner_admin_id=NULL`، `scope_enforced=false`.
+- ستون قدیمی `key` (plaintext) **حذف/nullable نمی‌شود** - migration این پروژه فقط additive است (`main.py`'s `_auto_migrate_missing_columns`)؛ `key_hash` کنارش اضافه می‌شود، نه جایگزینش.
+- `BotPrincipal`/چهار تابع مرکزی: **همین الان آماده و تست‌شده در `bot_auth.py`** - چیزی که باقی می‌ماند صرفاً وصل‌کردن `BotPrincipal.from_api_key`/`.internal()` به `deps.get_bot_api_key`/`panel_bridge.py` است، نه نوشتن از صفر.
+- Telemetry: لاگ (نه رد) هر بار caller-supplied owner_admin_id با principal.owner_admin_id فرق دارد وقتی `scope_enforced=false` - قبل از فاز C ببینیم این الگو در ترافیک واقعی اصلاً رخ می‌دهد یا نه.
+
+### Phase B - کلیدهای جدید
+
+- ساخت کلید جدید در UI پیش‌فرض `tenant_integration` است؛ owner و capability موقع ساخت مشخص می‌شود.
+- `global_integration` مسیر جدا، هشدار صریح، `require_confirm_password` (همان الگوی موجود `routers/api_keys.py`'s `delete_key`).
+- کلید remote bot به‌صورت خودکار `key_type='remote_shared_bot'` می‌گیرد (تغییر کوچک در `routers/remote_bot.py:90`، بدون تغییر رفتار چون همچنان unscoped با همه‌ی capabilityهای لازم است).
+
+### Phase C - Enforcement
+
+- فقط برای کلید با `scope_enforced=true` (کلیدهای جدید Phase B + هر کلید legacy که عمداً ارتقا داده شود) `resolve_claimed_owner`/`require_bot_capability`/`require_bot_user_access`/`require_bot_node_access` واقعاً صدا زده می‌شوند.
+- کلیدهای legacy با `scope_enforced=false` دقیقاً مثل امروز کار می‌کنند - **بدون قطعی.**
+- `panel_bridge.py` هم‌زمان به `BotPrincipal.internal()` وصل می‌شود - نه بعداً - تا دو مسیر enforcement جدا (HTTP قوی، in-process ضعیف) دوباره ایجاد نشود.
+- `add_balance`، `link_telegram`، payment cards، downloadها، همه از همین مسیر مرکزی رد می‌شوند - نه یک‌به‌یک.
+
+### Phase D - پایان دوره‌ی legacy
+
+- کلیدهای legacy تشویق/الزام به rotation.
+- Plaintext از پاسخ API حذف (`ApiKeyOut` فقط `key_prefix`/`key_last4`، `key` کامل فقط لحظه‌ی create).
+- ستون `key` قدیمی در DB با یک مقدار غیرقابل‌استفاده جایگزین شود (نه حذف ستون - additive-only).
+- حالت «legacy unrestricted» در نهایت خاموش شود (تصمیم جدا، بعد از این‌که همه واقعاً rotate کردند).
+
+## Hash کلید
+
+طبق دستور: SHA-256 deterministic، نه bcrypt (کلید API خودش پرآنتروپی است، نه یک رمز کوتاه انسانی - هزینه‌ی CPU بالای bcrypt هیچ محافظتی اضافه نمی‌کند و فقط هر درخواست را کند می‌کند). کد شده در `bot_auth.hash_api_key`/`verify_api_key` (`hashlib.sha256` + `hmac.compare_digest`)، تست شده در `test_bot_auth_principal.py`.
+
+## ریسک deploy این مرحله (طراحی، همین commit جدید)
+
+**صفر.** `backend/app/services/bot_auth.py` وجود دارد ولی هیچ فایل دیگری آن را import نمی‌کند (تایید شد با `grep`) - یعنی حتی import کردن این ماژول هم اثری روی هیچ request زنده‌ای ندارد. هیچ ستونی به `models.py` اضافه نشده (پس auto-migration پروژه چیزی روی DB واقعی اجرا نمی‌کند). `shared bot`/`remote bot` لمس نشدند.
 
 ## باز برای مرحله بعد
 
-- تایید طراحی بالا (به‌خصوص فاز compatibility/enforcement و lifecycle) قبل از نوشتن migration واقعی.
-- تصمیم صریح درباره‌ی `/nodes` (global بماند یا نه).
-- تصمیم درباره‌ی این‌که آیا panel-level UI برای «ساخت کلید مخصوص یک ادمین» در همین فاز لازم است یا بعداً.
+- تایید نهایی طراحی نسخه‌ی دوم (این بخش) - اگر تایید شد، مرحله‌ی بعد Phase A واقعی است: افزودن ستون‌ها به `models.py` (additive - auto-migration خودش را اعمال می‌کند) + وصل‌کردن `BotPrincipal.from_api_key`/`.internal()` به `deps.get_bot_api_key`/`panel_bridge.py` **بدون** روشن‌کردن `scope_enforced` روی هیچ کلیدی (یعنی هنوز صفر تغییر رفتار، فقط خودِ زیرساخت روی DB واقعی می‌نشیند).
+- طراحی جدای `/nodes` + مسیر `pick_node` برای shared bot (چه چیزی باید ببیند وقتی هیچ owner مشخصی ندارد).
+- تصمیم درباره‌ی UI ساخت کلید (Phase B) - در همین دور یا جدا.

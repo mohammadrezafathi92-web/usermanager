@@ -1,12 +1,12 @@
 # تحلیل: عدم وجود owner/scope روی X-API-Key (`/api/bot/*`)
 
-**مرحله:** ۳ - تحلیل ✅ / reproduction test ✅ / طراحی BotPrincipal ✅ (بازبینی دوم، ۱۰ نقص رفع شد) ✅ / **Phase A (schema+backfill) ✅ پیاده‌سازی شد** - همچنان بدون enforcement، بدون اتصال به `deps`/`panel_bridge`/routerها، بدون push.
-**وضعیت:** تحلیل، جدول endpointها، طراحی نسخه‌ی دوم، و اکنون Phase A همه تایید/پیاده‌سازی شده‌اند. منتظر گزارش/تایید بعدی برای Phase B.
+**مرحله:** ۳ - تحلیل ✅ / reproduction test ✅ / طراحی BotPrincipal ✅ (بازبینی دوم، ۱۰ نقص رفع شد) ✅ / **Phase A (schema+backfill) ✅ پیاده‌سازی شد، یک باگ P2 (بازبینی سوم) رفع شد** - همچنان بدون enforcement، بدون اتصال به `deps`/`panel_bridge`/routerها، بدون push.
+**وضعیت:** تحلیل، جدول endpointها، طراحی نسخه‌ی دوم، Phase A، و رفع باگ backfill همه تایید/پیاده‌سازی شده‌اند. منتظر گزارش/تایید بعدی برای Phase B.
 **تست‌ها (همه سبز روی HEAD فعلی، هیچ‌کدام push نشده):**
 - `backend/tests/test_bot_api_key_cross_tenant.py` (۱۲ assertion) - اثبات cross-tenant با یک کلید معمولی.
 - `backend/tests/test_bot_auth_principal.py` (۶۲ assertion) - تست واحد ماژول طراحی `services/bot_auth.py` (هنوز به هیچ endpointای وصل نشده).
 - `backend/tests/test_bot_inprocess_trust_characterization.py` (۸ assertion) - رفتار امروزِ کالر in-process (`panel_bridge.py`) را مستقل از HTTP مستند می‌کند.
-- `backend/tests/test_api_key_migration.py` (۳۰ assertion، **جدید**) - Phase A را روی دیتابیس قدیمی/تازه/اجرای دوباره‌ی startup تست می‌کند + با `inspect.getsource` تایید می‌کند `deps`/`routers/bot.py`/`panel_bridge.py` هنوز `bot_auth` را import نمی‌کنند.
+- `backend/tests/test_api_key_migration.py` (۳۴ assertion) - Phase A را روی دیتابیس قدیمی/تازه/اجرای دوباره‌ی startup + دو رگرسیون «ستون غیرضروری گم است»/«ستون ضروری گم است» تست می‌کند + با `inspect.getsource` تایید می‌کند `deps`/`routers/bot.py`/`panel_bridge.py` هنوز `bot_auth` را import نمی‌کنند.
 **رمز مادر:** کاملاً خارج از scope این تحلیل - هیچ فایل/کدی مربوط به آن بررسی یا لمس نشد.
 
 ## خلاصه‌ی مشکل
@@ -247,12 +247,22 @@ scope_enforced     bool, default false
 
 - `backend/app/models.py`: ۸ ستون additive روی `ApiKey` (`owner_admin_id`, `key_type` default `legacy_global`, `capabilities`, `scope_enforced` default `False`, `key_hash` unique/indexed, `key_prefix`, `key_last4`, `created_by_admin_id`).
 - `backend/app/main.py`: `_backfill_api_key_hashes()` - idempotent، فیلتر روی `key_hash IS NULL`، هر ردیف whitespace‌دار (که نباید هیچ‌وقت رخ بدهد) را رد می‌کند نه کرش - در `on_startup` بلافاصله بعد از `_auto_migrate_missing_columns()` صدا زده می‌شود.
-- `backend/tests/test_api_key_migration.py` (۳۰ assertion) - دقیقاً همان تکنیک `test_package_groups.py` (جایگزینی موقت `app_main.engine`/`SessionLocal` با یک engine ساختگی) برای سه سناریو:
+- `backend/tests/test_api_key_migration.py` (۳۴ assertion) - دقیقاً همان تکنیک `test_package_groups.py` (جایگزینی موقت `app_main.engine`/`SessionLocal` با یک engine ساختگی) برای سه سناریو:
   1. **دیتابیس قدیمی** - جدول `api_keys` دقیقاً به شکل قبل از این migration، با ۲ ردیف واقعی؛ بعد از migration همه‌ی ستون‌های جدید اضافه شدند و هر ردیف `key_type=legacy_global`, `owner_admin_id=NULL`, `scope_enforced=False`, و `key_hash`/`key_prefix`/`key_last4` درست از روی همان `key` قدیمی محاسبه شد.
   2. **دیتابیس تازه** - یک کلید تازه‌ساخته با ORM، بدون تنظیم دستی هیچ ستون جدیدی، دقیقاً همان مقادیر پیش‌فرض را می‌گیرد.
   3. **اجرای دوباره‌ی startup** - migration+backfill دوبار پشت‌سرهم روی هم آن دیتابیس (چه تازه چه قدیمی) اجرا شد؛ هیچ ردیفی تغییر نکرد، هیچ خطایی رخ نداد.
   - یک بخش آخر هم با `inspect.getsource` تایید می‌کند `deps.get_bot_api_key`، `routers/bot.py`، و `telegram_bot/panel_bridge.py` هیچ‌کدام `bot_auth` را import نمی‌کنند - یعنی مرز Phase A را خودِ تست نگه‌بانی می‌کند، نه فقط توضیح در سند.
 
-**نتیجه:** ۸۳ تست بک‌اند سبز (۸۲ قبلی + فایل جدید)، compileall سبز، `npm run build` سبز، `git diff --check` سبز. یک `SAWarning` درباره‌ی چرخه‌ی FK بین `admin_users`/`payment_cards` در طول تست دیده می‌شود - با `git stash` تایید شد این هشدار از قبلِ این تغییر هم وجود داشته (نامرتبط با ستون‌های جدید).
+### باگ P2 پیدا‌شده و رفع‌شده در بازبینی سوم Product: crash روی migration ناقص
 
-**ریسک deploy:** پایین. تنها تغییر واقعی روی دیتابیس زنده، افزودن ۸ ستون null‌پذیر/پیش‌فرض‌دار به یک جدول کوچک (`api_keys`) به‌علاوه یک پرس‌وجوی سبک روی همان جدول در startup است - هیچ جدول دیگری، هیچ فایل اجراشونده‌ی دیگری، و هیچ رفتار زنده‌ای لمس نشد. Push نشده - منتظر گزارش/تایید بعدی طبق دستور.
+**مشکل:** `_backfill_api_key_hashes()`ی اولیه با `db.query(models.ApiKey)...` کل ردیف ORM را می‌خواند - یعنی SELECT روی هر ۸ ستون جدید، نه فقط ۴ ستونی (`id, key, key_hash, key_prefix, key_last4`) که این تابع واقعاً لازم دارد. `_auto_migrate_missing_columns()` عمداً خطای افزودن هر ستون را لاگ و skip می‌کند تا startup را قطع نکند - ولی اگر همان یکی از ۸ ستون (مثلاً `created_by_admin_id`، هرچند دلیلش مهم نیست) واقعاً اضافه نشده باشد، همین یک SELECT کامل با `OperationalError: no such column` کل startup را کرش می‌کرد؛ دقیقاً برخلاف فلسفه‌ی خودِ `_auto_migrate_missing_columns` («یک ستون گم‌شده ارزش کرش‌کردن ندارد»).
+
+**رفع:** تابع حالا اول با `inspect(engine).get_columns(...)` بررسی می‌کند ۵ ستون موردنیازش واقعاً روی جدول هست یا نه؛ اگر نبود فقط warning می‌دهد و بی‌سروصدا برمی‌گردد (startup ادامه پیدا می‌کند، دفعه‌ی بعد دوباره امتحان می‌شود). خواندن/نوشتن هم دیگر از `models.ApiKey` ORM نیست - از `models.ApiKey.__table__` (Core) با `select()`/`update()` صریح روی همان ۵ ستون، یعنی این تابع دیگر هیچ‌وقت به وجود ستون‌های دیگر (`owner_admin_id`, `key_type`, `capabilities`, `scope_enforced`, `created_by_admin_id`) وابسته نیست.
+
+**دو رگرسیون اضافه شد:**
+- یک ستون **غیرضروری** (`created_by_admin_id`) گم است → backfill همچنان موفق می‌شود و کلید را hash می‌کند.
+- یک ستون **ضروری** (`key_hash`/`key_prefix`/`key_last4`) گم است → backfill بدون کرش فقط warning می‌دهد و رد می‌شود؛ ردیف دست‌نخورده می‌ماند.
+
+**نتیجه:** ۸۳ تست بک‌اند سبز (شامل ۳۴ assertion در `test_api_key_migration.py`)، compileall سبز، `npm run build` سبز، `git diff --check` سبز. یک `SAWarning` درباره‌ی چرخه‌ی FK بین `admin_users`/`payment_cards` در طول تست دیده می‌شود - با `git stash` تایید شد این هشدار از قبلِ این تغییر هم وجود داشته (نامرتبط با ستون‌های جدید).
+
+**ریسک deploy:** پایین. تنها تغییر واقعی روی دیتابیس زنده، افزودن ۸ ستون null‌پذیر/پیش‌فرض‌دار به یک جدول کوچک (`api_keys`) به‌علاوه یک پرس‌وجوی سبک و اکنون کاملاً مقاوم‌به‌migration-ناقص روی همان جدول در startup است - هیچ جدول دیگری، هیچ فایل اجراشونده‌ی دیگری، و هیچ رفتار زنده‌ای لمس نشد. Push نشده - منتظر گزارش/تایید بعدی طبق دستور.

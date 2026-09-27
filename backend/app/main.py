@@ -332,22 +332,73 @@ def _backfill_api_key_hashes() -> None:
     already-fully-migrated database, is a guaranteed no-op - safe to call
     unconditionally rather than tracked with its own one-time flag.
 
+    Found 2026-09-27 (second review): the first version of this function
+    queried the ORM-mapped `models.ApiKey` directly
+    (`db.query(models.ApiKey)...`), which SELECTs every column the model
+    declares - all 8 of this migration's new ones, not just the 4 (id, key,
+    key_hash, key_prefix, key_last4) this function actually touches.
+    _auto_migrate_missing_columns() above deliberately logs and SKIPS any
+    single column it fails to add rather than aborting startup - but if
+    even ONE of the other four (owner_admin_id, key_type, capabilities,
+    scope_enforced, created_by_admin_id) had failed to add for any reason,
+    this function's full-row ORM SELECT referenced a column that plainly
+    did not exist and raised an unhandled OperationalError, turning that
+    tolerated single-column skip into a hard startup crash - exactly the
+    failure mode _auto_migrate_missing_columns's own design note says
+    should never happen ("a missing index/column is not worth crashing
+    over"). Fixed by reading/writing only the specific columns this
+    function needs, via Core (Table.c.*), and by checking those columns
+    actually exist FIRST - so a migration gap in an UNRELATED column (or
+    even in key_hash/key_prefix/key_last4 themselves) degrades to "this
+    backfill quietly does nothing yet, try again next startup", never to
+    "the panel does not start".
+
     Deliberately reaches no further than hash_api_key itself - no
     key_type/owner/capability decision is made here (that is Phase B/C's
     job); a row this leaves alone keeps working exactly as it does today,
     via the untouched plaintext `key` column, precisely as approved."""
+    from sqlalchemy import select, update
+
     from .services.bot_auth import hash_api_key
+
+    api_keys = models.ApiKey.__table__
+    required_columns = {"id", "key", "key_hash", "key_prefix", "key_last4"}
+    try:
+        existing_columns = {c["name"] for c in inspect(engine).get_columns(api_keys.name)}
+    except Exception as exc:
+        logging.warning("api_key backfill: بررسی ستون‌های %s ممکن نشد (%s) - این‌بار رد شد", api_keys.name, exc)
+        return
+    missing = required_columns - existing_columns
+    if missing:
+        # A previous _auto_migrate_missing_columns() run must have failed
+        # to add one of these (logged there already) - nothing this
+        # function does is safe without them. Skip cleanly; the next
+        # startup tries again, same as any other column add that failed
+        # once and needs another attempt (a transient lock, a full disk,
+        # ...).
+        logging.warning(
+            "api_key backfill: ستون(های) %s هنوز روی جدول %s نیست - migration این ستون‌ها را کامل "
+            "نکرده، backfill این‌بار رد شد (startup ادامه پیدا می‌کند)",
+            sorted(missing), api_keys.name,
+        )
+        return
 
     db = SessionLocal()
     try:
-        rows = db.query(models.ApiKey).filter(models.ApiKey.key_hash.is_(None)).all()
+        # Core select() naming exactly the 2 source columns this needs -
+        # never the full ORM-mapped row, so this statement can never
+        # reference a column outside `required_columns` above, regardless
+        # of what else the model has grown since.
+        rows = db.execute(
+            select(api_keys.c.id, api_keys.c.key).where(api_keys.c.key_hash.is_(None))
+        ).all()
         if not rows:
             return
         updated = 0
-        for row in rows:
-            raw = row.key or ""
+        for row_id, raw_key in rows:
+            raw = raw_key or ""
             try:
-                row.key_hash = hash_api_key(raw)
+                key_hash = hash_api_key(raw)
             except ValueError:
                 # A stored key that somehow contains whitespace - should
                 # never happen (services/keys.py's generate_api_key never
@@ -356,10 +407,13 @@ def _backfill_api_key_hashes() -> None:
                 # the plaintext `key` column exactly as it does today,
                 # simply without a key_hash - same as any row a future
                 # startup hasn't reached yet.
-                logging.warning("api_key backfill: کلید id=%s قابل hash نیست (whitespace) - رد شد", row.id)
+                logging.warning("api_key backfill: کلید id=%s قابل hash نیست (whitespace) - رد شد", row_id)
                 continue
-            row.key_prefix = raw[:8]
-            row.key_last4 = raw[-4:] if len(raw) >= 4 else raw
+            db.execute(
+                update(api_keys)
+                .where(api_keys.c.id == row_id)
+                .values(key_hash=key_hash, key_prefix=raw[:8], key_last4=raw[-4:] if len(raw) >= 4 else raw)
+            )
             updated += 1
         db.commit()
         if updated:

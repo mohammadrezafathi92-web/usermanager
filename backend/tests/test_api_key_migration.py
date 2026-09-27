@@ -166,6 +166,106 @@ check("re-running the full migration against an already-upgraded OLD database "
       after_rows, before)
 
 print("\n" + "=" * 60)
+print("--- REGRESSION: a column the backfill does NOT need is missing - it still succeeds ---")
+print("=" * 60)
+# Reproduces the exact shape of the crash found in review: some OTHER
+# column's ALTER failed to apply (created_by_admin_id, here, standing in
+# for "any column outside required_columns"), while everything the
+# backfill actually touches (id, key, key_hash, key_prefix, key_last4) is
+# present. The old, full-ORM-SELECT version would have crashed on this
+# too - not because it needed created_by_admin_id, but because loading
+# `models.ApiKey` SELECTs every mapped column regardless.
+
+partial = create_engine("sqlite://", connect_args={"check_same_thread": False})
+with partial.begin() as conn:
+    conn.exec_driver_sql("""
+        CREATE TABLE api_keys (
+            id INTEGER NOT NULL PRIMARY KEY,
+            label VARCHAR(128) NOT NULL,
+            key VARCHAR(128) NOT NULL,
+            enabled BOOLEAN,
+            created_at DATETIME,
+            last_used_at DATETIME,
+            owner_admin_id INTEGER,
+            key_type VARCHAR(32) NOT NULL DEFAULT 'legacy_global',
+            capabilities TEXT,
+            scope_enforced BOOLEAN NOT NULL DEFAULT 0,
+            key_hash VARCHAR(64),
+            key_prefix VARCHAR(16),
+            key_last4 VARCHAR(8)
+            -- created_by_admin_id deliberately absent - simulates its
+            -- ALTER having failed while every column the backfill
+            -- actually needs succeeded.
+        )
+    """)
+    conn.exec_driver_sql(
+        "INSERT INTO api_keys (id, label, key, key_type, scope_enforced) VALUES "
+        "(1, 'partial-migration key', 'partial-plaintext-key', 'legacy_global', 0)"
+    )
+
+real_engine, app_main.engine = app_main.engine, partial
+real_session, app_main.SessionLocal = app_main.SessionLocal, sessionmaker(bind=partial)
+try:
+    app_main._backfill_api_key_hashes()
+finally:
+    app_main.engine = real_engine
+    app_main.SessionLocal = real_session
+
+with partial.begin() as conn:
+    row = conn.execute(text("SELECT key_hash, key_prefix, key_last4 FROM api_keys WHERE id=1")).first()
+check("the backfill still runs and hashes the key, even though an UNRELATED "
+      "column (created_by_admin_id) is entirely missing from the real table",
+      row[0], hash_api_key("partial-plaintext-key"))
+check("...and its prefix/last4 too", (row[1], row[2]),
+      ("partial-plaintext-key"[:8], "partial-plaintext-key"[-4:]))
+
+print("\n" + "=" * 60)
+print("--- REGRESSION: a column the backfill DOES need is missing - clean skip, no crash ---")
+print("=" * 60)
+
+broken = create_engine("sqlite://", connect_args={"check_same_thread": False})
+with broken.begin() as conn:
+    conn.exec_driver_sql("""
+        CREATE TABLE api_keys (
+            id INTEGER NOT NULL PRIMARY KEY,
+            label VARCHAR(128) NOT NULL,
+            key VARCHAR(128) NOT NULL,
+            enabled BOOLEAN,
+            created_at DATETIME,
+            last_used_at DATETIME,
+            owner_admin_id INTEGER,
+            key_type VARCHAR(32) NOT NULL DEFAULT 'legacy_global',
+            capabilities TEXT,
+            scope_enforced BOOLEAN NOT NULL DEFAULT 0
+            -- key_hash/key_prefix/key_last4 all deliberately absent - this
+            -- IS one of the columns the backfill needs.
+        )
+    """)
+    conn.exec_driver_sql(
+        "INSERT INTO api_keys (id, label, key, key_type, scope_enforced) VALUES "
+        "(1, 'broken-migration key', 'broken-plaintext-key', 'legacy_global', 0)"
+    )
+
+real_engine, app_main.engine = app_main.engine, broken
+real_session, app_main.SessionLocal = app_main.SessionLocal, sessionmaker(bind=broken)
+crashed = False
+try:
+    app_main._backfill_api_key_hashes()
+except Exception:
+    crashed = True
+finally:
+    app_main.engine = real_engine
+    app_main.SessionLocal = real_session
+
+check("the backfill does NOT raise when key_hash/key_prefix/key_last4 are "
+      "missing - it must degrade to 'skip for now', never crash startup",
+      crashed, False)
+with broken.begin() as conn:
+    row2 = conn.execute(text("SELECT label, key FROM api_keys WHERE id=1")).first()
+check("the row itself is completely untouched - still there, unchanged",
+      (row2[0], row2[1]), ("broken-migration key", "broken-plaintext-key"))
+
+print("\n" + "=" * 60)
 print("--- schema-only boundary (Product's explicit Phase A limit) ---")
 print("=" * 60)
 

@@ -40,7 +40,9 @@ trade for not writing to the database on every failed request).
 from __future__ import annotations
 
 import datetime as dt
+import ipaddress
 import logging
+import os
 import threading
 
 from sqlalchemy.orm import Session
@@ -209,12 +211,118 @@ def list_bans(db: Session) -> list[models.IpBan]:
     return db.query(models.IpBan).order_by(models.IpBan.banned_at.desc()).all()
 
 
+# ------------------------------------------------- trusted-proxy IP resolution
+#
+# Found 2026-09-27: request_ip() and routers/auth.py's (near-identical, now
+# merged into this one) _client_ip() used to accept X-Real-IP unconditionally
+# - with no notion of whether the thing that set it was actually nginx. That
+# broke in two concrete ways, both confirmed against this exact codebase:
+#
+#   - Whenever ANOTHER proxy sits in front of nginx (the bundled Caddy `tls`
+#     compose profile, or an admin's own external reverse proxy on
+#     PANEL_WEB_BIND=127.0.0.1), nginx's `proxy_set_header X-Real-IP
+#     $remote_addr;` OVERWRITES the correct value that front proxy already
+#     set, with ITS OWN address instead - so every real visitor is seen as
+#     ONE shared IP. Ten unauthenticated requests from ANY mix of visitors
+#     then bans that one shared address, and because every request keeps
+#     arriving "from" it, the whole panel goes dark for everyone at once -
+#     reported as "دسترسی این آی‌پی به پنل مسدود شده است ... روی همه‌ی
+#     آی‌پی‌ها" (see frontend/nginx.conf's real_ip_header fix, the other half
+#     of this).
+#   - Whenever this process is reachable WITHOUT going through nginx at all
+#     (PANEL_API_BIND=0.0.0.0, used for the remote-bot/HA bridge), a caller
+#     could set X-Real-IP to anything it liked and have this module (and the
+#     login rate-limiter) act on the fabricated address - rotating it defeats
+#     the ban/lockout outright, and reusing a real third party's address
+#     frames THEM instead of the actual caller.
+#
+# The fix: only ever trust X-Real-IP when the DIRECT TCP peer
+# (request.client.host) is itself one of the addresses this deployment is
+# allowed to receive that header from. Everyone else's header is ignored
+# outright - not sanitized-and-used, ignored - and request.client.host (the
+# one thing that cannot be spoofed at the TCP layer) is used instead, exactly
+# as if no header had been sent.
+
+# Loopback (an admin's own external reverse proxy on the same host, see
+# docker-compose.yml's PANEL_WEB_BIND) and the private range Docker's default
+# bridge network draws from (covers the bundled Caddy container in the `tls`
+# compose profile, and nginx talking to this process normally). This trusts
+# the whole private range, not just the one specific proxy container - an
+# accepted, documented trade-off (nothing else legitimately reaches this
+# process from inside that space); override TRUSTED_PROXY_CIDRS for a
+# narrower or different set.
+DEFAULT_TRUSTED_PROXY_CIDRS = ("127.0.0.0/8", "::1/128", "172.16.0.0/12")
+
+
+def _parse_trusted_proxy_cidrs() -> tuple:
+    raw = os.environ.get("TRUSTED_PROXY_CIDRS", "")
+    cidrs = [c.strip() for c in raw.split(",") if c.strip()] or list(DEFAULT_TRUSTED_PROXY_CIDRS)
+    nets = []
+    for cidr in cidrs:
+        try:
+            nets.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            logger.warning("ip_guard: نادیده گرفتن مقدار نامعتبر در TRUSTED_PROXY_CIDRS: %r", cidr)
+    return tuple(nets)
+
+
+# Read once at import, same tradeoff as every other piece of state in this
+# module (a hot-path check on every request) - tests that need a different
+# set reassign this tuple directly, same as they reset the ban/hit dicts.
+_TRUSTED_PROXY_NETS = _parse_trusted_proxy_cidrs()
+
+
+def _is_trusted_proxy_peer(peer: str | None) -> bool:
+    if not peer:
+        return False
+    try:
+        addr = ipaddress.ip_address(peer)
+    except ValueError:
+        return False  # not a real IP at all (e.g. TestClient's "testclient")
+    return any(addr in net for net in _TRUSTED_PROXY_NETS)
+
+
+def _clean_forwarded_ip(value: str | None) -> str | None:
+    """Exactly one valid IP address from a header value, or None.
+
+    Deliberately strict, not "take the first one": this value is only ever
+    read after the peer has already been confirmed trusted (see
+    resolve_client_ip), and a real trusted proxy sends exactly one address -
+    anything else (empty, whitespace, a comma-separated list smuggling a
+    second value, garbage that isn't an IP at all) is treated the same as no
+    header, not parsed-as-best-effort."""
+    if not value:
+        return None
+    value = value.strip()
+    if not value or "," in value:
+        return None
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    return value
+
+
+def resolve_client_ip(request) -> str | None:
+    """The one place this project decides what IP a request is really from -
+    used by this module's auto-ban AND routers/auth.py's login rate-limiter,
+    so the two can never quietly disagree. See the module comment above for
+    why this exists and what it fixes.
+
+    X-Real-IP is honoured only when request.client.host (the real, unspoofable
+    TCP peer) is a trusted proxy; otherwise it's ignored completely, even if
+    it happens to look like a perfectly valid address - "looks valid" is not
+    "came from somewhere we trust". An untrusted or missing peer, or a
+    trusted peer with no/invalid header, both fall back to the peer itself."""
+    peer = request.client.host if request.client else None
+    if not _is_trusted_proxy_peer(peer):
+        return peer
+    return _clean_forwarded_ip(request.headers.get("x-real-ip")) or peer
+
+
 def request_ip(request) -> str | None:
-    # Same convention as routers/auth.py's _client_ip: nginx.conf sets
-    # X-Real-IP to $remote_addr, so this is the true client address even
-    # though the backend container only ever sees nginx's own IP as
-    # request.client.host.
-    return request.headers.get("x-real-ip") or (request.client.host if request.client else None)
+    """Backward-compatible name for resolve_client_ip - see its docstring."""
+    return resolve_client_ip(request)
 
 
 async def guard_request(request, call_next, session_factory):

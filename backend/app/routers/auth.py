@@ -12,7 +12,7 @@ from ..security import verify_password, create_access_token, hash_password
 from .. import deps
 from ..deps import get_current_admin
 from ..permissions import effective_permissions
-from ..services import hierarchy, jalali
+from ..services import hierarchy, ip_guard, jalali
 from ..services import version as version_info
 
 
@@ -44,12 +44,11 @@ LOGIN_RATE_LIMIT_MAX_FAILURES = 10
 
 
 def _client_ip(request: Request) -> str | None:
-    # nginx.conf sets X-Real-IP to $remote_addr on every /api/ request, so
-    # this is the real client IP even though the backend container only
-    # ever sees nginx's own IP as request.client.host. Falls back to
-    # request.client.host for direct (non-nginx) access, e.g. hitting
-    # backend:8000 straight during local dev.
-    return request.headers.get("x-real-ip") or (request.client.host if request.client else None)
+    # Delegates to services/ip_guard.resolve_client_ip - see its docstring.
+    # Used to read X-Real-IP unconditionally; now the login rate-limiter
+    # below and ip_guard's own auto-ban share exactly one trusted-proxy
+    # decision, so they can never disagree about which IP a request is from.
+    return ip_guard.resolve_client_ip(request)
 
 
 def _is_rate_limited(db: Session, ip: str | None) -> bool:

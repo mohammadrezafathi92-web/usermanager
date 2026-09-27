@@ -227,10 +227,48 @@ def fake_login():
 
 mw_client = TestClient(mw_app)
 
+# A second client whose ASGI-level peer is a TRUSTED address (inside the
+# default Docker bridge range), simulating "arrived via nginx" - as opposed
+# to mw_client above, whose peer is httpx/Starlette's own "testclient"
+# placeholder, which is correctly UNTRUSTED (see the trusted-proxy section
+# below). The four checks right below this are about the ban-COUNTING logic
+# itself (does the 10th request trip it, does a different address stay
+# clear, ...), not about spoofing, so they need a peer whose X-Real-IP is
+# actually honoured - exactly like a real request that came through nginx.
+#
+# httpx.ASGITransport (which is what lets Starlette's own TestClient set a
+# custom peer at all) only speaks async, so this wraps it in a one-shot
+# event loop per call rather than pulling in Starlette's TestClient a
+# second time just to override one constructor argument it doesn't expose.
+import httpx  # noqa: E402
+
+
+class _TrustedPeerClient:
+    def __init__(self, app, peer_host: str):
+        self._transport = httpx.ASGITransport(app=app, client=(peer_host, 1))
+
+    def _request(self, method: str, url: str, **kw):
+        async def _go():
+            async with httpx.AsyncClient(transport=self._transport, base_url="http://testserver") as ac:
+                return await ac.request(method, url, **kw)
+        return asyncio.run(_go())
+
+    def get(self, url, **kw):
+        return self._request("GET", url, **kw)
+
+    def post(self, url, **kw):
+        return self._request("POST", url, **kw)
+
+    def options(self, url, **kw):
+        return self._request("OPTIONS", url, **kw)
+
+
+trusted_mw_client = _TrustedPeerClient(mw_app, "172.20.0.9")
+
 print("--- an unauthenticated caller trips the ban after 10 GETs, then is refused outright ---")
 last_status = None
 for i in range(12):
-    resp = mw_client.get("/api/protected", headers={"X-Real-IP": "50.50.50.50"})
+    resp = trusted_mw_client.get("/api/protected", headers={"X-Real-IP": "50.50.50.50"})
     last_status = resp.status_code
 check("the 12th request (past the 10-trip threshold) is the flat ban response, "
       "not the endpoint's own 401", last_status, 403)
@@ -238,48 +276,39 @@ check("...and the endpoint's own logic never even ran for it "
       "(ban message, not 'no auth')", resp.json()["detail"], "دسترسی این آی‌پی به پنل مسدود شده است")
 
 print("\n--- a DIFFERENT IP is unaffected ---")
-resp = mw_client.get("/api/protected", headers={"X-Real-IP": "60.60.60.60"})
+resp = trusted_mw_client.get("/api/protected", headers={"X-Real-IP": "60.60.60.60"})
 check("a fresh IP still gets the normal 401, not blocked", resp.status_code, 401)
 
 print("\n--- /api/auth/login failures never ban, even hammered ---")
 for _ in range(30):
-    mw_client.post("/api/auth/login", headers={"X-Real-IP": "70.70.70.70"})
-resp = mw_client.get("/api/protected", headers={"X-Real-IP": "70.70.70.70"})
+    trusted_mw_client.post("/api/auth/login", headers={"X-Real-IP": "70.70.70.70"})
+resp = trusted_mw_client.get("/api/protected", headers={"X-Real-IP": "70.70.70.70"})
 check("still just a normal 401 on another endpoint - login attempts don't ban this IP",
       resp.status_code, 401)
 
 print("\n--- OPTIONS (CORS preflight) is never blocked, even for an already-banned IP ---")
-resp = mw_client.options("/api/protected", headers={"X-Real-IP": "50.50.50.50"})
+resp = trusted_mw_client.options("/api/protected", headers={"X-Real-IP": "50.50.50.50"})
 check("OPTIONS passes through regardless of ban state", resp.status_code != 403, True)
 
 print("\n" + "=" * 60)
-print("--- REPRODUCTION: X-Real-IP is trusted with no notion of a trusted proxy ---")
-print("(2026-09-27 audit finding - see the trusted-proxy design report; this")
-print(" section only proves the CURRENT behaviour, it changes nothing yet)")
+print("--- TRUSTED-PROXY IP RESOLUTION (fixed 2026-09-27) ---")
 print("=" * 60)
 
-# ip_guard.request_ip() (and routers/auth.py's near-identical _client_ip())
-# read X-Real-IP unconditionally - there is no check on WHO the direct TCP
-# peer (request.client.host) actually is. In production this header is
-# meant to be set by nginx from $remote_addr, overwriting anything the
-# client sent - but nothing in this module enforces that nginx (or Caddy,
-# in the optional TLS profile) is really what is talking to it. Two
-# concrete consequences, reproduced below:
-#
-#   1. If the backend is ever reachable without going through nginx first
-#      (a misconfigured proxy, PANEL_API_BIND=0.0.0.0 for the HA/remote-
-#      bridge features, or plain localhost during ops work), a caller can
-#      set X-Real-IP to anything and ip_guard/the login limiter will act on
-#      that fabricated address instead of the caller's real one.
-#   2. Everything this module does is ip-KEYED, so a spoofable ip is not
-#      just "unattributed" - it can frame an innocent third party (ban
-#      their real address) or let an attacker dodge the ban outright by
-#      rotating the header on every request.
+# services/ip_guard.resolve_client_ip() is now the ONE place both this
+# module and routers/auth.py's login rate-limiter decide what IP a request
+# is really from. X-Real-IP is honoured ONLY when request.client.host (the
+# real, unspoofable TCP peer) is itself a trusted proxy - see
+# DEFAULT_TRUSTED_PROXY_CIDRS. Everything below was, until this fix, exactly
+# backwards: the header won regardless of who sent it, which let a caller
+# either dodge the auto-ban/login-lockout by rotating a fake address, or
+# frame an innocent real IP by reusing it. 198.51.100.0/24 and
+# 203.0.113.0/24 (RFC 5737 TEST-NET ranges) stand in for "the internet" here
+# - neither is in any trusted range, exactly like a real external caller.
 
 
 def fake_request(headers: dict, client_host: str | None):
     """A minimal stand-in for Starlette's Request - only the two attributes
-    ip_guard.request_ip()/auth.py's _client_ip() actually read."""
+    resolve_client_ip()/auth.py's _client_ip() actually read."""
     class _Client:
         def __init__(self, host):
             self.host = host
@@ -296,59 +325,107 @@ def fake_request(headers: dict, client_host: str | None):
     return _Req()
 
 
-print("\n--- ip_guard.request_ip(): a caller-supplied header is trusted with no peer check ---")
-spoofed = fake_request({"X-Real-IP": "203.0.113.9"}, client_host="198.51.100.50")
-check("the caller's own header wins over the real TCP peer - nothing here "
-      "verifies 198.51.100.50 (the real peer) is a proxy this panel trusts",
-      ip_guard.request_ip(spoofed), "203.0.113.9")
+print("\n--- an UNTRUSTED peer's header is ignored outright, even if it looks valid ---")
+untrusted = fake_request({"X-Real-IP": "203.0.113.9"}, client_host="198.51.100.50")
+check("the real (untrusted) peer wins, NOT the caller-supplied header",
+      ip_guard.resolve_client_ip(untrusted), "198.51.100.50")
 
-print("\n--- reproduction: rotating the header defeats the auto-ban entirely ---")
-reset_ip_guard_state()
-db = fresh_db()
-for i in range(30):
-    # A REAL attacker script would vary this per request; a fixed range is
-    # enough to show none of them individually reaches the 10-hit threshold.
-    ip_guard.record_failure(db, f"203.0.113.{i % 15}", "GET", "/api/users", had_credential=False)
-check("30 unauthenticated hits, spread over a rotating spoofed header, ban NOTHING "
-      "(each fake address alone stays under the 10-hit limit)",
-      any(ip_guard.is_banned(f"203.0.113.{i % 15}") for i in range(30)), False)
+print("\n--- a TRUSTED peer (nginx's own docker-network address) with a valid header: header wins ---")
+trusted_valid = fake_request({"X-Real-IP": "203.0.113.9"}, client_host="172.20.0.5")
+check("nginx (inside the default Docker bridge range) is trusted, so its "
+      "X-Real-IP is used - unchanged from before this fix, for the normal deployment",
+      ip_guard.resolve_client_ip(trusted_valid), "203.0.113.9")
 
-print("\n--- reproduction: the SAME spoofing frames an innocent real address ---")
-reset_ip_guard_state()
-db = fresh_db()
-for _ in range(10):
-    # An attacker who ALREADY knows a victim's real IP (e.g. a shared
-    # office/NAT address, or one leaked elsewhere) can put it in every
-    # request's X-Real-IP instead of their own, and ip_guard bans the
-    # victim's address, not the attacker's.
-    ip_guard.record_failure(db, "198.51.100.77", "GET", "/api/users", had_credential=False)
-check("the victim's address ends up banned, not the actual caller",
-      ip_guard.is_banned("198.51.100.77"), True)
+print("\n--- loopback (an admin's own external reverse proxy, PANEL_WEB_BIND=127.0.0.1) is trusted too ---")
+trusted_loopback = fake_request({"X-Real-IP": "203.0.113.9"}, client_host="127.0.0.1")
+check("127.0.0.1 is trusted by default", ip_guard.resolve_client_ip(trusted_loopback), "203.0.113.9")
 
-print("\n--- routers/auth.py's _client_ip() has the exact same trust problem ---")
+print("\n--- a TRUSTED peer with an INVALID header falls back to the peer, not the header ---")
+for bad_header in ["not-an-ip", "", "   ", "999.999.999.999"]:
+    req = fake_request({"X-Real-IP": bad_header}, client_host="172.20.0.5")
+    check(f"invalid header {bad_header!r} from a trusted peer falls back to the peer itself",
+          ip_guard.resolve_client_ip(req), "172.20.0.5")
+
+print("\n--- a TRUSTED peer with a COMMA-SEPARATED header falls back to the peer, not either address ---")
+comma_req = fake_request({"X-Real-IP": "203.0.113.9, 198.51.100.1"}, client_host="172.20.0.5")
+check("a real trusted proxy only ever sends ONE address - a list is treated as invalid, not "
+      "'take the first one' (which would let a client behind that proxy smuggle a second value)",
+      ip_guard.resolve_client_ip(comma_req), "172.20.0.5")
+
+print("\n--- no peer at all (no header either) resolves to None, not a crash ---")
+no_peer = fake_request({}, client_host=None)
+check("no client, no header -> None", ip_guard.resolve_client_ip(no_peer), None)
+
+print("\n--- no peer at all, but a header present: still None - a header alone proves nothing ---")
+no_peer_spoofed = fake_request({"X-Real-IP": "203.0.113.9"}, client_host=None)
+check("an absent peer is never 'trusted', regardless of any header",
+      ip_guard.resolve_client_ip(no_peer_spoofed), None)
+
+print("\n--- IPv6: a trusted IPv6 peer (::1) with a valid IPv6 header ---")
+v6_trusted = fake_request({"X-Real-IP": "2001:db8::1"}, client_host="::1")
+check("loopback works in IPv6 form too", ip_guard.resolve_client_ip(v6_trusted), "2001:db8::1")
+
+print("\n--- IPv6: an untrusted IPv6 peer's header is ignored, same as IPv4 ---")
+v6_untrusted = fake_request({"X-Real-IP": "2001:db8::1"}, client_host="2001:db8::dead")
+check("an arbitrary public IPv6 peer is not trusted by default",
+      ip_guard.resolve_client_ip(v6_untrusted), "2001:db8::dead")
+
+print("\n--- TRUSTED_PROXY_CIDRS is overridable, and a garbage entry in it is skipped, not fatal ---")
+os.environ["TRUSTED_PROXY_CIDRS"] = "203.0.113.0/24, not-a-cidr-at-all"
+try:
+    custom_nets = ip_guard._parse_trusted_proxy_cidrs()
+    check("the valid entry parsed", any(str(n) == "203.0.113.0/24" for n in custom_nets), True)
+    check("the garbage entry was dropped, not raised", len(custom_nets), 1)
+finally:
+    os.environ.pop("TRUSTED_PROXY_CIDRS", None)
+
+print("\n--- routers/auth.py's _client_ip() is not a second implementation - it's the SAME resolver ---")
 from app.routers import auth as auth_router  # noqa: E402
 
-spoofed2 = fake_request({"X-Real-IP": "203.0.113.66"}, client_host="198.51.100.50")
-check("auth.py's own IP resolver also just believes the header",
-      auth_router._client_ip(spoofed2), "203.0.113.66")
+check("auth.py imports the exact ip_guard module this file tests against "
+      "(not a copy, not a re-import under a different name)",
+      auth_router.ip_guard is ip_guard, True)
+for headers, client_host in [
+    ({"X-Real-IP": "203.0.113.9"}, "198.51.100.50"),   # untrusted peer, spoofed header
+    ({"X-Real-IP": "203.0.113.9"}, "172.20.0.5"),      # trusted peer, valid header
+    ({"X-Real-IP": "garbage"}, "172.20.0.5"),          # trusted peer, invalid header
+    ({}, "203.0.113.1"),                                # no header at all
+]:
+    req_a = fake_request(headers, client_host)
+    req_b = fake_request(headers, client_host)
+    check(f"_client_ip and resolve_client_ip agree for headers={headers!r} peer={client_host!r}",
+          auth_router._client_ip(req_a), ip_guard.resolve_client_ip(req_b))
 
-print("\n--- reproduction: the login brute-force limiter can be spoofed around too ---")
+print("\n--- the middleware itself: a spoofed header can no longer frame an innocent real IP ---")
+reset_ip_guard_state()
+victim_ip = "198.51.100.77"
+for _ in range(15):
+    # TestClient's own peer ("testclient", not a real IP) is untrusted, so
+    # everything below is now attributed to THAT, no matter what X-Real-IP
+    # claims - the header is not even a well-formed spoof target here, which
+    # is the point: an attacker's real peer is never one of the trusted
+    # ranges either.
+    mw_client.get("/api/protected", headers={"X-Real-IP": victim_ip})
+check("the innocent victim IP was never actually banned (the middleware's own "
+      "TestClient peer, not X-Real-IP, is what gets attributed and counted)",
+      ip_guard.is_banned(victim_ip), False)
+
+print("\n--- login rate-limiter: rotating X-Real-IP from an untrusted peer no longer hides anything ---")
 db = fresh_db()
 now = dt.datetime.utcnow()
-real_attacker_ip = "203.0.113.200"
-for i in range(20):
-    # Same rotation trick against LOGIN_RATE_LIMIT_MAX_FAILURES (10 failures
-    # / 15 minutes per IP, routers/auth.py) - every failed attempt is logged
-    # under a DIFFERENT spoofed address, so no single one ever crosses the
-    # real threshold and the account is never actually protected.
+real_peer = "203.0.113.201"
+for i in range(12):
+    req = fake_request({"X-Real-IP": f"203.0.113.{50 + i}"}, client_host=real_peer)
+    resolved = auth_router._client_ip(req)
     db.add(models.AdminLoginLog(
-        attempted_username="root", ip_address=f"203.0.113.{100 + (i % 20)}",
-        success=False, created_at=now,
+        attempted_username="root", ip_address=resolved, success=False, created_at=now,
     ))
 db.commit()
-check("20 failed attempts 'from' 20 different spoofed addresses - none of "
-      "them individually trips the 10-failure lockout",
-      any(auth_router._is_rate_limited(db, f"203.0.113.{100 + i}") for i in range(20)), False)
+check("every rotated-header attempt still resolved to the ONE real peer, so it "
+      "correctly crosses the 10-failure lockout",
+      auth_router._is_rate_limited(db, real_peer), True)
+check("none of the fabricated addresses accumulated any failures of their own",
+      auth_router._is_rate_limited(db, "203.0.113.50"), False)
 
 print("\n" + "=" * 60)
 if failures:

@@ -212,10 +212,15 @@ def stats(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_c
     offset = dt.timedelta(minutes=jalali.get_display_offset())
     local_now = now + offset
     today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0) - offset
-    local_month_start = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    # Jalali month boundaries, not datetime.replace(day=1)'s Gregorian ones -
+    # this panel's every other date is Jalali, and "این ماه" resetting on
+    # the 1st of the GREGORIAN month meant it kept last month's total for
+    # days after a new Jalali month (e.g. Mehr 1, ~Sep 23) had already
+    # started. See jalali.jalali_month_bounds's docstring.
+    local_month_start, local_prev_month_start = jalali.jalali_month_bounds(local_now)
     month_start = local_month_start - offset
     prev_month_end = month_start
-    prev_month_start = (local_month_start - dt.timedelta(days=1)).replace(day=1) - offset
+    prev_month_start = local_prev_month_start - offset
 
     def _sum(q):
         return int(q.with_entities(func.coalesce(func.sum(models.LedgerEntry.amount), 0)).scalar() or 0)

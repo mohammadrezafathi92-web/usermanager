@@ -139,3 +139,48 @@ def fmt_jalali_long(value, with_time: bool = False, empty: str = "-") -> str:
     jy, jm, jd = gregorian_to_jalali(parsed.year, parsed.month, parsed.day)
     out = f"{jd} {JALALI_MONTHS[jm - 1]} {jy}"
     return f"{out} ساعت {parsed.strftime('%H:%M')}" if with_time else out
+
+
+def jalali_to_gregorian(jy: int, jm: int, jd: int) -> dt.date:
+    """The inverse of gregorian_to_jalali - finds the Gregorian date for a
+    given Jalali (jy, jm, jd).
+
+    Rather than hand-deriving the exact algebraic inverse of that function's
+    33-year-cycle arithmetic (easy to get subtly wrong right at a leap-year
+    edge - precisely where a month-boundary bug would hide), this seeds a
+    close Gregorian guess and walks it to the exact day using
+    gregorian_to_jalali ITSELF as the source of truth. That guarantees the
+    two functions can never disagree with each other, which matters more
+    here than shaving off a few iterations: jalali_month_bounds() below
+    exists specifically to fix a month figure that silently used the wrong
+    calendar (see routers/dashboard.py's sales_month) - an inverse that
+    could drift from the forward conversion would just move the same class
+    of bug to a different day of the year instead of fixing it."""
+    guess = dt.date(jy + 621, 3, 20) + dt.timedelta(days=(jm - 1) * 31 + (jd - 1))
+    for _ in range(400):  # generous bound; real corrections are a handful of days
+        gy2, gm2, gd2 = gregorian_to_jalali(guess.year, guess.month, guess.day)
+        if (gy2, gm2, gd2) == (jy, jm, jd):
+            return guess
+        guess += dt.timedelta(days=1 if (gy2, gm2, gd2) < (jy, jm, jd) else -1)
+    raise ValueError(f"could not resolve Jalali date {jy}-{jm}-{jd} to a Gregorian one")
+
+
+def jalali_month_bounds(local_dt: dt.datetime) -> tuple[dt.datetime, dt.datetime]:
+    """(this Jalali month's start, previous Jalali month's start), as naive
+    local-midnight datetimes - given `local_dt` already shifted into the
+    display timezone (see _coerce's convention).
+
+    Exists because "this month"/"previous month" figures (routers/
+    dashboard.py's sales_month/sales_prev_month) used to reset on the 1st
+    of the GREGORIAN month (plain datetime.replace(day=1)) in a panel whose
+    every other date is Jalali - so on Mehr 1 (~Sep 23, a new Persian month)
+    "این ماه" kept showing Shahrivar's total, and only reset days later on
+    Oct 1. Reported as "الان که رفتیم توی مهر ماه ریست نشده"."""
+    jy, jm, jd = gregorian_to_jalali(local_dt.year, local_dt.month, local_dt.day)
+    this_month_start = jalali_to_gregorian(jy, jm, 1)
+    prev_jy, prev_jm = (jy - 1, 12) if jm == 1 else (jy, jm - 1)
+    prev_month_start = jalali_to_gregorian(prev_jy, prev_jm, 1)
+    return (
+        dt.datetime(this_month_start.year, this_month_start.month, this_month_start.day),
+        dt.datetime(prev_month_start.year, prev_month_start.month, prev_month_start.day),
+    )

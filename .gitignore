@@ -19,9 +19,18 @@ venv/
 # Ruflo local secrets and runtime data
 .env.local
 .env.*.local
-.claude-flow/data/
-.claude-flow/logs/
-.claude-flow/sessions/
+# The whole directory, not just data/logs/sessions/ - `ruflo init` recreates
+# one of these under every subfolder it touches (backend/, backend/app/,
+# frontend/src/, ...), which kept showing up as untracked noise in `git
+# status` no matter how many times it was cleared out.
+.claude-flow/
+**/.claude-flow/
+
+# graphify's own output (knowledge-graph JSON/HTML/report) - local tooling
+# output, not project source; same "shows up everywhere it ran" pattern as
+# .claude-flow/ above.
+graphify-out/
+**/graphify-out/
 
 # stray files that should never be committed
 _sync_test.txt

@@ -253,6 +253,104 @@ resp = mw_client.options("/api/protected", headers={"X-Real-IP": "50.50.50.50"})
 check("OPTIONS passes through regardless of ban state", resp.status_code != 403, True)
 
 print("\n" + "=" * 60)
+print("--- REPRODUCTION: X-Real-IP is trusted with no notion of a trusted proxy ---")
+print("(2026-09-27 audit finding - see the trusted-proxy design report; this")
+print(" section only proves the CURRENT behaviour, it changes nothing yet)")
+print("=" * 60)
+
+# ip_guard.request_ip() (and routers/auth.py's near-identical _client_ip())
+# read X-Real-IP unconditionally - there is no check on WHO the direct TCP
+# peer (request.client.host) actually is. In production this header is
+# meant to be set by nginx from $remote_addr, overwriting anything the
+# client sent - but nothing in this module enforces that nginx (or Caddy,
+# in the optional TLS profile) is really what is talking to it. Two
+# concrete consequences, reproduced below:
+#
+#   1. If the backend is ever reachable without going through nginx first
+#      (a misconfigured proxy, PANEL_API_BIND=0.0.0.0 for the HA/remote-
+#      bridge features, or plain localhost during ops work), a caller can
+#      set X-Real-IP to anything and ip_guard/the login limiter will act on
+#      that fabricated address instead of the caller's real one.
+#   2. Everything this module does is ip-KEYED, so a spoofable ip is not
+#      just "unattributed" - it can frame an innocent third party (ban
+#      their real address) or let an attacker dodge the ban outright by
+#      rotating the header on every request.
+
+
+def fake_request(headers: dict, client_host: str | None):
+    """A minimal stand-in for Starlette's Request - only the two attributes
+    ip_guard.request_ip()/auth.py's _client_ip() actually read."""
+    class _Client:
+        def __init__(self, host):
+            self.host = host
+
+    class _Headers(dict):
+        def get(self, key, default=None):
+            return super().get(key.lower(), default)
+
+    class _Req:
+        def __init__(self):
+            self.headers = _Headers({k.lower(): v for k, v in headers.items()})
+            self.client = _Client(client_host) if client_host else None
+
+    return _Req()
+
+
+print("\n--- ip_guard.request_ip(): a caller-supplied header is trusted with no peer check ---")
+spoofed = fake_request({"X-Real-IP": "203.0.113.9"}, client_host="198.51.100.50")
+check("the caller's own header wins over the real TCP peer - nothing here "
+      "verifies 198.51.100.50 (the real peer) is a proxy this panel trusts",
+      ip_guard.request_ip(spoofed), "203.0.113.9")
+
+print("\n--- reproduction: rotating the header defeats the auto-ban entirely ---")
+reset_ip_guard_state()
+db = fresh_db()
+for i in range(30):
+    # A REAL attacker script would vary this per request; a fixed range is
+    # enough to show none of them individually reaches the 10-hit threshold.
+    ip_guard.record_failure(db, f"203.0.113.{i % 15}", "GET", "/api/users", had_credential=False)
+check("30 unauthenticated hits, spread over a rotating spoofed header, ban NOTHING "
+      "(each fake address alone stays under the 10-hit limit)",
+      any(ip_guard.is_banned(f"203.0.113.{i % 15}") for i in range(30)), False)
+
+print("\n--- reproduction: the SAME spoofing frames an innocent real address ---")
+reset_ip_guard_state()
+db = fresh_db()
+for _ in range(10):
+    # An attacker who ALREADY knows a victim's real IP (e.g. a shared
+    # office/NAT address, or one leaked elsewhere) can put it in every
+    # request's X-Real-IP instead of their own, and ip_guard bans the
+    # victim's address, not the attacker's.
+    ip_guard.record_failure(db, "198.51.100.77", "GET", "/api/users", had_credential=False)
+check("the victim's address ends up banned, not the actual caller",
+      ip_guard.is_banned("198.51.100.77"), True)
+
+print("\n--- routers/auth.py's _client_ip() has the exact same trust problem ---")
+from app.routers import auth as auth_router  # noqa: E402
+
+spoofed2 = fake_request({"X-Real-IP": "203.0.113.66"}, client_host="198.51.100.50")
+check("auth.py's own IP resolver also just believes the header",
+      auth_router._client_ip(spoofed2), "203.0.113.66")
+
+print("\n--- reproduction: the login brute-force limiter can be spoofed around too ---")
+db = fresh_db()
+now = dt.datetime.utcnow()
+real_attacker_ip = "203.0.113.200"
+for i in range(20):
+    # Same rotation trick against LOGIN_RATE_LIMIT_MAX_FAILURES (10 failures
+    # / 15 minutes per IP, routers/auth.py) - every failed attempt is logged
+    # under a DIFFERENT spoofed address, so no single one ever crosses the
+    # real threshold and the account is never actually protected.
+    db.add(models.AdminLoginLog(
+        attempted_username="root", ip_address=f"203.0.113.{100 + (i % 20)}",
+        success=False, created_at=now,
+    ))
+db.commit()
+check("20 failed attempts 'from' 20 different spoofed addresses - none of "
+      "them individually trips the 10-failure lockout",
+      any(auth_router._is_rate_limited(db, f"203.0.113.{100 + i}") for i in range(20)), False)
+
+print("\n" + "=" * 60)
 if failures:
     print(f"{len(failures)} FAILED: " + ", ".join(failures))
     sys.exit(1)

@@ -91,11 +91,28 @@
 
 نسخه‌ی دوم پایین همین بخش هر سه را با `key_type` صریح، `capabilities`، و یک `BotPrincipal` مرکزی حل می‌کند.
 
-## طراحی نسخه‌ی دوم (فعلی - کد آن نوشته و تست شده، هنوز به هیچ endpointای وصل نشده)
+## طراحی نسخه‌ی دوم (بازبینی دوم Product - ۱۰ نقص برطرف شد، کد نوشته و تست شده)
 
 **اصل کلیدی که Product تاکید کرده باید حفظ شود: نه shared bot نه remote bot حتی چند ثانیه قطع نشوند.** این نسخه با همین اصل طراحی شده - Phase A زیر رفتار هیچ کلید موجودی را عوض نمی‌کند.
 
-کد طراحی در `backend/app/services/bot_auth.py` نوشته و با `backend/tests/test_bot_auth_principal.py` (۳۴ assertion) تست شده - **ولی از هیچ‌جای production صدا زده نمی‌شود** (تایید شد با `grep` که هیچ فایل دیگری آن را import نمی‌کند). یعنی خودِ طراحی همین الان قابل بررسی/اجراست، بدون این‌که کوچک‌ترین اثری روی رفتار زنده داشته باشد.
+کد طراحی در `backend/app/services/bot_auth.py` نوشته و با `backend/tests/test_bot_auth_principal.py` (۶۲ assertion) تست شده - **ولی از هیچ‌جای production صدا زده نمی‌شود** (تایید شد با `grep` که هیچ فایل دیگری آن را import نمی‌کند). یعنی خودِ طراحی همین الان قابل بررسی/اجراست، بدون این‌که کوچک‌ترین اثری روی رفتار زنده داشته باشد.
+
+**بازبینی دوم Product ۱۰ نقص در این طراحی پیدا کرد؛ هر ۱۰ مورد در کد و تست‌ها اصلاح شد:**
+
+| # | نقص | اصلاح |
+|---|---|---|
+| ۱ | `is_scoped` فقط بر اساس وجود `owner_admin_id` تصمیم می‌گرفت - کلید با `scope_enforced=false` ممکن بود ناخواسته محدود شود | فیلد `scope_enforced` به `BotPrincipal` اضافه شد؛ `is_scoped` حالا `valid AND owner_admin_id IS NOT NULL AND scope_enforced` است |
+| ۲ | فقط owner scope کافی نبود - کلید scoped داخل تنانتش به همه‌چیز دسترسی داشت | ۸ capability + `DEFAULT_CAPABILITIES_BY_KEY_TYPE` (قبلاً هم بود، دوباره تایید و تکمیل شد) |
+| ۳ | `frozenset(capabilities)` روی یک رشته‌ی JSON، آن را کاراکتر‌به‌کاراکتر می‌خواند | `parse_capabilities`/`serialize_capabilities` نوشته شد - JSON واقعی، حذف تکرار، ترتیب پایدار، fail-closed روی هر ورودی خراب |
+| ۴ | `key_type` ناشناخته fail-open بود (پیش‌فرض = همه‌ی capabilityها) | فقط `NULL` صریحاً به `legacy_global` تبدیل می‌شود؛ هر مقدار دیگر خارج از `KeyType.KNOWN` یک principal با `valid=False` (fail-closed کامل) می‌سازد |
+| ۵ | ترکیب نامعتبر key_type/owner می‌توانست به principal بدون‌محدودیت تبدیل شود | `KeyType.REQUIRES_OWNER`/`FORBIDS_OWNER` + بررسی صریح در `from_api_key` - نقض هرکدام یعنی `valid=False` |
+| ۶ | پیام ۴۰۳ می‌توانست label کلید یا owner مجاز را افشا کند | یک پیام عمومی ثابت (`_DENIED_MESSAGE`) برای هر ۴۰۳؛ جزئیات فقط به لاگ می‌رود |
+| ۷ | فرمت ذخیره‌سازی capabilities مشخص نبود | JSON canonical (مرتب‌شده، بدون تکرار) + تست NULL/رشته‌ی خراب/لیست خالی |
+| ۸ | نرمال‌سازی/رد whitespace در کلید، و تست duplicate hash، تعریف نشده بود | `hash_api_key`/`verify_api_key` هر ورودی دارای whitespace را صریحاً رد می‌کنند (نه strip خاموش)؛ یک تست unique-constraint روی جدول scratch نشان می‌دهد collision رد می‌شود |
+| ۹ | telemetry تعریف نشده بود | `_log_decision` در هر ۴ تابع مرکزی صدا زده می‌شود - endpoint، key id/type، claimed owner، نتیجه؛ هرگز کلید خام یا (در پاسخ HTTP) label |
+| ۱۰ | `link_telegram` هم‌سطح `customer_write` بود | capability جدای `identity_write` اضافه شد - `tenant_integration` پیش‌فرض آن را ندارد، `remote_shared_bot` دارد (چون ربات تعاملی خودش «وصل کردن حساب قبلی» را صدا می‌زند) |
+
+نکته‌ی مهم: یافته‌ی bypass در `panel_bridge._scope()` (مستند در `test_bot_inprocess_trust_characterization.py`) **عمداً دست‌نخورده ماند** - اصلاح آن طبق دستور صریح Product به Phase C موکول شده، همراه با تست معکوس‌شده و rollout کنترل‌شده، نه در همین مرحله‌ی طراحی.
 
 ### ۱. `key_type` صریح - رفع ابهام NULL
 

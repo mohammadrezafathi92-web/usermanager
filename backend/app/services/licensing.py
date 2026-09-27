@@ -36,6 +36,7 @@ import os
 import subprocess
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from cryptography.exceptions import InvalidSignature
@@ -222,21 +223,67 @@ def hardware_fingerprint() -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+_fallback_id_cache: Optional[str] = None
+
+
+def _fallback_id_paths() -> list[str]:
+    """Candidate locations for the last-resort machine id.
+
+    ``/app/data`` is the persistent Docker volume used in production.  The
+    repository-local path keeps bare-metal development and the standalone
+    test scripts stable too; previously those environments tried only the
+    container path, failed to write it, and generated a different id on
+    every call.
+    """
+    configured = os.environ.get("USERMANAGER_FALLBACK_ID_PATH", "").strip()
+    if configured:
+        return [configured]
+
+    app_data = "/app/data/.machine"
+    local_data = str(Path(__file__).resolve().parents[2] / "data" / ".machine")
+    return list(dict.fromkeys((app_data, local_data)))
+
+
 def _persistent_fallback_id() -> str:
     """Last resort - a random id kept next to the database so it survives
     restarts. Weak on purpose: it is better than binding every unknown
     machine to the same empty string."""
-    path = os.environ.get("USERMANAGER_FALLBACK_ID_PATH", "/app/data/.machine")
-    existing = _read_first([path])
+    global _fallback_id_cache
+
+    paths = _fallback_id_paths()
+    existing = _read_first(paths)
     if existing:
+        _fallback_id_cache = existing
         return existing
+    if _fallback_id_cache:
+        return _fallback_id_cache
+
     value = uuid.uuid4().hex
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(value)
-    except OSError:
-        logger.warning("could not persist fallback machine id at %s", path)
+    for path in paths:
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            # O_EXCL makes concurrent first starts safe: only one process
+            # creates the id; every loser reads the winner's value.
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(value)
+            _fallback_id_cache = value
+            return value
+        except FileExistsError:
+            existing = _read_first([path])
+            if existing:
+                _fallback_id_cache = existing
+                return existing
+        except OSError:
+            continue
+
+    # A read-only filesystem should remain stable for the lifetime of the
+    # process instead of changing on every verification call. It can still
+    # change after restart, so keep the warning explicit.
+    _fallback_id_cache = value
+    logger.warning("could not persist fallback machine id at any of: %s", ", ".join(paths))
     return value
 
 

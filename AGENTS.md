@@ -16,7 +16,11 @@ The full Persian README (`README.md`) is the source of truth for deployment/oper
 
 ## Commands
 
-There is no test suite, linter, or CI in this repo (confirmed absent, not just undocumented) — the closest thing to verification is a manual compile/parse check, described below.
+The backend checks are historical standalone Python scripts rather than
+pytest tests: each file is run in its own process by `tests/run_all.py` so
+its module globals, environment changes, and `sys.exit()` cannot leak into
+another check. GitHub Actions runs that suite plus the frontend production
+build on every push to `main` and every pull request.
 
 **Backend (FastAPI, Python 3, SQLite via SQLAlchemy):**
 ```bash
@@ -26,9 +30,10 @@ pip install -r requirements.txt
 cp .env.example .env            # then edit SECRET_KEY / DEFAULT_ADMIN_PASSWORD
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
-Sanity-check backend edits compile before considering them done (there's no pytest to run instead):
+Run the backend checks and compile-check before considering backend edits done:
 ```bash
-python3 -m py_compile $(find app -name "*.py")
+python3 tests/run_all.py
+python3 -m compileall -q app
 ```
 
 **Frontend (React + Vite + Tailwind, RTL/Persian UI):**

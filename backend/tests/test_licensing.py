@@ -251,6 +251,38 @@ print("\n--- the MAC component must come from the HOST, not the container ---")
 import tempfile
 import shutil
 
+fallback_dir = tempfile.mkdtemp()
+fallback_path = os.path.join(fallback_dir, ".machine")
+original_machine_paths = licensing._HOST_MACHINE_ID_PATHS
+original_net_paths = licensing._HOST_NET_CLASS_PATHS
+original_cpu_signature = licensing._cpu_signature
+original_fallback_cache = licensing._fallback_id_cache
+original_fallback_env = os.environ.get("USERMANAGER_FALLBACK_ID_PATH")
+try:
+    # Force every normal hardware source to be unavailable, exactly like a
+    # non-Linux development host or a restricted container. Clearing the
+    # module cache between calls simulates a full process restart: the value
+    # must come back from disk, not merely stay stable in memory.
+    licensing._HOST_MACHINE_ID_PATHS = ("/no/such/machine-id",)
+    licensing._HOST_NET_CLASS_PATHS = ("/no/such/sysfs",)
+    licensing._cpu_signature = lambda: ""
+    os.environ["USERMANAGER_FALLBACK_ID_PATH"] = fallback_path
+    licensing._fallback_id_cache = None
+    fallback_before = licensing.hardware_fingerprint()
+    licensing._fallback_id_cache = None
+    fallback_after = licensing.hardware_fingerprint()
+    check("fallback fingerprint survives a simulated process restart", fallback_after, fallback_before)
+finally:
+    licensing._HOST_MACHINE_ID_PATHS = original_machine_paths
+    licensing._HOST_NET_CLASS_PATHS = original_net_paths
+    licensing._cpu_signature = original_cpu_signature
+    licensing._fallback_id_cache = original_fallback_cache
+    if original_fallback_env is None:
+        os.environ.pop("USERMANAGER_FALLBACK_ID_PATH", None)
+    else:
+        os.environ["USERMANAGER_FALLBACK_ID_PATH"] = original_fallback_env
+    shutil.rmtree(fallback_dir, ignore_errors=True)
+
 host_net = tempfile.mkdtemp()
 container_net = tempfile.mkdtemp()
 

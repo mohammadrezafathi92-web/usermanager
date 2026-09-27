@@ -70,8 +70,10 @@ def make():
 
 def report(db, conn, session_id: str, cumulative_gb: float):
     """One Interim-Update, the way HandleAcctPacket now handles it."""
-    delta = RadiusServer._session_delta(db, conn.id, session_id, int(cumulative_gb * GB), 0)
-    qm.add_usage(db, conn, delta)
+    download_delta, upload_delta = RadiusServer._session_delta(
+        db, conn.id, session_id, int(cumulative_gb * GB), 0
+    )
+    qm.add_usage(db, conn, download_delta + upload_delta)
     db.commit()
 
 
@@ -111,8 +113,10 @@ close("the restart is treated as a fresh count, not a negative",
 print("\n--- a Stop packet is counted before the row is deleted ---")
 db, conn = make()
 report(db, conn, "Y", 1.0)
-delta = RadiusServer._session_delta(db, conn.id, "Y", int(3.0 * GB), 0)
-qm.add_usage(db, conn, delta)
+download_delta, upload_delta = RadiusServer._session_delta(
+    db, conn.id, "Y", int(3.0 * GB), 0
+)
+qm.add_usage(db, conn, download_delta + upload_delta)
 RadiusServer._close_active_session(db, conn.id, "Y")
 db.commit()
 close("the final report is not lost", db.get(models.User, 1).used_bytes, 3.0)

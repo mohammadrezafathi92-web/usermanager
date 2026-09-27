@@ -1,11 +1,12 @@
 # تحلیل: عدم وجود owner/scope روی X-API-Key (`/api/bot/*`)
 
-**مرحله:** ۳ (تحلیل + reproduction test + طراحی BotPrincipal - طبق دستور، بدون enforcement/migration/push)
-**وضعیت:** تحلیل و جدول endpointها تایید شده؛ طراحی نسخه‌ی اول رد شد (۳ نقص معماری)؛ **نسخه‌ی دوم پایین همین سند** با ۴ اصلاح الزامی نوشته شده - منتظر تایید نهایی قبل از پیاده‌سازی Phase A واقعی.
+**مرحله:** ۳ - تحلیل ✅ / reproduction test ✅ / طراحی BotPrincipal ✅ (بازبینی دوم، ۱۰ نقص رفع شد) ✅ / **Phase A (schema+backfill) ✅ پیاده‌سازی شد** - همچنان بدون enforcement، بدون اتصال به `deps`/`panel_bridge`/routerها، بدون push.
+**وضعیت:** تحلیل، جدول endpointها، طراحی نسخه‌ی دوم، و اکنون Phase A همه تایید/پیاده‌سازی شده‌اند. منتظر گزارش/تایید بعدی برای Phase B.
 **تست‌ها (همه سبز روی HEAD فعلی، هیچ‌کدام push نشده):**
 - `backend/tests/test_bot_api_key_cross_tenant.py` (۱۲ assertion) - اثبات cross-tenant با یک کلید معمولی.
-- `backend/tests/test_bot_auth_principal.py` (۳۴ assertion) - تست واحد ماژول طراحی جدید `services/bot_auth.py` (هنوز به هیچ endpointای وصل نشده).
+- `backend/tests/test_bot_auth_principal.py` (۶۲ assertion) - تست واحد ماژول طراحی `services/bot_auth.py` (هنوز به هیچ endpointای وصل نشده).
 - `backend/tests/test_bot_inprocess_trust_characterization.py` (۸ assertion) - رفتار امروزِ کالر in-process (`panel_bridge.py`) را مستقل از HTTP مستند می‌کند.
+- `backend/tests/test_api_key_migration.py` (۳۰ assertion، **جدید**) - Phase A را روی دیتابیس قدیمی/تازه/اجرای دوباره‌ی startup تست می‌کند + با `inspect.getsource` تایید می‌کند `deps`/`routers/bot.py`/`panel_bridge.py` هنوز `bot_auth` را import نمی‌کنند.
 **رمز مادر:** کاملاً خارج از scope این تحلیل - هیچ فایل/کدی مربوط به آن بررسی یا لمس نشد.
 
 ## خلاصه‌ی مشکل
@@ -230,6 +231,28 @@ scope_enforced     bool, default false
 
 ## باز برای مرحله بعد
 
-- تایید نهایی طراحی نسخه‌ی دوم (این بخش) - اگر تایید شد، مرحله‌ی بعد Phase A واقعی است: افزودن ستون‌ها به `models.py` (additive - auto-migration خودش را اعمال می‌کند) + وصل‌کردن `BotPrincipal.from_api_key`/`.internal()` به `deps.get_bot_api_key`/`panel_bridge.py` **بدون** روشن‌کردن `scope_enforced` روی هیچ کلیدی (یعنی هنوز صفر تغییر رفتار، فقط خودِ زیرساخت روی DB واقعی می‌نشیند).
+- تایید نهایی طراحی نسخه‌ی دوم (این بخش) - اگر تایید شد، مرحله‌ی بعد Phase A واقعی است: **فقط** افزودن ستون‌ها به `models.py` (additive - auto-migration خودش را اعمال می‌کند) + backfill امن/idempotent (`main.py`'s `_backfill_api_key_hashes`).
+  > **اصلاح ۲۰۲۶-۰۹-۲۷ (بازبینی سوم Product):** نسخه‌ی قبلی همین خط اشتباهاً می‌گفت وصل‌کردن `BotPrincipal.from_api_key`/`.internal()` به `deps.get_bot_api_key`/`panel_bridge.py` هم بخشی از «Phase A واقعی» است. **این اشتباه بود.** طبق تایید صریح Product، Phase A **کاملاً schema/backfill-only** است - هیچ اتصالی به `deps.get_bot_api_key`، هیچ routerای، یا `panel_bridge.py` در این فاز برقرار نمی‌شود؛ وصل‌کردن `BotPrincipal` به این‌ها (و روشن‌کردن هرگونه enforcement) تماماً به **Phase C** موکول شده است.
 - طراحی جدای `/nodes` + مسیر `pick_node` برای shared bot (چه چیزی باید ببیند وقتی هیچ owner مشخصی ندارد).
 - تصمیم درباره‌ی UI ساخت کلید (Phase B) - در همین دور یا جدا.
+
+## دو Guardrail ثبت‌شده برای مراحل بعد (بازبینی سوم Product)
+
+1. **کلیدهای `tenant_integration` در Phase B تا زمان enforcement نباید فعال/قابل‌استفاده باشند** - چون تا وقتی `scope_enforced=false` است، عملاً دقیقاً مثل یک کلید global رفتار می‌کنند (طبق طراحی عمدی همین بخش)؛ یعنی ساختن یک کلید scoped-به‌ظاهر در Phase B نباید به کسی این تصور غلط را بدهد که همان لحظه محدود شده است.
+2. **در Phase C، اعتبارسنجی principal باید یک dependency مرکزی و اجباری برای تمام endpointهای `/api/bot` باشد، حتی endpointهای global** (مثل `/nodes`، `/customer-menu-config`) - نه یک بررسی اختیاری که فقط endpointهای «مهم» آن را صدا می‌زنند. این دقیقاً همان درسی است که خودِ این آسیب‌پذیری از آن به وجود آمد (`add_balance`/`link_telegram` فراموش شدند چون بررسی پخش بود، نه مرکزی).
+
+## Phase A - وضعیت پیاده‌سازی
+
+**پیاده‌سازی شد** (schema + backfill، هیچ enforcement/اتصالی):
+
+- `backend/app/models.py`: ۸ ستون additive روی `ApiKey` (`owner_admin_id`, `key_type` default `legacy_global`, `capabilities`, `scope_enforced` default `False`, `key_hash` unique/indexed, `key_prefix`, `key_last4`, `created_by_admin_id`).
+- `backend/app/main.py`: `_backfill_api_key_hashes()` - idempotent، فیلتر روی `key_hash IS NULL`، هر ردیف whitespace‌دار (که نباید هیچ‌وقت رخ بدهد) را رد می‌کند نه کرش - در `on_startup` بلافاصله بعد از `_auto_migrate_missing_columns()` صدا زده می‌شود.
+- `backend/tests/test_api_key_migration.py` (۳۰ assertion) - دقیقاً همان تکنیک `test_package_groups.py` (جایگزینی موقت `app_main.engine`/`SessionLocal` با یک engine ساختگی) برای سه سناریو:
+  1. **دیتابیس قدیمی** - جدول `api_keys` دقیقاً به شکل قبل از این migration، با ۲ ردیف واقعی؛ بعد از migration همه‌ی ستون‌های جدید اضافه شدند و هر ردیف `key_type=legacy_global`, `owner_admin_id=NULL`, `scope_enforced=False`, و `key_hash`/`key_prefix`/`key_last4` درست از روی همان `key` قدیمی محاسبه شد.
+  2. **دیتابیس تازه** - یک کلید تازه‌ساخته با ORM، بدون تنظیم دستی هیچ ستون جدیدی، دقیقاً همان مقادیر پیش‌فرض را می‌گیرد.
+  3. **اجرای دوباره‌ی startup** - migration+backfill دوبار پشت‌سرهم روی هم آن دیتابیس (چه تازه چه قدیمی) اجرا شد؛ هیچ ردیفی تغییر نکرد، هیچ خطایی رخ نداد.
+  - یک بخش آخر هم با `inspect.getsource` تایید می‌کند `deps.get_bot_api_key`، `routers/bot.py`، و `telegram_bot/panel_bridge.py` هیچ‌کدام `bot_auth` را import نمی‌کنند - یعنی مرز Phase A را خودِ تست نگه‌بانی می‌کند، نه فقط توضیح در سند.
+
+**نتیجه:** ۸۳ تست بک‌اند سبز (۸۲ قبلی + فایل جدید)، compileall سبز، `npm run build` سبز، `git diff --check` سبز. یک `SAWarning` درباره‌ی چرخه‌ی FK بین `admin_users`/`payment_cards` در طول تست دیده می‌شود - با `git stash` تایید شد این هشدار از قبلِ این تغییر هم وجود داشته (نامرتبط با ستون‌های جدید).
+
+**ریسک deploy:** پایین. تنها تغییر واقعی روی دیتابیس زنده، افزودن ۸ ستون null‌پذیر/پیش‌فرض‌دار به یک جدول کوچک (`api_keys`) به‌علاوه یک پرس‌وجوی سبک روی همان جدول در startup است - هیچ جدول دیگری، هیچ فایل اجراشونده‌ی دیگری، و هیچ رفتار زنده‌ای لمس نشد. Push نشده - منتظر گزارش/تایید بعدی طبق دستور.

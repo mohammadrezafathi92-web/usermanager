@@ -411,7 +411,23 @@ class AdminLoginLog(Base):
 
 class ApiKey(Base):
     """API keys used by external systems (e.g. a Telegram sales bot) to
-    call the /api/bot/* endpoints without going through the admin JWT login."""
+    call the /api/bot/* endpoints without going through the admin JWT login.
+
+    The columns below `last_used_at` are Phase A of the 2026-09-27 API-key-
+    scope audit (docs/api-key-scope-audit-2026-09-27.md, services/
+    bot_auth.py) - schema and backfill ONLY, approved with an explicit
+    boundary: nothing here changes deps.get_bot_api_key, any router, or
+    telegram_bot/panel_bridge.py, and no key's real-world behavior changes
+    yet. Every key that exists today, and every key created before Phase B
+    ships a UI for the new columns, ends up exactly `key_type=
+    "legacy_global"`, `owner_admin_id=NULL`, `scope_enforced=False` -
+    services/bot_auth.py's BotPrincipal.from_api_key() already treats that
+    combination as fully unscoped with every capability, i.e. identical to
+    today's actual behavior. See bot_auth.KeyType's docstring for what each
+    key_type value means, and main.py's _backfill_api_key_hashes for how
+    key_hash/key_prefix/key_last4 get filled in for rows that predate
+    this migration.
+    """
 
     __tablename__ = "api_keys"
 
@@ -421,6 +437,61 @@ class ApiKey(Base):
     enabled = Column(Boolean, default=True)
     created_at = Column(DateTime, default=now)
     last_used_at = Column(DateTime, nullable=True)
+
+    # --- Phase A additions (schema/backfill only - see class docstring) ---
+    # NULL for every key today and for the foreseeable future (Phase B is
+    # the first thing that ever sets this) - a TENANT_INTEGRATION key's
+    # mandatory owner; every other key_type forbids it (see bot_auth.
+    # KeyType.REQUIRES_OWNER/FORBIDS_OWNER, enforced in from_api_key, NOT
+    # at the database level - SQLite has no clean per-row conditional
+    # constraint, same reasoning documented on AdminUser.parent_admin_id).
+    owner_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True, index=True)
+    # "legacy_global" for every key that exists before this migration runs
+    # AND for every key created after it but before Phase B's UI ships -
+    # both cases are the exact same real-world behavior (unscoped, every
+    # capability), so they get the exact same key_type rather than a
+    # separate "not yet categorized" state.
+    key_type = Column(String(32), nullable=False, default="legacy_global")
+    # JSON array of capability strings (see bot_auth.ALL_CAPABILITIES) via
+    # bot_auth.serialize_capabilities/parse_capabilities - NULL means "use
+    # key_type's own default set", not "no capabilities". Plain Text (not a
+    # dedicated JSON column type) to match every other free-form/JSON-ish
+    # column already in this file (e.g. AdminUser.admin_ids-style CSV
+    # fields) and to avoid a dialect-specific JSON type on MySQL/MariaDB.
+    capabilities = Column(Text, nullable=True)
+    # False for every key until an operator DELIBERATELY turns enforcement
+    # on for it (see bot_auth.BotPrincipal.is_scoped's docstring on why
+    # this is a separate flag from "does the key have an owner" - a
+    # TENANT_INTEGRATION key gets its owner at creation time in Phase B,
+    # but must keep behaving exactly like an unscoped key until Phase C's
+    # rollout explicitly flips this).
+    scope_enforced = Column(Boolean, nullable=False, default=False)
+    # SHA-256 of the plaintext `key` above (services/bot_auth.hash_api_key)
+    # - NULL until main.py's _backfill_api_key_hashes fills it in for an
+    # existing row (every new key gets one immediately at creation, once
+    # Phase C's key-creation endpoint is updated to set it). The plaintext
+    # `key` column is deliberately NOT removed/nulled in this phase or any
+    # later one covered by this migration - see the audit doc's Phase D.
+    # unique=True: two different keys must never hash to the same value: a
+    # real collision would mean either two independent lookups return the
+    # SAME row for two DIFFERENT physical secrets (letting a caller who
+    # only knows one of them authenticate as if it held the other), or -
+    # more realistically, since SHA-256 collisions are not a practical
+    # concern - it would silently mask a bug that reused the same secret
+    # for two rows.
+    key_hash = Column(String(64), unique=True, index=True, nullable=True)
+    # First/last few characters of the plaintext key, for the panel's own
+    # "کلیدهای API" list to show something identifying without ever
+    # displaying (or re-deriving) the full secret again after creation -
+    # see the audit doc's Phase D ("plaintext از پاسخ API حذف شود").
+    key_prefix = Column(String(16), nullable=True)
+    key_last4 = Column(String(8), nullable=True)
+    # Which admin created this key - audit/log only, never used for
+    # authorization (that is owner_admin_id's job, and the two are
+    # deliberately allowed to differ: a superadmin creating a
+    # TENANT_INTEGRATION key FOR a specific admin sets owner_admin_id to
+    # that admin, not to themselves).
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True)
 
 
 class IpBan(Base):

@@ -319,6 +319,55 @@ def _auto_migrate_missing_columns() -> None:
                     logging.warning("auto-migrate: could not create index %s (%s) - skipping", index.name, exc)
 
 
+def _backfill_api_key_hashes() -> None:
+    """Phase A of the 2026-09-27 API-key-scope audit (docs/api-key-scope-
+    audit-2026-09-27.md, services/bot_auth.py) - fills in ApiKey.key_hash/
+    key_prefix/key_last4 from the existing plaintext `key` column.
+
+    Unlike _backfill_hierarchy_node_access below, this is NOT gated on
+    "table is new" - api_keys already existed long before this migration,
+    so this runs on every startup and simply does nothing once every row
+    already has a key_hash: idempotent by construction (filters on
+    `key_hash IS NULL`), so running it twice in a row, or against an
+    already-fully-migrated database, is a guaranteed no-op - safe to call
+    unconditionally rather than tracked with its own one-time flag.
+
+    Deliberately reaches no further than hash_api_key itself - no
+    key_type/owner/capability decision is made here (that is Phase B/C's
+    job); a row this leaves alone keeps working exactly as it does today,
+    via the untouched plaintext `key` column, precisely as approved."""
+    from .services.bot_auth import hash_api_key
+
+    db = SessionLocal()
+    try:
+        rows = db.query(models.ApiKey).filter(models.ApiKey.key_hash.is_(None)).all()
+        if not rows:
+            return
+        updated = 0
+        for row in rows:
+            raw = row.key or ""
+            try:
+                row.key_hash = hash_api_key(raw)
+            except ValueError:
+                # A stored key that somehow contains whitespace - should
+                # never happen (services/keys.py's generate_api_key never
+                # produces one), but this must never crash startup over a
+                # single bad row. Left alone: it keeps authenticating via
+                # the plaintext `key` column exactly as it does today,
+                # simply without a key_hash - same as any row a future
+                # startup hasn't reached yet.
+                logging.warning("api_key backfill: کلید id=%s قابل hash نیست (whitespace) - رد شد", row.id)
+                continue
+            row.key_prefix = raw[:8]
+            row.key_last4 = raw[-4:] if len(raw) >= 4 else raw
+            updated += 1
+        db.commit()
+        if updated:
+            logging.info("api_key backfill: %d کلید موجود hash شد", updated)
+    finally:
+        db.close()
+
+
 def _backfill_hierarchy_node_access(admin_node_access_table_is_new: bool) -> None:
     """One-time backfill for the 3-tier reseller hierarchy feature (see
     services/hierarchy.py): before this feature existed, EVERY logged-in
@@ -622,6 +671,7 @@ def on_startup():
     _admin_node_access_is_new = "admin_node_access" not in set(inspect(engine).get_table_names())
     Base.metadata.create_all(bind=engine)
     _auto_migrate_missing_columns()
+    _backfill_api_key_hashes()
     _backfill_hierarchy_node_access(_admin_node_access_is_new)
     _backfill_roles_and_paths()
 

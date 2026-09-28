@@ -262,7 +262,12 @@ export const createApiKey = (data) =>
         capabilities: data.capabilities,
       });
 export const toggleApiKey = (id) => client.post(`/api-keys/${id}/toggle`);
+export const activateApiKey = (id) => client.post(`/api-keys/${id}/activate`);
 export const deleteApiKey = (id) => client.delete(`/api-keys/${id}`);
+
+export const fetchPackageNodeScopeStatus = () => client.get("/settings/package-node-scope");
+export const enablePackageNodeScope = () => client.put("/settings/package-node-scope");
+export const disablePackageNodeScope = () => client.put("/settings/package-node-scope/disable");
 
 export const fetchPackages = () => client.get("/packages");
 export const createPackage = (data) => client.post("/packages", data);

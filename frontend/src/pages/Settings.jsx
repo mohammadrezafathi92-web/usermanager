@@ -17,7 +17,11 @@ import {
   fetchApiKeys,
   createApiKey,
   toggleApiKey,
+  activateApiKey,
   deleteApiKey,
+  fetchPackageNodeScopeStatus,
+  enablePackageNodeScope,
+  disablePackageNodeScope,
   fetchPanelSettings,
   updatePanelSettings,
   fetchPaymentCards,
@@ -307,12 +311,50 @@ export default function Settings() {
   const [copiedId, setCopiedId] = useState(null);
 
   const loadKeys = () => fetchApiKeys().then((res) => setKeys(res.data));
+
+  // Phase C (docs/api-key-scope-audit-2026-09-27.md) - the per-installation
+  // package-authorization rollout switch. null while loading, so the card
+  // can avoid flashing "disabled" before the real value arrives.
+  const [packageNodeScopeEnabled, setPackageNodeScopeEnabled] = useState(null);
+  const [packageNodeScopeBusy, setPackageNodeScopeBusy] = useState(false);
+  const [packageNodeScopeError, setPackageNodeScopeError] = useState("");
+
+  const loadPackageNodeScopeStatus = () =>
+    fetchPackageNodeScopeStatus().then((res) => setPackageNodeScopeEnabled(res.data.enabled));
+
   useEffect(() => {
     if (isSuperadmin) {
       loadKeys();
       fetchAdmins().then((res) => setKeyOwners(res.data));
+      loadPackageNodeScopeStatus();
     }
   }, [isSuperadmin]);
+
+  const onEnablePackageNodeScope = async () => {
+    setPackageNodeScopeError("");
+    setPackageNodeScopeBusy(true);
+    try {
+      await enablePackageNodeScope();
+      await loadPackageNodeScopeStatus();
+    } catch (err) {
+      setPackageNodeScopeError(err?.response?.data?.detail || t("settings.msgSaveError"));
+    } finally {
+      setPackageNodeScopeBusy(false);
+    }
+  };
+
+  const onDisablePackageNodeScope = async () => {
+    setPackageNodeScopeError("");
+    setPackageNodeScopeBusy(true);
+    try {
+      await disablePackageNodeScope();
+      await loadPackageNodeScopeStatus();
+    } catch (err) {
+      setPackageNodeScopeError(err?.response?.data?.detail || t("settings.msgSaveError"));
+    } finally {
+      setPackageNodeScopeBusy(false);
+    }
+  };
 
   const [payment, setPayment] = useState({
     payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "",
@@ -603,6 +645,16 @@ export default function Settings() {
   const onToggleKey = async (id) => {
     try {
       await toggleApiKey(id);
+      loadKeys();
+    } catch (err) {
+      setKeyError(err?.response?.data?.detail || t("settings.msgSaveError"));
+    }
+  };
+
+  const onActivateKey = async (id) => {
+    if (!(await confirm({ message: t("settings.confirmActivateKey") }))) return;
+    try {
+      await activateApiKey(id);
       loadKeys();
     } catch (err) {
       setKeyError(err?.response?.data?.detail || t("settings.msgSaveError"));
@@ -1854,14 +1906,23 @@ export default function Settings() {
                 <span className={`${k.enabled ? "badge-success" : "badge-neutral"}`}>
                   {k.enabled ? t("status.active") : t("status.disabled")}
                 </span>
-                <button
-                  className={`btn-secondary ${k.key_type === "tenant_integration" && !k.enabled ? "opacity-50 cursor-not-allowed" : ""}`}
-                  onClick={() => onToggleKey(k.id)}
-                  disabled={k.key_type === "tenant_integration" && !k.enabled}
-                  title={k.key_type === "tenant_integration" && !k.enabled ? t("settings.apiKeyPendingPhaseCHint") : (k.enabled ? t("settings.disableKey") : t("settings.enableKey"))}
-                >
-                  <Power size={14} />
-                </button>
+                {k.key_type === "tenant_integration" && !k.enabled ? (
+                  <button
+                    className="btn-secondary"
+                    onClick={() => onActivateKey(k.id)}
+                    title={t("settings.activateKeyHint")}
+                  >
+                    <ShieldCheck size={14} /> {t("settings.activateKey")}
+                  </button>
+                ) : (
+                  <button
+                    className="btn-secondary"
+                    onClick={() => onToggleKey(k.id)}
+                    title={k.enabled ? t("settings.disableKey") : t("settings.enableKey")}
+                  >
+                    <Power size={14} />
+                  </button>
+                )}
                 <button className="btn-danger" onClick={() => onDeleteKey(k.id)}>
                   <Trash2 size={14} />
                 </button>
@@ -1869,6 +1930,37 @@ export default function Settings() {
             </div>
           ))}
           {keys.length === 0 && <div className="text-center text-gray-400 py-6 text-sm">{t("settings.noKeysYet")}</div>}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+            <ShieldAlert size={15} />
+          </span>
+          <h3 className="font-bold text-gray-700">{t("settings.packageNodeScopeTitle")}</h3>
+        </div>
+        <p className="text-xs text-gray-400 mb-4">{t("settings.packageNodeScopeDescription")}</p>
+
+        {packageNodeScopeError && (
+          <div className="text-xs text-rose-600 bg-rose-50 dark:bg-rose-500/10 rounded-lg px-3 py-2 mb-3">
+            {packageNodeScopeError}
+          </div>
+        )}
+
+        <div className="flex items-center justify-between">
+          <span className={packageNodeScopeEnabled ? "badge-success" : "badge-neutral"}>
+            {packageNodeScopeEnabled ? t("status.active") : t("status.disabled")}
+          </span>
+          {packageNodeScopeEnabled ? (
+            <button className="btn-secondary" disabled={packageNodeScopeBusy} onClick={onDisablePackageNodeScope}>
+              {t("settings.packageNodeScopeDisable")}
+            </button>
+          ) : (
+            <button className="btn-primary" disabled={packageNodeScopeBusy} onClick={onEnablePackageNodeScope}>
+              <ShieldCheck size={14} /> {t("settings.packageNodeScopeEnable")}
+            </button>
+          )}
         </div>
       </div>
       </div>

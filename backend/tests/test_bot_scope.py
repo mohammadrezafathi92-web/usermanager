@@ -111,11 +111,15 @@ from fastapi import HTTPException
 def can_fetch(db, username, admin_id) -> bool:
     # A SCOPED principal (unlike visible()'s unscoped+claim shape above) -
     # the old _get_user_or_404(db, username, admin_id) checked admin_id as
-    # the acting scope itself, which require_bot_user_access now does via
-    # principal.owner_admin_id only when is_scoped is True.
+    # the acting scope itself. Passing claimed_owner_admin_id=None here
+    # reproduces that exactly: resolve_claimed_owner resolves an empty
+    # claim to the principal's own owner_admin_id when scoped, which is
+    # then what _get_user_or_403's unconditional hierarchy check runs
+    # against - the same "admin_id as the acting scope" shape the old
+    # function had, plus require_bot_user_access on top.
     principal = BotPrincipal.internal(admin_id, scope_enforced=True) if admin_id is not None else _unscoped
     try:
-        bot_resources._get_user_or_403(db, principal, username)
+        bot_resources._get_user_or_403(db, principal, username, None)
         return True
     except HTTPException:
         return False

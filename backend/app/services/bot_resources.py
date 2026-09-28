@@ -41,14 +41,49 @@ from .bot_auth import (
 
 # ------------------------------------------------------------------------- User
 
-def _get_user_or_403(db: Session, principal: BotPrincipal, username: str) -> models.User:
-    """Single-user lookup by username - same query shape as routers/bot.py's
-    _get_user_or_404 today, but authorization goes through
-    require_bot_user_access (hierarchy-aware) instead of a manual
-    owner_admin_id equality/can_see_user check inlined per caller."""
+def _get_user_or_403(
+    db: Session, principal: BotPrincipal, username: str, claimed_owner_admin_id: Optional[int],
+) -> models.User:
+    """Single-user lookup by username. claimed_owner_admin_id is mandatory
+    (no default, matching _list_users_query's own convention below) - the
+    exact owner_admin_id value the endpoint itself received (already
+    defaulted by telegram_bot/panel_bridge.py's _scope() for in-process
+    callers), or explicitly None for the few endpoints (link_telegram,
+    add_balance, apply_referral) that have never taken one - never
+    silently omitted.
+
+    Applies TWO checks, not one - found missing during Phase C review
+    (docs/api-key-scope-audit-2026-09-27.md): an earlier version of this
+    accessor dropped the claim entirely and relied on require_bot_user_
+    access alone, which is a no-op for every unscoped principal - i.e.
+    every dedicated bot today, since dedicated_bot_scope_enforced still
+    defaults False. That was a REAL regression, not a harmless no-op: the
+    OLD (pre-Phase-C) _get_user_or_404 applied its owner_admin_id-based
+    hierarchy.can_see_user check UNCONDITIONALLY whenever a caller passed
+    one - which panel_bridge.py's _scope() always did for a dedicated
+    bot's own calls, completely independent of any scope_enforced concept
+    (that flag didn't exist yet). Dropping it meant Admin A's own
+    dedicated bot could read/mutate Admin B's customers by username the
+    moment this file shipped, C0 flags or not.
+
+    1. resolve_claimed_owner + an unconditional hierarchy.can_see_user
+       check against whatever the claim resolves to - restores exactly
+       that old, always-on guarantee (mirrors _list_users_query's own
+       _visibility_clause below, which already got this right for the
+       list case).
+    2. require_bot_user_access - the NEW principal-identity-bound check,
+       still a no-op today for the same unscoped case, but the one that
+       matters once scope_enforced is actually true on a row."""
     user = db.query(models.User).filter(models.User.username == username).first()
     if user is None:
         raise HTTPException(404, "کاربر پیدا نشد")
+    owner_admin_id = resolve_claimed_owner(db, principal, claimed_owner_admin_id, endpoint="_get_user_or_403")
+    if owner_admin_id is not None:
+        admin = db.get(models.AdminUser, owner_admin_id)
+        if admin is None or not hierarchy.can_see_user(
+            admin, hierarchy.owned_admin_ids(db, admin), user.owner_admin_id
+        ):
+            raise HTTPException(404, "کاربر پیدا نشد")
     require_bot_user_access(db, principal, user, endpoint="_get_user_or_403")
     return user
 

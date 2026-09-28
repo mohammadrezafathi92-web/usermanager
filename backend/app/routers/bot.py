@@ -265,15 +265,18 @@ def _ensure_one_time_package_not_reused(
         raise HTTPException(403, "این بسته فقط یک‌بار برای هر مشتری قابل خرید است و قبلاً توسط شما خریداری شده.")
 
 
-# Phase C: the old _get_user_or_404 helper (same query, same
-# hierarchy.can_see_user check) moved into services/bot_resources.py's
-# _get_user_or_403 - every caller here now goes through that accessor,
-# which uses require_bot_user_access (principal-aware) instead of a bare
-# owner_admin_id equality check.
+# Phase C: the old _get_user_or_404 helper moved into services/
+# bot_resources.py's _get_user_or_403 - every caller here now passes its
+# own owner_admin_id query param through as claimed_owner_admin_id
+# (still the SAME unconditional hierarchy.can_see_user check the old
+# helper applied whenever a caller passed one - see that accessor's own
+# docstring for why dropping this unconditional part during the first
+# C0 wiring pass was a real regression, not a no-op), plus
+# require_bot_user_access (the NEW principal-identity-bound check) on top.
 
 
 def _record_bot_sale(
-    db: Session, kind: str, payload, user: models.User,
+    db: Session, principal: BotPrincipal, kind: str, payload, user: models.User,
     package: Optional[models.Package], purchase_id: Optional[int] = None,
 ) -> None:
     """Shared accounting hook for every bot sale endpoint below (see
@@ -281,19 +284,32 @@ def _record_bot_sale(
     it (new bot builds pass the post-discount final price), otherwise falls
     back to the package's list/seller price so a stale remote bot still
     produces sensible books. Adds to the session only - the caller's own
-    commit right after makes it atomic with the sale itself."""
+    commit right after makes it atomic with the sale itself.
+
+    payload.payment_card_id is validated through _get_payment_card_or_403
+    before it ever reaches accounting.record - found during Phase C review
+    (docs/api-key-scope-audit-2026-09-27.md): this was the one remaining
+    write path that reached PaymentCard by id without going through the
+    accessor built specifically for it, which would have left a scoped
+    tenant's sale bookkeeping permanently attributable to a foreign card
+    (wrong reseller's rotation/aggregate totals) even after enforcement is
+    turned on for that tenant, since the bypass has nothing to do with
+    scope_enforced."""
     paid = getattr(payload, "paid_amount", None)
     if paid is None:
         if package is None:
             return  # package-less admin-created user - nothing was sold
         paid = accounting.sale_fallback_price(db, package, user.owner_admin_id)
+    payment_card_id = getattr(payload, "payment_card_id", None)
+    if payment_card_id is not None:
+        bot_resources._get_payment_card_or_403(db, principal, payment_card_id)
     accounting.record(
         db, kind, paid,
         user=user,
         admin_id=user.owner_admin_id,
         package=package,
         purchase_id=purchase_id,
-        payment_card_id=getattr(payload, "payment_card_id", None),
+        payment_card_id=payment_card_id,
         payment_method=getattr(payload, "payment_method", None),
         discount_code=getattr(payload, "discount_code", None),
         discount_amount=getattr(payload, "discount_amount", None),
@@ -782,7 +798,7 @@ def create_user(
     _ensure_telegram_can_buy(db, payload.telegram_id)
     owner_admin_id = resolve_claimed_owner(db, principal, payload.owner_admin_id, endpoint="create_user")
     if payload.package_id:
-        _new_package = db.get(models.Package, payload.package_id)
+        _new_package = bot_resources._get_package_or_403(db, principal, payload.package_id)
         _ensure_one_time_package_not_reused(
             db, _new_package, telegram_id=payload.telegram_id,
         )
@@ -832,14 +848,16 @@ def create_user(
     if payload.connections:
         user_ops.absorb_legacy_pool_into_purchase(db, user, comment=payload.comment)
 
-    package = db.get(models.Package, payload.package_id) if payload.package_id else None
+    # Reuses the same already-authorized fetch above rather than a second
+    # raw db.get - one _get_package_or_403 call per package_id per request.
+    package = _new_package if payload.package_id else None
     # Charged AFTER provisioning here, unlike everywhere else: this endpoint
     # is called from the receipt-approval handler, so the customer has
     # already paid. Refusing at this point would take their money and give
     # them nothing. The reseller goes into debt instead - which their
     # overdraft is for, and which the superadmin can see.
     _charge_seller(db, user, package)
-    _record_bot_sale(db, "sale_new", payload, user, package)
+    _record_bot_sale(db, principal, "sale_new", payload, user, package)
     db.commit()
     db.refresh(user)
     return _user_response(user)
@@ -867,11 +885,9 @@ def purchase_package(
     a "plain" package with no admin-defined bundle, where the customer
     picked exactly one node/protocol by hand in the bot's purchase flow
     (see telegram_bot/handlers/customer.py's pick_node/pick_protocol)."""
-    user = bot_resources._get_user_or_403(db, principal, username)
+    user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     _ensure_can_buy(user)
-    package = db.get(models.Package, payload.package_id)
-    if not package:
-        raise HTTPException(404, "پکیج پیدا نشد")
+    package = bot_resources._get_package_or_403(db, principal, payload.package_id)
     _ensure_one_time_package_not_reused(db, package, user=user, telegram_id=user.telegram_id)
     trial.ensure_allowed(db, package, user=user, telegram_id=user.telegram_id)
     override = (
@@ -882,7 +898,7 @@ def purchase_package(
         db, user, package, connections_override=override, comment=payload.comment, principal=principal,
     )
     _charge_seller(db, user, package)
-    _record_bot_sale(db, "sale_new", payload, user, package, purchase_id=purchase.id)
+    _record_bot_sale(db, principal, "sale_new", payload, user, package, purchase_id=purchase.id)
     db.commit()
     db.refresh(user)
     return schemas.BotPurchaseResponse(
@@ -904,7 +920,7 @@ def apply_referral(
     logic lives in services/user_ops.py's apply_referral_code (both the
     referrer and the new user get a gift, per the confirmed design - not
     just the referrer)."""
-    user = bot_resources._get_user_or_403(db, principal, payload.username)
+    user = bot_resources._get_user_or_403(db, principal, payload.username, None)
     ok, reason = user_ops.apply_referral_code(db, user, payload.referral_code)
     return {"ok": ok, "reason": reason}
 
@@ -1032,7 +1048,7 @@ def get_user(
     username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
     principal: BotPrincipal = Depends(get_bot_principal),
 ):
-    return _user_response(bot_resources._get_user_or_403(db, principal, username))
+    return _user_response(bot_resources._get_user_or_403(db, principal, username, owner_admin_id))
 
 
 @router.post("/users/{username}/link-telegram", response_model=schemas.BotUserResponse)
@@ -1048,7 +1064,7 @@ def link_telegram(
     # just adds this account to that telegram id's list; when there's more
     # than one, the bot shows an account picker (see list_users_by_telegram
     # below + telegram_bot's _resolve_account).
-    user = bot_resources._get_user_or_403(db, principal, username)
+    user = bot_resources._get_user_or_403(db, principal, username, None)
     user.telegram_id = payload.telegram_id
     db.commit()
     db.refresh(user)
@@ -1061,7 +1077,7 @@ def add_connection(
     username: str, spec: schemas.BotCreateConnectionSpec, db: Session = Depends(get_db),
     owner_admin_id: Optional[int] = None, principal: BotPrincipal = Depends(get_bot_principal),
 ):
-    user = bot_resources._get_user_or_403(db, principal, username)
+    user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     node = bot_resources._get_node_or_403(db, principal, spec.node_id)
     conn = user_ops.provision_connection(
         db, user, node, spec.protocol, spec.flow or "",
@@ -1080,7 +1096,7 @@ def list_user_purchases(
     """The customer's independently-tracked services, for the bot's
     «کدام سرویس را تمدید می‌کنید؟» picker (renewal always continues one
     SPECIFIC existing service - see renew_service below)."""
-    user = bot_resources._get_user_or_403(db, principal, username)
+    user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     out = []
     for p in sorted(user.purchases, key=lambda p: p.created_at or dt.datetime.min, reverse=True):
         info = schemas.BotPurchaseInfo.model_validate(p)
@@ -1100,7 +1116,7 @@ def rename_purchase(
     UserDetail.jsx - lets the customer set/change it themselves instead of
     only an admin being able to (see handlers/customer_account.py's
     «✏️ تغییر نام» flow)."""
-    user = bot_resources._get_user_or_403(db, principal, username)
+    user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
@@ -1137,7 +1153,7 @@ def delete_purchase(
     button (routers/users.py's delete_purchase), just self-service and
     scoped to services that are already unusable (see
     _ensure_deletable_purchase)."""
-    user = bot_resources._get_user_or_403(db, principal, username)
+    user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
@@ -1167,7 +1183,7 @@ def delete_connection(
     that predates the Purchase feature (or was added one-at-a-time) and so
     has no purchase_id of its own - governed by the user's own combined
     status instead of a Purchase's (see models.Purchase's docstring)."""
-    user = bot_resources._get_user_or_403(db, principal, username)
+    user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     conn = db.get(models.Connection, connection_id)
     if not conn or conn.user_id != user.id:
         raise HTTPException(404, "کانکشن پیدا نشد")
@@ -1201,7 +1217,7 @@ def get_bot_subscription_link(
     come back None until an admin configures that - the bot tells the
     customer support needs to set it up rather than sending a link that
     can never resolve to anything."""
-    user = bot_resources._get_user_or_403(db, principal, username)
+    user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     settings_row = db.get(models.PanelSettings, 1)
     base = (settings_row.panel_public_url or "").strip().rstrip("/") if settings_row else ""
     if not base:
@@ -1243,16 +1259,16 @@ def renew_service(
     service is already exhausted (see user_ops.renew_purchase). Never
     creates anything new - renewal means CONTINUING the same service, per
     the panel owner's definition (2026-08-09)."""
-    user = bot_resources._get_user_or_403(db, principal, username)
+    user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     _ensure_can_buy(user)
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
     user_ops.renew_purchase(db, purchase, payload.add_gb, payload.add_days, payload.reset_usage, package_id=payload.package_id)
-    renew_package = db.get(models.Package, payload.package_id) if payload.package_id else None
+    renew_package = bot_resources._get_package_or_403(db, principal, payload.package_id) if payload.package_id else None
     _charge_seller(db, user, renew_package, payload.add_gb or 0)
     if payload.package_id or payload.paid_amount is not None:
-        _record_bot_sale(db, "sale_renew", payload, user, renew_package, purchase_id=purchase.id)
+        _record_bot_sale(db, principal, "sale_renew", payload, user, renew_package, purchase_id=purchase.id)
         db.commit()
     db.refresh(user)
     db.refresh(purchase)
@@ -1273,7 +1289,7 @@ def renew(
     username: str, payload: schemas.BotRenewRequest, db: Session = Depends(get_db),
     owner_admin_id: Optional[int] = None, principal: BotPrincipal = Depends(get_bot_principal),
 ):
-    user = bot_resources._get_user_or_403(db, principal, username)
+    user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     _ensure_can_buy(user)
     # Post-migration (services/purchase_migration.py) the user-level pool
     # governs nothing for a fully-converted customer - a renewal landing
@@ -1291,10 +1307,10 @@ def renew(
     # Accounting: only a package-based renewal (or one where the bot sent
     # the exact paid amount) is a paid event - a bare reset_usage or manual
     # add_gb/add_days admin favor isn't a sale.
-    renew_package = db.get(models.Package, payload.package_id) if payload.package_id else None
+    renew_package = bot_resources._get_package_or_403(db, principal, payload.package_id) if payload.package_id else None
     _charge_seller(db, user, renew_package, payload.add_gb or 0)
     if payload.package_id or payload.paid_amount is not None:
-        _record_bot_sale(db, "sale_renew", payload, user, renew_package)
+        _record_bot_sale(db, principal, "sale_renew", payload, user, renew_package)
         db.commit()
     return _user_response(user)
 
@@ -1305,7 +1321,7 @@ def reset_usage(
     username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
     principal: BotPrincipal = Depends(get_bot_principal),
 ):
-    user = bot_resources._get_user_or_403(db, principal, username)
+    user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     user_ops.renew_user(db, user, reset_usage=True)
     return _user_response(user)
 
@@ -1320,7 +1336,7 @@ def set_user_enabled(
     node they have a connection on (unlike just flipping the status column,
     which the background poller would otherwise silently revert back to
     "active" once quota/expiry no longer justify it)."""
-    user = bot_resources._get_user_or_403(db, principal, username)
+    user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     user.status = models.UserStatus.active if enabled else models.UserStatus.disabled
     for conn in user.connections:
         _set_connection_enabled(db, conn, enabled=enabled)
@@ -1346,7 +1362,7 @@ def add_balance(
     button) can't both succeed and drive the balance negative - the second
     one gets a clean "insufficient balance" error instead of silently
     overdrawing the wallet."""
-    user = bot_resources._get_user_or_403(db, principal, username)
+    user = bot_resources._get_user_or_403(db, principal, username, None)
     # Only a TOP-UP is blocked. A negative amount is the wallet being spent
     # on a purchase, and that purchase is already refused upstream - but if
     # one ever reaches here, refusing the debit too would be the wrong way
@@ -1370,6 +1386,14 @@ def add_balance(
         # LedgerEntry kind docs for why the negative/debit branch above is
         # deliberately NOT recorded - the sale row already covers it).
         if payload.amount > 0:
+            # Same payment_card_id-ownership gap as _record_bot_sale's own
+            # fix above, found while auditing every OTHER accounting.record
+            # call site for the same pattern (not just the one Product's
+            # review pointed at) - a top-up's card needs the same check a
+            # sale's card gets, or this call site alone would still corrupt
+            # ledger attribution once enforcement is on.
+            if payload.payment_card_id is not None:
+                bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
             accounting.record(
                 db, "wallet_topup", payload.amount,
                 user=user,
@@ -1388,6 +1412,6 @@ def delete_user(
     username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
     principal: BotPrincipal = Depends(get_bot_principal),
 ):
-    user = bot_resources._get_user_or_403(db, principal, username)
+    user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     user_ops.delete_user_cascade(db, user)
     return {"ok": True}

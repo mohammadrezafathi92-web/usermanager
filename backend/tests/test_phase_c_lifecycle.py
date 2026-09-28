@@ -237,89 +237,127 @@ print("=" * 72)
 # widens the window with a real sleep so a race would actually have to be
 # won, not just theoretically possible.
 
+# Both threads below hit the SAME shared lock (_lock_package_node_scope_
+# settings on PanelSettings row id=1), but through the TWO DIFFERENT
+# endpoints the design's own TOCTOU concern is actually about: a package
+# WRITE (routers/packages.py's create_package) racing the activation
+# endpoint (panel_settings.enable_package_node_scope) - not two activation
+# calls against each other, which would only prove the activation endpoint
+# doesn't collide with itself and say nothing about the write-vs-activate
+# invariant _lock_package_node_scope_settings exists to close (caught in
+# review - the first version of this test picked the wrong pair of
+# endpoints).
+
 tmpdir = tempfile.mkdtemp(prefix="phase_c_lock_")
 db_path = os.path.join(tmpdir, "race.db")
 file_url = f"sqlite:///{db_path}"
 
-engine_a = create_engine(file_url, connect_args={"check_same_thread": False, "timeout": 10})
-models.Base.metadata.create_all(engine_a)
-SessionA = sessionmaker(bind=engine_a)
-db_a = SessionA()
+engine_pkg = create_engine(file_url, connect_args={"check_same_thread": False, "timeout": 10})
+models.Base.metadata.create_all(engine_pkg)
+SessionPkg = sessionmaker(bind=engine_pkg)
+db_pkg = SessionPkg()
 
-engine_b = create_engine(file_url, connect_args={"check_same_thread": False, "timeout": 10})
-SessionB = sessionmaker(bind=engine_b)
-db_b = SessionB()
+engine_act = create_engine(file_url, connect_args={"check_same_thread": False, "timeout": 10})
+SessionAct = sessionmaker(bind=engine_act)
+db_act = SessionAct()
 
-root_a = models.AdminUser(username="root_a", hashed_password=hash_password(PW), is_superadmin=True)
-db_a.add(root_a)
-db_a.commit()
-db_a.refresh(root_a)
-# db_b's connection did not exist yet when root_a was committed by db_a's
-# connection on the same file - re-open/re-query on db_b to see it, exactly
-# like a second real HTTP request would with its own fresh session.
-root_a_id = root_a.id
+root_race = models.AdminUser(username="root_race", hashed_password=hash_password(PW), is_superadmin=True)
+db_pkg.add(root_race)
+db_pkg.commit()
+db_pkg.refresh(root_race)
+# db_act's own connection did not exist yet when root_race was committed
+# over db_pkg's connection on the same file - re-queried by id below,
+# exactly like a second real HTTP request would with its own fresh
+# session.
+root_race_id = root_race.id
 
-app_a = FastAPI()
-app_a.include_router(panel_settings.router)
-app_a.dependency_overrides[get_db] = lambda: db_a
-app_a.dependency_overrides[get_current_admin] = lambda: db_a.get(models.AdminUser, root_a_id)
-client_a = TestClient(app_a)
+node_race = models.Node(name="n-race", type=models.NodeType.mikrotik,
+                        mt_host="9.9.9.9", mt_username="u", mt_password="p")
+db_pkg.add(node_race)
+db_pkg.commit()
+node_race_id = node_race.id
 
-app_b = FastAPI()
-app_b.include_router(panel_settings.router)
-app_b.dependency_overrides[get_db] = lambda: db_b
-app_b.dependency_overrides[get_current_admin] = lambda: db_b.get(models.AdminUser, root_a_id)
-client_b = TestClient(app_b)
+app_pkg = FastAPI()
+app_pkg.include_router(packages_router.router)
+app_pkg.dependency_overrides[get_db] = lambda: db_pkg
+app_pkg.dependency_overrides[get_current_admin] = lambda: db_pkg.get(models.AdminUser, root_race_id)
+client_pkg = TestClient(app_pkg)
 
-# Widen the window the lock is held for, on BOTH sessions equally, so
-# whichever one wins the race to BEGIN IMMEDIATE first forces the other to
-# genuinely wait rather than "winning" purely by CPU scheduling luck.
-_real_find_mismatches = bot_auth._find_package_node_scope_mismatches
+app_act = FastAPI()
+app_act.include_router(panel_settings.router)
+app_act.dependency_overrides[get_db] = lambda: db_act
+app_act.dependency_overrides[get_current_admin] = lambda: db_act.get(models.AdminUser, root_race_id)
+client_act = TestClient(app_act)
+
+# Widen the window the lock is held for, on WHICHEVER of the two endpoints
+# acquires it first - patched at the module-attribute level in BOTH
+# routers/packages.py's and routers/panel_settings.py's own namespaces
+# (each did `from ..services.bot_auth import _lock_package_node_scope_
+# settings`, which copies the reference at import time - patching
+# bot_auth's own attribute alone would not reach either caller).
+_real_lock = bot_auth._lock_package_node_scope_settings
 _hold_seconds = 0.4
 
 
-def _slow_find_mismatches(db):
-    time.sleep(_hold_seconds)
-    return _real_find_mismatches(db)
+def _slow_lock(db):
+    row = _real_lock(db)
+    time.sleep(_hold_seconds)  # lock is already held (BEGIN IMMEDIATE ran above) - widen the window it's held for
+    return row
 
 
-bot_auth._find_package_node_scope_mismatches = _slow_find_mismatches
-panel_settings._find_package_node_scope_mismatches = _slow_find_mismatches
+bot_auth._lock_package_node_scope_settings = _slow_lock
+packages_router._lock_package_node_scope_settings = _slow_lock
+panel_settings._lock_package_node_scope_settings = _slow_lock
 
 results: dict[str, tuple[int, float]] = {}
 
 
-def _run(name, client):
+def _run_create_package():
     start = time.monotonic()
-    resp = client.put("/api/settings/package-node-scope", headers=CONFIRM)
-    elapsed = time.monotonic() - start
-    results[name] = (resp.status_code, elapsed)
+    resp = client_pkg.post(
+        "/api/packages",
+        json={
+            "name": "race-package", "quota_gb": 5, "duration_days": 10, "price": 100,
+            "connections": [{"node_id": node_race_id, "protocol": "wireguard"}],
+        },
+    )
+    results["package_write"] = (resp.status_code, time.monotonic() - start)
 
 
-t_a = threading.Thread(target=_run, args=("a", client_a))
-t_b = threading.Thread(target=_run, args=("b", client_b))
-t_a.start()
-time.sleep(0.05)  # give A a head start acquiring BEGIN IMMEDIATE first
-t_b.start()
-t_a.join(timeout=10)
-t_b.join(timeout=10)
+def _run_enable():
+    start = time.monotonic()
+    resp = client_act.put("/api/settings/package-node-scope", headers=CONFIRM)
+    results["activation"] = (resp.status_code, time.monotonic() - start)
 
-bot_auth._find_package_node_scope_mismatches = _real_find_mismatches
-panel_settings._find_package_node_scope_mismatches = _real_find_mismatches
 
-status_a, elapsed_a = results.get("a", (None, None))
-status_b, elapsed_b = results.get("b", (None, None))
+t_pkg = threading.Thread(target=_run_create_package)
+t_act = threading.Thread(target=_run_enable)
+t_pkg.start()
+time.sleep(0.05)  # give the package write a head start acquiring BEGIN IMMEDIATE first
+t_act.start()
+t_pkg.join(timeout=10)
+t_act.join(timeout=10)
 
-check("both concurrent enable attempts eventually complete (no deadlock/crash)",
-      None in (status_a, status_b), False)
-check("neither concurrent request errors out (both see a clean 200 - no real mismatches exist)",
-      (status_a, status_b), (200, 200))
-check(f"the second request was genuinely blocked waiting for the lock, not merely lucky "
-      f"(a={elapsed_a:.2f}s, b={elapsed_b:.2f}s, hold={_hold_seconds}s)",
-      elapsed_b >= _hold_seconds * 0.8, True)
+bot_auth._lock_package_node_scope_settings = _real_lock
+packages_router._lock_package_node_scope_settings = _real_lock
+panel_settings._lock_package_node_scope_settings = _real_lock
 
-db_a.close()
-db_b.close()
+status_pkg, elapsed_pkg = results.get("package_write", (None, None))
+status_act, elapsed_act = results.get("activation", (None, None))
+
+check("both the concurrent package write and the activation attempt eventually complete (no deadlock/crash)",
+      None in (status_pkg, status_act), False)
+check("the package write succeeds (superadmin-owned package, node in scope - no mismatch possible)",
+      status_pkg, 200)
+check("the activation attempt succeeds too (no OTHER package has a real mismatch)",
+      status_act, 200)
+check(f"whichever of the two lost the race was genuinely blocked waiting for the "
+      f"OTHER endpoint's lock, not merely lucky (write={elapsed_pkg:.2f}s, "
+      f"activate={elapsed_act:.2f}s, hold={_hold_seconds}s)",
+      max(elapsed_pkg, elapsed_act) >= _hold_seconds * 0.8, True)
+
+db_pkg.close()
+db_act.close()
 
 
 # ===========================================================================

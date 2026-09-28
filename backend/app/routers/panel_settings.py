@@ -28,6 +28,7 @@ from ..services import hierarchy
 from ..services import payment_cards as payment_cards_service
 from ..services import panel_tls
 from ..services import telegram_ids
+from ..services.bot_auth import _find_package_node_scope_mismatches, _lock_package_node_scope_settings
 
 # Panel-wide (single PanelSettings row, id=1) - payment/checkout info,
 # support contact, referral/loyalty config, panel port, HA config all
@@ -46,6 +47,63 @@ def _get_or_create(db: Session) -> models.PanelSettings:
         db.commit()
         db.refresh(row)
     return row
+
+
+# --------------------------------------------------------- package-node-scope
+#
+# Phase C (docs/api-key-scope-audit-2026-09-27.md) per-installation switch -
+# False by default on every install, including ones that already existed
+# before this column was added. Deliberately its own three endpoints
+# (enable/disable/status), not folded into the general PUT /api/settings
+# below: enabling re-validates inside a locked transaction and can be
+# refused with 409, which the general settings-update endpoint's shape
+# (accept-and-save) has no room for.
+
+@router.put("/package-node-scope")
+def enable_package_node_scope(
+    db: Session = Depends(get_db),
+    _admin: models.AdminUser = Depends(require_superadmin),
+    _confirmed: models.AdminUser = Depends(require_confirm_password),
+):
+    """Turns package-authorization enforcement on for THIS installation
+    only. Re-runs the exact same mismatch check
+    scripts/preflight_package_node_scope.py lets an operator preview ahead
+    of time, but does so INSIDE the same locked transaction that then
+    flips the flag - a stale/no-longer-current preflight report can never
+    be the actual gate, only this re-check can (see
+    _lock_package_node_scope_settings's own docstring for why the lock has
+    to be acquired before this call, not after)."""
+    settings = _lock_package_node_scope_settings(db)
+    mismatches = _find_package_node_scope_mismatches(db)
+    if mismatches:
+        db.rollback()
+        raise HTTPException(
+            409,
+            f"{len(mismatches)} ناهماهنگی هنوز حل نشده - preflight_package_node_scope.py را دوباره اجرا کنید",
+        )
+    settings.package_node_scope_enforced = True
+    db.commit()
+    return {"ok": True}
+
+
+@router.put("/package-node-scope/disable")
+def disable_package_node_scope(
+    db: Session = Depends(get_db),
+    _admin: models.AdminUser = Depends(require_superadmin),
+    _confirmed: models.AdminUser = Depends(require_confirm_password),
+):
+    """Turning enforcement back OFF only ever makes access broader, never
+    narrower - there is no unsafe intermediate state to guard against, so
+    (unlike enable above) this needs no lock/re-validation."""
+    settings = _get_or_create(db)
+    settings.package_node_scope_enforced = False
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/package-node-scope")
+def get_package_node_scope_status(db: Session = Depends(get_db)):
+    return {"enabled": _get_or_create(db).package_node_scope_enforced}
 
 
 def _settings_out(db: Session, row: models.PanelSettings) -> schemas.PanelSettingsOut:

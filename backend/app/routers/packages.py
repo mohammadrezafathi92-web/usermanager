@@ -10,6 +10,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_admin, require_confirm_password
 from ..services import hierarchy, admin_billing, trial
+from ..services.bot_auth import _lock_package_node_scope_settings, resolve_package_authorization_scope
 
 # Router-level dependency is just "logged in" - listing packages is
 # available to every admin (needed to pick a package while creating a
@@ -152,7 +153,9 @@ XRAY_PROTOCOLS = {"xray"}
 SOFTETHER_PROTOCOLS = {"softether"}
 
 
-def _sync_connections(db: Session, pkg: models.Package, specs: list[schemas.PackageConnectionSpec]) -> None:
+def _sync_connections(
+    db: Session, pkg: models.Package, specs: list[schemas.PackageConnectionSpec], *, enforce_scope: bool,
+) -> None:
     """Replaces the package's whole set of bundled server/service rows with
     the ones just submitted from the web UI (simplest correct semantics for
     an editable list - no per-row diffing needed).
@@ -162,7 +165,28 @@ def _sync_connections(db: Session, pkg: models.Package, specs: list[schemas.Pack
     only when a customer bought the package and provisioning ran - by which
     point they had already paid, and the error surfaced far from the form
     that caused it.
+
+    enforce_scope (Phase C, docs/api-key-scope-audit-2026-09-27.md): when
+    the installation has turned on package-authorization enforcement
+    (PanelSettings.package_node_scope_enforced), also rejects a node this
+    package's own owner (resolve_package_authorization_scope(pkg) - never
+    an `admin` parameter, since _sync_connections' real signature never had
+    one) has no access to - closing the write-time half of the same gap
+    user_ops.provision_connection's authorization_scope closes at
+    provisioning time. No commit here, same as before this parameter
+    existed - create_package/update_package still do exactly one commit,
+    which is also what makes their PanelSettings row (if just created by
+    the caller's own _lock_package_node_scope_settings) durable.
     """
+    if enforce_scope:
+        scope = resolve_package_authorization_scope(pkg)
+        if not scope.unrestricted:
+            owner = db.get(models.AdminUser, scope.admin_id)
+            allowed = hierarchy.selling_scope_node_ids(db, owner) if owner else set()
+            for spec in specs:
+                if allowed is not None and spec.node_id not in allowed:
+                    raise HTTPException(400, f"سرور (id={spec.node_id}) در اختیار شما نیست")
+
     for spec in specs:
         node = db.get(models.Node, spec.node_id)
         if node is None:
@@ -269,6 +293,13 @@ def _check_group_in_scope(db: Session, admin: models.AdminUser, group_id) -> Non
 
 @router.post("", response_model=schemas.PackageOut)
 def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    # Phase C (docs/api-key-scope-audit-2026-09-27.md): the very first DB
+    # operation of this endpoint's own body, before db.add/db.flush below -
+    # get_current_admin's own SELECT (already run by the time this body
+    # starts) does not itself trip SQLite's "cannot start a transaction
+    # within a transaction" (only a prior DML does), but a flush() would if
+    # this ran any later. See _lock_package_node_scope_settings's docstring.
+    package_node_scope_settings = _lock_package_node_scope_settings(db)
     _require_package_manager(admin)
     # The price floor exists so a reseller cannot sell below what the
     # package costs them. A trial costs them nothing - _charge_seller skips
@@ -302,15 +333,16 @@ def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db)
     pkg = models.Package(**data)
     db.add(pkg)
     db.flush()  # assign pkg.id before adding child rows
-    _sync_connections(db, pkg, payload.connections)
+    _sync_connections(db, pkg, payload.connections, enforce_scope=package_node_scope_settings.package_node_scope_enforced)
     _sync_ovpn_templates(db, pkg, payload.ovpn_templates)
-    db.commit()
+    db.commit()  # single commit: pkg + connections + templates + (if just created above) the PanelSettings row
     db.refresh(pkg)
     return _out(pkg)
 
 
 @router.put("/{package_id}", response_model=schemas.PackageOut)
 def update_package(package_id: int, payload: schemas.PackageUpdate, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    package_node_scope_settings = _lock_package_node_scope_settings(db)  # first DB op - see create_package's comment
     _require_package_manager(admin)
     pkg = _get_scoped_package(db, package_id, admin)
     data = payload.model_dump(exclude_unset=True, exclude={"connections", "ovpn_templates"})
@@ -347,7 +379,7 @@ def update_package(package_id: int, payload: schemas.PackageUpdate, db: Session 
     for k, v in data.items():
         setattr(pkg, k, v)
     if payload.connections is not None:
-        _sync_connections(db, pkg, payload.connections)
+        _sync_connections(db, pkg, payload.connections, enforce_scope=package_node_scope_settings.package_node_scope_enforced)
     if payload.ovpn_templates is not None:
         _sync_ovpn_templates(db, pkg, payload.ovpn_templates)
     db.commit()

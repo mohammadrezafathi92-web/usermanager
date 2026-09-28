@@ -27,11 +27,23 @@ from fastapi import HTTPException
 from ..database import SessionLocal
 from .. import models, schemas
 from ..routers import bot as bot_router
+from ..services import bot_resources
+from ..services.bot_auth import BotPrincipal, build_internal_principal_for_owner
 from .config import config
 
 
 class ApiError(Exception):
     pass
+
+
+def _build_principal(db) -> BotPrincipal:
+    """Phase C (docs/api-key-scope-audit-2026-09-27.md): the in-process
+    counterpart of deps.get_bot_principal - config.bot_owner_admin_id is
+    None for the shared bot or an AdminUser id for a dedicated admin/
+    seller bot thread. See bot_auth.build_internal_principal_for_owner
+    for how scope_enforced is resolved (that admin's own
+    dedicated_bot_scope_enforced row, never a blanket default)."""
+    return build_internal_principal_for_owner(db, config.bot_owner_admin_id, label="in-process bot")
 
 
 def _scope(owner_admin_id: Optional[int]) -> Optional[int]:
@@ -51,10 +63,19 @@ def _scope(owner_admin_id: Optional[int]) -> Optional[int]:
 
 
 async def _call(fn, *args, **kwargs):
+    """Every bot_router.* function called through this now takes
+    `principal` (Phase C's @bot_route_policy wraps every one of them) -
+    built once here, from the SAME session `fn` itself runs against, so
+    every PanelBridge method gets this for free without having to build
+    one itself. `_scope()` (above) is unrelated and stays exactly as it
+    was: it fills in the CLAIMED owner_admin_id value a handler didn't
+    pass explicitly; `principal` is who is asking, never a substitute for
+    it."""
     def _run():
         db = SessionLocal()
         try:
-            return fn(*args, db=db, **kwargs)
+            principal = _build_principal(db)
+            return fn(*args, db=db, principal=principal, **kwargs)
         finally:
             db.close()
 
@@ -99,11 +120,25 @@ class PanelBridge:
         remote_bridge.RemoteBridge's version of this method, which has no
         choice but to fetch the bytes over HTTP - that symmetry is what
         lets handlers/customer.py stay identical regardless of whether the
-        bot is running in-process here or on a remote server."""
+        bot is running in-process here or on a remote server.
+
+        Phase C: authorization goes through bot_resources._get_package_or_403
+        (the same accessor routers/bot.py's download_package_file uses) -
+        this used to query models.PackageFile directly with no
+        authorization at all, one of the bypasses the audit found."""
 
         def _run():
             db = SessionLocal()
             try:
+                principal = _build_principal(db)
+                try:
+                    bot_resources._get_package_or_403(db, principal, package_id)
+                except HTTPException:
+                    # Matches this method's own long-standing contract
+                    # (never raises - a package/tutorial that doesn't
+                    # exist, or isn't this principal's, just yields no
+                    # files, same as an empty query would have).
+                    return []
                 rows = (
                     db.query(models.PackageFile)
                     .filter(models.PackageFile.package_id == package_id)
@@ -211,11 +246,17 @@ class PanelBridge:
 
     async def get_tutorial_media(self, tutorial_id: int) -> list[dict]:
         """Filename + raw bytes for every photo/video attached to a
-        tutorial - same rationale as get_package_files above."""
+        tutorial - same rationale as get_package_files above (Phase C:
+        authorized via bot_resources._get_tutorial_or_403 now)."""
 
         def _run():
             db = SessionLocal()
             try:
+                principal = _build_principal(db)
+                try:
+                    bot_resources._get_tutorial_or_403(db, principal, tutorial_id)
+                except HTTPException:
+                    return []  # never-raises contract - see get_package_files' comment
                 rows = (
                     db.query(models.TutorialMedia)
                     .filter(models.TutorialMedia.tutorial_id == tutorial_id)
@@ -252,6 +293,15 @@ class PanelBridge:
                 r = db.get(models.TutorialSoftware, software_id)
                 if not r or not r.stored_path:
                     return None
+                # Phase C: authorize against the row's OWN tutorial_id, not
+                # the (possibly None/unused, see docstring above) parameter -
+                # bot_resources._get_tutorial_or_403 is the same accessor
+                # routers/bot.py's download_tutorial_software uses.
+                principal = _build_principal(db)
+                try:
+                    bot_resources._get_tutorial_or_403(db, principal, r.tutorial_id)
+                except HTTPException:
+                    return None  # never-raises contract - see get_package_files' comment
                 try:
                     with open(r.stored_path, "rb") as f:
                         content = f.read()
@@ -344,12 +394,22 @@ class PanelBridge:
         they have a linked Telegram id, regardless of which bot the
         customer happened to be talking to. Goes straight to the DB rather
         than through bot_router since this is an internal notification
-        concern, not part of the bot's customer-facing API surface."""
+        concern, not part of the bot's customer-facing API surface.
+
+        Phase C: goes through bot_resources._get_admin_or_403 now (still
+        no bot_router hop - that accessor is the shared, principal-aware
+        implementation routers/bot.py's admin-username endpoint also
+        calls). The broad except below already treated "not found" as
+        None; it now also absorbs a 403 from an out-of-hierarchy lookup
+        the exact same way - unchanged behavior for C0's unscoped
+        principals, since require_bot_resource_owner_access never denies
+        an unscoped one."""
         def _run():
             db = SessionLocal()
             try:
-                admin = db.get(models.AdminUser, admin_id)
-                return admin.telegram_id if admin else None
+                principal = _build_principal(db)
+                admin = bot_resources._get_admin_or_403(db, principal, admin_id)
+                return admin.telegram_id
             finally:
                 db.close()
 
@@ -369,12 +429,14 @@ class PanelBridge:
         confusing without a label. Same direct-DB pattern as
         get_admin_telegram_id just above and for the same reason: an
         internal display concern, not part of the bot's customer-facing
-        API surface."""
+        API surface. Phase C: same accessor/reasoning as
+        get_admin_telegram_id above."""
         def _run():
             db = SessionLocal()
             try:
-                admin = db.get(models.AdminUser, admin_id)
-                return admin.username if admin else None
+                principal = _build_principal(db)
+                admin = bot_resources._get_admin_or_403(db, principal, admin_id)
+                return admin.username
             finally:
                 db.close()
 

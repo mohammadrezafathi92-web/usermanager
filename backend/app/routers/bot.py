@@ -16,19 +16,44 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
-from sqlalchemy import or_
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..deps import get_bot_api_key
+from ..deps import get_bot_principal
 from ..services import user_ops, hierarchy, payment_cards, accounting, admin_billing, trial
+from ..services import bot_resources
+from ..services.bot_auth import (
+    BROADCAST,
+    CUSTOMER_READ,
+    CUSTOMER_WRITE,
+    FILES_READ,
+    IDENTITY_WRITE,
+    PAYMENT_READ,
+    PAYMENT_WRITE,
+    ADMIN_LOOKUP,
+    WALLET_WRITE,
+    BotPrincipal,
+    NodeAuthorizationScope,
+    bot_route_policy,
+    resolve_bot_authorization_scope,
+    resolve_claimed_owner,
+)
 from ..services.quota_manager import _set_connection_enabled
 from .panel_settings import _get_or_create as _get_or_create_settings
 
 logger = logging.getLogger("bot_api")
 
-router = APIRouter(prefix="/api/bot", tags=["bot"], dependencies=[Depends(get_bot_api_key)])
+# Phase C (docs/api-key-scope-audit-2026-09-27.md): get_bot_api_key remains
+# the router-level dependency purely as the 401 gate (missing/invalid/
+# disabled key) - its RETURN VALUE is no longer injected into any endpoint
+# here. Every endpoint below instead takes `principal: BotPrincipal =
+# Depends(get_bot_principal)` (which itself depends on get_bot_api_key) and
+# is wrapped in @bot_route_policy, which enforces the declared capability
+# before the endpoint body ever runs - see bot_auth.bot_route_policy's own
+# docstring for why this, not a bare dict of policies, is what actually
+# makes the capability check impossible to forget on a new endpoint.
+router = APIRouter(prefix="/api/bot", tags=["bot"], dependencies=[Depends(get_bot_principal)])
 
 
 def _connection_info(conn: models.Connection) -> schemas.BotConnectionInfo:
@@ -148,41 +173,13 @@ def _charge_seller(
     admin_billing.charge_for_renewal(db, admin, package, add_gb)
 
 
-def _visibility_filter(db: Session, owner_admin_id: Optional[int]):
-    """The clause to add to a models.User query, or None for "no filter".
-
-    The parameter every endpoint below calls `owner_admin_id` is NOT a
-    filter value - it is the panel account the bot is acting for. Treating
-    it as one (`User.owner_admin_id == owner_admin_id`) is what made an
-    Admin's own Sellers' customers invisible in the bot while being
-    perfectly visible in the panel: two answers to the same question,
-    depending on which door you came through.
-
-    Nor is it an `IN` list, which was the first fix and was still wrong: a
-    customer with no owner at all (owner_admin_id IS NULL - 577 of them on
-    this install, left behind by delete_admin's "unassign, don't destroy")
-    can never match one, because ANSI SQL's `IN (1, 2)` is not TRUE for
-    NULL. Those customers are visible to a superadmin and to nobody else.
-
-    So the rule is not restated here at all - hierarchy.user_visibility_
-    clause already encodes it for the panel, and this calls that. A second
-    copy of a rule this important is a second thing to keep in sync
-    forever, and the two copies had already drifted once.
-
-    None (the shared, unowned bot) still means unfiltered: customer-facing
-    flows on the shared bot legitimately serve every Admin's customers.
-    """
-    if owner_admin_id is None:
-        return None
-    admin = db.get(models.AdminUser, owner_admin_id)
-    if admin is None:
-        # An unknown caller sees nothing. Failing open here would hand a
-        # stale or mistyped id the entire customer list.
-        from sqlalchemy import false
-        return false()
-    return hierarchy.user_visibility_clause(db, admin)
-
-
+# Phase C (docs/api-key-scope-audit-2026-09-27.md): the old _visibility_filter
+# helper that used to live here (same clause, same reasoning as
+# hierarchy.user_visibility_clause) moved into services/bot_resources.py's
+# _list_users_query as a nested closure - every caller here now goes through
+# that accessor instead of building the clause locally, so this file itself
+# never touches models.User/models.AdminUser outside the accessor functions
+# (see that module's own docstring, and tests/test_bot_resource_accessor_ast.py).
 
 DEFAULT_PURCHASE_BLOCK_MESSAGE = (
     "امکان خرید و تمدید برای این حساب فعلا غیرفعال است. "
@@ -268,26 +265,11 @@ def _ensure_one_time_package_not_reused(
         raise HTTPException(403, "این بسته فقط یک‌بار برای هر مشتری قابل خرید است و قبلاً توسط شما خریداری شده.")
 
 
-def _get_user_or_404(db: Session, username: str, owner_admin_id: Optional[int] = None) -> models.User:
-    """owner_admin_id, when given, scopes this lookup to one admin's group -
-    used by the built-in bot when a linked group-admin (see
-    telegram_bot/admin_scope.py) is operating on "their" users, so they
-    can't reach/guess a user belonging to a different admin's group by
-    username. A full/config bot admin never passes this (sees everyone,
-    same as before this scoping existed)."""
-    user = db.query(models.User).filter(models.User.username == username).first()
-    if user is None:
-        raise HTTPException(404, "کاربر پیدا نشد")
-    if owner_admin_id is not None:
-        admin = db.get(models.AdminUser, owner_admin_id)
-        # hierarchy.can_see_user is the single-object twin of the clause
-        # _visibility_filter builds for queries - same rule, including the
-        # ownerless customers only a superadmin may reach.
-        if admin is None or not hierarchy.can_see_user(
-            admin, hierarchy.owned_admin_ids(db, admin), user.owner_admin_id
-        ):
-            raise HTTPException(404, "کاربر پیدا نشد")
-    return user
+# Phase C: the old _get_user_or_404 helper (same query, same
+# hierarchy.can_see_user check) moved into services/bot_resources.py's
+# _get_user_or_403 - every caller here now goes through that accessor,
+# which uses require_bot_user_access (principal-aware) instead of a bare
+# owner_admin_id equality check.
 
 
 def _record_bot_sale(
@@ -319,13 +301,21 @@ def _record_bot_sale(
 
 
 @router.get("/nodes", response_model=list[schemas.BotNodeInfo])
-def list_nodes(db: Session = Depends(get_db)):
-    nodes = db.query(models.Node).filter(models.Node.enabled == True).all()  # noqa: E712
-    return nodes
+@bot_route_policy(capability=None, resource_strategy="node_list")
+def list_nodes(db: Session = Depends(get_db), principal: BotPrincipal = Depends(get_bot_principal)):
+    allowed = bot_resources._scoped_node_ids(db, principal)
+    query = db.query(models.Node).filter(models.Node.enabled == True)  # noqa: E712
+    if allowed is not None:
+        query = query.filter(models.Node.id.in_(allowed))
+    return query.all()
 
 
 @router.get("/packages", response_model=list[schemas.PackageOut])
-def list_packages(owner_admin_id: Optional[int] = None, db: Session = Depends(get_db)):
+@bot_route_policy(capability=CUSTOMER_READ, resource_strategy="package_list")
+def list_packages(
+    owner_admin_id: Optional[int] = None, db: Session = Depends(get_db),
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Active packages, in the order the admin arranged them - shown to
     customers by the sales bot at checkout. Eager-loads `connections` AND
     `files` - the built-in bot (app/telegram_bot/panel_bridge.py) closes
@@ -353,30 +343,18 @@ def list_packages(owner_admin_id: Optional[int] = None, db: Session = Depends(ge
     package's `price` is replaced with their own resale override (models.
     PackageSellerPrice) where one is set, so their bot shows/charges their
     own number instead of their parent Admin's base price."""
-    q = (
-        db.query(models.Package)
-        .options(
-            joinedload(models.Package.connections),
-            joinedload(models.Package.files),
-            # ovpn_templates MUST be eager-loaded too - PackageOut reads it,
-            # and panel_bridge.py closes the DB session before converting
-            # the result to a schema, so a lazy load here raises
-            # DetachedInstanceError and takes down the whole "خرید/تمدید"
-            # flow (exactly the trap this docstring already warns about -
-            # it caught `files` once and caught this field too).
-            joinedload(models.Package.ovpn_templates),
-        )
-        .filter(models.Package.bot_enabled == True)  # noqa: E712
-    )
-
-    target = db.get(models.AdminUser, owner_admin_id) if owner_admin_id is not None else None
+    q = bot_resources._list_packages_query(db, principal, owner_admin_id)
+    # Phase C: the accessor above already resolved+validated the claim via
+    # resolve_claimed_owner and applied the same owner filtering this
+    # function used to build inline - this second call just re-derives
+    # `target` (already-validated, since resolve_claimed_owner is a pure
+    # function of the same inputs) for the seller_prices overlay below,
+    # which is a display concern the accessor itself has no reason to know
+    # about.
+    resolved_owner_admin_id = resolve_claimed_owner(db, principal, owner_admin_id, endpoint="list_packages")
+    target = db.get(models.AdminUser, resolved_owner_admin_id) if resolved_owner_admin_id is not None else None
     seller_prices: dict[int, int] = {}
     if target is not None and not target.is_superadmin:
-        # An Admin's/Seller's own bot never shows the superadmin's global
-        # packages, only their own tree's (see accessible_package_owner_ids's
-        # docstring).
-        allowed = hierarchy.accessible_package_owner_ids(target)
-        q = q.filter(hierarchy.owner_id_in_clause(models.Package.owner_admin_id, allowed))
         if hierarchy.role(target) == hierarchy.ROLE_SELLER:
             seller_prices = {
                 row.package_id: row.price
@@ -384,12 +362,10 @@ def list_packages(owner_admin_id: Optional[int] = None, db: Session = Depends(ge
                 .filter(models.PackageSellerPrice.seller_admin_id == target.id)
                 .all()
             }
-    else:
-        # Shared/global bot (owner_admin_id was None), or an explicit
-        # owner_admin_id that resolved to the superadmin themself - only
-        # the superadmin's own NULL-owned packages, same rule as
-        # everywhere else now.
-        q = q.filter(models.Package.owner_admin_id.is_(None))
+    # (No `else` branch needed here anymore - bot_resources._list_packages_query
+    # already applied the "shared/global bot, or an owner_admin_id that
+    # resolved to the superadmin themself -> only NULL-owned packages" filter
+    # itself, on the exact same resolved_owner_admin_id.)
 
     pkgs = q.order_by(models.Package.sort_order, models.Package.id).all()
     # Keyed on OWNERSHIP, not on the role column.
@@ -439,7 +415,11 @@ def list_packages(owner_admin_id: Optional[int] = None, db: Session = Depends(ge
 
 
 @router.get("/payment-info", response_model=schemas.PanelSettingsOut)
-def get_payment_info(owner_admin_id: Optional[int] = None, db: Session = Depends(get_db)):
+@bot_route_policy(capability=PAYMENT_READ, resource_strategy="claim")
+def get_payment_info(
+    owner_admin_id: Optional[int] = None, db: Session = Depends(get_db),
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Card-to-card payment details - shown by the sales bot right before it
     asks the customer for a receipt photo (also used for the top-up presets
     and support-contact text elsewhere in the bot, see telegram_bot/
@@ -476,6 +456,7 @@ def get_payment_info(owner_admin_id: Optional[int] = None, db: Session = Depends
     showing the legacy single-card fields exactly as before - this is
     fully additive, no behavior change for a panel that never adopts the
     multi-card feature."""
+    owner_admin_id = resolve_claimed_owner(db, principal, owner_admin_id, endpoint="get_payment_info")
     row = _get_or_create_settings(db)
     own_admin = None
     if owner_admin_id is not None:
@@ -529,7 +510,10 @@ def get_payment_info(owner_admin_id: Optional[int] = None, db: Session = Depends
 
 
 @router.get("/payment-cards/{card_id}", response_model=schemas.PaymentCardOut)
-def get_payment_card(card_id: int, db: Session = Depends(get_db)):
+@bot_route_policy(capability=PAYMENT_READ, resource_strategy="payment_card_owner")
+def get_payment_card(
+    card_id: int, db: Session = Depends(get_db), principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Single card lookup by id - used by the bot to find out which
     Telegram id (if any) a customer's receipt should ALSO be routed to for
     approval (see models.PaymentCard.approval_telegram_id and telegram_bot/
@@ -539,29 +523,36 @@ def get_payment_card(card_id: int, db: Session = Depends(get_db)):
     considers active (get_payment_info's job) - the pool may well have
     rotated to a different card since the customer's receipt came in, and
     approval must still go by what was actually shown to them."""
-    card = db.get(models.PaymentCard, card_id)
-    if not card:
-        raise HTTPException(404, "کارت پیدا نشد")
-    return card
+    return bot_resources._get_payment_card_or_403(db, principal, card_id)
 
 
 @router.post("/payment-cards/{card_id}/record-payment")
-def record_payment_card_use(card_id: int, payload: schemas.BotRecordCardPaymentRequest, db: Session = Depends(get_db)):
+@bot_route_policy(capability=PAYMENT_WRITE, resource_strategy="payment_card_owner")
+def record_payment_card_use(
+    card_id: int, payload: schemas.BotRecordCardPaymentRequest, db: Session = Depends(get_db),
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Called once by telegram_bot/handlers/admin_pending.py right after a
     receipt/top-up payment is actually approved - see
     services/payment_cards.py's advance_after_payment for what this does
     ("threshold" mode's auto-switch-to-next-card bookkeeping; a harmless
     no-op for a pool in "manual"/"rotate" mode)."""
+    bot_resources._get_payment_card_or_403(db, principal, card_id)  # authorization only - advance_after_payment re-fetches
     payment_cards.advance_after_payment(db, card_id, payload.amount)
     return {"ok": True}
 
 
 @router.get("/sales-stats")
-def get_sales_stats(owner_admin_id: Optional[int] = None, db: Session = Depends(get_db)):
+@bot_route_policy(capability=CUSTOMER_READ, resource_strategy="claim")
+def get_sales_stats(
+    owner_admin_id: Optional[int] = None, db: Session = Depends(get_db),
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Compact sales summary for the bot's admin «📊 گزارش فروش» screen -
     today / last 7 days / last 30 days, read off the accounting ledger
     (see services/accounting.py) and scoped to whichever admin's bot is
     asking, exactly like list_packages/get_payment_info are."""
+    owner_admin_id = resolve_claimed_owner(db, principal, owner_admin_id, endpoint="get_sales_stats")
     now = dt.datetime.utcnow()
     windows = {
         "today": now.replace(hour=0, minute=0, second=0, microsecond=0),
@@ -579,17 +570,18 @@ def get_sales_stats(owner_admin_id: Optional[int] = None, db: Session = Depends(
         rows = q.all()
         out[key] = {"total": sum(r.amount or 0 for r in rows), "count": len(rows)}
 
-    user_q = db.query(models.User)
-    clause = _visibility_filter(db, owner_admin_id)
-    if clause is not None:
-        user_q = user_q.filter(clause)
+    # Already-resolved/validated owner_admin_id above - _list_users_query
+    # re-resolving the same value through resolve_claimed_owner a second
+    # time is a no-op (same principal, same claim), not a second decision.
+    user_q = bot_resources._list_users_query(db, principal, owner_admin_id)
     out["users_total"] = user_q.count()
     out["users_active"] = user_q.filter(models.User.status == models.UserStatus.active).count()
     return out
 
 
 @router.get("/customer-menu-config")
-def get_customer_menu_config(db: Session = Depends(get_db)):
+@bot_route_policy(capability=None, resource_strategy="none")
+def get_customer_menu_config(db: Session = Depends(get_db), principal: BotPrincipal = Depends(get_bot_principal)):
     """Which customer main-menu buttons are hidden (see Settings > ربات >
     منوی مشتری and telegram_bot/keyboards.py's main_menu_kb), PLUS whether
     customers can use the bot AT ALL right now (Settings > ربات > «دسترسی
@@ -609,7 +601,11 @@ def get_customer_menu_config(db: Session = Depends(get_db)):
 
 
 @router.get("/tutorials", response_model=list[schemas.TutorialOut])
-def list_tutorials(owner_admin_id: Optional[int] = None, db: Session = Depends(get_db)):
+@bot_route_policy(capability=CUSTOMER_READ, resource_strategy="tutorial_list")
+def list_tutorials(
+    owner_admin_id: Optional[int] = None, db: Session = Depends(get_db),
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Enabled tutorial entries, shown to customers from the bot's "📚
     آموزش" menu. Eager-loads `media` for the same reason list_packages
     eager-loads `connections`/`files` - the built-in bot converts this to a
@@ -623,29 +619,26 @@ def list_tutorials(owner_admin_id: Optional[int] = None, db: Session = Depends(g
     hierarchy.accessible_tutorial_owner_ids); the shared/global bot (or any
     owner_admin_id that resolves to the superadmin) shows only the
     superadmin's own NULL-owned tutorials."""
-    target = db.get(models.AdminUser, owner_admin_id) if owner_admin_id is not None else None
-    if target is not None and not target.is_superadmin:
-        allowed = hierarchy.accessible_tutorial_owner_ids(target)
-        owner_filter = hierarchy.owner_id_in_clause(models.Tutorial.owner_admin_id, allowed)
-    else:
-        owner_filter = models.Tutorial.owner_admin_id.is_(None)
     return (
-        db.query(models.Tutorial)
-        .options(joinedload(models.Tutorial.media), joinedload(models.Tutorial.software))
-        .filter(models.Tutorial.enabled == True, owner_filter)  # noqa: E712
+        bot_resources._list_tutorials_query(db, principal, owner_admin_id)
         .order_by(models.Tutorial.sort_order, models.Tutorial.id)
         .all()
     )
 
 
 @router.get("/packages/{package_id}/files/{file_id}/download")
-def download_package_file(package_id: int, file_id: int, db: Session = Depends(get_db)):
+@bot_route_policy(capability=FILES_READ, resource_strategy="package_owner")
+def download_package_file(
+    package_id: int, file_id: int, db: Session = Depends(get_db),
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Raw bytes of a package's attached file - used by the bot (in-process
     or remote) to actually hand the file to the customer. The in-process
     bot doesn't need this (it reads stored_path straight off disk via
     panel_bridge.py), but a remotely-deployed bot has no local access to
     this server's disk, so it downloads the bytes over this endpoint
     instead - same X-API-Key auth as everything else on this router."""
+    bot_resources._get_package_or_403(db, principal, package_id)
     row = (
         db.query(models.PackageFile)
         .filter(models.PackageFile.id == file_id, models.PackageFile.package_id == package_id)
@@ -657,9 +650,14 @@ def download_package_file(package_id: int, file_id: int, db: Session = Depends(g
 
 
 @router.get("/tutorials/{tutorial_id}/media/{media_id}/download")
-def download_tutorial_media(tutorial_id: int, media_id: int, db: Session = Depends(get_db)):
+@bot_route_policy(capability=FILES_READ, resource_strategy="tutorial_owner")
+def download_tutorial_media(
+    tutorial_id: int, media_id: int, db: Session = Depends(get_db),
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Raw bytes of a tutorial's attached photo/video - same rationale as
     download_package_file above."""
+    bot_resources._get_tutorial_or_403(db, principal, tutorial_id)
     row = (
         db.query(models.TutorialMedia)
         .filter(models.TutorialMedia.id == media_id, models.TutorialMedia.tutorial_id == tutorial_id)
@@ -671,11 +669,16 @@ def download_tutorial_media(tutorial_id: int, media_id: int, db: Session = Depen
 
 
 @router.get("/tutorials/{tutorial_id}/software/{software_id}/download")
-def download_tutorial_software(tutorial_id: int, software_id: int, db: Session = Depends(get_db)):
+@bot_route_policy(capability=FILES_READ, resource_strategy="tutorial_owner")
+def download_tutorial_software(
+    tutorial_id: int, software_id: int, db: Session = Depends(get_db),
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Raw bytes of a tutorial's uploaded software file - same rationale as
     download_package_file above. Only applies to entries that have an
     uploaded file (stored_path set); link-only entries are just sent as a
     URL and never hit this endpoint."""
+    bot_resources._get_tutorial_or_403(db, principal, tutorial_id)
     row = (
         db.query(models.TutorialSoftware)
         .filter(models.TutorialSoftware.id == software_id, models.TutorialSoftware.tutorial_id == tutorial_id)
@@ -687,13 +690,16 @@ def download_tutorial_software(tutorial_id: int, software_id: int, db: Session =
 
 
 @router.get("/admin-by-telegram/{tg_id}", response_model=schemas.BotAdminInfo)
-def get_admin_by_telegram(tg_id: int, db: Session = Depends(get_db)):
+@bot_route_policy(capability=ADMIN_LOOKUP, resource_strategy="admin_hierarchy")
+def get_admin_by_telegram(
+    tg_id: int, db: Session = Depends(get_db), principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Looked up by the built-in bot on every message from someone who
     isn't in the bot's global admin_ids list, to see whether they're
     instead a linked group-admin (AdminUser.telegram_id) who should get a
     scoped-down admin menu for their own group only - see
     telegram_bot/admin_scope.py."""
-    admin = db.query(models.AdminUser).filter(models.AdminUser.telegram_id == tg_id).first()
+    admin = bot_resources._get_admin_by_telegram_or_403(db, principal, tg_id)
     if not admin:
         raise HTTPException(404, "ادمین پیدا نشد")
     # Asked once, here, so the bot can refuse a sale BEFORE walking someone
@@ -719,7 +725,10 @@ def get_admin_by_telegram(tg_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/admin-username/{admin_id}")
-def get_admin_username(admin_id: int, db: Session = Depends(get_db)):
+@bot_route_policy(capability=ADMIN_LOOKUP, resource_strategy="admin_hierarchy")
+def get_admin_username(
+    admin_id: int, db: Session = Depends(get_db), principal: BotPrincipal = Depends(get_bot_principal),
+):
     """This AdminUser's own username - used only to tag a pending request
     in the bot's «درخواست‌های در انتظار» list with WHICH admin/seller it
     belongs to (telegram_bot/handlers/admin_pending.py's _pending_summary,
@@ -728,14 +737,16 @@ def get_admin_username(admin_id: int, db: Session = Depends(get_db)):
     is whose). 404 if no such account, matching get_admin_by_telegram's
     convention just above - panel_bridge.py's/remote_bridge.py's
     get_admin_username both treat that as None (no tag), never an error."""
-    admin = db.get(models.AdminUser, admin_id)
-    if not admin:
-        raise HTTPException(404, "ادمین پیدا نشد")
+    admin = bot_resources._get_admin_or_403(db, principal, admin_id)
     return {"username": admin.username}
 
 
 @router.get("/telegram-user-ids", response_model=list[int])
-def telegram_user_ids(db: Session = Depends(get_db), owner_admin_id: Optional[int] = None):
+@bot_route_policy(capability=BROADCAST, resource_strategy="claim")
+def telegram_user_ids(
+    db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Every DISTINCT telegram id currently linked to a panel account - used
     by the admin bot's "📢 پیام همگانی" broadcast, which sends one generic
     message per chat id (as opposed to the daily quota/expiry reminder job,
@@ -751,19 +762,25 @@ def telegram_user_ids(db: Session = Depends(get_db), owner_admin_id: Optional[in
     every OTHER reseller's customers, which is worse than the missing menu
     ever was.
     """
-    query = db.query(models.User.telegram_id).filter(models.User.telegram_id.isnot(None))
-    clause = _visibility_filter(db, owner_admin_id)
-    if clause is not None:
-        query = query.filter(clause)
+    query = (
+        bot_resources._list_users_query(db, principal, owner_admin_id)
+        .filter(models.User.telegram_id.isnot(None))
+        .with_entities(models.User.telegram_id)
+    )
     return [r[0] for r in query.distinct().all()]
 
 
 @router.post("/users", response_model=schemas.BotUserResponse)
-def create_user(payload: schemas.BotCreateUserRequest, db: Session = Depends(get_db)):
+@bot_route_policy(capability=CUSTOMER_WRITE, resource_strategy="claim")
+def create_user(
+    payload: schemas.BotCreateUserRequest, db: Session = Depends(get_db),
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     # A locked customer must not be able to start a fresh account from the
     # same Telegram id and keep buying - that would leave the lock looking
     # enforced while doing nothing at all.
     _ensure_telegram_can_buy(db, payload.telegram_id)
+    owner_admin_id = resolve_claimed_owner(db, principal, payload.owner_admin_id, endpoint="create_user")
     if payload.package_id:
         _new_package = db.get(models.Package, payload.package_id)
         _ensure_one_time_package_not_reused(
@@ -775,7 +792,7 @@ def create_user(payload: schemas.BotCreateUserRequest, db: Session = Depends(get
         trial.ensure_allowed(db, _new_package, telegram_id=payload.telegram_id)
     user = user_ops.create_user_record(
         db, payload.username, payload.full_name, payload.quota_gb, payload.expire_days,
-        telegram_id=payload.telegram_id, owner_admin_id=payload.owner_admin_id,
+        telegram_id=payload.telegram_id, owner_admin_id=owner_admin_id,
         package_id=payload.package_id,
     )
     # Marks where this customer came from, so the panel can show «ربات»
@@ -786,6 +803,7 @@ def create_user(payload: schemas.BotCreateUserRequest, db: Session = Depends(get
     # batch (see models.Connection.purchase_batch) so the bot's "اکانت من"
     # groups them together instead of listing each service separately.
     batch = uuid.uuid4().hex if payload.connections else None
+    connection_authorization_scope = resolve_bot_authorization_scope(principal)
     for spec in payload.connections:
         node = db.get(models.Node, spec.node_id)
         if not node:
@@ -793,6 +811,7 @@ def create_user(payload: schemas.BotCreateUserRequest, db: Session = Depends(get
         user_ops.provision_connection(
             db, user, node, spec.protocol, spec.flow or "",
             purchase_batch=batch, package_name=payload.package_name,
+            authorization_scope=connection_authorization_scope,
         )
 
     # Turn what was just provisioned into a real, independently-enforced
@@ -827,9 +846,10 @@ def create_user(payload: schemas.BotCreateUserRequest, db: Session = Depends(get
 
 
 @router.post("/users/{username}/purchase-package", response_model=schemas.BotPurchaseResponse)
+@bot_route_policy(capability=CUSTOMER_WRITE, resource_strategy="user")
 def purchase_package(
     username: str, payload: schemas.BotPurchasePackageRequest, db: Session = Depends(get_db),
-    owner_admin_id: Optional[int] = None,
+    owner_admin_id: Optional[int] = None, principal: BotPrincipal = Depends(get_bot_principal),
 ):
     """Bot counterpart of routers/users.py's apply_package ("افزودن پکیج") -
     gives an EXISTING customer a NEW, independently-enforced Purchase (its
@@ -847,7 +867,7 @@ def purchase_package(
     a "plain" package with no admin-defined bundle, where the customer
     picked exactly one node/protocol by hand in the bot's purchase flow
     (see telegram_bot/handlers/customer.py's pick_node/pick_protocol)."""
-    user = _get_user_or_404(db, username, owner_admin_id)
+    user = bot_resources._get_user_or_403(db, principal, username)
     _ensure_can_buy(user)
     package = db.get(models.Package, payload.package_id)
     if not package:
@@ -859,7 +879,7 @@ def purchase_package(
         if payload.connections else None
     )
     purchase = user_ops.apply_package_as_purchase(
-        db, user, package, connections_override=override, comment=payload.comment,
+        db, user, package, connections_override=override, comment=payload.comment, principal=principal,
     )
     _charge_seller(db, user, package)
     _record_bot_sale(db, "sale_new", payload, user, package, purchase_id=purchase.id)
@@ -872,7 +892,11 @@ def purchase_package(
 
 
 @router.post("/referral/apply")
-def apply_referral(payload: schemas.ReferralApplyRequest, db: Session = Depends(get_db)):
+@bot_route_policy(capability=CUSTOMER_WRITE, resource_strategy="user")
+def apply_referral(
+    payload: schemas.ReferralApplyRequest, db: Session = Depends(get_db),
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Called once, right after admin_pending.py's receipt-approval handler
     creates a brand-new customer account via create_user above - the ONLY
     choke point new customer accounts are created through, so this is the
@@ -880,22 +904,25 @@ def apply_referral(payload: schemas.ReferralApplyRequest, db: Session = Depends(
     logic lives in services/user_ops.py's apply_referral_code (both the
     referrer and the new user get a gift, per the confirmed design - not
     just the referrer)."""
-    user = db.query(models.User).filter(models.User.username == payload.username).first()
-    if not user:
-        raise HTTPException(404, "کاربر پیدا نشد")
+    user = bot_resources._get_user_or_403(db, principal, payload.username)
     ok, reason = user_ops.apply_referral_code(db, user, payload.referral_code)
     return {"ok": ok, "reason": reason}
 
 
 @router.post("/discount/validate", response_model=schemas.DiscountValidateResult)
-def validate_discount(payload: schemas.DiscountValidateRequest, db: Session = Depends(get_db)):
+@bot_route_policy(capability=CUSTOMER_WRITE, resource_strategy="claim")
+def validate_discount(
+    payload: schemas.DiscountValidateRequest, db: Session = Depends(get_db),
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Check-as-you-type step - does NOT consume the code (see
     /discount/redeem for that). `username`, when the customer already has
     an account, also catches "you already used this code" before they get
     to the final confirm screen."""
+    owner_admin_id = resolve_claimed_owner(db, principal, payload.owner_admin_id, endpoint="validate_discount")
     valid, reason, amount = user_ops.validate_discount_code(
         db, payload.code, payload.package_price, username=payload.username,
-        owner_admin_id=payload.owner_admin_id,
+        owner_admin_id=owner_admin_id,
     )
     return schemas.DiscountValidateResult(
         valid=valid,
@@ -906,14 +933,19 @@ def validate_discount(payload: schemas.DiscountValidateRequest, db: Session = De
 
 
 @router.post("/discount/redeem", response_model=schemas.DiscountValidateResult)
-def redeem_discount(payload: schemas.DiscountRedeemRequest, db: Session = Depends(get_db)):
+@bot_route_policy(capability=CUSTOMER_WRITE, resource_strategy="claim")
+def redeem_discount(
+    payload: schemas.DiscountRedeemRequest, db: Session = Depends(get_db),
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Called once a purchase is actually confirmed - re-validates then
     atomically consumes the code (bumps used_count, records a
     DiscountCodeRedemption row). See services/user_ops.py's
     redeem_discount_code."""
+    owner_admin_id = resolve_claimed_owner(db, principal, payload.owner_admin_id, endpoint="redeem_discount")
     ok, reason, amount = user_ops.redeem_discount_code(
         db, payload.code, payload.username, payload.package_price,
-        owner_admin_id=payload.owner_admin_id,
+        owner_admin_id=owner_admin_id,
     )
     return schemas.DiscountValidateResult(
         valid=ok,
@@ -924,12 +956,14 @@ def redeem_discount(payload: schemas.DiscountRedeemRequest, db: Session = Depend
 
 
 @router.get("/users", response_model=schemas.BotUserListPage)
+@bot_route_policy(capability=CUSTOMER_READ, resource_strategy="user_list")
 def list_users(
     db: Session = Depends(get_db),
     page: int = 1,
     page_size: int = 20,
     search: Optional[str] = None,
     owner_admin_id: Optional[int] = None,
+    principal: BotPrincipal = Depends(get_bot_principal),
 ):
     """Used by the admin side of the sales bot to browse/search customers.
     owner_admin_id, when given, scopes this to one group-admin's own users
@@ -937,13 +971,7 @@ def list_users(
     admin flow, which still sees everyone."""
     page = max(page, 1)
     page_size = min(max(page_size, 1), 100)
-    query = db.query(models.User)
-    clause = _visibility_filter(db, owner_admin_id)
-    if clause is not None:
-        query = query.filter(clause)
-    if search:
-        like = f"%{search}%"
-        query = query.filter(or_(models.User.username.ilike(like), models.User.full_name.ilike(like)))
+    query = bot_resources._list_users_query(db, principal, owner_admin_id, search=search)
     total = query.count()
     items = (
         query.order_by(models.User.id.desc())
@@ -955,7 +983,11 @@ def list_users(
 
 
 @router.get("/users/by-telegram/{telegram_id}", response_model=schemas.BotUserResponse)
-def get_user_by_telegram(telegram_id: int, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None):
+@bot_route_policy(capability=CUSTOMER_READ, resource_strategy="user_list")
+def get_user_by_telegram(
+    telegram_id: int, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Single-account lookup - kept for callers that only ever cared about
     "the" account for this telegram id (e.g. the daily notify job, the
     /start greeting). Now that telegram_id can point at more than one User,
@@ -968,10 +1000,7 @@ def get_user_by_telegram(telegram_id: int, db: Session = Depends(get_db), owner_
     that Admin's own tree - a customer's account under a DIFFERENT Admin's
     bot should never surface here, same isolation as the rest of the
     3-tier hierarchy."""
-    query = db.query(models.User).filter(models.User.telegram_id == telegram_id)
-    clause = _visibility_filter(db, owner_admin_id)
-    if clause is not None:
-        query = query.filter(clause)
+    query = bot_resources._list_users_query(db, principal, owner_admin_id, telegram_id=telegram_id)
     user = query.order_by(models.User.id.desc()).first()
     if not user:
         raise HTTPException(404, "کاربری با این حساب تلگرام پیدا نشد")
@@ -979,7 +1008,11 @@ def get_user_by_telegram(telegram_id: int, db: Session = Depends(get_db), owner_
 
 
 @router.get("/users/by-telegram/{telegram_id}/all", response_model=list[schemas.BotUserResponse])
-def list_users_by_telegram(telegram_id: int, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None):
+@bot_route_policy(capability=CUSTOMER_READ, resource_strategy="user_list")
+def list_users_by_telegram(
+    telegram_id: int, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Every account linked to this telegram id (could be 0, 1, or several -
     see the big comment on User.telegram_id in models.py). The bot uses
     this to decide whether to act directly (0 or 1 result) or show an
@@ -988,21 +1021,26 @@ def list_users_by_telegram(telegram_id: int, db: Session = Depends(get_db), owne
     owner_admin_id scopes this to one Admin's own tree, same rationale as
     get_user_by_telegram above - a per-admin bot's account-picker should
     never surface someone else's customer accounts from another Admin."""
-    query = db.query(models.User).filter(models.User.telegram_id == telegram_id)
-    clause = _visibility_filter(db, owner_admin_id)
-    if clause is not None:
-        query = query.filter(clause)
+    query = bot_resources._list_users_query(db, principal, owner_admin_id, telegram_id=telegram_id)
     users = query.order_by(models.User.id.desc()).all()
     return [_user_response(u) for u in users]
 
 
 @router.get("/users/{username}", response_model=schemas.BotUserResponse)
-def get_user(username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None):
-    return _user_response(_get_user_or_404(db, username, owner_admin_id))
+@bot_route_policy(capability=CUSTOMER_READ, resource_strategy="user")
+def get_user(
+    username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
+    return _user_response(bot_resources._get_user_or_403(db, principal, username))
 
 
 @router.post("/users/{username}/link-telegram", response_model=schemas.BotUserResponse)
-def link_telegram(username: str, payload: schemas.BotLinkTelegramRequest, db: Session = Depends(get_db)):
+@bot_route_policy(capability=IDENTITY_WRITE, resource_strategy="user")
+def link_telegram(
+    username: str, payload: schemas.BotLinkTelegramRequest, db: Session = Depends(get_db),
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     # telegram_id is intentionally NOT required to be unique across users -
     # one Telegram account can be linked to several panel accounts (a
     # customer who bought more than once under different usernames). The
@@ -1010,7 +1048,7 @@ def link_telegram(username: str, payload: schemas.BotLinkTelegramRequest, db: Se
     # just adds this account to that telegram id's list; when there's more
     # than one, the bot shows an account picker (see list_users_by_telegram
     # below + telegram_bot's _resolve_account).
-    user = _get_user_or_404(db, username)
+    user = bot_resources._get_user_or_403(db, principal, username)
     user.telegram_id = payload.telegram_id
     db.commit()
     db.refresh(user)
@@ -1018,27 +1056,31 @@ def link_telegram(username: str, payload: schemas.BotLinkTelegramRequest, db: Se
 
 
 @router.post("/users/{username}/connections", response_model=schemas.BotConnectionInfo)
+@bot_route_policy(capability=CUSTOMER_WRITE, resource_strategy="user+node")
 def add_connection(
     username: str, spec: schemas.BotCreateConnectionSpec, db: Session = Depends(get_db),
-    owner_admin_id: Optional[int] = None,
+    owner_admin_id: Optional[int] = None, principal: BotPrincipal = Depends(get_bot_principal),
 ):
-    user = _get_user_or_404(db, username, owner_admin_id)
-    node = db.get(models.Node, spec.node_id)
-    if not node:
-        raise HTTPException(400, "نود پیدا نشد")
+    user = bot_resources._get_user_or_403(db, principal, username)
+    node = bot_resources._get_node_or_403(db, principal, spec.node_id)
     conn = user_ops.provision_connection(
         db, user, node, spec.protocol, spec.flow or "",
         purchase_batch=spec.purchase_batch, package_name=spec.package_name,
+        authorization_scope=resolve_bot_authorization_scope(principal),
     )
     return _connection_info(conn)
 
 
 @router.get("/users/{username}/purchases", response_model=list[schemas.BotPurchaseInfo])
-def list_user_purchases(username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None):
+@bot_route_policy(capability=CUSTOMER_READ, resource_strategy="user")
+def list_user_purchases(
+    username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """The customer's independently-tracked services, for the bot's
     «کدام سرویس را تمدید می‌کنید؟» picker (renewal always continues one
     SPECIFIC existing service - see renew_service below)."""
-    user = _get_user_or_404(db, username, owner_admin_id)
+    user = bot_resources._get_user_or_403(db, principal, username)
     out = []
     for p in sorted(user.purchases, key=lambda p: p.created_at or dt.datetime.min, reverse=True):
         info = schemas.BotPurchaseInfo.model_validate(p)
@@ -1048,15 +1090,17 @@ def list_user_purchases(username: str, db: Session = Depends(get_db), owner_admi
 
 
 @router.post("/users/{username}/purchases/{purchase_id}/rename", response_model=schemas.BotPurchaseInfo)
+@bot_route_policy(capability=CUSTOMER_WRITE, resource_strategy="user")
 def rename_purchase(
     username: str, purchase_id: int, payload: schemas.BotRenamePurchaseRequest,
     db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
+    principal: BotPrincipal = Depends(get_bot_principal),
 ):
     """Bot counterpart of the panel's own "📝 یادداشت/نام سرویس" field on
     UserDetail.jsx - lets the customer set/change it themselves instead of
     only an admin being able to (see handlers/customer_account.py's
     «✏️ تغییر نام» flow)."""
-    user = _get_user_or_404(db, username, owner_admin_id)
+    user = bot_resources._get_user_or_403(db, principal, username)
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
@@ -1081,9 +1125,11 @@ def _ensure_deletable_purchase(purchase: models.Purchase) -> None:
 
 
 @router.delete("/users/{username}/purchases/{purchase_id}")
+@bot_route_policy(capability=CUSTOMER_WRITE, resource_strategy="user")
 def delete_purchase(
     username: str, purchase_id: int,
     db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
+    principal: BotPrincipal = Depends(get_bot_principal),
 ):
     """Deletes one of the customer's own expired/exhausted services (all of
     its connections, deprovisioned from their nodes, then the Purchase row
@@ -1091,7 +1137,7 @@ def delete_purchase(
     button (routers/users.py's delete_purchase), just self-service and
     scoped to services that are already unusable (see
     _ensure_deletable_purchase)."""
-    user = _get_user_or_404(db, username, owner_admin_id)
+    user = bot_resources._get_user_or_403(db, principal, username)
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
@@ -1111,15 +1157,17 @@ def delete_purchase(
 
 
 @router.delete("/users/{username}/connections/{connection_id}")
+@bot_route_policy(capability=CUSTOMER_WRITE, resource_strategy="user")
 def delete_connection(
     username: str, connection_id: int,
     db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
+    principal: BotPrincipal = Depends(get_bot_principal),
 ):
     """Same self-service delete as delete_purchase above, for a connection
     that predates the Purchase feature (or was added one-at-a-time) and so
     has no purchase_id of its own - governed by the user's own combined
     status instead of a Purchase's (see models.Purchase's docstring)."""
-    user = _get_user_or_404(db, username, owner_admin_id)
+    user = bot_resources._get_user_or_403(db, principal, username)
     conn = db.get(models.Connection, connection_id)
     if not conn or conn.user_id != user.id:
         raise HTTPException(404, "کانکشن پیدا نشد")
@@ -1136,7 +1184,11 @@ def delete_connection(
 
 
 @router.get("/users/{username}/subscription-link", response_model=schemas.BotSubscriptionLinkOut)
-def get_bot_subscription_link(username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None):
+@bot_route_policy(capability=CUSTOMER_READ, resource_strategy="user")
+def get_bot_subscription_link(
+    username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Bot counterpart of routers/users.py's get_subscription_link, for the
     "🔗 دریافت لینک ساب" bot menu button (telegram_bot/handlers/
     customer.py) - a customer fetching their OWN link, rather than an
@@ -1149,7 +1201,7 @@ def get_bot_subscription_link(username: str, db: Session = Depends(get_db), owne
     come back None until an admin configures that - the bot tells the
     customer support needs to set it up rather than sending a link that
     can never resolve to anything."""
-    user = _get_user_or_404(db, username, owner_admin_id)
+    user = bot_resources._get_user_or_403(db, principal, username)
     settings_row = db.get(models.PanelSettings, 1)
     base = (settings_row.panel_public_url or "").strip().rstrip("/") if settings_row else ""
     if not base:
@@ -1159,7 +1211,8 @@ def get_bot_subscription_link(username: str, db: Session = Depends(get_db), owne
 
 
 @router.get("/miniapp-button-text")
-def get_miniapp_button_text(db: Session = Depends(get_db)):
+@bot_route_policy(capability=None, resource_strategy="none")
+def get_miniapp_button_text(db: Session = Depends(get_db), principal: BotPrincipal = Depends(get_bot_principal)):
     """Label for the Mini App launcher beside the text box, for every bot
     this panel runs - see models.BotSettings.miniapp_button_text and
     telegram_bot/runner.py's _set_menu_button."""
@@ -1168,7 +1221,8 @@ def get_miniapp_button_text(db: Session = Depends(get_db)):
 
 
 @router.get("/panel-public-url")
-def get_panel_public_url(db: Session = Depends(get_db)):
+@bot_route_policy(capability=None, resource_strategy="none")
+def get_panel_public_url(db: Session = Depends(get_db), principal: BotPrincipal = Depends(get_bot_principal)):
     """PanelSettings.panel_public_url, for callers that need to build an
     absolute link. Used by telegram_bot/runner.py to point each bot's Menu
     button at this panel's Mini App - see _set_menu_button there."""
@@ -1177,9 +1231,11 @@ def get_panel_public_url(db: Session = Depends(get_db)):
 
 
 @router.post("/users/{username}/purchases/{purchase_id}/renew", response_model=schemas.BotUserResponse)
+@bot_route_policy(capability=CUSTOMER_WRITE, resource_strategy="user")
 def renew_service(
     username: str, purchase_id: int, payload: schemas.BotRenewRequest,
     db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
+    principal: BotPrincipal = Depends(get_bot_principal),
 ):
     """Renews ONE specific service: same connections/credentials, the new
     package queued (reserved) behind whatever the service has left and
@@ -1187,7 +1243,7 @@ def renew_service(
     service is already exhausted (see user_ops.renew_purchase). Never
     creates anything new - renewal means CONTINUING the same service, per
     the panel owner's definition (2026-08-09)."""
-    user = _get_user_or_404(db, username, owner_admin_id)
+    user = bot_resources._get_user_or_403(db, principal, username)
     _ensure_can_buy(user)
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
@@ -1212,11 +1268,12 @@ def renew_service(
 
 
 @router.post("/users/{username}/renew", response_model=schemas.BotUserResponse)
+@bot_route_policy(capability=CUSTOMER_WRITE, resource_strategy="user")
 def renew(
     username: str, payload: schemas.BotRenewRequest, db: Session = Depends(get_db),
-    owner_admin_id: Optional[int] = None,
+    owner_admin_id: Optional[int] = None, principal: BotPrincipal = Depends(get_bot_principal),
 ):
-    user = _get_user_or_404(db, username, owner_admin_id)
+    user = bot_resources._get_user_or_403(db, principal, username)
     _ensure_can_buy(user)
     # Post-migration (services/purchase_migration.py) the user-level pool
     # governs nothing for a fully-converted customer - a renewal landing
@@ -1227,7 +1284,9 @@ def renew(
     # then fall back to the legacy user-level behavior.
     legacy_conns = [c for c in user.connections if c.purchase_id is None]
     if not legacy_conns and len(user.purchases) == 1:
-        return renew_service(username, user.purchases[0].id, payload, db=db, owner_admin_id=owner_admin_id)
+        return renew_service(
+            username, user.purchases[0].id, payload, db=db, owner_admin_id=owner_admin_id, principal=principal,
+        )
     user_ops.renew_user(db, user, payload.add_gb, payload.add_days, payload.reset_usage, package_id=payload.package_id)
     # Accounting: only a package-based renewal (or one where the bot sent
     # the exact paid amount) is a paid event - a bare reset_usage or manual
@@ -1241,19 +1300,27 @@ def renew(
 
 
 @router.post("/users/{username}/reset-usage", response_model=schemas.BotUserResponse)
-def reset_usage(username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None):
-    user = _get_user_or_404(db, username, owner_admin_id)
+@bot_route_policy(capability=CUSTOMER_WRITE, resource_strategy="user")
+def reset_usage(
+    username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
+    user = bot_resources._get_user_or_403(db, principal, username)
     user_ops.renew_user(db, user, reset_usage=True)
     return _user_response(user)
 
 
 @router.post("/users/{username}/set-enabled", response_model=schemas.BotUserResponse)
-def set_user_enabled(username: str, enabled: bool, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None):
+@bot_route_policy(capability=CUSTOMER_WRITE, resource_strategy="user")
+def set_user_enabled(
+    username: str, enabled: bool, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Enables/disables the user AND actually pushes the change to every
     node they have a connection on (unlike just flipping the status column,
     which the background poller would otherwise silently revert back to
     "active" once quota/expiry no longer justify it)."""
-    user = _get_user_or_404(db, username, owner_admin_id)
+    user = bot_resources._get_user_or_403(db, principal, username)
     user.status = models.UserStatus.active if enabled else models.UserStatus.disabled
     for conn in user.connections:
         _set_connection_enabled(db, conn, enabled=enabled)
@@ -1263,7 +1330,11 @@ def set_user_enabled(username: str, enabled: bool, db: Session = Depends(get_db)
 
 
 @router.post("/users/{username}/add-balance", response_model=schemas.BotUserResponse)
-def add_balance(username: str, payload: schemas.BotAddBalanceRequest, db: Session = Depends(get_db)):
+@bot_route_policy(capability=WALLET_WRITE, resource_strategy="user")
+def add_balance(
+    username: str, payload: schemas.BotAddBalanceRequest, db: Session = Depends(get_db),
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
     """Credits (or, with a negative amount, debits) the user's wallet-style
     balance - used by the sales bot's "افزایش اعتبار" top-up flow (admin
     approval, positive amount) and the "پرداخت از اعتبار" purchase flow
@@ -1275,7 +1346,7 @@ def add_balance(username: str, payload: schemas.BotAddBalanceRequest, db: Sessio
     button) can't both succeed and drive the balance negative - the second
     one gets a clean "insufficient balance" error instead of silently
     overdrawing the wallet."""
-    user = _get_user_or_404(db, username)
+    user = bot_resources._get_user_or_403(db, principal, username)
     # Only a TOP-UP is blocked. A negative amount is the wallet being spent
     # on a purchase, and that purchase is already refused upstream - but if
     # one ever reaches here, refusing the debit too would be the wrong way
@@ -1312,7 +1383,11 @@ def add_balance(username: str, payload: schemas.BotAddBalanceRequest, db: Sessio
 
 
 @router.delete("/users/{username}")
-def delete_user(username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None):
-    user = _get_user_or_404(db, username, owner_admin_id)
+@bot_route_policy(capability=CUSTOMER_WRITE, resource_strategy="user")
+def delete_user(
+    username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
+    principal: BotPrincipal = Depends(get_bot_principal),
+):
+    user = bot_resources._get_user_or_403(db, principal, username)
     user_ops.delete_user_cascade(db, user)
     return {"ok": True}

@@ -18,6 +18,12 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from . import hierarchy
+from .bot_auth import (
+    BotPrincipal,
+    NodeAuthorizationScope,
+    resolve_bot_authorization_scope,
+    resolve_package_authorization_scope,
+)
 from .mikrotik_client import MikrotikClient, MikrotikError
 from .xray_client import XrayError, client_for_node
 from .marzneshin_client import sanitize_username as marzneshin_sanitize_username
@@ -685,6 +691,19 @@ def bulk_create_users(
     skipped: list[dict] = []
     connections = connections or []
 
+    # Phase C authorization_scope for the manual/no-package branch below:
+    # owner_admin_id here is always the calling admin's OWN id (see
+    # routers/users.py's bulk_create_users, the only caller - it passes
+    # owner_admin_id=admin.id, never a different tenant), so the actor and
+    # the owner are one and the same. A superadmin caller stays
+    # unrestricted (matches today); any other admin is scoped to
+    # themselves via hierarchy.selling_scope_node_ids.
+    owner_admin = db.get(models.AdminUser, owner_admin_id) if owner_admin_id is not None else None
+    if owner_admin is None or owner_admin.is_superadmin:
+        bulk_authorization_scope = NodeAuthorizationScope.unrestricted_scope()
+    else:
+        bulk_authorization_scope = NodeAuthorizationScope.scoped(owner_admin.id)
+
     i = 1
     attempts = 0
     max_attempts = count * 5 + 20  # safety cap in case of heavy collisions
@@ -735,6 +754,7 @@ def bulk_create_users(
                         db, user, node, spec.protocol,
                         max_concurrent_sessions=getattr(spec, "max_concurrent_sessions", 1),
                         purchase_batch=batch,
+                        authorization_scope=bulk_authorization_scope,
                     )
                 except HTTPException as exc:
                     skipped.append({"name": f"{username} (اتصال)", "reason": str(exc.detail)})
@@ -1190,6 +1210,19 @@ def provision_softether(
     return conn
 
 
+def _package_node_scope_enforced(db: Session) -> bool:
+    """Plain read of PanelSettings.package_node_scope_enforced (Phase C,
+    docs/api-key-scope-audit-2026-09-27.md) - no lock needed here, unlike
+    routers/panel_settings.py's _lock_package_node_scope_settings, since
+    provisioning a purchase never WRITES a new PackageConnection row (the
+    TOCTOU concern that lock closes is specifically about a package WRITE
+    racing the flag flip, not about a purchase reading it). False (the
+    default, and what every install has until an operator explicitly
+    enables it) if the row doesn't exist yet either."""
+    row = db.get(models.PanelSettings, 1)
+    return bool(row.package_node_scope_enforced) if row else False
+
+
 def provision_package_connections(db: Session, user: models.User, package: models.Package) -> dict:
     """Provisions every server/service bundled into a package for this
     user in one go - used when a user is created "with a package" from the
@@ -1201,6 +1234,15 @@ def provision_package_connections(db: Session, user: models.User, package: model
     created: list[models.Connection] = []
     skipped: list[dict] = []
     batch = uuid.uuid4().hex
+    # Bundled connections are authorized by the PACKAGE's own owner (Phase
+    # C), independent of package_node_scope_enforced's flag state and of
+    # which customer is buying - see resolve_package_authorization_scope's
+    # docstring for why this must match routers/packages.py's write-time
+    # _sync_connections check exactly, not the buying customer's tenant.
+    authorization_scope = (
+        resolve_package_authorization_scope(package)
+        if _package_node_scope_enforced(db) else NodeAuthorizationScope.unrestricted_scope()
+    )
     for pc in package.connections:
         node = db.get(models.Node, pc.node_id)
         if not node:
@@ -1215,6 +1257,7 @@ def provision_package_connections(db: Session, user: models.User, package: model
                 db, user, node, pc.protocol, pc.flow or "", 1,
                 purchase_batch=batch, package_name=package.name,
                 speed_limit_mbps=package.speed_limit_mbps,
+                authorization_scope=authorization_scope,
             )
             created.append(conn)
         except HTTPException as exc:
@@ -1327,6 +1370,7 @@ def apply_package_as_purchase(
     db: Session, user: models.User, package: models.Package,
     connections_override: Optional[list[dict]] = None,
     comment: Optional[str] = None,
+    principal: Optional[BotPrincipal] = None,
 ) -> models.Purchase:
     """The real, independently-enforced counterpart to
     provision_package_connections above - used by routers/users.py's
@@ -1334,6 +1378,17 @@ def apply_package_as_purchase(
     EXISTING user an extra package on top of whatever they already have)
     AND by routers/bot.py's purchase_package endpoint (same thing, but for
     a purchase made through the sales bot).
+
+    Phase C authorization_scope: connections_override, when given, is the
+    customer's own manually-picked node(s) for a plain package with no
+    preset PackageConnection rows (see routers/bot.py's purchase_package,
+    which builds it straight from payload.connections) - the authority for
+    THOSE is whoever is completing this purchase right now, hence
+    `principal`. When connections_override is None (the panel's own
+    apply_package call, and any bot purchase of a bundled package), the
+    connections come from package.connections instead, and the authority
+    is the package's own owner (resolve_package_authorization_scope),
+    exactly like provision_package_connections above.
 
     Before this existed, that action only ever created connections and left
     the user's own combined total_quota_bytes/used_bytes/expire_at
@@ -1393,6 +1448,13 @@ def apply_package_as_purchase(
         connections_override if connections_override is not None
         else [{"node_id": pc.node_id, "protocol": pc.protocol, "flow": pc.flow or ""} for pc in package.connections]
     )
+    if connections_override is not None and principal is not None:
+        authorization_scope = resolve_bot_authorization_scope(principal)
+    else:
+        authorization_scope = (
+            resolve_package_authorization_scope(package)
+            if _package_node_scope_enforced(db) else NodeAuthorizationScope.unrestricted_scope()
+        )
     for spec in conn_specs:
         node = db.get(models.Node, spec["node_id"])
         if not node:
@@ -1403,6 +1465,7 @@ def apply_package_as_purchase(
                 db, user, node, spec["protocol"], spec.get("flow") or "", 1,
                 purchase_batch=batch, package_name=package.name,
                 speed_limit_mbps=package.speed_limit_mbps,
+                authorization_scope=authorization_scope,
             )
             conn.purchase_id = purchase.id
             created_any = True
@@ -1537,12 +1600,31 @@ def provision_connection(
     purchase_batch: Optional[str] = None,
     package_name: Optional[str] = None,
     speed_limit_mbps: Optional[int] = None,
+    *,
+    authorization_scope: NodeAuthorizationScope,
 ) -> models.Connection:
     """Generic dispatcher used by the bot API, where the protocol is picked
     dynamically per request. speed_limit_mbps is silently ignored for xray -
     there is no enforcement path for it on that protocol (neither Xray-core
     nor 3X-UI support per-client bandwidth throttling as of 2026) - see
-    models.Connection.speed_limit_mbps's docstring."""
+    models.Connection.speed_limit_mbps's docstring.
+
+    authorization_scope (Phase C, docs/api-key-scope-audit-2026-09-27.md) is
+    mandatory and keyword-only, deliberately with no default - a caller
+    that forgets it gets an immediate TypeError, never a silent
+    unrestricted grant. Every call site resolves it from whichever
+    authority actually sanctioned THIS node for THIS connection (the
+    package's own owner for a bundled connection, the acting bot
+    principal/admin for a manually-picked node, or an explicitly-verified
+    superadmin actor) - never from user.owner_admin_id, which is the
+    CUSTOMER's tenant, not necessarily the authority that chose the node
+    (see hierarchy.selling_scope_node_ids's docstring for why those two
+    differ for a Seller-owned customer buying a global/superadmin package)."""
+    if not authorization_scope.unrestricted:
+        owner = db.get(models.AdminUser, authorization_scope.admin_id)
+        allowed = hierarchy.selling_scope_node_ids(db, owner) if owner else set()
+        if allowed is not None and node.id not in allowed:
+            raise HTTPException(403, f"سرور «{node.name}» در اختیار این مجموعه نیست")
     if protocol == models.ConnectionType.wireguard:
         return provision_wireguard(db, user, node, purchase_batch, package_name, max_concurrent_sessions, speed_limit_mbps)
     if protocol == models.ConnectionType.openvpn:

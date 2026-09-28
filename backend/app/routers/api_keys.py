@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -151,6 +152,35 @@ def toggle_key(key_id: int, db: Session = Depends(get_db)):
     key.enabled = False if key.key_type == KeyType.TENANT_INTEGRATION else not key.enabled
     db.commit()
     db.refresh(key)
+    return _response(db, key)
+
+
+@router.post("/{key_id}/activate", response_model=schemas.ApiKeyOut)
+def activate_tenant_key(
+    key_id: int, db: Session = Depends(get_db), _confirmed: models.AdminUser = Depends(require_confirm_password),
+):
+    """Phase C (docs/api-key-scope-audit-2026-09-27.md) - the only way a
+    tenant_integration key ever becomes usable. Sets enabled AND
+    scope_enforced together, in one UPDATE with `enabled=False` as a
+    precondition - never two separate writes, which could otherwise leave
+    a moment where enabled=true but scope_enforced=false on the row (a
+    state BotPrincipal.from_api_key treats as outright invalid, by design,
+    rather than as an unscoped/legacy key - see its own docstring).
+    toggle_key above still only ever moves an already-active tenant key
+    back to disabled; this is the one path that turns one on."""
+    result = db.execute(
+        update(models.ApiKey.__table__)
+        .where(
+            models.ApiKey.id == key_id,
+            models.ApiKey.key_type == KeyType.TENANT_INTEGRATION,
+            models.ApiKey.enabled == False,  # noqa: E712
+        )
+        .values(enabled=True, scope_enforced=True)
+    )
+    db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(409, "کلید در وضعیت قابل‌فعال‌سازی نیست")
+    key = db.get(models.ApiKey, key_id)
     return _response(db, key)
 
 

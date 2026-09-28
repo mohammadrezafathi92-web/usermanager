@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..services import hierarchy, telegram_webapp
+from ..services.bot_auth import build_internal_principal_for_owner
 from . import bot as bot_router
 
 logger = logging.getLogger("miniapp")
@@ -64,7 +65,9 @@ def _shop_packages(db: Session, owner: int | None) -> list:
     has to see it while the shelves must not.
     """
     return [
-        p for p in bot_router.list_packages(owner_admin_id=owner, db=db)
+        p for p in bot_router.list_packages(
+            owner_admin_id=owner, db=db, principal=build_internal_principal_for_owner(db, owner),
+        )
         if getattr(p, "miniapp_enabled", True)
     ]
 
@@ -243,10 +246,11 @@ def home(visitor: dict = Depends(current_visitor), db: Session = Depends(get_db)
     an Iranian mobile network - where the cost is per request, not per byte.
     """
     owner = visitor["owner_admin_id"]
+    principal = build_internal_principal_for_owner(db, owner)
 
     packages = _shop_shelves(db, owner)
-    accounts = bot_router.list_users_by_telegram(visitor["telegram_id"], db=db, owner_admin_id=owner)
-    payment = bot_router.get_payment_info(owner_admin_id=owner, db=db)
+    accounts = bot_router.list_users_by_telegram(visitor["telegram_id"], db=db, owner_admin_id=owner, principal=principal)
+    payment = bot_router.get_payment_info(owner_admin_id=owner, db=db, principal=principal)
 
     # A customer can hold more than one account under the same Telegram id
     # (see models.User.telegram_id) - the bot shows a picker. Here they are
@@ -266,7 +270,7 @@ def home(visitor: dict = Depends(current_visitor), db: Session = Depends(get_db)
         username = getattr(account, "username", None)
         if not username:
             continue
-        for purchase in bot_router.list_user_purchases(username, db=db, owner_admin_id=owner):
+        for purchase in bot_router.list_user_purchases(username, db=db, owner_admin_id=owner, principal=principal):
             services.append({
                 "id": purchase.id,
                 # The package's name as it was WHEN BOUGHT - renaming or
@@ -341,7 +345,8 @@ def _own_account(db: Session, visitor: dict, username: str | None):
     database, so nothing may reach it that has not passed through here.
     """
     accounts = bot_router.list_users_by_telegram(
-        visitor["telegram_id"], db=db, owner_admin_id=visitor["owner_admin_id"]
+        visitor["telegram_id"], db=db, owner_admin_id=visitor["owner_admin_id"],
+        principal=build_internal_principal_for_owner(db, visitor["owner_admin_id"]),
     )
     if username:
         return next((a for a in accounts if a.username == username), None)
@@ -492,7 +497,9 @@ def _own_purchase_or_404(db: Session, owner: int | None, username: str, purchase
     comes from the request body, so it is only trusted if it appears among
     the purchases of an account this Telegram id already proved it holds
     (see _own_account) - never fetched by id alone."""
-    purchases = bot_router.list_user_purchases(username, db=db, owner_admin_id=owner)
+    purchases = bot_router.list_user_purchases(
+        username, db=db, owner_admin_id=owner, principal=build_internal_principal_for_owner(db, owner),
+    )
     purchase = next((p for p in purchases if p.id == purchase_id), None)
     if purchase is None:
         raise HTTPException(404, "سرویس پیدا نشد.")
@@ -536,6 +543,7 @@ def checkout(
     after the debit is recoverable, and is recovered (the refund below).
     """
     owner = visitor["owner_admin_id"]
+    principal = build_internal_principal_for_owner(db, owner)
     pkg = _package_or_404(db, owner, payload.package_id)
     renewing = payload.renew_purchase_id is not None
     if not renewing:
@@ -571,6 +579,7 @@ def checkout(
                 owner_admin_id=owner,
             ),
             db=db,
+            principal=principal,
         )
         return {
             "status": "done",
@@ -586,7 +595,7 @@ def checkout(
     if renewing:
         _own_purchase_or_404(db, owner, account.username, payload.renew_purchase_id)
 
-    bot_router.add_balance(account.username, schemas.BotAddBalanceRequest(amount=-price), db=db)
+    bot_router.add_balance(account.username, schemas.BotAddBalanceRequest(amount=-price), db=db, principal=principal)
     try:
         if renewing:
             renewed = bot_router.renew_service(
@@ -601,6 +610,7 @@ def checkout(
                 ),
                 db=db,
                 owner_admin_id=owner,
+                principal=principal,
             )
         else:
             result = bot_router.purchase_package(
@@ -613,6 +623,7 @@ def checkout(
                 ),
                 db=db,
                 owner_admin_id=owner,
+                principal=principal,
             )
     except Exception:
         # Put the money back. Without this the customer is charged for a
@@ -620,7 +631,7 @@ def checkout(
         # balance they were not watching.
         logger.exception("miniapp: purchase failed after debit - refunding %s", account.username)
         try:
-            bot_router.add_balance(account.username, schemas.BotAddBalanceRequest(amount=price), db=db)
+            bot_router.add_balance(account.username, schemas.BotAddBalanceRequest(amount=price), db=db, principal=principal)
         except Exception:
             logger.exception("miniapp: REFUND FAILED for %s (%s tomans)", account.username, price)
         raise
@@ -691,7 +702,9 @@ async def checkout_receipt(
             raise HTTPException(400, "برای تمدید باید حساب داشته باشید.")
         _own_purchase_or_404(db, owner, account_row.username, renew_purchase_id)
 
-    payment = bot_router.get_payment_info(owner_admin_id=owner, db=db)
+    payment = bot_router.get_payment_info(
+        owner_admin_id=owner, db=db, principal=build_internal_principal_for_owner(db, owner),
+    )
 
     storage.init_db()
     request_id = storage.create_pending(
@@ -796,7 +809,9 @@ async def topup_receipt(
     if account_row is None:
         raise HTTPException(400, "هنوز حسابی ندارید - اولین خرید را از داخل ربات انجام دهید.")
 
-    payment = bot_router.get_payment_info(owner_admin_id=owner, db=db)
+    payment = bot_router.get_payment_info(
+        owner_admin_id=owner, db=db, principal=build_internal_principal_for_owner(db, owner),
+    )
 
     storage.init_db()
     request_id = storage.create_pending(

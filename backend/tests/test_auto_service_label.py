@@ -43,6 +43,11 @@ from app.database import Base, engine, SessionLocal  # noqa: E402
 from app import models, schemas  # noqa: E402
 from app.routers import packages as packages_router  # noqa: E402
 from app.routers import bot as bot_router  # noqa: E402
+from app.services.bot_auth import BotPrincipal  # noqa: E402
+
+# Phase C: routers/bot.py endpoints now take `principal` - unscoped
+# stand-in, matching every other test file's own _principal fixup.
+_principal = BotPrincipal.internal(None)
 from app.routers import users as users_router  # noqa: E402
 from app.services import hierarchy, user_ops  # noqa: E402
 
@@ -93,7 +98,7 @@ check(
 )
 
 print("\n--- purchase_package: second purchase (same customer) with no comment -> 'اکانت 2' ---")
-bot_router.purchase_package("cust1", schemas.BotPurchasePackageRequest(package_id=pkg.id), db=db)
+bot_router.purchase_package("cust1", schemas.BotPurchasePackageRequest(package_id=pkg.id), db=db, principal=_principal)
 db.commit()
 purchases = db.query(models.Purchase).filter(models.Purchase.user_id == user1.id).order_by(models.Purchase.id).all()
 check("two purchases exist for cust1", len(purchases), 2)
@@ -102,7 +107,7 @@ check("second purchase auto-labeled 'اکانت 2'", purchases[1].comment, "اک
 
 print("\n--- an explicit comment on purchase_package is always honored over the auto-label ---")
 bot_router.purchase_package(
-    "cust1", schemas.BotPurchasePackageRequest(package_id=pkg.id, comment="سرویس لپ‌تاپ"), db=db,
+    "cust1", schemas.BotPurchasePackageRequest(package_id=pkg.id, comment="سرویس لپ‌تاپ"), db=db, principal=_principal,
 )
 db.commit()
 purchases2 = db.query(models.Purchase).filter(models.Purchase.user_id == user1.id).order_by(models.Purchase.id).all()

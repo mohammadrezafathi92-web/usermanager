@@ -37,6 +37,11 @@ from app.database import Base, engine, SessionLocal  # noqa: E402
 from app import models, schemas  # noqa: E402
 from app.routers import bot as bot_router  # noqa: E402
 from app.services import hierarchy, user_ops  # noqa: E402
+from app.services.bot_auth import BotPrincipal  # noqa: E402
+
+# Phase C: bot_router.rename_purchase now takes `principal` - unscoped
+# stand-in, same reasoning as test_purchase_lock.py's own _principal.
+_principal = BotPrincipal.internal(None)
 
 Base.metadata.create_all(bind=engine)
 db = SessionLocal()
@@ -84,7 +89,7 @@ check("truncated to 255 chars", len(long_renamed.comment), 255)
 print("\n--- the bot endpoint only lets a customer rename THEIR OWN purchase ---")
 try:
     bot_router.rename_purchase(
-        "cust2", purchase.id, schemas.BotRenamePurchaseRequest(comment="سرقتی"), db=db,
+        "cust2", purchase.id, schemas.BotRenamePurchaseRequest(comment="سرقتی"), db=db, principal=_principal,
     )
     check("cust2 renaming cust1's purchase was rejected", "no exception raised", "HTTPException")
 except HTTPException as exc:
@@ -94,7 +99,7 @@ check("cust1's purchase is untouched", purchase.comment, long_renamed.comment)
 
 print("\n--- the bot endpoint renames the right purchase for its real owner ---")
 out = bot_router.rename_purchase(
-    "cust1", purchase.id, schemas.BotRenamePurchaseRequest(comment="اکانت اصلی"), db=db,
+    "cust1", purchase.id, schemas.BotRenamePurchaseRequest(comment="اکانت اصلی"), db=db, principal=_principal,
 )
 check("BotPurchaseInfo reflects the new comment", out.comment, "اکانت اصلی")
 db.refresh(purchase)
@@ -102,7 +107,7 @@ check("...and the row itself was updated", purchase.comment, "اکانت اصل�
 
 print("\n--- a made-up purchase id 404s instead of 500ing ---")
 try:
-    bot_router.rename_purchase("cust1", 999999, schemas.BotRenamePurchaseRequest(comment="x"), db=db)
+    bot_router.rename_purchase("cust1", 999999, schemas.BotRenamePurchaseRequest(comment="x"), db=db, principal=_principal)
     check("unknown purchase id was rejected", "no exception raised", "HTTPException")
 except HTTPException as exc:
     check("unknown purchase id was rejected", exc.status_code, 404)

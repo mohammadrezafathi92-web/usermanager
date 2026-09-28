@@ -27,6 +27,16 @@ from sqlalchemy.orm import sessionmaker
 from app import models, schemas
 from app.routers import bot as bot_router
 from app.routers import users as users_router
+from app.services.bot_auth import BotPrincipal
+
+# Phase C (docs/api-key-scope-audit-2026-09-27.md): every routers/bot.py
+# endpoint now takes `principal` (via @bot_route_policy) - this test calls
+# them directly (not through a real X-API-Key/HTTP request), so it needs to
+# build one itself. Unscoped (owner_admin_id=None, every capability),
+# matching a legacy key's behavior exactly - nothing about purchase-lock
+# behavior is Phase C's concern, so the principal here is just "any valid
+# caller", never scoped/restricted.
+_principal = BotPrincipal.internal(None)
 
 failures: list[str] = []
 
@@ -81,32 +91,32 @@ print("--- the till is closed ---")
 db, admin, pkg, user = build(blocked=True, reason=REASON)
 
 was, msg = refused(lambda: bot_router.purchase_package(
-    "cust1", schemas.BotPurchasePackageRequest(package_id=pkg.id), db=db))
+    "cust1", schemas.BotPurchasePackageRequest(package_id=pkg.id), db=db, principal=_principal))
 check("cannot buy a new service", was, True)
 check("...and is told the admin's own reason", msg, REASON)
 
 was, _ = refused(lambda: bot_router.renew(
-    "cust1", schemas.BotRenewRequest(package_id=pkg.id, add_gb=50, add_days=30), db=db))
+    "cust1", schemas.BotRenewRequest(package_id=pkg.id, add_gb=50, add_days=30), db=db, principal=_principal))
 check("cannot renew", was, True)
 
 was, _ = refused(lambda: bot_router.add_balance(
-    "cust1", schemas.BotAddBalanceRequest(amount=50_000), db=db))
+    "cust1", schemas.BotAddBalanceRequest(amount=50_000), db=db, principal=_principal))
 check("cannot top up the wallet", was, True)
 
 was, _ = refused(lambda: bot_router.create_user(
-    schemas.BotCreateUserRequest(username="cust1_second", telegram_id=555001), db=db))
+    schemas.BotCreateUserRequest(username="cust1_second", telegram_id=555001), db=db, principal=_principal))
 check("cannot open a second account on the same Telegram id", was, True)
 
 # A different person is unaffected - the lock is on this customer, not on
 # the panel.
 was, _ = refused(lambda: bot_router.create_user(
-    schemas.BotCreateUserRequest(username="somebody_else", telegram_id=999999), db=db))
+    schemas.BotCreateUserRequest(username="somebody_else", telegram_id=999999), db=db, principal=_principal))
 check("a different Telegram id can still sign up", was, False)
 
 print("\n--- with no reason typed, a sensible default is shown ---")
 db2, _, pkg2, _ = build(blocked=True, reason=None)
 was, msg = refused(lambda: bot_router.purchase_package(
-    "cust1", schemas.BotPurchasePackageRequest(package_id=pkg2.id), db=db2))
+    "cust1", schemas.BotPurchasePackageRequest(package_id=pkg2.id), db=db2, principal=_principal))
 check("still refused", was, True)
 check("...with the default wording", msg, bot_router.DEFAULT_PURCHASE_BLOCK_MESSAGE)
 
@@ -119,7 +129,7 @@ check("wallet balance intact", user.balance, 200_000)
 
 # Reading their account, configs and usage must all still work - a locked
 # customer still needs to use what they bought.
-me = bot_router.get_user_by_telegram(555001, db=db)
+me = bot_router.get_user_by_telegram(555001, db=db, principal=_principal)
 check("the bot can still read their account", me.username, "cust1")
 check("...and reports the lock so the buttons can explain it", me.purchases_blocked, True)
 check("...carrying the reason", me.purchases_blocked_reason, REASON)
@@ -128,7 +138,7 @@ check("...carrying the reason", me.purchases_blocked_reason, REASON)
 # but if a debit ever arrives it must not be blocked, or the customer
 # would pay and get nothing.
 was, _ = refused(lambda: bot_router.add_balance(
-    "cust1", schemas.BotAddBalanceRequest(amount=-1000), db=db))
+    "cust1", schemas.BotAddBalanceRequest(amount=-1000), db=db, principal=_principal))
 check("a wallet DEBIT is not blocked (never take money for nothing)", was, False)
 
 print("\n--- nothing in the enforcement path may read the flag ---")
@@ -159,7 +169,7 @@ check("the lock is off", user.purchases_blocked, False)
 check("...the reason is cleared, not left to be shown later", user.purchases_blocked_reason, None)
 check("...and so is the date", user.purchases_blocked_at, None)
 was, _ = refused(lambda: bot_router.purchase_package(
-    "cust1", schemas.BotPurchasePackageRequest(package_id=pkg.id), db=db))
+    "cust1", schemas.BotPurchasePackageRequest(package_id=pkg.id), db=db, principal=_principal))
 check("they can buy again", was, False)
 
 print("\n--- locking from the panel stamps the date ---")
@@ -177,10 +187,10 @@ print("\n--- an untouched customer behaves exactly as before ---")
 db, admin, pkg, user = build(blocked=False)
 check("default is unlocked", bool(user.purchases_blocked), False)
 was, _ = refused(lambda: bot_router.add_balance(
-    "cust1", schemas.BotAddBalanceRequest(amount=50_000), db=db))
+    "cust1", schemas.BotAddBalanceRequest(amount=50_000), db=db, principal=_principal))
 check("can top up", was, False)
 was, _ = refused(lambda: bot_router.purchase_package(
-    "cust1", schemas.BotPurchasePackageRequest(package_id=pkg.id), db=db))
+    "cust1", schemas.BotPurchasePackageRequest(package_id=pkg.id), db=db, principal=_principal))
 check("can buy", was, False)
 
 print("\n" + "=" * 60)

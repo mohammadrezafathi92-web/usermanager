@@ -245,6 +245,14 @@ made = _pr.create_package(
     db=db3, admin=boss3,
 )
 check("a free trial can be created at all despite the per-GB floor", made.price, 0)
+# Phase C: create_package's own trailing db.refresh(pkg) (after its commit)
+# starts a new implicit transaction on db3 - harmless in production (each
+# HTTP request gets its own fresh session via Depends(get_db), closed at
+# request end) but this test reuses db3 for the update_package calls right
+# below, whose own _lock_package_node_scope_settings needs to BEGIN IMMEDIATE
+# as the first statement of a NEW transaction. Closing it explicitly here
+# mirrors what a real second request's fresh session would already give it.
+db3.commit()
 
 for label, change in (
     ("grow the quota", {"quota_gb": 500}),
@@ -253,6 +261,14 @@ for label, change in (
 ):
     detail = refusal(_pr.update_package, made.id, _schemas.PackageUpdate(**change), db=db3, admin=boss3)
     check(f"{label} is refused", bool(detail), True)
+    # Phase C: update_package's guard (_lock_package_node_scope_settings)
+    # runs BEFORE the refusal is raised, leaving db3's transaction open -
+    # in production a fresh per-request session is closed (which rolls
+    # back) regardless of how the request ended; this loop reuses db3
+    # across iterations the way no two real requests would, so roll back
+    # explicitly to give the next iteration the same clean slate a new
+    # request's session would have.
+    db3.rollback()
 
 # The subtler one: ticking is_trial ON an existing large package would stop
 # it being charged for - a way to give away a year of service for nothing.
@@ -260,9 +276,11 @@ big = _pr.create_package(
     _schemas.PackageCreate(name="بزرگ", quota_gb=500, duration_days=365, price=9_000_000),
     db=db3, admin=boss3,
 )
+db3.commit()  # Phase C: close create_package's own trailing db.refresh() transaction - see comment above
 check("turning a big package INTO a trial is refused",
       bool(refusal(_pr.update_package, big.id, _schemas.PackageUpdate(is_trial=True), db=db3, admin=boss3)),
       True)
+db3.rollback()  # Phase C: close the refused update_package's own open transaction - see comment above
 
 # The superadmin is exempt - it is their platform and their cost.
 check("a superadmin may set a larger trial",

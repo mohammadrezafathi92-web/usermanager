@@ -36,6 +36,11 @@ from sqlalchemy.orm import sessionmaker
 
 from app import models, schemas
 from app.routers import miniapp, package_groups, packages as packages_router
+from app.services.bot_auth import BotPrincipal
+
+# Phase C: routers/bot.py's list_packages now takes `principal` - unscoped
+# stand-in, matching every other test file's own _principal fixup.
+_principal = BotPrincipal.internal(None)
 
 failures: list[str] = []
 
@@ -166,6 +171,12 @@ refusal = call(
     schemas.PackageUpdate(group_id=reza_group.id), db=db, admin=admin(db, 2),
 )
 check("refused on update too", str(refusal).startswith("404"), True)
+# Phase C: update_package's guard (_lock_package_node_scope_settings) ran
+# and grabbed BEGIN IMMEDIATE before the refusal above was raised, leaving
+# db's transaction open - roll it back before reusing db for the next
+# update_package call below (a fresh per-request session would never carry
+# this over).
+db.rollback()
 db.refresh(mine)
 check("the package kept no group", mine.group_id, None)
 check("his own group is accepted",
@@ -221,7 +232,7 @@ check("a plan hidden from the Mini App is not on any shelf",
       any(p.name == "فقط در ربات" for s in shelves for p in s["packages"]), False)
 check("...but the bot still sells it",
       any(p.name == "فقط در ربات" for p in
-          __import__("app.routers.bot", fromlist=["x"]).list_packages(owner_admin_id=2, db=db)),
+          __import__("app.routers.bot", fromlist=["x"]).list_packages(owner_admin_id=2, db=db, principal=_principal)),
       True)
 check("...and it cannot be bought by id either",
       str(call(miniapp._package_or_404, db, 2, hidden.id)).startswith("404"), True)

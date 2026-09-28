@@ -123,6 +123,11 @@ check("a redacted read does not poison the next one",
 # about a reseller's account and not telling them.
 print("\n--- where a reseller's customers are told to pay ---")
 from app.routers import bot as bot_router  # noqa: E402
+from app.services.bot_auth import BotPrincipal  # noqa: E402
+
+# Phase C: get_payment_info now takes `principal` - unscoped stand-in, same
+# reasoning as test_purchase_lock.py's own _principal.
+_principal = BotPrincipal.internal(None)
 
 # A SECOND reseller, with no saved cards of their own at all. The first one
 # already has a card in their pool, and a pool card deliberately overrides
@@ -136,7 +141,7 @@ db.commit()
 # This reseller has set NOTHING of their own. Before this fix the main
 # admin's card was handed to their customers - who then paid the wrong
 # person, silently and correctly-looking, for as long as nobody noticed.
-info = bot_router.get_payment_info(owner_admin_id=3, db=db)
+info = bot_router.get_payment_info(owner_admin_id=3, db=db, principal=_principal)
 check("no card is offered rather than the main admin's", info.payment_card_number, "")
 check("...nor the cardholder", info.payment_card_holder, "")
 check("...nor instructions describing someone else's process",
@@ -149,7 +154,7 @@ check("...and the suggested amounts survive", info.topup_presets, "50000,100000"
 bare.own_payment_card_number = "5892-1010-2020-3030"
 bare.own_payment_card_holder = "علی"
 db.commit()
-info = bot_router.get_payment_info(owner_admin_id=3, db=db)
+info = bot_router.get_payment_info(owner_admin_id=3, db=db, principal=_principal)
 check("once they set their own, that is what is shown",
       info.payment_card_number, "5892-1010-2020-3030")
 check("...under their own name", info.payment_card_holder, "علی")
@@ -157,12 +162,12 @@ check("...under their own name", info.payment_card_holder, "علی")
 # The superadmin's own shop is unaffected by any of this - their customers
 # still get whichever card their own pool resolves to, exactly as before.
 check("the main admin's own customers still see a main card",
-      bot_router.get_payment_info(owner_admin_id=None, db=db).payment_card_number,
+      bot_router.get_payment_info(owner_admin_id=None, db=db, principal=_principal).payment_card_number,
       "6037-1")
 # And a reseller WITH a pool still gets their own pool's card, not the
 # legacy field and certainly not the main admin's.
 check("a reseller's own pool card wins for their customers",
-      bot_router.get_payment_info(owner_admin_id=2, db=db).payment_card_number, "5892-9")
+      bot_router.get_payment_info(owner_admin_id=2, db=db, principal=_principal).payment_card_number, "5892-9")
 
 
 print("\n--- and what the panel tells them they owe ---")

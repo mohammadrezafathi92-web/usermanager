@@ -266,7 +266,7 @@ check("the row itself is completely untouched - still there, unchanged",
       (row2[0], row2[1]), ("broken-migration key", "broken-plaintext-key"))
 
 print("\n" + "=" * 60)
-print("--- schema-only boundary (Product's explicit Phase A limit) ---")
+print("--- schema-only boundary (superseded by Phase C - see below) ---")
 print("=" * 60)
 
 import inspect as pyinspect  # noqa: E402
@@ -274,13 +274,22 @@ import inspect as pyinspect  # noqa: E402
 from app import deps  # noqa: E402
 from app.telegram_bot import panel_bridge  # noqa: E402
 
-check("deps.get_bot_api_key's source is untouched by this migration - still "
-      "returns the plain ApiKey row, no BotPrincipal/bot_auth import",
+# This section used to assert that deps/routers/bot.py/panel_bridge.py
+# imported NOTHING from bot_auth - Product's explicit Phase A/B limit at
+# the time. Phase C's C0 stage (docs/api-key-scope-audit-2026-09-27.md,
+# نسخه‌ی هشتم) is exactly the migration THAT wires those in, on purpose -
+# so this migration test's own job is now just "deps.get_bot_api_key
+# itself (the raw 401 gate) is untouched", not "nothing here ever imports
+# bot_auth". The real "still behaves like today" guarantee belongs to
+# test_bot_route_policy_coverage.py/test_bot_inprocess_trust_characterization.py,
+# not to a bare source-text search here.
+check("deps.get_bot_api_key itself (the raw 401 gate) is untouched by this migration - "
+      "still returns the plain ApiKey row, no BotPrincipal/bot_auth import in THAT function",
       "bot_auth" in pyinspect.getsource(deps.get_bot_api_key), False)
-check("routers/bot.py imports nothing from bot_auth",
-      "bot_auth" not in pyinspect.getsource(__import__("app.routers.bot", fromlist=["router"])), True)
-check("telegram_bot/panel_bridge.py imports nothing from bot_auth",
-      "bot_auth" not in pyinspect.getsource(panel_bridge), True)
+check("routers/bot.py is now wired to bot_auth (Phase C C0, not this migration)",
+      "bot_auth" in pyinspect.getsource(__import__("app.routers.bot", fromlist=["router"])), True)
+check("telegram_bot/panel_bridge.py is now wired to bot_auth (Phase C C0, not this migration)",
+      "bot_auth" in pyinspect.getsource(panel_bridge), True)
 
 print("\n" + "=" * 60)
 if failures:

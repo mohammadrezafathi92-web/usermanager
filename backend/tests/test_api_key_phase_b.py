@@ -202,16 +202,30 @@ check("remote bot receives the same plaintext key", captured.get("panel_api_key"
 check("remote key hash is written", remote_key.key_hash, bot_auth.hash_api_key(remote_key.key))
 
 print("\n" + "=" * 60)
-print("--- Phase B boundary: no production authorization wiring ---")
+print("--- Phase C C0 boundary: wired in, but every row still unscoped ---")
 print("=" * 60)
+
+# This section documented Phase B's OWN boundary ("no BotPrincipal wiring
+# yet") - Phase C's C0 stage (docs/api-key-scope-audit-2026-09-27.md,
+# نسخه‌ی هشتم) is exactly what wires deps.get_bot_principal, every
+# routers/bot.py endpoint, and telegram_bot/panel_bridge.py in, so the old
+# "remains free of BotPrincipal" assertions are now testing for the wrong
+# thing on purpose - flipped below to confirm the wiring landed, with the
+# real "behavior did not change" guarantee covered by
+# test_bot_route_policy_coverage.py/test_bot_inprocess_trust_characterization.py
+# (every scope_enforced/dedicated_bot_scope_enforced/package_node_scope_enforced
+# column still defaults to False) rather than by "the word never appears".
 
 from app import deps
 from app.routers import bot
 from app.telegram_bot import panel_bridge
 
-check("deps remains free of BotPrincipal wiring", "BotPrincipal" in inspect.getsource(deps), False)
-check("bot endpoints remain free of BotPrincipal wiring", "BotPrincipal" in inspect.getsource(bot), False)
-check("in-process bridge remains free of BotPrincipal wiring", "BotPrincipal" in inspect.getsource(panel_bridge), False)
+check("deps now builds a BotPrincipal", "BotPrincipal" in inspect.getsource(deps), True)
+check("bot endpoints now take a BotPrincipal", "BotPrincipal" in inspect.getsource(bot), True)
+check("in-process bridge now builds a BotPrincipal", "BotPrincipal" in inspect.getsource(panel_bridge), True)
+# _scope() itself must never be removed (see panel_bridge.py's own _scope
+# docstring) - wiring principal alongside it, never replacing it.
+check("panel_bridge's _scope() defaulting helper is still there", hasattr(panel_bridge, "_scope"), True)
 
 if failures:
     print(f"\n{len(failures)} failure(s): {', '.join(failures)}")

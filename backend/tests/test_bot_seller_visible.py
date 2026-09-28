@@ -37,6 +37,11 @@ def check(label, got, expected):
 from app.database import Base, engine, SessionLocal  # noqa: E402
 from app import models  # noqa: E402
 from app.routers import bot as bot_router  # noqa: E402
+from app.services.bot_auth import BotPrincipal  # noqa: E402
+
+# Phase C: routers/bot.py endpoints now take `principal` - unscoped
+# stand-in, matching every other test file's own _principal fixup.
+_principal = BotPrincipal.internal(None)
 from app.services import hierarchy  # noqa: E402
 
 Base.metadata.create_all(bind=engine)
@@ -62,12 +67,12 @@ db.add_all([pkg_visible, pkg_hidden])
 db.commit()
 
 print("--- the owning Admin's own bot session sees BOTH packages (seller_visible never restricts an Admin) ---")
-pkgs = bot_router.list_packages(owner_admin_id=admin.id, db=db)
+pkgs = bot_router.list_packages(owner_admin_id=admin.id, db=db, principal=_principal)
 names = {p.name for p in pkgs}
 check("both visible to the Admin", names, {"پکیج عمومی", "پکیج داخلی"})
 
 print("\n--- the Seller's bot session (admin-menu picker / their own dedicated bot) only sees the seller_visible one ---")
-pkgs = bot_router.list_packages(owner_admin_id=seller.id, db=db)
+pkgs = bot_router.list_packages(owner_admin_id=seller.id, db=db, principal=_principal)
 names = {p.name for p in pkgs}
 check("only the seller-visible package", names, {"پکیج عمومی"})
 

@@ -44,6 +44,11 @@ from fastapi import HTTPException  # noqa: E402
 from app.database import Base, engine, SessionLocal  # noqa: E402
 from app import models, schemas  # noqa: E402
 from app.routers import panel_settings, bot as bot_router  # noqa: E402
+from app.services.bot_auth import BotPrincipal  # noqa: E402
+
+# Phase C: routers/bot.py endpoints now take `principal` - unscoped
+# stand-in, matching every other test file's own _principal fixup.
+_principal = BotPrincipal.internal(None)
 
 Base.metadata.create_all(bind=engine)
 db = SessionLocal()
@@ -68,7 +73,7 @@ db.refresh(card2)
 check("cleared via update", card2.approval_telegram_id, None)
 
 print("\n--- GET /api/bot/payment-cards/{id} returns the exact card by id ---")
-out = bot_router.get_payment_card(card.id, db=db)
+out = bot_router.get_payment_card(card.id, db=db, principal=_principal)
 # Called directly (bypassing FastAPI's routing layer, which normally
 # converts the return value via response_model=PaymentCardOut) - so this
 # is still the raw ORM row, same as create_payment_card's return value
@@ -78,7 +83,7 @@ check("...with the right approval id", out.approval_telegram_id, 555111)
 
 print("\n--- ...and 404s for a card that doesn't exist ---")
 try:
-    bot_router.get_payment_card(999999, db=db)
+    bot_router.get_payment_card(999999, db=db, principal=_principal)
     check("raises 404", False, True)
 except HTTPException as exc:
     check("raises 404", exc.status_code, 404)

@@ -114,7 +114,7 @@ def visitor(db, token=ALI_TOKEN, telegram_id=555):
 from app.services import user_ops  # noqa: E402
 
 
-def _fake_provision(db, user, package, connections_override=None, comment=None):
+def _fake_provision(db, user, package, connections_override=None, comment=None, principal=None):
     purchase = models.Purchase(
         user_id=user.id, status="active",
         package_name_snapshot=package.name,

@@ -53,7 +53,7 @@ def sync(pairs):
         for n, p in pairs
     ]
     try:
-        packages_router._sync_connections(db, pkg, specs)
+        packages_router._sync_connections(db, pkg, specs, enforce_scope=False)
         db.commit()
         return True, None
     except HTTPException as exc:
@@ -104,7 +104,7 @@ check("and the previous set is gone",
 print("\n--- a server that does not exist ---")
 specs = [schemas.PackageConnectionSpec(node_id=99999, protocol="wireguard", flow="")]
 try:
-    packages_router._sync_connections(db, pkg, specs)
+    packages_router._sync_connections(db, pkg, specs, enforce_scope=False)
     ok, detail = True, None
 except HTTPException as exc:
     db.rollback()

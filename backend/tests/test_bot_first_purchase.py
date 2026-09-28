@@ -21,6 +21,11 @@ from sqlalchemy.orm import sessionmaker
 
 from app import models, schemas
 from app.routers import bot as bot_router
+from app.services.bot_auth import BotPrincipal  # noqa: E402
+
+# Phase C: routers/bot.py endpoints now take `principal` - unscoped
+# stand-in, matching every other test file's own _principal fixup.
+_principal = BotPrincipal.internal(None)
 from app.services import user_ops
 
 failures: list[str] = []
@@ -44,7 +49,8 @@ def make_db():
 # creates the row the way the real one does. What is under test is whether a
 # Purchase gets created and linked, not the provisioning itself.
 def fake_provision(db, user, node, protocol, flow="", max_sessions=1,
-                   purchase_batch=None, package_name=None, speed_limit_mbps=None):
+                   purchase_batch=None, package_name=None, speed_limit_mbps=None,
+                   authorization_scope=None):
     conn = models.Connection(
         user_id=user.id, node_id=node.id, type=models.ConnectionType.wireguard,
         purchase_batch=purchase_batch, package_name_snapshot=package_name,
@@ -83,7 +89,7 @@ def buy_new(db, node, pkg, username):
         telegram_id=555, package_id=pkg.id, package_name=pkg.name,
         connections=[schemas.BotCreateConnectionSpec(node_id=node.id, protocol="wireguard")],
     )
-    return bot_router.create_user(payload, db=db)
+    return bot_router.create_user(payload, db=db, principal=_principal)
 
 
 print("--- a brand-new customer's first purchase ---")
@@ -116,7 +122,7 @@ payload = schemas.BotCreateUserRequest(
     username="empty", quota_gb=10, expire_days=30,
     package_id=pkg.id, package_name=pkg.name, connections=[],
 )
-bot_router.create_user(payload, db=db)
+bot_router.create_user(payload, db=db, principal=_principal)
 user = db.query(models.User).filter_by(username="empty").one()
 # Nothing was provisioned, so there is nothing to own - creating an empty
 # Purchase would invent a service the customer never got.

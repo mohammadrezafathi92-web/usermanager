@@ -18,8 +18,18 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app import models
-from app.services import hierarchy
+from app.services import hierarchy, bot_resources
+from app.services.bot_auth import BotPrincipal
 from app.routers import bot as bot_router
+
+# Phase C (docs/api-key-scope-audit-2026-09-27.md): the old bot_router.
+# _visibility_filter/_get_user_or_404 helpers moved into
+# services/bot_resources.py's principal-aware accessors. This unscoped
+# principal is the direct equivalent of "no principal concept at all" (the
+# shape every one of these functions had before Phase C) - claims are
+# trusted as-is, exactly like _visibility_filter's own owner_admin_id
+# parameter always was.
+_unscoped = BotPrincipal.internal(None)
 
 failures: list[str] = []
 
@@ -59,11 +69,7 @@ def add_user(db, username, owner):
 
 
 def visible(db, admin_id):
-    clause = bot_router._visibility_filter(db, admin_id)
-    q = db.query(models.User)
-    if clause is not None:
-        q = q.filter(clause)
-    return {u.username for u in q.all()}
+    return {u.username for u in bot_resources._list_users_query(db, _unscoped, admin_id).all()}
 
 
 db = make_db()
@@ -103,8 +109,13 @@ from fastapi import HTTPException
 
 
 def can_fetch(db, username, admin_id) -> bool:
+    # A SCOPED principal (unlike visible()'s unscoped+claim shape above) -
+    # the old _get_user_or_404(db, username, admin_id) checked admin_id as
+    # the acting scope itself, which require_bot_user_access now does via
+    # principal.owner_admin_id only when is_scoped is True.
+    principal = BotPrincipal.internal(admin_id, scope_enforced=True) if admin_id is not None else _unscoped
     try:
-        bot_router._get_user_or_404(db, username, admin_id)
+        bot_resources._get_user_or_403(db, principal, username)
         return True
     except HTTPException:
         return False
@@ -133,7 +144,7 @@ for name, admin, expected in (
     ("admin1", a1, {"a1_cust", "s1_cust"}),
     ("seller1", s1, {"s1_cust"}),
 ):
-    got = {by_tg[t] for t in bot_router.telegram_user_ids(db=db, owner_admin_id=admin.id)}
+    got = {by_tg[t] for t in bot_router.telegram_user_ids(db=db, owner_admin_id=admin.id, principal=_unscoped)}
     check(f"broadcast from {name}", got, expected)
 
 print("\n--- pending receipts carry an owner ---")

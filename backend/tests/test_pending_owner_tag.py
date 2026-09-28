@@ -36,6 +36,11 @@ from fastapi import HTTPException  # noqa: E402
 from app.database import Base, engine, SessionLocal  # noqa: E402
 from app import models  # noqa: E402
 from app.routers import bot as bot_router  # noqa: E402
+from app.services.bot_auth import BotPrincipal  # noqa: E402
+
+# Phase C: routers/bot.py endpoints now take `principal` - unscoped
+# stand-in, matching every other test file's own _principal fixup.
+_principal = BotPrincipal.internal(None)
 from app.telegram_bot.handlers import admin_pending  # noqa: E402
 
 Base.metadata.create_all(bind=engine)
@@ -49,11 +54,11 @@ db.refresh(admin1)
 db.refresh(admin2)
 
 print("--- routers/bot.py's get_admin_username endpoint ---")
-out = bot_router.get_admin_username(admin1.id, db=db)
+out = bot_router.get_admin_username(admin1.id, db=db, principal=_principal)
 check("returns the right username", out, {"username": "admin_one"})
 
 try:
-    bot_router.get_admin_username(999999, db=db)
+    bot_router.get_admin_username(999999, db=db, principal=_principal)
     check("raises 404 for unknown id", False, True)
 except HTTPException as exc:
     check("raises 404 for unknown id", exc.status_code, 404)

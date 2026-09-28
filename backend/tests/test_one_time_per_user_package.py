@@ -35,6 +35,11 @@ from app.database import Base, engine, SessionLocal  # noqa: E402
 from app import models, schemas  # noqa: E402
 from app.routers import packages as packages_router  # noqa: E402
 from app.routers import bot as bot_router  # noqa: E402
+from app.services.bot_auth import BotPrincipal  # noqa: E402
+
+# Phase C: routers/bot.py endpoints now take `principal` - unscoped
+# stand-in, matching every other test file's own _principal fixup.
+_principal = BotPrincipal.internal(None)
 from app.routers import users as users_router  # noqa: E402
 from app.services import hierarchy, user_ops  # noqa: E402
 
@@ -63,11 +68,11 @@ print("\n--- a normal (non one-time) package can be bought by the same user twic
 user1 = user_ops.create_user_record(db, "user1", telegram_id=111)
 db.commit()
 bot_router.purchase_package(
-    "user1", schemas.BotPurchasePackageRequest(package_id=normal_pkg.id), db=db,
+    "user1", schemas.BotPurchasePackageRequest(package_id=normal_pkg.id), db=db, principal=_principal,
 )
 db.commit()
 bot_router.purchase_package(
-    "user1", schemas.BotPurchasePackageRequest(package_id=normal_pkg.id), db=db,
+    "user1", schemas.BotPurchasePackageRequest(package_id=normal_pkg.id), db=db, principal=_principal,
 )
 db.commit()
 check(
@@ -78,7 +83,7 @@ check(
 
 print("\n--- first purchase of the one-time package succeeds ---")
 bot_router.purchase_package(
-    "user1", schemas.BotPurchasePackageRequest(package_id=one_time_pkg.id), db=db,
+    "user1", schemas.BotPurchasePackageRequest(package_id=one_time_pkg.id), db=db, principal=_principal,
 )
 db.commit()
 check(
@@ -90,7 +95,7 @@ check(
 print("\n--- buying it again (same user) is rejected ---")
 try:
     bot_router.purchase_package(
-        "user1", schemas.BotPurchasePackageRequest(package_id=one_time_pkg.id), db=db,
+        "user1", schemas.BotPurchasePackageRequest(package_id=one_time_pkg.id), db=db, principal=_principal,
     )
     failures.append("second purchase should have raised")
     print("FAIL  second purchase should have raised HTTPException")
@@ -102,7 +107,7 @@ print("\n--- a DIFFERENT customer (different telegram id) can still buy it once 
 user2 = user_ops.create_user_record(db, "user2", telegram_id=222)
 db.commit()
 bot_router.purchase_package(
-    "user2", schemas.BotPurchasePackageRequest(package_id=one_time_pkg.id), db=db,
+    "user2", schemas.BotPurchasePackageRequest(package_id=one_time_pkg.id), db=db, principal=_principal,
 )
 db.commit()
 check(
@@ -116,7 +121,7 @@ user1b = user_ops.create_user_record(db, "user1-second-account", telegram_id=111
 db.commit()
 try:
     bot_router.purchase_package(
-        "user1-second-account", schemas.BotPurchasePackageRequest(package_id=one_time_pkg.id), db=db,
+        "user1-second-account", schemas.BotPurchasePackageRequest(package_id=one_time_pkg.id), db=db, principal=_principal,
     )
     failures.append("sibling-account purchase should have raised")
     print("FAIL  sibling-account purchase should have raised HTTPException")
@@ -128,7 +133,7 @@ print("\n--- create_user() also blocks a brand-new signup on an already-used tel
 try:
     bot_router.create_user(
         schemas.BotCreateUserRequest(username="user1-third-account", telegram_id=111, package_id=one_time_pkg.id),
-        db=db,
+        db=db, principal=_principal,
     )
     failures.append("create_user with reused telegram id should have raised")
     print("FAIL  create_user should have raised HTTPException")
@@ -144,7 +149,7 @@ check(
 print("\n--- but create_user() for a FRESH telegram id still works fine ---")
 resp = bot_router.create_user(
     schemas.BotCreateUserRequest(username="user3", telegram_id=333, package_id=one_time_pkg.id),
-    db=db,
+    db=db, principal=_principal,
 )
 db.commit()
 check("user3 created successfully", resp.username, "user3")

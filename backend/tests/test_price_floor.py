@@ -82,6 +82,12 @@ try:
     check("raises", False, True)
 except HTTPException as exc:
     check("raises 400", exc.status_code, 400)
+# Phase C: create_package's guard (_lock_package_node_scope_settings) ran
+# and grabbed BEGIN IMMEDIATE before the refusal above was raised, leaving
+# db's transaction open - roll it back before reusing db for the next
+# create_package call (a fresh per-request session would never carry this
+# over; this file reuses one session across many simulated "requests").
+db.rollback()
 
 print("\n--- flat-rate admin: price EQUAL to cooperation_price is allowed (selling at cost is fine) ---")
 pkg_flat = packages_router.create_package(
@@ -89,6 +95,7 @@ pkg_flat = packages_router.create_package(
     db=db, admin=flat_admin,
 )
 check("created", pkg_flat.price, 5000)
+db.commit()  # Phase C: close create_package's own trailing db.refresh() transaction
 
 print("\n--- metered admin (1000/GB, quota 10 => real cost 10000): price below the real per-GB cost is refused even with a valid cooperation_price ---")
 try:
@@ -99,6 +106,7 @@ try:
     check("raises", False, True)
 except HTTPException as exc:
     check("raises 400 (real per-GB cost, not the stored cooperation_price)", exc.status_code, 400)
+db.rollback()  # Phase C - see comment above
 
 print("\n--- metered admin: price at the REAL per-GB cost (10000) is allowed ---")
 pkg_metered = packages_router.create_package(
@@ -106,6 +114,7 @@ pkg_metered = packages_router.create_package(
     db=db, admin=metered_admin,
 )
 check("created", pkg_metered.price, 10000)
+db.commit()  # Phase C - see comment above
 
 print("\n--- update_package: dropping price below the (unchanged) cooperation_price is refused ---")
 try:
@@ -113,6 +122,7 @@ try:
     check("raises", False, True)
 except HTTPException as exc:
     check("raises 400", exc.status_code, 400)
+db.rollback()  # Phase C - see comment above
 
 print("\n--- no cooperation_price and no per-GB rate at all -> no floor, any price allowed ---")
 pkg_free = packages_router.create_package(

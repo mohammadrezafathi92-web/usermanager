@@ -1,7 +1,7 @@
 # تحلیل: عدم وجود owner/scope روی X-API-Key (`/api/bot/*`)
 
-**مرحله:** ۳ - تحلیل ✅ / reproduction test ✅ / طراحی BotPrincipal ✅ (بازبینی دوم، ۱۰ نقص رفع شد) ✅ / **Phase A (schema+backfill) ✅ پیاده‌سازی شد، یک باگ P2 (بازبینی سوم) رفع شد** - همچنان بدون enforcement، بدون اتصال به `deps`/`panel_bridge`/routerها، بدون push.
-**وضعیت:** تحلیل، جدول endpointها، طراحی نسخه‌ی دوم، Phase A، و رفع باگ backfill همه تایید/پیاده‌سازی شده‌اند. منتظر گزارش/تایید بعدی برای Phase B.
+**مرحله:** ۳ - تحلیل ✅ / reproduction test ✅ / طراحی BotPrincipal ✅ / Phase A (schema+backfill) ✅ / **Phase B (ساخت و lifecycle کلیدهای typed) ✅ پیاده‌سازی شد** - همچنان بدون enforcement، بدون اتصال به `deps.get_bot_api_key`/`routers/bot.py`/`panel_bridge.py`، بدون push.
+**وضعیت:** Phase B آماده‌ی بازبینی است؛ Phase C هنوز شروع نشده است.
 **تست‌ها (همه سبز روی HEAD فعلی، هیچ‌کدام push نشده):**
 - `backend/tests/test_bot_api_key_cross_tenant.py` (۱۲ assertion) - اثبات cross-tenant با یک کلید معمولی.
 - `backend/tests/test_bot_auth_principal.py` (۶۲ assertion) - تست واحد ماژول طراحی `services/bot_auth.py` (هنوز به هیچ endpointای وصل نشده).
@@ -206,6 +206,15 @@ scope_enforced     bool, default false
 - ساخت کلید جدید در UI پیش‌فرض `tenant_integration` است؛ owner و capability موقع ساخت مشخص می‌شود.
 - `global_integration` مسیر جدا، هشدار صریح، `require_confirm_password` (همان الگوی موجود `routers/api_keys.py`'s `delete_key`).
 - کلید remote bot به‌صورت خودکار `key_type='remote_shared_bot'` می‌گیرد (تغییر کوچک در `routers/remote_bot.py:90`، بدون تغییر رفتار چون همچنان unscoped با همه‌ی capabilityهای لازم است).
+
+**وضعیت پیاده‌سازی Phase B (۲۰۲۶-۰۹-۲۸):**
+
+- `POST /api/api-keys` فقط `tenant_integration` می‌سازد؛ owner/capability را ذخیره می‌کند، ولی کلید را با `enabled=false` و `scope_enforced=false` می‌سازد. endpoint toggle نیز فعال‌کردن آن را با 409 رد می‌کند (اگر ردیفی بیرون از برنامه فعال شده باشد، همان toggle همچنان می‌تواند آن را خاموش کند).
+- `POST /api/api-keys/global` مسیر مجزاست؛ فقط بعد از `require_confirm_password` یک `global_integration` فعال و بدون owner می‌سازد. UI پیش از ساخت هشدار صریح دسترسی سراسری نشان می‌دهد.
+- deploy ربات روی سرور دوم کلید را با `remote_shared_bot`، بدون owner، `scope_enforced=false` و همان رفتار فعال قبلی می‌سازد؛ secret/hash/prefix/last4 و سازنده همان لحظه ثبت می‌شوند.
+- UI نوع، owner و capabilityهای tenant را می‌گیرد؛ دو capability کم‌خطر `customer_read`/`customer_write` پیش‌فرض‌اند و بقیه فقط با انتخاب صریح اضافه می‌شوند. کلید tenant در فهرست «در انتظار Phase C» است و دکمه‌ی فعال‌سازی ندارد.
+- plaintext و پاسخ API عمداً دست‌نخورده‌اند (Phase D). هیچ تغییری در auth زنده‌ی `/api/bot`، ربات in-process یا bypass شناخته‌شده‌ی `panel_bridge._scope()` ایجاد نشده است.
+- `backend/tests/test_api_key_phase_b.py` با تست HTTP واقعی و تست deploy mock‌شده، ساخت tenant/global، تأیید رمز، ممنوعیت فعال‌سازی tenant، سازگاری lifecycle کلید legacy، طبقه‌بندی remote bot، hash metadata و مرز «بدون BotPrincipal wiring» را پوشش می‌دهد.
 
 ### Phase C - Enforcement
 

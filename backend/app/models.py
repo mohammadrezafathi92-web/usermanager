@@ -468,8 +468,8 @@ class ApiKey(Base):
     scope_enforced = Column(Boolean, nullable=False, default=False)
     # SHA-256 of the plaintext `key` above (services/bot_auth.hash_api_key)
     # - NULL until main.py's _backfill_api_key_hashes fills it in for an
-    # existing row (every new key gets one immediately at creation, once
-    # Phase C's key-creation endpoint is updated to set it). The plaintext
+    # existing row (every typed key gets one immediately at creation from
+    # Phase B onward). The plaintext
     # `key` column is deliberately NOT removed/nulled in this phase or any
     # later one covered by this migration - see the audit doc's Phase D.
     # unique=True: two different keys must never hash to the same value: a

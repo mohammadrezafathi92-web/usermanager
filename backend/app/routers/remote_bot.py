@@ -16,6 +16,7 @@ from ..config import settings
 from ..database import get_db
 from ..deps import require_superadmin
 from ..services import remote_deploy
+from ..services.bot_auth import KeyType, hash_api_key
 from ..services.keys import generate_api_key
 from ..telegram_bot import runner as telegram_bot_runner
 from ..telegram_bot.config import parse_id_set
@@ -41,7 +42,11 @@ def status(db: Session = Depends(get_db)):
 
 
 @router.post("/deploy", response_model=schemas.BotSettingsOut)
-def deploy(payload: schemas.RemoteBotDeployRequest, db: Session = Depends(get_db)):
+def deploy(
+    payload: schemas.RemoteBotDeployRequest,
+    db: Session = Depends(get_db),
+    current: models.AdminUser = Depends(require_superadmin),
+):
     row = _get_or_create_bot_settings(db)
     if not row.bot_token or not row.admin_ids:
         raise HTTPException(400, "اول از بخش «ربات تلگرام» توکن و آیدی عددی ادمین را تنظیم و ذخیره کنید")
@@ -86,7 +91,20 @@ def deploy(payload: schemas.RemoteBotDeployRequest, db: Session = Depends(get_db
         if old_key:
             old_key.enabled = False
 
-    api_key = models.ApiKey(label=f"ربات روی سرور دور ({payload.host})", key=generate_api_key())
+    raw_key = generate_api_key()
+    api_key = models.ApiKey(
+        label=f"ربات روی سرور دور ({payload.host})",
+        key=raw_key,
+        key_hash=hash_api_key(raw_key),
+        key_prefix=raw_key[:8],
+        key_last4=raw_key[-4:],
+        key_type=KeyType.REMOTE_SHARED_BOT,
+        owner_admin_id=None,
+        capabilities=None,
+        scope_enforced=False,
+        enabled=True,
+        created_by_admin_id=current.id,
+    )
     db.add(api_key)
     db.flush()
 

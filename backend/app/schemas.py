@@ -804,7 +804,20 @@ class DashboardStats(BaseModel):
 
 # ---------- API keys (for the external/bot integration) ----------
 class ApiKeyCreate(BaseModel):
-    label: str
+    """A tenant-bound integration key prepared for Phase C enforcement.
+
+    Phase B deliberately creates these disabled: until the central bot API
+    dependency starts enforcing the stored owner/capabilities, enabling one
+    would make a key that only *looks* scoped behave globally.
+    """
+
+    label: str = Field(min_length=1, max_length=128)
+    owner_admin_id: int = Field(gt=0)
+    capabilities: Optional[List[str]] = Field(default=None, max_length=9)
+
+
+class GlobalApiKeyCreate(BaseModel):
+    label: str = Field(min_length=1, max_length=128)
 
 
 class ApiKeyOut(BaseModel):
@@ -815,6 +828,12 @@ class ApiKeyOut(BaseModel):
     enabled: bool
     created_at: dt.datetime
     last_used_at: Optional[dt.datetime] = None
+    owner_admin_id: Optional[int] = None
+    owner_admin_username: Optional[str] = None
+    key_type: str = "legacy_global"
+    capabilities: List[str] = Field(default_factory=list)
+    scope_enforced: bool = False
+    created_by_admin_id: Optional[int] = None
 
 
 # ---------- Packages (purchasable plans, shown by the sales bot) ----------

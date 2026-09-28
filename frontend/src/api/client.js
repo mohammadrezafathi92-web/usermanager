@@ -253,7 +253,14 @@ export const importUserManagerUsers = (id) => client.post(`/nodes/${id}/import-u
 export const import3xuiClients = (id) => client.post(`/nodes/${id}/import-3xui-clients`);
 
 export const fetchApiKeys = () => client.get("/api-keys");
-export const createApiKey = (label) => client.post("/api-keys", { label });
+export const createApiKey = (data) =>
+  data.key_type === "global_integration"
+    ? client.post("/api-keys/global", { label: data.label })
+    : client.post("/api-keys", {
+        label: data.label,
+        owner_admin_id: data.owner_admin_id,
+        capabilities: data.capabilities,
+      });
 export const toggleApiKey = (id) => client.post(`/api-keys/${id}/toggle`);
 export const deleteApiKey = (id) => client.delete(`/api-keys/${id}`);
 

@@ -13,6 +13,7 @@ import {
   changePassword,
   changeUsername,
   changeTelegramId,
+  fetchAdmins,
   fetchApiKeys,
   createApiKey,
   toggleApiKey,
@@ -59,6 +60,20 @@ import { useLanguage } from "../context/LanguageContext.jsx";
 // Same action keys/order as backend/app/telegram_bot/keyboards.py's
 // CUSTOMER_MENU_ITEMS - keep in sync if a menu item is ever added/removed.
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
+
+const API_KEY_CAPABILITIES = [
+  "customer_read",
+  "customer_write",
+  "identity_write",
+  "wallet_write",
+  "payment_read",
+  "payment_write",
+  "files_read",
+  "broadcast",
+  "admin_lookup",
+];
+
+const DEFAULT_TENANT_CAPABILITIES = ["customer_read", "customer_write"];
 
 const CUSTOMER_MENU_ITEM_KEYS = [
   "cust_account",
@@ -283,17 +298,20 @@ export default function Settings() {
   const [keys, setKeys] = useState([]);
   const [keyModalOpen, setKeyModalOpen] = useState(false);
   const [newLabel, setNewLabel] = useState("");
+  const [newKeyType, setNewKeyType] = useState("tenant_integration");
+  const [newOwnerAdminId, setNewOwnerAdminId] = useState("");
+  const [newCapabilities, setNewCapabilities] = useState(DEFAULT_TENANT_CAPABILITIES);
+  const [keyOwners, setKeyOwners] = useState([]);
   const [keyError, setKeyError] = useState("");
   const [savingKey, setSavingKey] = useState(false);
   const [copiedId, setCopiedId] = useState(null);
 
   const loadKeys = () => fetchApiKeys().then((res) => setKeys(res.data));
   useEffect(() => {
-    // Superadmin-only now (routers/api_keys.py) - ApiKey rows have no
-    // owner/scope, so this must never be fetched as a non-superadmin (would
-    // 403, and previously leaked every key in the system to anyone who
-    // reached this page as a level-2 Admin or a Seller with the checkbox).
-    if (isSuperadmin) loadKeys();
+    if (isSuperadmin) {
+      loadKeys();
+      fetchAdmins().then((res) => setKeyOwners(res.data));
+    }
   }, [isSuperadmin]);
 
   const [payment, setPayment] = useState({
@@ -559,8 +577,20 @@ export default function Settings() {
     setSavingKey(true);
     setKeyError("");
     try {
-      await createApiKey(newLabel);
+      if (newKeyType === "tenant_integration" && !newOwnerAdminId) {
+        setKeyError(t("settings.apiKeyOwnerRequired"));
+        return;
+      }
+      await createApiKey({
+        label: newLabel,
+        key_type: newKeyType,
+        owner_admin_id: newKeyType === "tenant_integration" ? Number(newOwnerAdminId) : null,
+        capabilities: newKeyType === "tenant_integration" ? newCapabilities : [],
+      });
       setNewLabel("");
+      setNewKeyType("tenant_integration");
+      setNewOwnerAdminId("");
+      setNewCapabilities(DEFAULT_TENANT_CAPABILITIES);
       setKeyModalOpen(false);
       loadKeys();
     } catch (err) {
@@ -571,8 +601,20 @@ export default function Settings() {
   };
 
   const onToggleKey = async (id) => {
-    await toggleApiKey(id);
-    loadKeys();
+    try {
+      await toggleApiKey(id);
+      loadKeys();
+    } catch (err) {
+      setKeyError(err?.response?.data?.detail || t("settings.msgSaveError"));
+    }
+  };
+
+  const toggleNewCapability = (capability) => {
+    setNewCapabilities((current) =>
+      current.includes(capability)
+        ? current.filter((item) => item !== capability)
+        : [...current, capability]
+    );
   };
 
   const onDeleteKey = async (id) => {
@@ -1772,7 +1814,7 @@ export default function Settings() {
             </span>
             <h3 className="font-bold text-gray-700">{t("settings.apiKeysTitle")}</h3>
           </div>
-          <button className="btn-primary" onClick={() => setKeyModalOpen(true)}>
+          <button className="btn-primary" onClick={() => { setKeyError(""); setKeyModalOpen(true); }}>
             <Plus size={16} /> {t("settings.newKey")}
           </button>
         </div>
@@ -1788,6 +1830,15 @@ export default function Settings() {
             <div key={k.id} className="flex items-center justify-between border border-gray-100 rounded-xl px-4 py-3">
               <div>
                 <div className="font-medium text-gray-800 text-sm">{k.label}</div>
+                <div className="flex flex-wrap items-center gap-1 mt-1">
+                  <span className="badge-neutral">{t(`settings.apiKeyType.${k.key_type}`)}</span>
+                  {k.owner_admin_username && (
+                    <span className="text-xs text-gray-500">{t("settings.apiKeyOwner", { owner: k.owner_admin_username })}</span>
+                  )}
+                  {k.key_type === "tenant_integration" && !k.scope_enforced && (
+                    <span className="text-xs text-amber-600">{t("settings.apiKeyPendingPhaseC")}</span>
+                  )}
+                </div>
                 <div className="text-xs text-gray-400 font-mono mt-1 flex items-center gap-2">
                   {k.key}
                   <button onClick={() => onCopyKey(k.id, k.key)} className="text-gray-400 hover:text-brand-600">
@@ -1803,7 +1854,12 @@ export default function Settings() {
                 <span className={`${k.enabled ? "badge-success" : "badge-neutral"}`}>
                   {k.enabled ? t("status.active") : t("status.disabled")}
                 </span>
-                <button className="btn-secondary" onClick={() => onToggleKey(k.id)} title={k.enabled ? t("settings.disableKey") : t("settings.enableKey")}>
+                <button
+                  className={`btn-secondary ${k.key_type === "tenant_integration" && !k.enabled ? "opacity-50 cursor-not-allowed" : ""}`}
+                  onClick={() => onToggleKey(k.id)}
+                  disabled={k.key_type === "tenant_integration" && !k.enabled}
+                  title={k.key_type === "tenant_integration" && !k.enabled ? t("settings.apiKeyPendingPhaseCHint") : (k.enabled ? t("settings.disableKey") : t("settings.enableKey"))}
+                >
                   <Power size={14} />
                 </button>
                 <button className="btn-danger" onClick={() => onDeleteKey(k.id)}>
@@ -1826,6 +1882,49 @@ export default function Settings() {
             <label className="block text-sm text-gray-600 mb-1">{t("settings.labelField")}</label>
             <input className="input" required value={newLabel} onChange={(e) => setNewLabel(e.target.value)} />
           </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("settings.apiKeyTypeLabel")}</label>
+            <select className="input" value={newKeyType} onChange={(e) => setNewKeyType(e.target.value)}>
+              <option value="tenant_integration">{t("settings.apiKeyType.tenant_integration")}</option>
+              <option value="global_integration">{t("settings.apiKeyType.global_integration")}</option>
+            </select>
+          </div>
+          {newKeyType === "tenant_integration" ? (
+            <>
+              <div className="text-sm rounded-lg px-3 py-2 bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">
+                {t("settings.apiKeyTenantDisabledWarning")}
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">{t("settings.apiKeyOwnerLabel")}</label>
+                <select className="input" required value={newOwnerAdminId} onChange={(e) => setNewOwnerAdminId(e.target.value)}>
+                  <option value="">{t("settings.apiKeyOwnerPlaceholder")}</option>
+                  {keyOwners.map((owner) => (
+                    <option key={owner.id} value={owner.id}>{owner.username} ({owner.role})</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-2">{t("settings.apiKeyCapabilitiesLabel")}</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {API_KEY_CAPABILITIES.map((capability) => (
+                    <label key={capability} className="flex items-start gap-2 text-sm text-gray-600 rounded-lg border border-gray-100 px-3 py-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={newCapabilities.includes(capability)}
+                        onChange={() => toggleNewCapability(capability)}
+                      />
+                      <span>{t(`settings.apiKeyCapability.${capability}`)}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="text-sm rounded-lg px-3 py-2 bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-300">
+              {t("settings.apiKeyGlobalWarning")}
+            </div>
+          )}
           {keyError && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{keyError}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setKeyModalOpen(false)}>

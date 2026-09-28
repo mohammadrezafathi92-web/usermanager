@@ -392,6 +392,59 @@ def accessible_discount_code_owner_ids(db: Session, admin: models.AdminUser) -> 
     return {admin.id, *seller_ids}
 
 
+def selling_scope_node_ids(db: Session, admin: models.AdminUser) -> set[int] | None:
+    """Which Node ids `admin` may sell a connection on right now - the
+    question Phase C's bot/package authorization needs (docs/api-key-
+    scope-audit-2026-09-27.md), which is subtly different from
+    accessible_node_ids above (that one is about ADMINISTERING node
+    infrastructure - editing/deleting a Node row - not about which nodes a
+    given tenant's customers may be provisioned onto).
+
+    A Seller never administers nodes (accessible_node_ids returns an empty
+    set for them, by design), but a Seller absolutely does sell connections
+    - on their parent Admin's infrastructure, via that Admin's own already-
+    built Packages. Handing accessible_node_ids(db, seller) straight to a
+    customer-facing check (e.g. the bot's plain-package pick_node flow, or
+    provision_connection's authorization check) would empty that Seller's
+    node list entirely and break every plain-package sale for their
+    customers - a real functional regression, not just an edge case.
+
+    So: resolve through the SAME parent Admin a Seller's Packages already
+    resolve through (accessible_package_owner_ids uses the identical
+    parent_admin_scope_id) - a Seller sells nodes.
+
+    One case needs its own explicit handling, not a blind resolve: a Seller
+    created directly under the superadmin (a real, deliberately-supported
+    configuration - see validate_placement's docstring, not corrupted
+    data). accessible_node_ids(db, superadmin) returns None (unrestricted -
+    node infrastructure oversight is deliberately NOT isolated for a
+    superadmin, see that function's own docstring). Handing that straight
+    to such a Seller would make every node in the whole panel sellable by
+    them, including other Admins' entirely unrelated private nodes - a
+    fail-OPEN accident, not a feature. Fail closed instead, to only the
+    nodes that are explicitly global (Node.owner_admin_id IS NULL) - the
+    same {None}-translation accessible_package_owner_ids/
+    accessible_tutorial_owner_ids already use for this exact configuration.
+    """
+    if role(admin) == ROLE_SELLER:
+        parent = admin.parent_admin
+        if parent is None:
+            return set()
+        if parent.is_superadmin:
+            return {
+                row.id for row in
+                db.query(models.Node.id).filter(models.Node.owner_admin_id.is_(None)).all()
+            }
+        if role(parent) != ROLE_ADMIN:
+            # Any other unexpected shape (corrupted data, a role this
+            # function doesn't know about) - fail closed, never unrestricted.
+            return set()
+        scope_admin = parent
+    else:
+        scope_admin = admin
+    return accessible_node_ids(db, scope_admin)
+
+
 def owner_id_in_clause(column, allowed: set):
     """Correct SQLAlchemy translation of "column's value is one of `allowed`"
     when `allowed` may contain None meaning "IS NULL" (e.g. the set returned

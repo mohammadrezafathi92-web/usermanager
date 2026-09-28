@@ -139,6 +139,18 @@ def get_bot_api_key(
     return key
 
 
+def get_bot_principal(api_key: models.ApiKey = Depends(get_bot_api_key)) -> "bot_auth.BotPrincipal":
+    """Phase C (docs/api-key-scope-audit-2026-09-27.md) wiring: every
+    routers/bot.py endpoint takes this instead of (or, during the C0
+    transition, alongside) the raw ApiKey - see bot_route_policy's own
+    docstring for why the decorator needs the resulting object rather than
+    the endpoint deriving it ad hoc. get_bot_api_key itself is unchanged
+    (still the only thing that rejects a missing/invalid/disabled key with
+    401) - this just wraps its result in a BotPrincipal."""
+    from .services import bot_auth
+    return bot_auth.BotPrincipal.from_api_key(api_key)
+
+
 def require_confirm_password(
     x_confirm_password: str = Header(None, alias="X-Confirm-Password"),
     admin: models.AdminUser = Depends(get_current_admin),

@@ -231,6 +231,17 @@ class AdminUser(Base):
     own_bot_token = Column(String(255), nullable=True)
     own_bot_enabled = Column(Boolean, nullable=False, default=True)
 
+    # Phase C (docs/api-key-scope-audit-2026-09-27.md) in-process enforcement
+    # rollout switch for THIS admin's own dedicated bot thread - independent
+    # of, and additive to, own_bot_token/own_bot_enabled above. False (the
+    # default for every existing and newly-created row) means panel_bridge.py
+    # builds this admin's BotPrincipal.internal() with scope_enforced=False,
+    # i.e. exactly today's unscoped behavior - only the operator flipping
+    # this one row per-admin turns real hierarchy enforcement on for that
+    # one dedicated bot, never a blanket switch. See services/bot_auth.py's
+    # BotPrincipal.internal and telegram_bot/panel_bridge.py.
+    dedicated_bot_scope_enforced = Column(Boolean, nullable=False, default=False)
+
     # ---------- Per-admin/seller override of «تایید خودکار رسید» ----------
     # Same six knobs as BotSettings.auto_approve_* (see services/
     # auto_approve.py) but scoped to THIS Admin's/Seller's own customers,
@@ -1888,6 +1899,20 @@ class PanelSettings(Base):
     # after legacy shared-pool connection groups have been converted into
     # independent Purchases once (see that module's docstring).
     legacy_purchases_migrated = Column(Boolean, nullable=False, default=False)
+
+    # Phase C (docs/api-key-scope-audit-2026-09-27.md) package-authorization
+    # enforcement switch, per-installation (this row is per-install, never
+    # shared across installs) - False by default on every install, including
+    # ones that already existed before this column was added. While False,
+    # user_ops.provision_connection's bundled-package check and
+    # routers/packages.py's _sync_connections write-time check both stay
+    # unrestricted - exactly today's behavior. Only an operator explicitly
+    # flipping this (via PUT /api/settings/package-node-scope, after that
+    # install's own preflight_package_node_scope.py report is clean) turns
+    # real node-access enforcement on for THAT installation's packages.
+    # See services/bot_auth.py's resolve_package_authorization_scope and
+    # routers/panel_settings.py's _lock_package_node_scope_settings.
+    package_node_scope_enforced = Column(Boolean, nullable=False, default=False)
 
 
 class PaymentCard(Base):

@@ -141,6 +141,7 @@ print("\n" + "=" * 72)
 print("--- [2] package_id: a scoped tenant cannot buy/renew into another tenant's private package ---")
 print("=" * 72)
 
+before_purchases = db.query(models.Purchase).count()
 resp = client.post(
     f"/api/bot/users/{cust_a.username}/purchase-package",
     json={"package_id": pkg_b.id},
@@ -148,27 +149,66 @@ resp = client.post(
 check("purchase-package against a foreign tenant's private package is refused "
       "(previously a raw db.get() with no ownership check at all)",
       resp.status_code, 404)
+check("...and no Purchase row was created for the refused attempt - review round 2 "
+      "caught that _get_package_or_403 alone (without also checking payment_card_id "
+      "early, see [3] below) does not by itself guarantee this for every endpoint",
+      db.query(models.Purchase).count(), before_purchases)
 
 resp = client.post(
     f"/api/bot/users/{cust_a.username}/purchase-package",
     json={"package_id": pkg_a.id},
 )
 check("...but its own tenant's package still purchases fine", resp.status_code, 200)
+cust_a_purchase = (
+    db.query(models.Purchase)
+    .filter(models.Purchase.user_id == cust_a.id)
+    .order_by(models.Purchase.id.desc())
+    .first()
+)
+before_reserved_pkg = cust_a_purchase.reserved_package_id
+before_pkg_id = cust_a_purchase.package_id
+
+print("\n--- [2b] same defect, the renew paths: renew_purchase/renew_user commit BEFORE package_id was checked ---")
+
+resp = client.post(
+    f"/api/bot/users/{cust_a.username}/purchases/{cust_a_purchase.id}/renew",
+    json={"add_gb": 1, "package_id": pkg_b.id},
+)
+check("renew-purchase against a foreign tenant's private package is refused "
+      "(review round 2: this endpoint calls user_ops.renew_purchase - which commits "
+      "internally - BEFORE it used to check package_id at all)",
+      resp.status_code, 404)
+db.refresh(cust_a_purchase)
+check("...and the Purchase's reserved_package_id was never stamped with the foreign id "
+      "(this is the actual regression review round 2 found: a 404 response that still "
+      "left the row durably mutated)",
+      cust_a_purchase.reserved_package_id, before_reserved_pkg)
+check("...nor was its own package_id touched either",
+      cust_a_purchase.package_id, before_pkg_id)
 
 
 print("\n" + "=" * 72)
 print("--- [3] payment_card_id: a scoped tenant's sale/top-up cannot be attributed to a foreign card ---")
 print("=" * 72)
 
+cust_a2 = models.User(username="cust_a2", owner_admin_id=admin_a.id)
+db.add(cust_a2)
+db.commit()
+
 before_entries = db.query(models.LedgerEntry).count()
+before_purchases = db.query(models.Purchase).count()
 resp = client.post(
-    f"/api/bot/users/{cust_a.username}/purchase-package",
+    f"/api/bot/users/{cust_a2.username}/purchase-package",
     json={"package_id": pkg_a.id, "paid_amount": 1000, "payment_card_id": card_b.id},
 )
 check("a purchase whose payment_card_id belongs to a FOREIGN tenant is refused entirely, "
       "not silently recorded against the wrong card",
       resp.status_code, 404)
 check("...and no ledger row was written for it at all", db.query(models.LedgerEntry).count(), before_entries)
+check("...and no Purchase row was created either - review round 2's actual finding: "
+      "apply_package_as_purchase commits internally BEFORE the old code checked "
+      "payment_card_id at all, so the customer got a real service despite the 404",
+      db.query(models.Purchase).count(), before_purchases)
 
 resp = client.post(
     f"/api/bot/users/{cust_a.username}/purchase-package",

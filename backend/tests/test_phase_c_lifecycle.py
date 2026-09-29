@@ -245,8 +245,25 @@ print("=" * 72)
 # calls against each other, which would only prove the activation endpoint
 # doesn't collide with itself and say nothing about the write-vs-activate
 # invariant _lock_package_node_scope_settings exists to close (caught in
-# review - the first version of this test picked the wrong pair of
-# endpoints).
+# review round 1 - that version picked the wrong pair of endpoints).
+#
+# The package written here has a REAL mismatch (a non-superadmin Admin's
+# package bundling a connection to a NODE THAT ADMIN HAS NO ACCESS TO) -
+# review round 2 caught that the first version used a superadmin-owned
+# package on an in-scope node, where BOTH endpoints trivially return 200
+# no matter what order they run in, so the mismatch-handling half of the
+# invariant was never actually exercised. With a real mismatch, either
+# order is safe but for a DIFFERENT reason, and both are checked below:
+#   - package-write-first: commits (enforcement was still off when it
+#     wrote), then activation-second re-validates inside the same lock,
+#     finds the mismatch, and correctly 409s - flag stays False.
+#   - activation-first: succeeds (no mismatch existed yet), then
+#     package-write-second reads the now-True flag and _sync_connections'
+#     own enforce_scope check rejects the out-of-scope node with 400 -
+#     that package is never created.
+# The one outcome that must NEVER happen, checked with a fresh session
+# after both threads finish: package_node_scope_enforced=True coexisting
+# with any real mismatch.
 
 tmpdir = tempfile.mkdtemp(prefix="phase_c_lock_")
 db_path = os.path.join(tmpdir, "race.db")
@@ -262,25 +279,32 @@ SessionAct = sessionmaker(bind=engine_act)
 db_act = SessionAct()
 
 root_race = models.AdminUser(username="root_race", hashed_password=hash_password(PW), is_superadmin=True)
-db_pkg.add(root_race)
+admin_race = models.AdminUser(username="admin_race", hashed_password=hash_password("x"), role="admin")
+other_race = models.AdminUser(username="other_race", hashed_password=hash_password("x"), role="admin")
+db_pkg.add_all([root_race, admin_race, other_race])
 db_pkg.commit()
 db_pkg.refresh(root_race)
-# db_act's own connection did not exist yet when root_race was committed
+db_pkg.refresh(admin_race)
+db_pkg.refresh(other_race)
+# db_act's own connection did not exist yet when these rows were committed
 # over db_pkg's connection on the same file - re-queried by id below,
 # exactly like a second real HTTP request would with its own fresh
 # session.
-root_race_id = root_race.id
+root_race_id, admin_race_id = root_race.id, admin_race.id
 
-node_race = models.Node(name="n-race", type=models.NodeType.mikrotik,
-                        mt_host="9.9.9.9", mt_username="u", mt_password="p")
-db_pkg.add(node_race)
+# other_race's own node - admin_race has no access to it (not owned by
+# admin_race, not granted via AdminNodeAccess) - the genuine mismatch.
+other_node = models.Node(name="n-other-race", type=models.NodeType.mikrotik,
+                         mt_host="9.9.9.9", mt_username="u", mt_password="p",
+                         owner_admin_id=other_race.id)
+db_pkg.add(other_node)
 db_pkg.commit()
-node_race_id = node_race.id
+other_node_id = other_node.id
 
 app_pkg = FastAPI()
 app_pkg.include_router(packages_router.router)
 app_pkg.dependency_overrides[get_db] = lambda: db_pkg
-app_pkg.dependency_overrides[get_current_admin] = lambda: db_pkg.get(models.AdminUser, root_race_id)
+app_pkg.dependency_overrides[get_current_admin] = lambda: db_pkg.get(models.AdminUser, admin_race_id)
 client_pkg = TestClient(app_pkg)
 
 app_act = FastAPI()
@@ -318,7 +342,7 @@ def _run_create_package():
         "/api/packages",
         json={
             "name": "race-package", "quota_gb": 5, "duration_days": 10, "price": 100,
-            "connections": [{"node_id": node_race_id, "protocol": "wireguard"}],
+            "connections": [{"node_id": other_node_id, "protocol": "wireguard"}],
         },
     )
     results["package_write"] = (resp.status_code, time.monotonic() - start)
@@ -347,14 +371,38 @@ status_act, elapsed_act = results.get("activation", (None, None))
 
 check("both the concurrent package write and the activation attempt eventually complete (no deadlock/crash)",
       None in (status_pkg, status_act), False)
-check("the package write succeeds (superadmin-owned package, node in scope - no mismatch possible)",
-      status_pkg, 200)
-check("the activation attempt succeeds too (no OTHER package has a real mismatch)",
-      status_act, 200)
+# Exactly one of the two possible safe outcomes, per the module comment
+# above - never both succeeding (the mismatch slipped through) and never
+# both failing (a legitimate write or activation was wrongly refused).
+check("the two outcomes are DIFFERENT - one succeeded (200) and the other was "
+      f"refused for the mismatch (409 activation-lost, or 400 write-lost) "
+      f"(write={status_pkg}, activate={status_act})",
+      status_pkg != status_act and 200 in (status_pkg, status_act), True)
+# whichever one "lost" must have lost FOR THE RIGHT REASON, not some
+# unrelated error.
+if status_pkg == 200:
+    check("activation lost the race for the right reason: 409, the mismatch it found", status_act, 409)
+elif status_act == 200:
+    check("the package write lost the race for the right reason: 400, _sync_connections' own scope check", status_pkg, 400)
 check(f"whichever of the two lost the race was genuinely blocked waiting for the "
-      f"OTHER endpoint's lock, not merely lucky (write={elapsed_pkg:.2f}s, "
-      f"activate={elapsed_act:.2f}s, hold={_hold_seconds}s)",
-      max(elapsed_pkg, elapsed_act) >= _hold_seconds * 0.8, True)
+      f"OTHER endpoint's lock to fully release (its own hold PLUS the wait, not just "
+      f"its own hold alone - a test-design bug in round 1 asserted a bound "
+      f"({_hold_seconds * 0.8:.2f}s) that a single unwaited _slow_lock call already "
+      f"satisfies by itself) (write={elapsed_pkg:.2f}s, activate={elapsed_act:.2f}s, "
+      f"hold={_hold_seconds}s)",
+      max(elapsed_pkg, elapsed_act) >= _hold_seconds * 1.6, True)
+
+# The one outcome that must never happen, re-checked from a THIRD, fresh
+# connection to the same file so this reads only what's actually durably
+# committed - never enforcement=True coexisting with a real mismatch.
+engine_check = create_engine(file_url, connect_args={"check_same_thread": False, "timeout": 10})
+db_check = sessionmaker(bind=engine_check)()
+final_settings = db_check.get(models.PanelSettings, 1)
+final_mismatches = bot_auth._find_package_node_scope_mismatches(db_check)
+check("the one truly unsafe outcome never happened: enforcement is on AND a real "
+      "mismatch exists at the same time",
+      final_settings.package_node_scope_enforced and bool(final_mismatches), False)
+db_check.close()
 
 db_pkg.close()
 db_act.close()

@@ -806,6 +806,13 @@ def create_user(
         # no `user` yet - only their Telegram id, which is what every rule
         # is keyed on anyway (see services/trial.py).
         trial.ensure_allowed(db, _new_package, telegram_id=payload.telegram_id)
+    # Authorize payload.payment_card_id BEFORE create_user_record, which
+    # commits internally - found during Phase C review
+    # (docs/api-key-scope-audit-2026-09-27.md): checking it only later,
+    # inside _record_bot_sale, meant an unauthorized card_id still left a
+    # real User row committed by the time the request was refused.
+    if payload.payment_card_id is not None:
+        bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
     user = user_ops.create_user_record(
         db, payload.username, payload.full_name, payload.quota_gb, payload.expire_days,
         telegram_id=payload.telegram_id, owner_admin_id=owner_admin_id,
@@ -890,6 +897,13 @@ def purchase_package(
     package = bot_resources._get_package_or_403(db, principal, payload.package_id)
     _ensure_one_time_package_not_reused(db, package, user=user, telegram_id=user.telegram_id)
     trial.ensure_allowed(db, package, user=user, telegram_id=user.telegram_id)
+    # Same ordering fix as create_user above: authorize payload.
+    # payment_card_id BEFORE apply_package_as_purchase, which commits
+    # internally - checking it only later inside _record_bot_sale left an
+    # unauthorized card_id's Purchase/Connection rows already committed by
+    # the time the request was refused.
+    if payload.payment_card_id is not None:
+        bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
     override = (
         [{"node_id": c.node_id, "protocol": c.protocol, "flow": c.flow or ""} for c in payload.connections]
         if payload.connections else None
@@ -1264,8 +1278,20 @@ def renew_service(
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
-    user_ops.renew_purchase(db, purchase, payload.add_gb, payload.add_days, payload.reset_usage, package_id=payload.package_id)
+    # Authorize payload.package_id BEFORE renew_purchase ever touches the
+    # row - found during Phase C review (docs/api-key-scope-audit-
+    # 2026-09-27.md): renew_purchase commits internally (it stamps
+    # reserved_package_id/package_id and calls db.commit() itself), so
+    # calling it first and only checking ownership afterward would let an
+    # unauthorized package_id land durably on the Purchase even though the
+    # request goes on to 404.
     renew_package = bot_resources._get_package_or_403(db, principal, payload.package_id) if payload.package_id else None
+    # Same reasoning as the package_id check just above - renew_purchase
+    # commits regardless of package_id, so payment_card_id has to be
+    # authorized before it too, not inside _record_bot_sale afterward.
+    if payload.payment_card_id is not None:
+        bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
+    user_ops.renew_purchase(db, purchase, payload.add_gb, payload.add_days, payload.reset_usage, package_id=payload.package_id)
     _charge_seller(db, user, renew_package, payload.add_gb or 0)
     if payload.package_id or payload.paid_amount is not None:
         _record_bot_sale(db, principal, "sale_renew", payload, user, renew_package, purchase_id=purchase.id)
@@ -1303,11 +1329,16 @@ def renew(
         return renew_service(
             username, user.purchases[0].id, payload, db=db, owner_admin_id=owner_admin_id, principal=principal,
         )
+    # Same ordering fix as renew_service above: authorize payload.package_id
+    # and payload.payment_card_id BEFORE renew_user, which also commits
+    # internally.
+    renew_package = bot_resources._get_package_or_403(db, principal, payload.package_id) if payload.package_id else None
+    if payload.payment_card_id is not None:
+        bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
     user_ops.renew_user(db, user, payload.add_gb, payload.add_days, payload.reset_usage, package_id=payload.package_id)
     # Accounting: only a package-based renewal (or one where the bot sent
     # the exact paid amount) is a paid event - a bare reset_usage or manual
     # add_gb/add_days admin favor isn't a sale.
-    renew_package = bot_resources._get_package_or_403(db, principal, payload.package_id) if payload.package_id else None
     _charge_seller(db, user, renew_package, payload.add_gb or 0)
     if payload.package_id or payload.paid_amount is not None:
         _record_bot_sale(db, principal, "sale_renew", payload, user, renew_package)

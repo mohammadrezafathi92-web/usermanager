@@ -44,11 +44,14 @@ class UnregisteredAction(RemoteActionError):
 class _Spawner(threading.Thread):
     """Every runner is forked from this ONE long-lived thread.
 
-    PR_SET_PDEATHSIG is tied to the thread that created the child, not to
-    the process: a child forked from a short-lived worker thread (a request
-    handler in the thread pool) would be killed when that thread ends, in
-    the middle of its action. Spawning from a thread that lives as long as
-    the process makes "the parent died" mean exactly that."""
+    prctl(2) on PR_SET_PDEATHSIG: "the 'parent' in this case is considered
+    to be the thread that created this process ... the signal will be sent
+    when that thread terminates ... rather than after all of the threads in
+    the parent process terminate". So a child forked from a short-lived
+    worker thread (a request handler in the thread pool) would be killed
+    when that thread ends, in the middle of its action. Forking from a
+    thread that lives as long as the process makes "the parent died" mean
+    the parent PROCESS died."""
 
     def __init__(self):
         super().__init__(name="remote-runner-spawner", daemon=True)

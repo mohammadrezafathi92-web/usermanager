@@ -11,10 +11,11 @@ What the gate does in each mode:
             and nothing else: no node lock, no GET_LOCK, no runner, no
             ownership check, no wait on other writers, no error. Two
             writers on the same node run concurrently exactly as today.
-            If the lock cannot be taken (lock directory missing/unwritable,
-            schema not ready, a mode change holding it exclusively past the
-            wait) the writer STILL proceeds - 'off' must never change
-            behaviour - and the miss is counted.
+            The lock is tried ONCE, without waiting. If it cannot be taken
+            (lock directory missing/unwritable, schema not ready, a mode
+            change holding it exclusively at that instant) the writer
+            proceeds immediately without it - 'off' must never delay or
+            fail a request - and the miss is counted.
   shadow    additionally TRIES the node's exclusive lock without waiting.
             Got it -> holds it to the end. Did not -> proceeds anyway and
             counts contention. Measurement only; never a guarantee.
@@ -42,10 +43,11 @@ from . import gate_locks
 logger = logging.getLogger(__name__)
 
 MODE_OFF, MODE_SHADOW, MODE_ENFORCED = "off", "shadow", "enforced"
-# How long an 'off'/'shadow' writer waits for the shared mode lock while a
-# gate-mode change holds it exclusively. Past this it proceeds without it
-# (and is counted) rather than failing a request because of the gate.
-MODE_LOCK_WAIT_SECONDS = 30.0
+# A writer never WAITS for the shared mode lock: it is tried once
+# (timeout 0). Whatever waiting a safe mode transition needs is the job of
+# the transition itself (it takes the lock exclusively and waits for the
+# writers already inside) and belongs to the mode-transition batch - not
+# to the writer path, where it would stall live requests.
 
 
 class GateNotAvailable(RuntimeError):
@@ -130,7 +132,7 @@ def read_runtime(session_factory: Optional[Callable] = None) -> Optional[GateRun
 def _try_shared_mode_lock(installation_uuid: str) -> Optional[gate_locks.FileLock]:
     lock = gate_locks.FileLock(gate_locks.mode_lock_path(installation_uuid))
     try:
-        return lock.acquire(shared=True, timeout=MODE_LOCK_WAIT_SECONDS)
+        return lock.acquire(shared=True, timeout=0)
     except (gate_locks.LockUnavailable, gate_locks.LockTimeout, ValueError):
         return None
 

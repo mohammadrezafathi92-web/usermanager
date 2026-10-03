@@ -11,7 +11,9 @@ opens no database connection in this batch.
 Exit codes (the parent treats every non-zero one, and any missing or
 malformed result, as killed_unknown):
     0  a result was written
-    3  the parent was already gone when the child started
+    3  the parent was already gone when the child started, or (Linux) the
+       parent-death signal could not be armed - in both cases BEFORE any
+       byte of the DTO is read
     4  no/short DTO on stdin
     5  DTO rejected (version, shape, unknown/unregistered action)
 """
@@ -32,20 +34,55 @@ _HEADER = struct.Struct(">Q")
 _MAX_MESSAGE = 16 * 1024 * 1024
 
 
-def _die_with_parent() -> None:
-    """PR_SET_PDEATHSIG(SIGKILL): Linux delivers SIGKILL to this process
-    when the thread that spawned it exits. Linux-only - on anything else
-    (macOS, used for development and tests) only the getppid() checks
-    below protect against an orphaned runner."""
-    if not sys.platform.startswith("linux"):
-        return
-    try:
-        import ctypes
-        import signal
+PR_SET_PDEATHSIG, PR_GET_PDEATHSIG = 1, 2
 
-        ctypes.CDLL(None, use_errno=True).prctl(1, int(signal.SIGKILL), 0, 0, 0)
+
+def _libc_prctl():
+    """prctl(2) with an explicit signature - without argtypes/restype ctypes
+    would pass and return plain C ints and a failure could go unnoticed."""
+    import ctypes
+
+    prctl = ctypes.CDLL(None, use_errno=True).prctl
+    prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+    prctl.restype = ctypes.c_int
+    return prctl
+
+
+def arm_parent_death_signal(platform: str | None = None, prctl=None) -> bool:
+    """Asks the kernel to SIGKILL this process when its parent goes away
+    (PR_SET_PDEATHSIG), and CONFIRMS it by reading the setting back.
+
+    Returns True only when the protection is really in place. On Linux any
+    failure - the call returning non-zero, raising, or the read-back not
+    showing SIGKILL - returns False, and main() then exits before reading
+    the DTO: a runner that might outlive its parent must never receive a
+    secret or take a lock.
+
+    Per prctl(2), the "parent" whose death triggers the signal is the
+    THREAD that created this process, not the parent process as a whole -
+    which is why services/remote_runner.py forks every runner from one
+    long-lived thread, so that the two mean the same thing.
+
+    Not Linux (macOS, used for development and tests): the mechanism does
+    not exist, True is returned, and only the getppid() checks in main()
+    stand between an orphaned runner and its action. That is a test-only
+    fallback; the design refuses 'enforced' on such a system."""
+    platform = sys.platform if platform is None else platform
+    if not platform.startswith("linux"):
+        return True
+    import ctypes
+    import signal
+
+    try:
+        prctl = prctl or _libc_prctl()
+        if prctl(PR_SET_PDEATHSIG, int(signal.SIGKILL), 0, 0, 0) != 0:
+            return False
+        current = ctypes.c_int(0)
+        if prctl(PR_GET_PDEATHSIG, ctypes.addressof(current), 0, 0, 0) != 0:
+            return False
+        return current.value == int(signal.SIGKILL)
     except Exception:  # noqa: BLE001
-        pass
+        return False
 
 
 def _read_message(stream) -> bytes | None:
@@ -68,7 +105,8 @@ def _write_message(stream, text: str) -> None:
 
 def main(argv: list[str]) -> int:
     # Before anything heavy, before reading any secret, before any lock:
-    _die_with_parent()
+    if not arm_parent_death_signal():
+        return EXIT_PARENT_GONE
     try:
         expected_parent = int(argv[1])
     except (IndexError, ValueError):

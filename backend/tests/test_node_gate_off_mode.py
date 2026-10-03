@@ -234,17 +234,29 @@ with ng.node_gate(5, session_factory=_broken_factory) as ctx:
     check("database down: the block still runs as 'off'", (ctx.mode, ctx.mode_lock_held), ("off", False))
 
 ng.counters.reset()
-saved_wait = ng.MODE_LOCK_WAIT_SECONDS
-ng.MODE_LOCK_WAIT_SECONDS = 0.2
 changing = gate_locks.FileLock(path).acquire(shared=False, timeout=0)   # a mode change in progress
-began = time.monotonic()
-with ng.node_gate(5, session_factory=Session) as ctx:
-    waited = time.monotonic() - began
-    check("a mode change holding the lock: an 'off' writer waits only the bounded time, then proceeds",
-          (ctx.mode_lock_held, 0.15 < waited < 2.0), (False, True))
+baseline_began = time.monotonic()
+for _ in range(20):
+    with ng.node_gate(5, session_factory=Session) as ctx:
+        pass
+blocked_elapsed = time.monotonic() - baseline_began
+check("a mode change holding the lock: the 'off' writer proceeds WITHOUT the lock", ctx.mode_lock_held, False)
+check("...immediately: 20 passages while the lock is held exclusively take well under a second "
+      f"({blocked_elapsed * 1000:.0f} ms)", blocked_elapsed < 1.0)
 changing.release()
-ng.MODE_LOCK_WAIT_SECONDS = saved_wait
-check("...counted as a miss", ng.counters.snapshot()["mode_lock_miss"], 1)
+free_began = time.monotonic()
+for _ in range(20):
+    with ng.node_gate(5, session_factory=Session):
+        pass
+free_elapsed = time.monotonic() - free_began
+check("...and no slower than 20 passages with the lock free, give or take scheduling noise "
+      f"({free_elapsed * 1000:.0f} ms)", blocked_elapsed < free_elapsed + 0.5)
+check("...each of the 20 counted as a miss", ng.counters.snapshot()["mode_lock_miss"], 20)
+check("the gate has no wait constant left on the writer path", hasattr(ng, "MODE_LOCK_WAIT_SECONDS"), False)
+with FlockSpy() as spy:
+    with ng.node_gate(5, session_factory=Session):
+        pass
+check("the single flock is a non-blocking attempt (the primitive always ORs LOCK_NB)", spy.calls, [("gate-mode.lock", "SH")])
 
 print("--- a mode change waits for writers that started before it (LP-165, LP-167 mechanism) ---")
 inside_gate, let_go = threading.Event(), threading.Event()

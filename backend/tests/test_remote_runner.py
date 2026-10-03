@@ -177,12 +177,22 @@ began = time.monotonic()
 other_node = rr.run_action(dto(ActionType.SELFTEST_ECHO, node_id=14))
 check("a runner on ANOTHER node does not wait", other_node.outcome, Outcome.SUCCEEDED)
 
+never_marker = os.path.join(WORK, "must-never-start")
 blocker = gate_locks.FileLock(gate_locks.node_lock_path(INSTALLATION, 15)).acquire(shared=False, timeout=0)
-timed_out = rr.run_action(dto(ActionType.SELFTEST_ECHO, node_id=15, deadline=0.6))
-blocker.release()
-check("a runner that cannot get the node lock in time reports a retryable error, having written nothing",
+timed_out = rr.run_action(dto(ActionType.SELFTEST_SLEEP, node_id=15, deadline=0.8,
+                              params={"seconds": 0, "started_marker": never_marker}))
+time.sleep(0.5)   # had the action been running after all, it would have written its marker by now
+check("node lock held by someone else until the deadline: the result is not a success",
       (timed_out.outcome in (Outcome.TRANSPORT_ERROR, Outcome.KILLED_UNKNOWN), timed_out.outcome is Outcome.SUCCEEDED),
       (True, False))
+check("...and the action provably never started: its marker does not exist", os.path.exists(never_marker), False)
+check("...while the blocker still holds the lock (nothing took it from it)", node_lock_is_free(15), False)
+blocker.release()
+check("...and once the lock is free the same action does run and write its marker",
+      (rr.run_action(dto(ActionType.SELFTEST_SLEEP, node_id=15,
+                         params={"seconds": 0, "started_marker": never_marker})).outcome,
+       os.path.exists(never_marker)),
+      (Outcome.SUCCEEDED, True))
 
 print("--- only registered actions, by name ---")
 check("only the four self-test actions are registered in this batch (no real remote mutation)",
@@ -249,6 +259,74 @@ check("a DTO fenced for another parent pid -> exit 5",
       raw_child(me, framed(json.dumps({**wire, "fencing": {"expected_parent_pid": me + 1}})))[0], 5)
 code, out = raw_child(me, framed(orphan.to_wire()))
 check("the same DTO, intact, runs and answers", (code, len(out) > HEADER.size, os.path.exists(orphan_marker)), (0, True, True))
+
+print("--- parent-death guard: fail-closed, before any byte of the DTO is read ---")
+import signal  # noqa: E402
+
+from app.services import remote_runner_child as child  # noqa: E402
+
+SIGKILL = int(signal.SIGKILL)
+
+
+def fake_prctl(set_result=0, get_result=0, readback=SIGKILL, boom=None):
+    import ctypes
+
+    def prctl(option, arg2, *rest):
+        if boom:
+            raise boom
+        if option == child.PR_SET_PDEATHSIG:
+            return set_result
+        if option == child.PR_GET_PDEATHSIG:
+            ctypes.c_int.from_address(arg2).value = readback
+            return get_result
+        return -1
+    return prctl
+
+
+check("Linux, prctl succeeds and reads back SIGKILL -> armed",
+      child.arm_parent_death_signal("linux", fake_prctl()), True)
+check("Linux, PR_SET_PDEATHSIG returns -1 -> NOT armed",
+      child.arm_parent_death_signal("linux", fake_prctl(set_result=-1)), False)
+check("Linux, the read-back call fails -> NOT armed",
+      child.arm_parent_death_signal("linux", fake_prctl(get_result=-1)), False)
+check("Linux, the read-back shows another signal -> NOT armed",
+      child.arm_parent_death_signal("linux", fake_prctl(readback=int(signal.SIGTERM))), False)
+check("Linux, the read-back shows no signal at all -> NOT armed",
+      child.arm_parent_death_signal("linux", fake_prctl(readback=0)), False)
+check("Linux, prctl raises -> NOT armed (never an exception out of the guard)",
+      child.arm_parent_death_signal("linux", fake_prctl(boom=OSError("EPERM"))), False)
+check("not Linux: nothing to arm, reported as such", child.arm_parent_death_signal("darwin", fake_prctl(set_result=-1)), True)
+if sys.platform.startswith("linux"):
+    check("on this Linux host the real prctl arms and confirms the signal", child.arm_parent_death_signal(), True)
+
+
+class _RecordingStdin:
+    def __init__(self):
+        self.reads = 0
+        self.buffer = self
+
+    def read(self, *a):
+        self.reads += 1
+        return b""
+
+
+guard_marker = os.path.join(WORK, "guard-ran")
+real_arm, real_stdin = child.arm_parent_death_signal, sys.stdin
+recording = _RecordingStdin()
+child.arm_parent_death_signal = lambda: False
+sys.stdin = recording
+try:
+    exit_code = child.main(["remote_runner_child", str(os.getppid())])
+finally:
+    child.arm_parent_death_signal, sys.stdin = real_arm, real_stdin
+check("guard not armed -> main() exits 3", exit_code, 3)
+check("...without reading a single byte of stdin (no DTO, no secret)", recording.reads, 0)
+check("...and no action ran", os.path.exists(guard_marker), False)
+source = open(os.path.join(SERVICES_DIR, "remote_runner_child.py"), encoding="utf-8").read()
+main_body = source[source.index("def main("):]
+check("in main(), arming comes before the parent-pid check, which comes before reading the DTO",
+      main_body.index("arm_parent_death_signal()") < main_body.index("os.getppid()") < main_body.index("_read_message("))
+check("the prctl wrapper declares argtypes and restype", ("prctl.argtypes" in source, "prctl.restype" in source), (True, True))
 
 print("--- malformed answers are killed_unknown, never trusted ---")
 real_command = rr.child_command

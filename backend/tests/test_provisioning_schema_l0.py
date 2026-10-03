@@ -1,29 +1,31 @@
-"""Lifecycle/P6 batch L0 - the durable-provisioning SCHEMA, and nothing else.
+"""Lifecycle/P6 batch L0 - the durable-provisioning SCHEMA: its shape and
+the constraints the database really enforces.
 
 Design: docs/lifecycle-provisioning-design-2026-10-01.md (v7.1, frozen),
 sections 4, 5 and the L0 row of section 16.
 
 Run:  python3 backend/tests/test_provisioning_schema_l0.py
 
-What is proven here, against a REAL SQLite database (constraints are
-executed, not just declared):
+Proven here against a REAL database (constraints are executed, not just
+declared) - SQLite always, and MariaDB whenever MARIADB_TEST_URL points at
+a scratch database:
 
-  1. create_all builds exactly the ten tables / 151 columns of design 5.7.
-  2. The startup inspector (services/provisioning_schema.py) accepts that
-     database, seeds the two fixed-row tables idempotently, and is
-     fail-closed - never fatal - when a table, column, unique, index or
-     check is missing.
-  3. UNIQUE and CHECK constraints really reject bad rows (covers the
-     schema half of LP-67, LP-68, LP-74, LP-90, LP-91, LP-109, LP-190).
-  4. An "old" database (every pre-existing table, none of the new ones)
-     gains the tables with all constraints, and no pre-existing table is
-     altered.
+  1. The ten tables / 151 columns of design 5.7, on their own MetaData
+     (never part of the project's general create_all / auto-migration).
+  2. services/provisioning_schema.bootstrap() creates them, verifies them,
+     seeds the two fixed-row tables idempotently and reports ready.
+  3. UNIQUE, CHECK and (on MariaDB) FOREIGN KEY ... ON DELETE RESTRICT
+     really reject bad rows (schema half of LP-67, LP-68, LP-74, LP-90,
+     LP-91, LP-109, LP-190).
+  4. The DDL compiled for the MySQL dialect has the expected shape.
 
-MariaDB/MySQL: there is no MariaDB server in this repository's test
-environment (same situation tests/test_phase_c_lifecycle.py documents), so
-the MariaDB half is proven by COMPILING the DDL with the MySQL dialect and
-asserting on the statements. If MARIADB_TEST_URL is set to a scratch
-database, the same real-constraint checks are also executed against it.
+The fail-closed / adversarial side (broken schema, wrong seeds, a DDL
+failure at startup) is in tests/test_provisioning_schema_guard.py.
+
+MariaDB: in CI (the CI environment variable is set) a missing
+MARIADB_TEST_URL is a FAILURE, never a silent skip - .github/workflows/
+ci.yml starts a MariaDB service for exactly this. Locally, without the
+variable, the real-MariaDB part is skipped and says so.
 """
 from __future__ import annotations
 
@@ -37,7 +39,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite://")
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.dialects import mysql, sqlite
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.schema import CreateIndex, CreateTable
 
@@ -66,18 +68,48 @@ def new_engine(url="sqlite://"):
     return create_engine(url, **kwargs)
 
 
+# A violated CHECK is an IntegrityError on SQLite, but MariaDB (4025
+# ER_CONSTRAINT_FAILED) and MySQL 8 (3819) report it as an OperationalError.
+# Only those two codes count - any other operational error (unknown column,
+# syntax, lost connection) is a broken test, not a rejected row.
+CHECK_VIOLATION_CODES = (4025, 3819)
+
+
+def _is_constraint_rejection(exc) -> bool:
+    if isinstance(exc, IntegrityError):
+        return True
+    code = getattr(getattr(exc, "orig", None), "args", [None])[0]
+    return isinstance(exc, OperationalError) and code in CHECK_VIOLATION_CODES
+
+
 def rejected(engine, table, values) -> bool:
-    """True if the DATABASE refuses the row (IntegrityError), False if it
-    was stored. Each attempt is its own transaction, always rolled back."""
+    """True if the DATABASE refuses the row, False if it was stored. Each
+    attempt is its own transaction, always rolled back."""
     with engine.connect() as conn:
         trans = conn.begin()
         try:
             conn.execute(table.insert().values(**values))
-        except IntegrityError:
+        except (IntegrityError, OperationalError) as exc:
             trans.rollback()
-            return True
+            if _is_constraint_rejection(exc):
+                return True
+            raise
         trans.rollback()
         return False
+
+
+def mariadb_url_or_fail() -> str:
+    """The scratch MariaDB URL, or "" when it may legitimately be absent.
+    In CI it may not be absent."""
+    url = os.environ.get("MARIADB_TEST_URL", "").strip()
+    if not url and os.environ.get("CI"):
+        check("CI must provide MARIADB_TEST_URL (real MariaDB is mandatory in CI, never skipped)", False)
+    return url
+
+
+def drop_provisioning_tables(engine):
+    for table in reversed(mp.PROVISIONING_TABLES):
+        table.drop(engine, checkfirst=True)
 
 
 def op_row(**over):
@@ -396,6 +428,29 @@ def run_constraint_checks(engine, tag):
         stored = conn.execute(text("SELECT node_id FROM provisioning_gate_stats")).scalar()
     check(f"[{tag}] gate_stats row node_id = 0 is stored as 0 (not renumbered by AUTO_INCREMENT)", stored, 0)
 
+    if engine.dialect.name != "sqlite":
+        # SQLite in this project does not enforce foreign keys at all
+        # (database.py sets no PRAGMA foreign_keys) - which is exactly why
+        # nothing outside these tables is referenced by FK. On MariaDB the
+        # three internal FKs are real.
+        print(f"--- [{tag}] foreign keys, ON DELETE RESTRICT ---")
+        check(f"[{tag}] step pointing at a non-existent operation rejected",
+              rejected(engine, steps, step_row(987654321)))
+        check(f"[{tag}] reservation pointing at a non-existent operation rejected",
+              rejected(engine, res, reservation_row(987654321)))
+        check(f"[{tag}] claim pointing at a non-existent operation rejected",
+              rejected(engine, claims, dict(user_claim, claim_key="9" * 64, operation_id=987654321)))
+        restricted = None
+        with engine.connect() as conn:
+            trans = conn.begin()
+            try:
+                conn.execute(ops.delete().where(ops.c.id == op_id))
+                restricted = False
+            except IntegrityError:
+                restricted = True
+            trans.rollback()
+        check(f"[{tag}] deleting an operation that still has steps/reservations/claims is RESTRICTed", restricted)
+
 
 # ---------------------------------------------------------------------------
 print("--- shape: ten tables, 151 columns (design 5.7) ---")
@@ -409,8 +464,11 @@ check("column count per table matches design 5.7",
           "provisioning_ownership_events": 10, "provisioning_gate_stats": 11,
       })
 check("total column count", sum(len(t.columns) for t in mp.PROVISIONING_TABLES), 151)
-check("models.Base.metadata carries all ten (importing `models` alone is enough)",
-      all(name in models.Base.metadata.tables for name in NEW_TABLE_NAMES))
+check("none of the ten is in the project's general metadata (create_all / auto-migrate never see them)",
+      sorted(set(NEW_TABLE_NAMES) & set(models.Base.metadata.tables)), [])
+check("they share one separate MetaData",
+      {t.metadata is mp.PROVISIONING_METADATA for t in mp.PROVISIONING_TABLES}, {True})
+check("no name collides with a pre-existing table", sorted(set(NEW_TABLE_NAMES) & set(models.Base.metadata.tables)), [])
 check("no provisioning table has a foreign key to a pre-existing table",
       sorted({fk.column.table.name for t in mp.PROVISIONING_TABLES for fk in t.foreign_keys}),
       ["provisioning_operations"])
@@ -423,116 +481,48 @@ check("every CHECK and UNIQUE constraint is named (the inspector matches by name
        if c.__class__.__name__ in ("CheckConstraint", "UniqueConstraint") and not c.name],
       [])
 
-print("--- real SQLite: create_all + startup inspector + seeds ---")
-engine = new_engine()
-models.Base.metadata.create_all(engine)
-Session = sessionmaker(bind=engine)
-check("all ten tables exist in the database",
-      sorted(set(NEW_TABLE_NAMES) - set(inspect(engine).get_table_names())), [])
-check("inspector finds no difference on a freshly created database", ps.inspect_schema(engine), [])
-result = ps.ensure_provisioning_schema(engine, Session)
-check("ensure_provisioning_schema reports ready", result["ready"], True)
-check("is_ready() / assert_ready() agree", (ps.is_ready(), ps.assert_ready()), (True, None))
-db = Session()
-runtime = db.get(mp.ProvisioningRuntimeState, 1)
-check("singleton seeded at its inert defaults",
-      (runtime.lock_backend, runtime.gate_mode, runtime.owner_state, runtime.gate_mode_epoch,
-       runtime.ownership_epoch, runtime.owner_host_id),
-      ("none", "off", "none", 0, 0, None))
-check("installation_uuid is a real uuid", str(uuid.UUID(runtime.installation_uuid)), runtime.installation_uuid)
-first_uuid = runtime.installation_uuid
-check("one 'legacy' row per operation_type",
-      sorted((m.operation_type, m.mode) for m in db.query(mp.ProvisioningTypeMode)),
-      sorted((t, "legacy") for t in mp.OPERATION_TYPES))
-db.close()
-ps.ensure_provisioning_schema(engine, Session)
-db = Session()
-check("seeding is idempotent: installation_uuid is never rewritten",
-      db.get(mp.ProvisioningRuntimeState, 1).installation_uuid, first_uuid)
-check("seeding is idempotent: still exactly eight type-mode rows and one singleton",
-      (db.query(mp.ProvisioningTypeMode).count(), db.query(mp.ProvisioningRuntimeState).count()), (8, 1))
-check("L0 seeds nothing else",
-      [t.name for t in mp.PROVISIONING_TABLES
-       if t.name not in ("provisioning_runtime_state", "provisioning_type_modes")
-       and db.execute(text(f"SELECT COUNT(*) FROM {t.name}")).scalar() != 0],
-      [])
-db.close()
+def run_bootstrap_checks(engine, tag):
+    Session = sessionmaker(bind=engine)
+    result = ps.bootstrap(engine, Session)
+    check(f"[{tag}] bootstrap creates the tables and reports ready", (result["ready"], result["problems"]), (True, []))
+    check(f"[{tag}] all ten tables exist in the database",
+          sorted(set(NEW_TABLE_NAMES) - set(inspect(engine).get_table_names())), [])
+    check(f"[{tag}] inspector finds no difference", ps.inspect_schema(engine), [])
+    check(f"[{tag}] is_ready() / assert_ready() agree", (ps.is_ready(), ps.assert_ready()), (True, None))
+    db = Session()
+    runtime = db.get(mp.ProvisioningRuntimeState, 1)
+    check(f"[{tag}] singleton seeded at its inert defaults",
+          (runtime.lock_backend, runtime.gate_mode, runtime.owner_state, runtime.gate_mode_epoch,
+           runtime.ownership_epoch, runtime.owner_host_id),
+          ("none", "off", "none", 0, 0, None))
+    check(f"[{tag}] installation_uuid is a canonical uuid",
+          str(uuid.UUID(runtime.installation_uuid)), runtime.installation_uuid)
+    first_uuid = runtime.installation_uuid
+    check(f"[{tag}] one 'legacy' row per operation_type",
+          sorted((m.operation_type, m.mode) for m in db.query(mp.ProvisioningTypeMode)),
+          sorted((t, "legacy") for t in mp.OPERATION_TYPES))
+    db.close()
+    again = ps.bootstrap(engine, Session)
+    db = Session()
+    check(f"[{tag}] a second bootstrap is ready too (idempotent)", again["ready"], True)
+    check(f"[{tag}] ...and never rewrites installation_uuid",
+          db.get(mp.ProvisioningRuntimeState, 1).installation_uuid, first_uuid)
+    check(f"[{tag}] ...still exactly eight type-mode rows and one singleton",
+          (db.query(mp.ProvisioningTypeMode).count(), db.query(mp.ProvisioningRuntimeState).count()), (8, 1))
+    check(f"[{tag}] L0 seeds nothing else",
+          [t.name for t in mp.PROVISIONING_TABLES
+           if t.name not in ("provisioning_runtime_state", "provisioning_type_modes")
+           and db.execute(text(f"SELECT COUNT(*) FROM {t.name}")).scalar() != 0],
+          [])
+    db.close()
+
+
+print("--- real SQLite: bootstrap, inspector, seeds ---")
+run_bootstrap_checks(new_engine(), "sqlite")
 
 constraint_engine = new_engine()
-models.Base.metadata.create_all(constraint_engine)
+ps.create_tables(constraint_engine)
 run_constraint_checks(constraint_engine, "sqlite")
-
-print("--- fail-closed, never fatal ---")
-broken = new_engine()
-models.Base.metadata.create_all(broken)
-with broken.begin() as conn:
-    conn.execute(text("DROP TABLE provisioning_gate_stats"))
-    conn.execute(text("DROP INDEX ix_provstep_state_retry"))
-    # Same table name, but built WITHOUT its constraints - exactly what
-    # create_all would silently accept as "already there".
-    conn.execute(text("DROP TABLE payment_reservations"))
-    conn.execute(text(
-        "CREATE TABLE payment_reservations (id INTEGER PRIMARY KEY, operation_id INTEGER NOT NULL, "
-        "payer_kind VARCHAR(20) NOT NULL, generation VARCHAR(16) NOT NULL, user_id INTEGER, admin_id INTEGER, "
-        "amount BIGINT NOT NULL, hold_ref CHAR(36) NOT NULL, state VARCHAR(10) NOT NULL, "
-        "capture_ledger_entry_id INTEGER, reserved_at DATETIME NOT NULL, captured_at DATETIME, "
-        "released_at DATETIME)"
-    ))
-problems = ps.inspect_schema(broken)
-check("missing table is reported", "provisioning_gate_stats: table is missing" in problems)
-check("missing plain index is reported", "provisioning_steps: index ix_provstep_state_retry is missing" in problems)
-check("missing column is reported", "payment_reservations.version: column is missing" in problems)
-check("missing UNIQUE is reported",
-      any(p.startswith("payment_reservations: unique uq_payres_hold_ref") for p in problems))
-check("missing CHECK is reported", "payment_reservations: check ck_payres_amount_positive is missing" in problems)
-raised = None
-try:
-    outcome = ps.ensure_provisioning_schema(broken, sessionmaker(bind=broken))
-except Exception as exc:  # noqa: BLE001
-    raised = exc
-check("ensure_provisioning_schema does not raise on a broken schema", raised, None)
-check("...and reports not ready with the problems", (outcome["ready"], bool(outcome["problems"])), (False, True))
-check("is_ready() is False", ps.is_ready(), False)
-try:
-    ps.assert_ready()
-    asserted = None
-except ps.ProvisioningSchemaNotReady as exc:
-    asserted = "raised"
-check("assert_ready() raises ProvisioningSchemaNotReady", asserted, "raised")
-with broken.connect() as conn:
-    seeded = conn.execute(text("SELECT COUNT(*) FROM provisioning_type_modes")).scalar()
-check("nothing is seeded into a schema that failed verification", seeded, 0)
-
-
-class _ExplodingEngine:
-    dialect = engine.dialect
-
-    def connect(self, *a, **k):
-        raise RuntimeError("database is down")
-
-
-raised = None
-try:
-    outcome = ps.ensure_provisioning_schema(_ExplodingEngine(), Session)
-except Exception as exc:  # noqa: BLE001
-    raised = exc
-check("an inspector that cannot even connect is not fatal either", (raised, outcome["ready"]), (None, False))
-ps.ensure_provisioning_schema(engine, Session)
-check("a later successful check flips readiness back", ps.is_ready(), True)
-
-print("--- LP-67: an existing database gains the tables, nothing existing is altered ---")
-old = new_engine()
-existing_tables = [t for t in models.Base.metadata.tables.values() if t.name not in NEW_TABLE_NAMES]
-models.Base.metadata.create_all(old, tables=existing_tables)
-before = {t.name: sorted(c["name"] for c in inspect(old).get_columns(t.name)) for t in existing_tables}
-check("the old database has none of the new tables",
-      sorted(set(NEW_TABLE_NAMES) & set(inspect(old).get_table_names())), [])
-models.Base.metadata.create_all(old)
-after = {t.name: sorted(c["name"] for c in inspect(old).get_columns(t.name)) for t in existing_tables}
-check("after create_all the schema verifies", ps.inspect_schema(old), [])
-check("no pre-existing table gained or lost a column", after, before)
-check("the upgraded database still enforces a CHECK (amount > 0)",
-      rejected(old, mp.PaymentReservation.__table__, reservation_row(1, amount=0)))
 
 print("--- MariaDB/MySQL: compiled DDL ---")
 my = mysql.dialect()
@@ -579,20 +569,25 @@ check("unique index keys stay under InnoDB's 3072-byte limit at utf8mb4 (4 bytes
        and sum(4 * (getattr(col.type, "length", None) or 2) for col in c.columns) > 3072],
       [])
 
-mariadb_url = os.environ.get("MARIADB_TEST_URL", "").strip()
+mariadb_url = mariadb_url_or_fail()
 if mariadb_url:
     print("--- real MariaDB (MARIADB_TEST_URL) ---")
     maria = create_engine(mariadb_url)
-    for table in reversed(mp.PROVISIONING_TABLES):
-        table.drop(maria, checkfirst=True)
-    for table in mp.PROVISIONING_TABLES:
-        table.create(maria)
-    check("[mariadb] inspector finds no difference", ps.inspect_schema(maria), [])
-    run_constraint_checks(maria, "mariadb")
-    for table in reversed(mp.PROVISIONING_TABLES):
-        table.drop(maria, checkfirst=True)
-else:
-    print("SKIP  real MariaDB execution (MARIADB_TEST_URL not set) - MariaDB is covered by compiled DDL only")
+    drop_provisioning_tables(maria)
+    try:
+        run_bootstrap_checks(maria, "mariadb")
+        # A clean set of tables for the row-level checks (bootstrap seeded
+        # the singleton and the type modes, which those checks insert).
+        drop_provisioning_tables(maria)
+        ps.create_tables(maria)
+        check("[mariadb] inspector finds no difference on freshly created tables", ps.inspect_schema(maria), [])
+        run_constraint_checks(maria, "mariadb")
+    finally:
+        drop_provisioning_tables(maria)
+        maria.dispose()
+elif not os.environ.get("CI"):
+    print("SKIP  real MariaDB execution (MARIADB_TEST_URL not set, not in CI) - "
+          "locally MariaDB is covered by compiled DDL only")
 
 print()
 if failures:

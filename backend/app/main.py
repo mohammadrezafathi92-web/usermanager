@@ -720,17 +720,44 @@ def _grandfather_permissions() -> None:
         db.close()
 
 
+def _bootstrap_provisioning_schema() -> None:
+    """Lifecycle/P6 batch L0: create, verify and seed the ten
+    durable-provisioning tables (services/provisioning_schema.py).
+
+    Those tables are on their own MetaData precisely so that the
+    unprotected create_all/auto-migrate in _create_schema never touch
+    them: whatever goes wrong here - a DDL error, a permission, an
+    inspector the dialect does not support - must not stop the panel,
+    the bots or RADIUS from starting. bootstrap() already swallows and
+    records its own failures; the except below is the last resort for
+    anything it could not (an import-time or interpreter-level error).
+    Either way readiness stays False and every operation type stays on
+    its legacy path."""
+    try:
+        provisioning_schema.bootstrap(engine, SessionLocal)
+    except Exception:  # noqa: BLE001
+        logging.exception("provisioning schema bootstrap raised - provisioning stays not-ready")
+        try:
+            provisioning_schema.mark_not_ready("bootstrap raised before it could record a result")
+        except Exception:  # noqa: BLE001
+            logging.exception("could not even record provisioning not-ready state")
+
+
+def _create_schema() -> None:
+    """Everything startup does to the database schema, in order: the
+    project's own tables exactly as before (create_all for brand-new
+    tables, then additive auto-migration), and only then the separately
+    guarded provisioning tables."""
+    Base.metadata.create_all(bind=engine)
+    _auto_migrate_missing_columns()
+    _bootstrap_provisioning_schema()
+
+
 @app.on_event("startup")
 def on_startup():
     _warn_if_insecure_defaults()
     _admin_node_access_is_new = "admin_node_access" not in set(inspect(engine).get_table_names())
-    Base.metadata.create_all(bind=engine)
-    _auto_migrate_missing_columns()
-    # Lifecycle/P6 batch L0: prove the durable-provisioning tables really
-    # carry their constraints and seed their fixed rows. Never fatal (see
-    # the module docstring) - a failed check only keeps is_ready() False,
-    # which keeps every operation type on its legacy path.
-    provisioning_schema.ensure_provisioning_schema(engine, SessionLocal)
+    _create_schema()
     _backfill_api_key_hashes()
     _backfill_hierarchy_node_access(_admin_node_access_is_new)
     _backfill_roles_and_paths()

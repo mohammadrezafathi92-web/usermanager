@@ -7,6 +7,22 @@ tables yet except services/provisioning_schema.py, which seeds the two
 fixed-row tables and verifies at startup that the database really carries
 every table/column/unique/check declared here.
 
+These tables deliberately live on their OWN declarative base / MetaData
+(ProvisioningBase), not on database.Base:
+
+- main.py's `Base.metadata.create_all()` runs unprotected at startup. If
+  these tables were part of that metadata, a DDL error on any one of them
+  (a permission, a dialect incompatibility) would stop the panel, the bots
+  and RADIUS from starting - for tables nothing uses yet.
+- main.py's _auto_migrate_missing_columns walks Base.metadata and "repairs"
+  tables by adding columns/indexes. It must never touch these: a
+  provisioning table that does not match its model is to be REPORTED by
+  services/provisioning_schema.py, not silently patched into a shape that
+  still lacks its CHECK/UNIQUE constraints.
+
+So they are created only by services/provisioning_schema.bootstrap(), inside
+its own never-fatal guard.
+
 Rules this file follows (section 4 of the design):
 
 - No existing table is touched: no column, index or constraint is added to
@@ -43,8 +59,11 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects import mysql
+from sqlalchemy.orm import declarative_base
 
-from .database import Base
+# Separate metadata on purpose - see the module docstring.
+ProvisioningBase = declarative_base()
+Base = ProvisioningBase
 
 
 def _now():
@@ -581,6 +600,8 @@ class ProvisioningGateStat(Base):
     updated_at = Column(_dt6(), nullable=False, default=_now)
     version = Column(Integer, nullable=False, default=0, server_default=text("0"))
 
+
+PROVISIONING_METADATA = ProvisioningBase.metadata
 
 PROVISIONING_TABLES = (
     ProvisioningOperation.__table__,

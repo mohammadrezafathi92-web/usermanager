@@ -374,7 +374,7 @@ ADVERSARIAL = [
      "provisioning_node_contracts: primary key is ['node_id']"),
 ]
 
-# Only MySQL/MariaDB can express (and report) these two.
+# Only MySQL/MariaDB can express (and report) these.
 ADVERSARIAL_MYSQL_ONLY = [
     ("DATETIME without its (6) fractional seconds",
      dict(edits={"provisioning_operations": replace("forward_deadline DATETIME(6)", "forward_deadline DATETIME")}),
@@ -383,6 +383,11 @@ ADVERSARIAL_MYSQL_ONLY = [
      dict(edits={"provisioning_node_reconciliations": replace("node_id INTEGER NOT NULL",
                                                               "node_id INTEGER NOT NULL AUTO_INCREMENT")}),
      "provisioning_node_reconciliations.node_id: autoincrement is True"),
+    # SQLite has no CHAR_LENGTH, so this one cannot even be created there.
+    ("ck_otclaim_key_length rewritten from LENGTH (bytes) to CHAR_LENGTH (characters)",
+     dict(edits={"one_time_package_claims": replace("CHECK (LENGTH(claim_key) = 64)",
+                                                    "CHECK (CHAR_LENGTH(claim_key) = 64)")}),
+     "one_time_package_claims: check ck_otclaim_key_length has a different expression"),
     ("surrogate id without AUTO_INCREMENT",
      dict(edits={"provisioning_ownership_events": replace("id BIGINT NOT NULL AUTO_INCREMENT", "id BIGINT NOT NULL")}),
      "provisioning_ownership_events.id: autoincrement is False"),
@@ -552,8 +557,14 @@ check("...and in a MySQL-8-style reprint (every term and every pair wrapped)",
       N(state_shape, "mysql"))
 check("charset introducers before literals are cosmetic",
       N("(`mode` in (_utf8mb4'legacy',_utf8mb4'durable'))", "mysql"), N("mode IN ('legacy', 'durable')", "mysql"))
-check("LENGTH reported as octet_length is the same function",
-      N("octet_length(`claim_key`) = 64", "mariadb"), N("LENGTH(claim_key) = 64", "mariadb"))
+for dialect_name in ("sqlite", "mariadb", "mysql"):
+    check(f"[{dialect_name}] LENGTH and OCTET_LENGTH are the same function (both count bytes)",
+          N("octet_length(`claim_key`) = 64", dialect_name), N("LENGTH(claim_key) = 64", dialect_name))
+    check(f"[{dialect_name}] LENGTH and CHAR_LENGTH are NOT the same function (bytes vs characters)",
+          N("CHAR_LENGTH(claim_key) = 64", dialect_name) == N("LENGTH(claim_key) = 64", dialect_name), False)
+    check(f"[{dialect_name}] ...nor are OCTET_LENGTH and CHAR_LENGTH",
+          N("char_length(`claim_key`) = 64", dialect_name) == N("octet_length(`claim_key`) = 64", dialect_name),
+          False)
 check("NOT IN is one predicate, however it is spelled",
       N("`state` not in ('a','b')", "mariadb"), N("NOT (state IN ('a', 'b'))", "mariadb"))
 check("a literal containing '+' and '_' survives verbatim",

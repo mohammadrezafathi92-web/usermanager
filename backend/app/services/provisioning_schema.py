@@ -161,7 +161,11 @@ _TOKEN = re.compile(
     r"|<>|!=|<=|>=|=|<|>|\(|\)|,"
     r")"
 )
-_FUNCTION_SYNONYMS = {"octet_length": "length", "char_length": "length"}
+# MariaDB re-prints LENGTH() as octet_length() - the same function, both
+# count BYTES. CHAR_LENGTH counts CHARACTERS and is deliberately NOT here:
+# for non-ASCII text the two differ, so a CHECK rewritten from LENGTH to
+# CHAR_LENGTH accepts values the original rejects.
+_FUNCTION_SYNONYMS = {"octet_length": "length"}
 _COMPARISONS = ("=", "<>", "<", ">", "<=", ">=")
 _KEYWORDS = ("or", "and", "not", "is", "null", "in")
 

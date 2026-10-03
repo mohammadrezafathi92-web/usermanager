@@ -2450,3 +2450,11 @@ class AdPost(Base):
     channel = relationship("AdChannel", back_populates="posts")
     package = relationship("Package")
     discount_code = relationship("DiscountCode")
+
+
+# Durable-provisioning tables (Lifecycle/P6, batch L0) are declared in their
+# own module to keep this file from growing further. Imported here, at the
+# very end, purely so that Base.metadata is complete for every caller that
+# only imports `models` (main.py's create_all, and the standalone test
+# scripts' own create_all) - nothing in this file uses them.
+from . import models_provisioning  # noqa: E402,F401

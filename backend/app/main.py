@@ -24,6 +24,7 @@ from .routers import auth, nodes, users, dashboard, bot, api_keys, packages, pac
 from .services import accounting as accounting_service
 from .services import purchase_migration
 from .services import ip_guard
+from .services import provisioning_schema
 from .telegram_bot import runner as telegram_bot_runner
 from .telegram_bot.config import parse_id_set
 
@@ -725,6 +726,11 @@ def on_startup():
     _admin_node_access_is_new = "admin_node_access" not in set(inspect(engine).get_table_names())
     Base.metadata.create_all(bind=engine)
     _auto_migrate_missing_columns()
+    # Lifecycle/P6 batch L0: prove the durable-provisioning tables really
+    # carry their constraints and seed their fixed rows. Never fatal (see
+    # the module docstring) - a failed check only keeps is_ready() False,
+    # which keeps every operation type on its legacy path.
+    provisioning_schema.ensure_provisioning_schema(engine, SessionLocal)
     _backfill_api_key_hashes()
     _backfill_hierarchy_node_access(_admin_node_access_is_new)
     _backfill_roles_and_paths()

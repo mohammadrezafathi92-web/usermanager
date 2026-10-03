@@ -14,8 +14,10 @@ silently - and every invariant of the durable design lives in its column
 types, CHECKs, UNIQUEs and foreign keys. So after creating, bootstrap()
 compares the live database against the models: column types (normalized
 per dialect), nullability, server defaults, primary keys, auto-increment,
-unique constraints, indexes, foreign keys with their ON DELETE rule, and
-CHECK constraints by name AND expression. Then it seeds the two fixed-row
+unique constraints (the exact set - an extra one is as wrong as a missing
+one), required indexes, foreign keys with their ON DELETE rule, and CHECK
+constraints (the exact set of names, each compared by its parsed
+expression). Then it seeds the two fixed-row
 tables and validates those rows.
 
 Fail-closed, never fatal:
@@ -156,73 +158,201 @@ _TOKEN = re.compile(
     r"'(?:[^'\\]|''|\\.)*'"          # string literal
     r"|[A-Za-z_][A-Za-z0-9_$]*"      # identifier / keyword / function
     r"|[0-9]+(?:\.[0-9]+)?"          # number
-    r"|<>|!=|<=|>=|=|<|>|\(|\)|,|\+|-|\*|/|\."
+    r"|<>|!=|<=|>=|=|<|>|\(|\)|,"
     r")"
 )
 _FUNCTION_SYNONYMS = {"octet_length": "length", "char_length": "length"}
+_COMPARISONS = ("=", "<>", "<", ">", "<=", ">=")
+_KEYWORDS = ("or", "and", "not", "is", "null", "in")
 
 
-def normalize_check(sqltext: str, dialect_name: str) -> list[str] | None:
-    """A CHECK expression as a comparable token list, or None if it cannot
-    be tokenized (which the caller treats as a mismatch).
+class _CheckSyntaxError(ValueError):
+    pass
 
-    Every dialect: identifier quoting (` or ") and whitespace are dropped,
-    identifiers/keywords are lowercased, string literals are kept verbatim,
-    != reads as <>, and LENGTH's reported spellings are unified.
 
-    SQLite stores the expression text exactly as written, so there the
-    parentheses are compared too. MySQL/MariaDB re-print the expression
-    (lowercased keywords, backticks, extra or fewer parentheses, a
-    _charset introducer before literals), so for them parentheses and the
-    introducer are dropped: a different column, operator, literal or order
-    is still caught; only a pure re-grouping of the same tokens is not."""
-    if sqltext is None:
-        return None
+def _tokenize_check(sqltext: str) -> list[tuple[str, str]]:
+    """(kind, value) tokens of a CHECK expression. Purely cosmetic
+    differences are removed HERE and nowhere else: identifier quoting
+    (` or "), whitespace, keyword/identifier case, != for <>, the spelling
+    of LENGTH, and a _charset introducer in front of a string literal.
+    Parentheses are tokens - grouping is the parser's business."""
     source = str(sqltext).replace("`", "").replace('"', "")
-    tokens: list[str] = []
+    raw: list[str] = []
     position = 0
     while position < len(source):
         if source[position:].strip() == "":
             break
         match = _TOKEN.match(source, position)
         if not match:
-            return None
-        tokens.append(match.group(1))
+            raise _CheckSyntaxError(f"cannot tokenize at {source[position:position + 20]!r}")
+        raw.append(match.group(1))
         position = match.end()
 
-    drop_parens = _is_mysql(dialect_name)
-    out: list[str] = []
-    for index, token in enumerate(tokens):
+    tokens: list[tuple[str, str]] = []
+    for index, token in enumerate(raw):
         if token.startswith("'"):
-            out.append(token)
-            continue
-        if drop_parens and token in ("(", ")"):
-            continue
-        lowered = token.lower()
-        # _utf8mb4'literal' - a charset introducer, not part of the expression.
-        if (drop_parens and lowered.startswith("_") and index + 1 < len(tokens)
-                and tokens[index + 1].startswith("'")):
-            continue
-        if lowered == "!=":
-            lowered = "<>"
-        out.append(_FUNCTION_SYNONYMS.get(lowered, lowered))
-    if not drop_parens:
-        # One redundant outer pair is a quoting artefact, not a difference.
-        while len(out) >= 2 and out[0] == "(" and out[-1] == ")" and _balanced(out[1:-1]):
-            out = out[1:-1]
-    return out
+            tokens.append(("str", token))
+        elif token[0].isdigit():
+            tokens.append(("num", token))
+        elif token[0].isalpha() or token[0] == "_":
+            lowered = token.lower()
+            # _utf8mb4'literal' (MySQL 8) - an introducer, not an operand.
+            if lowered.startswith("_") and index + 1 < len(raw) and raw[index + 1].startswith("'"):
+                continue
+            if lowered in _KEYWORDS:
+                tokens.append(("kw", lowered))
+            else:
+                tokens.append(("name", _FUNCTION_SYNONYMS.get(lowered, lowered)))
+        else:
+            tokens.append(("op", "<>" if token == "!=" else token))
+    return tokens
 
 
-def _balanced(tokens: list[str]) -> bool:
-    depth = 0
-    for token in tokens:
-        if token == "(":
-            depth += 1
-        elif token == ")":
-            depth -= 1
-            if depth < 0:
-                return False
-    return depth == 0
+class _CheckParser:
+    """Recursive-descent parser for the small boolean language the CHECK
+    constraints of this schema are written in, with SQL's real precedence:
+
+        or_expr   := and_expr ( OR and_expr )*
+        and_expr  := not_expr ( AND not_expr )*
+        not_expr  := NOT not_expr | predicate
+        predicate := operand ( <cmp> operand | IS [NOT] NULL | [NOT] IN ( operand, ... ) )*
+        operand   := literal | NULL | name | name ( args ) | ( or_expr )
+
+    The result is a tree, so a pair of parentheses only disappears when it
+    does not change that tree: `(a) AND ((b))` is `a AND b`, but
+    `a OR (b AND c)` and `(a OR b) AND c` are different trees. A chain of
+    the same operator is flattened into one n-ary node, because
+    `(a AND b) AND c` and `a AND (b AND c)` are the same condition - that is
+    how MySQL 8 re-prints a three-way AND.
+
+    Anything outside this grammar raises - the caller treats that as a
+    mismatch, never as a match."""
+
+    def __init__(self, tokens):
+        self.tokens = tokens
+        self.position = 0
+
+    def _peek(self):
+        return self.tokens[self.position] if self.position < len(self.tokens) else (None, None)
+
+    def _take(self, kind=None, value=None):
+        token = self._peek()
+        if token[0] is None or (kind and token[0] != kind) or (value and token[1] != value):
+            raise _CheckSyntaxError(f"expected {value or kind}, found {token[1]!r}")
+        self.position += 1
+        return token
+
+    def _at(self, kind, value):
+        return self._peek() == (kind, value)
+
+    def parse(self):
+        tree = self._or()
+        if self.position != len(self.tokens):
+            raise _CheckSyntaxError(f"unexpected {self._peek()[1]!r}")
+        return tree
+
+    def _nary(self, keyword, operand):
+        items = [operand()]
+        while self._at("kw", keyword):
+            self._take()
+            items.append(operand())
+        if len(items) == 1:
+            return items[0]
+        flat = []
+        for item in items:
+            flat.extend(item[1] if item[0] == keyword else [item])
+        return (keyword, tuple(flat))
+
+    def _or(self):
+        return self._nary("or", self._and)
+
+    def _and(self):
+        return self._nary("and", self._not)
+
+    def _not(self):
+        if self._at("kw", "not"):
+            self._take()
+            inner = self._not()
+            if inner[0] == "in":
+                return ("not_in",) + inner[1:]
+            if inner[0] == "is_null":
+                return ("is_not_null",) + inner[1:]
+            return ("not", inner)
+        return self._predicate()
+
+    def _predicate(self):
+        left = self._operand()
+        while True:
+            kind, value = self._peek()
+            if kind == "op" and value in _COMPARISONS:
+                self._take()
+                left = ("cmp", value, left, self._operand())
+            elif (kind, value) == ("kw", "is"):
+                self._take()
+                negated = self._at("kw", "not")
+                if negated:
+                    self._take()
+                self._take("kw", "null")
+                left = ("is_not_null" if negated else "is_null", left)
+            elif (kind, value) == ("kw", "in") or (
+                (kind, value) == ("kw", "not")
+                and self.position + 1 < len(self.tokens)
+                and self.tokens[self.position + 1] == ("kw", "in")
+            ):
+                negated = value == "not"
+                if negated:
+                    self._take()
+                self._take("kw", "in")
+                left = ("not_in" if negated else "in", left, self._list())
+            else:
+                return left
+
+    def _list(self):
+        self._take("op", "(")
+        items = [self._operand()]
+        while self._at("op", ","):
+            self._take()
+            items.append(self._operand())
+        self._take("op", ")")
+        return tuple(items)
+
+    def _operand(self):
+        kind, value = self._peek()
+        if kind in ("str", "num"):
+            self._take()
+            return (kind, value)
+        if (kind, value) == ("kw", "null"):
+            self._take()
+            return ("null",)
+        if kind == "name":
+            self._take()
+            if self._at("op", "("):
+                return ("call", value, self._list())
+            return ("name", value)
+        if (kind, value) == ("op", "("):
+            self._take()
+            inner = self._or()
+            self._take("op", ")")
+            return inner
+        raise _CheckSyntaxError(f"unexpected {value!r}")
+
+
+def normalize_check(sqltext, dialect_name: str = ""):
+    """A CHECK expression as a comparable syntax tree, or None when it
+    cannot be parsed (which every caller treats as a mismatch).
+
+    The same parser is used for every dialect. SQLite hands back the text
+    as written; MySQL/MariaDB re-print it (lowercase keywords, backticks,
+    redundant parentheses, a charset introducer before literals) - all of
+    that is absorbed by the tokenizer and by parsing, NOT by discarding
+    parentheses: logical grouping survives, so `A OR (B AND C)` never
+    equals `(A OR B) AND C`."""
+    if sqltext is None:
+        return None
+    try:
+        return _CheckParser(_tokenize_check(sqltext)).parse()
+    except (_CheckSyntaxError, RecursionError):
+        return None
 
 
 def _ondelete_matches(live, expected: str, dialect_name: str) -> bool:
@@ -236,14 +366,16 @@ def _ondelete_matches(live, expected: str, dialect_name: str) -> bool:
 
 
 # ------------------------------------------------------------------ inspect
-def _expected_unique_sets(table) -> list[tuple[str, frozenset]]:
+def _expected_uniques(table) -> list[tuple[str, tuple]]:
+    """(name, ordered columns) of every uniqueness the model declares,
+    whether written as a UniqueConstraint or as a unique Index."""
     out = []
     for constraint in table.constraints:
         if constraint.__class__.__name__ == "UniqueConstraint":
-            out.append((constraint.name, frozenset(c.name for c in constraint.columns)))
+            out.append((constraint.name, tuple(c.name for c in constraint.columns)))
     for index in table.indexes:
         if index.unique:
-            out.append((index.name, frozenset(c.name for c in index.columns)))
+            out.append((index.name, tuple(c.name for c in index.columns)))
     return out
 
 
@@ -312,26 +444,44 @@ def _inspect_columns(inspector, table, dialect, problems: list[str]) -> None:
 def _inspect_uniques_and_indexes(inspector, table, problems: list[str]) -> None:
     name = table.name
     try:
-        live_unique = {
-            frozenset(u.get("column_names") or []) for u in inspector.get_unique_constraints(name)
-        }
+        live_constraints = inspector.get_unique_constraints(name)
         live_indexes = inspector.get_indexes(name)
     except Exception as exc:  # noqa: BLE001
         problems.append(f"{name}: could not read unique constraints/indexes: {exc}")
         return
-    # Uniqueness surfaces as a unique constraint (SQLite) or a unique index
-    # (MySQL/MariaDB) - either is real enforcement, matched by column SET.
-    live_unique |= {frozenset(i.get("column_names") or []) for i in live_indexes if i.get("unique")}
-    for unique_name, columns in _expected_unique_sets(table):
+
+    # Uniqueness surfaces as a unique constraint (SQLite) or as a unique
+    # index (MySQL/MariaDB reports the same one both ways) - either is real
+    # enforcement, so both are collected and compared as ORDERED column
+    # tuples. The primary key is reported by neither call, so it never
+    # counts as an "extra" unique.
+    live_unique: dict[tuple, str] = {}
+    for constraint in live_constraints:
+        live_unique.setdefault(tuple(constraint.get("column_names") or []), constraint.get("name") or "(unnamed)")
+    for index in live_indexes:
+        if index.get("unique"):
+            live_unique.setdefault(tuple(index.get("column_names") or []), index.get("name") or "(unnamed)")
+
+    # EXACT set. A missing unique lets duplicates in; an extra one is just
+    # as wrong the other way - the schema would report ready and then
+    # reject rows the durable writers are entitled to store.
+    expected = _expected_uniques(table)
+    expected_columns = {columns for _, columns in expected}
+    for unique_name, columns in expected:
         if columns not in live_unique:
-            problems.append(f"{name}: unique {unique_name} on {sorted(columns)} is missing")
+            problems.append(f"{name}: unique {unique_name} on {list(columns)} is missing")
+    for columns in sorted(set(live_unique) - expected_columns):
+        problems.append(f"{name}: unexpected unique {live_unique[columns]} on {list(columns)}")
+
+    # Plain indexes: only the required ones are checked. An extra
+    # non-unique index cannot change what a writer is allowed to store.
     live_index_columns = {tuple(i.get("column_names") or []) for i in live_indexes}
     for index in table.indexes:
         if index.unique:
             continue
-        expected_columns = tuple(c.name for c in index.columns)
-        if expected_columns not in live_index_columns:
-            problems.append(f"{name}: index {index.name} on {list(expected_columns)} is missing")
+        expected_index = tuple(c.name for c in index.columns)
+        if expected_index not in live_index_columns:
+            problems.append(f"{name}: index {index.name} on {list(expected_index)} is missing")
 
 
 def _inspect_foreign_keys(inspector, table, dialect, problems: list[str]) -> None:
@@ -372,20 +522,34 @@ def _inspect_foreign_keys(inspector, table, dialect, problems: list[str]) -> Non
 def _inspect_checks(inspector, table, dialect, problems: list[str]) -> None:
     name = table.name
     expected = _expected_checks(table)
-    if not expected:
-        return
+    # Read even for a table that declares no CHECK: one that is there
+    # anyway is a restriction nobody designed.
     try:
-        live = {c.get("name"): c.get("sqltext") for c in inspector.get_check_constraints(name)}
+        live_rows = inspector.get_check_constraints(name)
     except Exception as exc:  # noqa: BLE001
         problems.append(f"{name}: could not read check constraints: {exc}")
         return
-    for check_name, sqltext in sorted(expected.items()):
-        if check_name not in live:
-            problems.append(f"{name}: check {check_name} is missing")
+
+    live: dict[str, str] = {}
+    for row in live_rows:
+        check_name = row.get("name")
+        if not check_name or check_name in live:
+            # Unnamed, or the same name twice - neither can be matched to
+            # the model, so it is reported rather than guessed at.
+            problems.append(f"{name}: unexpected check {check_name or '(unnamed)'}: {row.get('sqltext')!r}")
             continue
-        expected_tokens = normalize_check(sqltext, dialect.name)
-        live_tokens = normalize_check(live[check_name], dialect.name)
-        if expected_tokens is None or live_tokens is None or expected_tokens != live_tokens:
+        live[check_name] = row.get("sqltext")
+
+    # EXACT set of names...
+    for check_name in sorted(set(expected) - set(live)):
+        problems.append(f"{name}: check {check_name} is missing")
+    for check_name in sorted(set(live) - set(expected)):
+        problems.append(f"{name}: unexpected check {check_name}: {live[check_name]!r}")
+    # ...and for each expected one, the same parsed expression.
+    for check_name in sorted(set(expected) & set(live)):
+        expected_tree = normalize_check(expected[check_name], dialect.name)
+        live_tree = normalize_check(live[check_name], dialect.name)
+        if expected_tree is None or live_tree is None or expected_tree != live_tree:
             problems.append(
                 f"{name}: check {check_name} has a different expression: {live[check_name]!r}"
             )

@@ -18,7 +18,10 @@ Three things are proven:
      but the wrong substance is NOT reported ready: a wrong column type, a
      CHECK with the right name and a different expression, a missing or
      re-pointed foreign key, a wrong ON DELETE rule, a missing or wrong
-     unique/index, a wrong default, nullability, a missing table.
+     unique/index, a wrong default, nullability, a missing table. Nor is a
+     schema with something EXTRA that restricts writes: an additional CHECK
+     or UNIQUE nobody designed. And a CHECK whose tokens are all there but
+     whose AND/OR grouping changed is a different CHECK.
 
   C. SEEDS. A non-canonical installation_uuid, a fixed row with the wrong
      value, an extra row - each keeps readiness False.
@@ -204,7 +207,7 @@ check("upgrade: no pre-existing table gained or lost a column", after, before)
 
 
 # ===========================================================================
-def build_schema(engine, edits=None, skip_tables=(), skip_indexes=(), index_edits=None):
+def build_schema(engine, edits=None, skip_tables=(), skip_indexes=(), index_edits=None, extra_sql=()):
     """Creates the ten tables from the models' own DDL for this dialect,
     with targeted textual edits - so every case differs from the real
     schema in exactly one way. An edit that changes nothing is a bug in the
@@ -229,6 +232,8 @@ def build_schema(engine, edits=None, skip_tables=(), skip_indexes=(), index_edit
                 if index.name in index_edits:
                     index_ddl = index_edits[index.name](index_ddl)
                 conn.exec_driver_sql(index_ddl)
+        for statement in extra_sql:
+            conn.exec_driver_sql(statement)
 
 
 def sub(pattern, replacement):
@@ -247,6 +252,10 @@ def chain(*edits):
     return apply
 
 
+BEFORE_FK = "\tFOREIGN KEY(operation_id)"
+STATE_SHAPE_SEAM = "AND capture_ledger_entry_id IS NULL) OR (state = 'captured' AND"
+REMOVED_OUTCOME_HEAD = ("CHECK (state <> 'removed' OR remote_attempted = 0 OR "
+                        "(remote_outcome IS NOT NULL AND remote_outcome IN")
 FK_CLAUSE = r",\s*FOREIGN KEY\(operation_id\) REFERENCES provisioning_operations \(id\) ON DELETE RESTRICT"
 
 # (label, build_schema kwargs, fragment that must appear in a reported problem)
@@ -319,6 +328,43 @@ ADVERSARIAL = [
     ("index kept by name but on the wrong columns",
      dict(index_edits={"ix_provstep_state_retry": replace("(state, next_retry_at)", "(state)")}),
      "provisioning_steps: index ix_provstep_state_retry on ['state', 'next_retry_at'] is missing"),
+    # --- something EXTRA that restricts what a writer may store ---
+    ("an extra, restrictive CHECK under a new name",
+     dict(edits={"payment_reservations": replace(
+         BEFORE_FK, "\tCONSTRAINT ck_unexpected_blocker CHECK (amount < 10), \n" + BEFORE_FK)}),
+     "payment_reservations: unexpected check ck_unexpected_blocker"),
+    ("an extra UNNAMED CHECK",
+     dict(edits={"payment_reservations": replace(BEFORE_FK, "\tCHECK (amount < 10), \n" + BEFORE_FK)}),
+     "payment_reservations: unexpected check"),
+    ("an extra CHECK on a table that declares none",
+     dict(edits={"provisioning_gate_stats": replace(
+         "PRIMARY KEY (node_id)", "PRIMARY KEY (node_id), \n\tCONSTRAINT ck_surprise CHECK (max_hold_ms < 5)")}),
+     "provisioning_gate_stats: unexpected check ck_surprise"),
+    ("an extra UNIQUE constraint under a new name",
+     dict(edits={"payment_reservations": replace(
+         BEFORE_FK, "\tCONSTRAINT uq_unexpected UNIQUE (operation_id, amount), \n" + BEFORE_FK)}),
+     "payment_reservations: unexpected unique uq_unexpected on ['operation_id', 'amount']"),
+    ("an extra UNIQUE INDEX created separately",
+     dict(extra_sql=("CREATE UNIQUE INDEX uq_sneaky ON payment_reservations (admin_id)",)),
+     "payment_reservations: unexpected unique uq_sneaky on ['admin_id']"),
+    ("an extra UNIQUE on a table that declares none",
+     dict(extra_sql=("CREATE UNIQUE INDEX uq_gate_hold ON provisioning_gate_stats (max_hold_ms)",)),
+     "provisioning_gate_stats: unexpected unique uq_gate_hold on ['max_hold_ms']"),
+    ("UNIQUE with the right columns in the wrong order",
+     dict(edits={"payment_reservations": replace("UNIQUE (operation_id, payer_kind)",
+                                                 "UNIQUE (payer_kind, operation_id)")}),
+     "payment_reservations: unique uq_payres_operation_payer on ['operation_id', 'payer_kind'] is missing"),
+    # --- same tokens, different logic ---
+    ("ck_payres_state_shape regrouped: (A1..A4) OR (B1..B4) becomes (A1..A3 AND (A4 OR B1) AND B2..B4)",
+     dict(edits={"payment_reservations": replace(
+         STATE_SHAPE_SEAM, "AND (capture_ledger_entry_id IS NULL OR state = 'captured') AND")}),
+     "payment_reservations: check ck_payres_state_shape has a different expression"),
+    ("ck_provstep_removed_needs_outcome regrouped: X OR Y OR (P AND Q) becomes (X OR Y OR P) AND (Q)",
+     dict(edits={"provisioning_steps": replace(
+         REMOVED_OUTCOME_HEAD,
+         "CHECK ((state <> 'removed' OR remote_attempted = 0 OR remote_outcome IS NOT NULL) "
+         "AND (remote_outcome IN")}),
+     "provisioning_steps: check ck_provstep_removed_needs_outcome has a different expression"),
     ("an unexpected extra column",
      dict(edits={"provisioning_gate_stats": replace("node_id INTEGER NOT NULL, ",
                                                     "node_id INTEGER NOT NULL, \n\tsurprise INTEGER, ")}),
@@ -364,6 +410,22 @@ def run_inspector_checks(engine, tag):
         outcome = ps.bootstrap(engine, Session)
         check(f"[{tag}] {label}: bootstrap is not ready", (outcome["ready"], ps.is_ready()), (False, False))
         check(f"[{tag}] {label}: nothing seeded", row_count(engine, "provisioning_type_modes"), 0)
+
+    print(f"--- [{tag}] B. inspector: harmless differences are accepted ---")
+    build_schema(engine, extra_sql=("CREATE INDEX ix_extra_plain ON payment_reservations (amount)",))
+    check(f"[{tag}] an extra NON-unique index is not a problem (it restricts nothing)",
+          ps.inspect_schema(engine), [])
+    redundant = {
+        "payment_reservations": replace("CHECK (amount > 0)", "CHECK (((amount) > (0)))"),
+        "provisioning_type_modes": replace("CHECK (mode IN ('legacy', 'durable'))",
+                                           "CHECK ((mode in ('legacy', 'durable')))"),
+        "one_time_package_claims": replace("CHECK ((release_seq = 0) = (released_at IS NULL))",
+                                           "CHECK (((release_seq = 0)) = ((released_at is null)))"),
+    }
+    build_schema(engine, edits=redundant)
+    check(f"[{tag}] redundant parentheses and keyword case that keep the same tree are accepted",
+          ps.inspect_schema(engine), [])
+    check(f"[{tag}] ...and that schema bootstraps ready", ps.bootstrap(engine, Session)["ready"], True)
 
     print(f"--- [{tag}] B. inspector: a missing table is re-created only if create_all can; a wrong one never is ---")
     build_schema(engine, skip_tables=("provisioning_gate_stats",))
@@ -437,35 +499,79 @@ def run_inspector_checks(engine, tag):
     check(f"[{tag}] a missing type-mode row is simply re-seeded (the row set is fixed)", outcome["ready"], True)
 
 
-print("--- unit: CHECK normalization against how MySQL/MariaDB re-print expressions ---")
+print("--- unit: CHECK expressions are compared as parsed trees, on every dialect ---")
+N = ps.normalize_check
+for dialect_name in ("sqlite", "mariadb", "mysql"):
+    check(f"[{dialect_name}] A OR (B AND C) is NOT (A OR B) AND C",
+          N("a = 1 OR (b = 2 AND c = 3)", dialect_name) == N("(a = 1 OR b = 2) AND c = 3", dialect_name), False)
+    check(f"[{dialect_name}] AND binds tighter than OR without any parentheses",
+          N("a = 1 OR b = 2 AND c = 3", dialect_name), N("a = 1 OR (b = 2 AND c = 3)", dialect_name))
+    check(f"[{dialect_name}] parentheses that do not change the tree are ignored",
+          N("((a = 1)) OR (((b = 2) AND (c = 3)))", dialect_name), N("a = 1 OR b = 2 AND c = 3", dialect_name))
+    check(f"[{dialect_name}] a chain of the same operator is one n-ary node, however it is nested",
+          N("((a = 1 AND b = 2) AND c = 3)", dialect_name), N("a = 1 AND (b = 2 AND c = 3)", dialect_name))
+    check(f"[{dialect_name}] NOT applies to its own operand only",
+          N("NOT a = 1 AND b = 2", dialect_name) == N("NOT (a = 1 AND b = 2)", dialect_name), False)
+    check(f"[{dialect_name}] operand order is significant",
+          N("a = 1 OR b = 2", dialect_name) == N("b = 2 OR a = 1", dialect_name), False)
+
+state_shape = str(next(c.sqltext for c in mp.PaymentReservation.__table__.constraints
+                       if c.name == "ck_payres_state_shape"))
+regrouped = state_shape.replace("AND capture_ledger_entry_id IS NULL) OR (state = 'captured' AND",
+                                "AND (capture_ledger_entry_id IS NULL OR state = 'captured') AND", 1)
+check("the regrouped ck_payres_state_shape really is the same token sequence without parentheses",
+      (regrouped != state_shape,
+       [t for t in ps._tokenize_check(regrouped) if t[1] not in "()"]
+       == [t for t in ps._tokenize_check(state_shape) if t[1] not in "()"]),
+      (True, True))
+for dialect_name in ("sqlite", "mariadb", "mysql"):
+    check(f"[{dialect_name}] ...and is nevertheless a different expression",
+          N(regrouped, dialect_name) == N(state_shape, dialect_name), False)
+
 written = "(approval_key_bound IS NOT NULL AND approval_key_bound = 1) = (execution_key_instance_uuid IS NOT NULL)"
 check("MariaDB-style reprint (backticks, lowercase keywords) is the same expression",
-      ps.normalize_check("(`approval_key_bound` is not null and `approval_key_bound` = 1) = "
-                         "(`execution_key_instance_uuid` is not null)", "mariadb"),
-      ps.normalize_check(written, "mariadb"))
+      N("(`approval_key_bound` is not null and `approval_key_bound` = 1) = "
+        "(`execution_key_instance_uuid` is not null)", "mariadb"),
+      N(written, "mariadb"))
 check("MySQL-8-style reprint (extra parentheses everywhere) is the same expression",
-      ps.normalize_check("((((`approval_key_bound` is not null) and (`approval_key_bound` = 1))) = "
-                         "(`execution_key_instance_uuid` is not null))", "mysql"),
-      ps.normalize_check(written, "mysql"))
-check("charset introducers before literals are ignored on MySQL",
-      ps.normalize_check("(`mode` in (_utf8mb4'legacy',_utf8mb4'durable'))", "mysql"),
-      ps.normalize_check("mode IN ('legacy', 'durable')", "mysql"))
+      N("((((`approval_key_bound` is not null) and (`approval_key_bound` = 1))) = "
+        "(`execution_key_instance_uuid` is not null))", "mysql"),
+      N(written, "mysql"))
+check("the real ck_payres_state_shape in a MariaDB-style reprint is accepted",
+      N("(`state` = 'reserved' and `captured_at` is null and `released_at` is null and "
+        "`capture_ledger_entry_id` is null) or (`state` = 'captured' and `captured_at` is not null and "
+        "`released_at` is null and `capture_ledger_entry_id` is not null) or (`state` = 'released' and "
+        "`released_at` is not null and `captured_at` is null and `capture_ledger_entry_id` is null)", "mariadb"),
+      N(state_shape, "mariadb"))
+check("...and in a MySQL-8-style reprint (every term and every pair wrapped)",
+      N("((((`state` = _utf8mb4'reserved') and (`captured_at` is null) and (`released_at` is null) and "
+        "(`capture_ledger_entry_id` is null)) or ((`state` = _utf8mb4'captured') and "
+        "(`captured_at` is not null) and (`released_at` is null) and (`capture_ledger_entry_id` is not null))) "
+        "or ((`state` = _utf8mb4'released') and (`released_at` is not null) and (`captured_at` is null) and "
+        "(`capture_ledger_entry_id` is null)))", "mysql"),
+      N(state_shape, "mysql"))
+check("charset introducers before literals are cosmetic",
+      N("(`mode` in (_utf8mb4'legacy',_utf8mb4'durable'))", "mysql"), N("mode IN ('legacy', 'durable')", "mysql"))
 check("LENGTH reported as octet_length is the same function",
-      ps.normalize_check("octet_length(`claim_key`) = 64", "mariadb"),
-      ps.normalize_check("LENGTH(claim_key) = 64", "mariadb"))
+      N("octet_length(`claim_key`) = 64", "mariadb"), N("LENGTH(claim_key) = 64", "mariadb"))
+check("NOT IN is one predicate, however it is spelled",
+      N("`state` not in ('a','b')", "mariadb"), N("NOT (state IN ('a', 'b'))", "mariadb"))
 check("a literal containing '+' and '_' survives verbatim",
-      "'flock+get_lock'" in ps.normalize_check("lock_backend IN ('none', 'flock', 'flock+get_lock')", "mysql"))
-check("string literals are case-sensitive (not lowercased)",
-      ps.normalize_check("mode IN ('Legacy', 'durable')", "mysql") ==
-      ps.normalize_check("mode IN ('legacy', 'durable')", "mysql"), False)
-check("a different column is a different expression",
-      ps.normalize_check("`amount` > 0", "mariadb") == ps.normalize_check("`user_id` > 0", "mariadb"), False)
-check("a different operator is a different expression",
-      ps.normalize_check("`amount` >= 0", "mariadb") == ps.normalize_check("amount > 0", "mariadb"), False)
-check("on SQLite parentheses are part of the comparison",
-      ps.normalize_check("a = 1 OR (b = 2 AND c = 3)", "sqlite") ==
-      ps.normalize_check("(a = 1 OR b = 2) AND c = 3", "sqlite"), False)
-check("an expression that cannot be tokenized is never 'equal'", ps.normalize_check("amount > 0 ; ¤", "sqlite"), None)
+      N("lock_backend IN ('none', 'flock', 'flock+get_lock')", "mysql"),
+      ("in", ("name", "lock_backend"), (("str", "'none'"), ("str", "'flock'"), ("str", "'flock+get_lock'"))))
+check("string literals are case-sensitive",
+      N("mode IN ('Legacy', 'durable')", "mysql") == N("mode IN ('legacy', 'durable')", "mysql"), False)
+check("the order of an IN list is significant",
+      N("mode IN ('durable', 'legacy')", "mysql") == N("mode IN ('legacy', 'durable')", "mysql"), False)
+check("a different column is a different expression", N("`amount` > 0", "mariadb") == N("`user_id` > 0", "mariadb"), False)
+check("a different operator is a different expression", N("`amount` >= 0", "mariadb") == N("amount > 0", "mariadb"), False)
+for broken_text in ("amount > 0 ; x", "amount >", "(amount > 0", "amount > 0)", "amount BETWEEN 1 AND 2",
+                    "a = 1 OR", "state IN ()", "CASE WHEN a THEN 1 END", ""):
+    check(f"unparseable {broken_text!r} is never 'equal' to anything (fail-closed)", N(broken_text, "mariadb"), None)
+check("every CHECK of the model itself is parseable",
+      [f"{t.name}:{c.name}" for t in mp.PROVISIONING_TABLES for c in t.constraints
+       if c.__class__.__name__ == "CheckConstraint" and N(str(c.sqltext), "sqlite") is None],
+      [])
 
 print("--- unit: type normalization ---")
 from sqlalchemy.dialects import mysql as _my  # noqa: E402
@@ -513,8 +619,8 @@ try:
     outcome = ps.bootstrap(healthy, sessionmaker(bind=healthy))
 finally:
     ps.inspect = real_inspect
-check("an inspector that cannot read CHECKs makes every checked table a problem",
-      sum(1 for p in problems if "could not read check constraints" in p), 9)
+check("an inspector that cannot read CHECKs makes every table a problem",
+      sum(1 for p in problems if "could not read check constraints" in p), 10)
 check("...and bootstrap is not ready", outcome["ready"], False)
 check("...with nothing seeded", row_count(healthy, "provisioning_type_modes"), 0)
 

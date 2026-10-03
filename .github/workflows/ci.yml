@@ -21,6 +21,32 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    # A real MariaDB for the durable-provisioning schema tests
+    # (tests/test_provisioning_schema_*.py): compiled DDL alone cannot show
+    # that MariaDB enforces the CHECK/UNIQUE/FOREIGN KEY constraints or that
+    # the startup inspector reads them back correctly. Same major version as
+    # docker-compose.yml's optional mariadb service. The credentials below
+    # exist only inside this throwaway CI container - they are not secrets
+    # and are used nowhere else.
+    services:
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: ci-root-local-only
+          MARIADB_DATABASE: um_ci_scratch
+          MARIADB_USER: um_ci
+          MARIADB_PASSWORD: ci-local-only
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=24
+    env:
+      # Those tests treat a missing URL as a FAILURE when CI is set (GitHub
+      # sets CI=true), so the MariaDB half can never be skipped silently.
+      MARIADB_TEST_URL: mysql+pymysql://um_ci:ci-local-only@127.0.0.1:3306/um_ci_scratch?charset=utf8mb4
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

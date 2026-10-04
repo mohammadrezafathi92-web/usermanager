@@ -43,11 +43,13 @@ import gzip
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 from .jalali import fmt_jalali_long
 import subprocess
 import tempfile
+from typing import Optional
 from pathlib import Path
 
 import requests
@@ -190,6 +192,17 @@ def create_backup() -> Path:
     finally:
         dst.close()
         src.close()
+
+    # Compact the COPY (never the live database): pages freed by deleted
+    # rows are otherwise carried into every backup, old data and all.
+    try:
+        compact = sqlite3.connect(str(tmp_db))
+        try:
+            compact.execute("VACUUM")
+        finally:
+            compact.close()
+    except sqlite3.Error:
+        logger.warning("could not compact the backup copy - backing it up as it is", exc_info=True)
 
     with open(tmp_db, "rb") as f_in, gzip.open(final_path, "wb") as f_out:
         shutil.copyfileobj(f_in, f_out)
@@ -375,41 +388,90 @@ def send_backup_to_telegram(path: Path) -> tuple[int, int]:
         return 0, 0
 
     size_mb = path.stat().st_size / (1024 ** 2)
-    if size_mb > 50:
-        # Tell the admins IN TELEGRAM, not just in a log file nobody reads:
-        # this failure mode is completely silent from the admin's side
-        # (backups keep being created on disk, they just never arrive), so
-        # it can go unnoticed for weeks - exactly what happened here, where
-        # an unpruned usage_logs table had inflated the database until
-        # every backup crossed the limit.
-        alert = (
-            f"⚠️ بک‌آپ ساخته شد ولی ارسال نشد.\n\n"
-            f"حجم فایل {size_mb:.0f} مگابایت است و تلگرام اجازه ارسال فایل بیشتر از ۵۰ مگابایت "
-            f"توسط ربات را نمی‌دهد.\n\n"
-            f"فایل روی سرور ذخیره شده: <code>{path.name}</code>"
-        )
+    when = fmt_jalali_long(dt.datetime.utcnow(), with_time=True)
+    parts = split_for_telegram(path)
+    try:
+        sent = 0
         for chat_id in admin_ids:
-            telegram_bot_runner.send_message_sync(chat_id, alert)
-        # Telegram's Bot API hard-caps uploads sent BY a bot at 50MB - past
-        # that, every send below fails the exact same way regardless of
-        # token/proxy health, and (before send_document_sync started
-        # logging its real exception) looked identical to a broken proxy.
-        # Worth calling out explicitly since KEEP_LAST/rotation only limits
-        # backup COUNT, not the live database's own size, which only grows.
-        logger.warning(
-            "backup file %s is %.1fMB - over Telegram's 50MB bot-upload limit, every send below will fail",
-            path.name, size_mb,
-        )
+            delivered = True
+            for index, part in enumerate(parts, start=1):
+                if len(parts) == 1:
+                    caption = f"💾 بک‌آپ دیتابیس — {when}"
+                else:
+                    caption = f"💾 بک‌آپ دیتابیس — {when}\nتکه {index} از {len(parts)}"
+                if not telegram_bot_runner.send_document_sync(chat_id, str(part), caption=caption):
+                    delivered = False
+                    logger.warning("failed to send backup %s to admin chat %s - see send_document_sync's own log "
+                                   "line above for the reason", part.name, chat_id)
+            if len(parts) > 1:
+                # Said IN TELEGRAM, next to the files: what these pieces
+                # are and how to turn them back into one backup. (Before
+                # this, a backup over Telegram's 50MB bot-upload limit was
+                # created on disk and simply never arrived.)
+                telegram_bot_runner.send_message_sync(chat_id, (
+                    f"ℹ️ حجم این بک‌آپ {size_mb:.0f} مگابایت است و تلگرام فایل بیشتر از ۵۰ مگابایت را از ربات "
+                    f"نمی‌پذیرد، پس در {len(parts)} تکه فرستاده شد.\n\n"
+                    f"برای بازگردانی، در پنل (تنظیمات ← بازگردانی دیتابیس) <b>همه‌ی تکه‌ها را با هم</b> انتخاب کنید.\n"
+                    f"برای کوچک‌تر شدن بک‌آپ، دکمه‌ی «بهینه‌سازی دیتابیس» در همان صفحه را بزنید."
+                ))
+            if delivered:
+                sent += 1
+        return sent, len(admin_ids)
+    finally:
+        if len(parts) > 1:
+            shutil.rmtree(parts[0].parent, ignore_errors=True)
 
-    caption = f"💾 بک‌آپ دیتابیس — {fmt_jalali_long(dt.datetime.utcnow(), with_time=True)}"
-    sent = 0
-    for chat_id in admin_ids:
-        ok = telegram_bot_runner.send_document_sync(chat_id, str(path), caption=caption)
-        if ok:
-            sent += 1
-        else:
-            logger.warning("failed to send backup %s to admin chat %s - see send_document_sync's own log line above for the reason", path.name, chat_id)
-    return sent, len(admin_ids)
+
+# ---------------------------------------------------------------------------
+# Backups larger than Telegram allows a bot to upload (50MB) are sent as
+# several plain byte slices of the same file. Nothing is re-compressed or
+# re-encoded: joining the slices in order gives back the exact backup file.
+TELEGRAM_PART_BYTES = 45 * 1024 * 1024
+_PART_NAME = re.compile(r"^(?P<base>.+)\.part(?P<index>\d{2,3})of(?P<total>\d{2,3})$")
+
+
+def split_for_telegram(path: Path, part_bytes: Optional[int] = None) -> list[Path]:
+    """[path] itself when it fits in one upload; otherwise the slices,
+    written to a throwaway folder next to it as NAME.partNNofMM."""
+    part_bytes = part_bytes or TELEGRAM_PART_BYTES
+    size = path.stat().st_size
+    if size <= part_bytes:
+        return [path]
+    total = -(-size // part_bytes)
+    folder = Path(tempfile.mkdtemp(prefix=".parts_", dir=str(path.parent)))
+    parts = []
+    with open(path, "rb") as source:
+        for index in range(1, total + 1):
+            part = folder / f"{path.name}.part{index:02d}of{total:02d}"
+            with open(part, "wb") as target:
+                target.write(source.read(part_bytes))
+            parts.append(part)
+    return parts
+
+
+def join_parts(files: list[tuple[str, bytes]]) -> bytes:
+    """The uploaded file(s) as one backup. A single ordinary file is
+    returned as it is. Several files must be ALL the slices of ONE backup
+    (in any order) - a missing, repeated or foreign slice is refused
+    rather than producing a silently truncated database."""
+    if not files:
+        raise ValueError("فایلی انتخاب نشده است")
+    named = [(os.path.basename(name or ""), data) for name, data in files]
+    matches = [_PART_NAME.match(name) for name, _data in named]
+    if len(named) == 1 and matches[0] is None:
+        return named[0][1]
+    if not all(matches):
+        raise ValueError("برای بازگردانی چندتکه‌ای، فقط تکه‌های همان بک‌آپ (…partNNofMM) را انتخاب کنید")
+    bases = {m.group("base") for m in matches}
+    totals = {int(m.group("total")) for m in matches}
+    if len(bases) != 1 or len(totals) != 1:
+        raise ValueError("تکه‌های انتخاب‌شده مربوط به یک بک‌آپ نیستند")
+    total = totals.pop()
+    by_index = {int(m.group("index")): data for m, (_name, data) in zip(matches, named)}
+    if len(by_index) != len(named) or sorted(by_index) != list(range(1, total + 1)):
+        missing = sorted(set(range(1, total + 1)) - set(by_index))
+        raise ValueError(f"همه‌ی {total} تکه لازم است" + (f" - تکه‌ی {missing} انتخاب نشده" if missing else " - تکه‌ی تکراری"))
+    return b"".join(by_index[index] for index in range(1, total + 1))
 
 
 # PanelSettings columns that describe THIS server's own HA identity/role

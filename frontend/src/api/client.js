@@ -367,10 +367,14 @@ export const updateMyAutoApprove = (data) => client.put("/telegram-bot/my-bot/au
 
 export const fetchBackups = () => client.get("/backup/list");
 export const runBackup = () => client.post("/backup/run", null, { responseType: "blob" });
-export const restoreBackup = (file) => {
+// One backup file, or every slice (…partNNofMM) of a backup the bot had to
+// send in pieces - the backend joins them.
+export const restoreBackup = (files) => {
   const fd = new FormData();
-  fd.append("file", file);
-  return client.post("/backup/restore", fd, { headers: { "Content-Type": "multipart/form-data" }, timeout: 60000 });
+  const list = Array.isArray(files) ? files : [files];
+  if (list.length === 1) fd.append("file", list[0]);
+  else list.forEach((f) => fd.append("files", f));
+  return client.post("/backup/restore", fd, { headers: { "Content-Type": "multipart/form-data" }, timeout: 300000 });
 };
 export const downloadBackup = (filename) =>
   client.get(`/backup/download/${encodeURIComponent(filename)}`, { responseType: "blob" });

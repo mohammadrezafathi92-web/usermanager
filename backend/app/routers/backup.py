@@ -12,6 +12,7 @@ otherwise apply here too). Non-superadmins get their own separate, scoped
 "my-backup" endpoints further down instead - see services/backup.py's
 create_admin_scoped_backup."""
 import os
+from typing import Optional
 import threading
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -59,17 +60,20 @@ def download_backup(filename: str):
 
 
 @router.post("/restore", dependencies=[Depends(require_superadmin)])
-async def restore_backup(file: UploadFile = File(...)):
+async def restore_backup(file: Optional[UploadFile] = File(None), files: list[UploadFile] = File([])):
     """Superadmin-only: uploads a .db.gz (or raw .db) backup and fully
     replaces the live database with it. The current live db is
     safety-backed-up first. Forces the backend process to exit right after
     responding so Docker's `restart: unless-stopped` brings it back up
     against the newly-restored file - see restore_from_upload's docstring
     for why an in-process reload isn't enough."""
-    data = await file.read()
-    if not data:
-        raise HTTPException(400, "فایل خالی است")
+    # One file as before, or every slice of a backup that was sent to
+    # Telegram in pieces (see backup_service.join_parts).
+    uploads = ([file] if file is not None else []) + list(files or [])
     try:
+        data = backup_service.join_parts([(upload.filename, await upload.read()) for upload in uploads])
+        if not data:
+            raise HTTPException(400, "فایل خالی است")
         backup_service.restore_from_upload(data)
     except ValueError as exc:
         raise HTTPException(400, str(exc))

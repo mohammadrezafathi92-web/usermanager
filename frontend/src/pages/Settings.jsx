@@ -852,9 +852,9 @@ export default function Settings() {
   };
 
   const onRestoreFile = async (e) => {
-    const file = e.target.files?.[0];
+    const file = Array.from(e.target.files || []);
     e.target.value = "";
-    if (!file) return;
+    if (!file.length) return;
     if (
       !(await confirm({ message: t("settings.confirmRestore"), danger: true }))
     ) {
@@ -1848,7 +1848,7 @@ export default function Settings() {
             )}
             <label className={`btn-secondary inline-flex cursor-pointer ${restoring ? "opacity-60 pointer-events-none" : ""}`}>
               <Upload size={14} /> {restoring ? t("settings.uploadingRestoring") : t("settings.selectBackupFile")}
-              <input type="file" accept=".gz,.db" className="hidden" onChange={onRestoreFile} disabled={restoring} />
+              <input type="file" multiple className="hidden" onChange={onRestoreFile} disabled={restoring} />
             </label>
           </div>
         )}

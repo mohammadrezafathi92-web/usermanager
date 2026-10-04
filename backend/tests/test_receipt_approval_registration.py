@@ -153,6 +153,20 @@ check("superadmin for the shared pool / the owner / the seller's parent admin / 
       [("linked_admin", root.id), ("owner_seller", admin.id), ("linked_admin", admin.id), ("card_approver", None)])
 check("an unrelated admin cannot approve another tenant's receipt",
       attempt(internal, fresh(target_username="sara"), "manual", 3000), (403, "manual_approver_not_authorized"))
+print("--- the shared bot's own admin list (found on production, 2026-10-04) ---")
+db.add(models.BotSettings(id=1, admin_ids="7777, 8888,notanumber"))
+db.commit()
+m_config = attempt(internal, fresh(), "manual", 7777)
+check("a Telegram id in the shared bot's admin list, with no panel account, may approve through the shared bot",
+      (row(m_config.approval_uuid)["approver_evidence_kind"], row(m_config.approval_uuid)["approved_by_admin_id"],
+       row(m_config.approval_uuid)["approved_by_telegram_id"]), ("linked_admin", None, 7777))
+check("...also for a reseller's customer (that admin handles every request of the shared bot)",
+      isinstance(attempt(internal, fresh(target_username="sara"), "manual", 8888), reg.Registration), True)
+dedicated = bot_auth.BotPrincipal.internal(admin.id)
+check("...but not through a bot bound to one owner, and not an id that is not on the list",
+      (attempt(dedicated, fresh(target_username="sara", claimed_owner_admin_id=admin.id), "manual", 7777),
+       attempt(internal, fresh(), "manual", 9999)),
+      ((403, "manual_approver_not_authorized"), (403, "manual_approver_not_authorized")))
 manual_row = row(m_super.approval_uuid)
 check("manual rows carry no auto grant; original_* is written once",
       (manual_row["auto_granted_at"], manual_row["original_approval_mode"], manual_row["original_approved_by_telegram_id"]),

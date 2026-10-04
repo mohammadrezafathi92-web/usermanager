@@ -24,8 +24,10 @@ from dataclasses import dataclass
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+import time
+
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from .. import models
@@ -310,6 +312,31 @@ def register(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalI
     raise AssertionError("unreachable")
 
 
+WRITE_ATTEMPTS = 3
+
+
+def take_write_lock(db: Session) -> None:
+    """SQLite only: start the transaction as a WRITE transaction (design
+    5.1 / 6.5, "SQLite: BEGIN IMMEDIATE").
+
+    A registration reads first (target, approver, last approval) and writes
+    last. On SQLite a transaction that began by reading cannot be upgraded
+    once any other connection has committed in between - the write fails at
+    once with "database is locked", whatever the busy timeout. On a panel
+    whose RADIUS accounting commits all the time that is not rare (seen on
+    production 2026-10-04). Taking the write lock up front makes this
+    transaction wait its turn instead, and then read current data."""
+    if db.get_bind().dialect.name != "sqlite":
+        return
+    db.rollback()                       # end whatever read transaction is open
+    db.execute(text("BEGIN IMMEDIATE"))
+
+
+def describe_error(exc: BaseException) -> str:
+    """A short code for a shadow event: the exception class, no values."""
+    return f"registration_error:{type(getattr(exc, 'orig', None) or exc).__name__}"[:48]
+
+
 def begin(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalIntent, *, approval_mode: str,
           approved_by_telegram_id: Optional[int] = None, local_decision: Optional[str] = None) -> dict:
     """The structured answer of design 5.6. Commits. Only the backend
@@ -325,20 +352,32 @@ def begin(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalInte
 
     error = runtime.shadow_error(state)
     result = None
-    if error is None:
+    for attempt in range(1, WRITE_ATTEMPTS + 1):
+        if error is not None:
+            break
         try:
+            take_write_lock(db)
             result = register(db, principal, intent, approval_mode=approval_mode,
                               approved_by_telegram_id=approved_by_telegram_id, registered_under_mode=runtime.SHADOW,
                               local_decision=local_decision,
                               rate_limit_mode=runtime.effective_auto_rate_limit_mode(state))
             db.commit()
+            break
         except RegistrationRejected as exc:
             db.rollback()
             error = exc.code
-        except Exception:
+        except OperationalError as exc:              # database busy: wait and try again
             db.rollback()
-            log.exception("receipt approval shadow registration failed")
-            error = "registration_error"
+            if attempt == WRITE_ATTEMPTS:
+                log.warning("receipt approval registration unavailable after %s attempts: %s", attempt,
+                            getattr(exc, "orig", exc))
+                error = describe_error(exc)
+            else:
+                time.sleep(0.3 * attempt)
+        except Exception as exc:
+            db.rollback()
+            log.exception("receipt approval shadow registration failed (%s)", describe_error(exc))
+            error = describe_error(exc)
     if result is None:
         runtime.record_shadow_event(db, pending_source_instance_id=str(intent.pending_source_instance_id or "?"),
                                     pending_local_id=intent.pending_local_id if isinstance(intent.pending_local_id, int) else 0,

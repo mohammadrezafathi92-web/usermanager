@@ -178,6 +178,41 @@ class SuiClient:
         clients = obj.get("clients") or []
         return clients[0] if clients else None
 
+    # --- strict, typed access for the durable adapter (adapter_xray_panels) ---
+    def find_clients_strict(self, name: str) -> list:
+        """FULL records (with config and inbounds) of every client called
+        `name`, or XrayError. The plain list has no config, so a name match
+        there says nothing about the uuid; and a response without a client
+        list is an error here, not "no clients"."""
+        obj = self._get("clients")
+        rows = obj.get("clients") if isinstance(obj, dict) else None
+        if not isinstance(rows, list):
+            raise XrayError("پاسخ پنل s-ui فهرست کلاینت نداشت")
+        full = []
+        for row in rows:
+            if isinstance(row, dict) and row.get("name") == name:
+                record = self._client_full(row.get("id"))
+                if not isinstance(record, dict):
+                    raise XrayError("رکورد کامل کلاینت s-ui خوانده نشد")
+                full.append(record)
+        return full
+
+    def create_client_only(self, name: str, client_uuid: str, flow: str = "") -> None:
+        """action=new only - never an edit over an existing client."""
+        self._post_save("clients", "new", {
+            "name": name, "enable": True,
+            "config": {"vless": {"uuid": client_uuid, "flow": flow or ""}},
+            "inbounds": [self.inbound_id], "volume": 0, "expiry": 0, "desc": "", "group": "", "remark": "",
+        })
+
+    def enable_client_full(self, full_record: dict) -> None:
+        """edit with the COMPLETE record just read (s-ui replaces the whole
+        row), only `enable` changed."""
+        self._post_save("clients", "edit", {**full_record, "enable": True})
+
+    def delete_client_by_id(self, client_id) -> None:
+        self._post_save("clients", "del", client_id)
+
     def list_client_emails(self, inbound_tag) -> list:
         return [
             c.get("name")

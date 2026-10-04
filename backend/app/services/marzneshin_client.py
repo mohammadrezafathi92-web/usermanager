@@ -248,6 +248,38 @@ class MarzneshinClient:
                 return
             page += 1
 
+    # --- strict, typed access for the durable adapter (adapter_xray_panels) ---
+    def list_users_strict(self, page_size: int = 200) -> list[dict]:
+        """EVERY user visible to this admin, or XrayError. _iter_users stops
+        silently at the first page that is not a 200 and hands back a
+        partial list - which a caller deciding "absent" cannot use."""
+        users: list[dict] = []
+        page = 1
+        while True:
+            status, data = self._get(f"/api/users?page={page}&size={page_size}")
+            items = data.get("items") if isinstance(data, dict) else None
+            if status != 200 or not isinstance(items, list):
+                raise XrayError(f"خواندن فهرست کاربران Marzneshin ناموفق بود (صفحه {page}، کد HTTP {status})")
+            users.extend(items)
+            pages, total = data.get("pages"), data.get("total")
+            if len(items) < page_size or (pages is not None and page >= pages):
+                if isinstance(total, int) and total != len(users):
+                    raise XrayError("فهرست کاربران Marzneshin کامل خوانده نشد")
+                return users
+            page += 1
+
+    def create_user_only(self, username: str, email: str, client_uuid: str) -> None:
+        """POST only - no PUT over an existing (possibly someone else's) user."""
+        self._post("/api/users", self._body_for(username, email, client_uuid))
+
+    def enable_user_only(self, username: str) -> None:
+        status, data = self._request("POST", f"/api/users/{username}/enable")
+        if status != 200:
+            raise XrayError(f"فعال‌سازی کاربر Marzneshin ناموفق بود (کد HTTP {status})")
+
+    def delete_user_raw(self, username: str) -> tuple[int, dict]:
+        return self._request("DELETE", f"/api/users/{username}")
+
     def _list_users_for_service(self) -> list[dict]:
         """All Marzneshin users assigned to self.service_id - no
         server-side "users of this service" filter on a non-sudo admin

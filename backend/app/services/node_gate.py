@@ -1,9 +1,11 @@
 """node_gate - the single entry point every remote writer will pass through
 (Lifecycle/P6 design v7.1, sections 10.2, 10.6, 10.7). Batch L1a-1.
 
-WHAT THIS BATCH DOES. It provides the gate itself; no existing writer calls
-it yet, and no code path can move the gate out of 'off' (there is no
-endpoint, and L0's seed validation only accepts 'off').
+STATE OF THE ROLLOUT. Every remote writer of the application now passes
+through writer_gate() (batch L1a-2), but no code path can move the gate out
+of 'off' (there is no endpoint, and L0's seed validation only accepts
+'off') - so on a live system the only thing that happens is the one
+non-blocking shared lock described below.
 
 What the gate does in each mode:
 
@@ -35,6 +37,7 @@ import contextlib
 import contextvars
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterator, Optional
 
@@ -80,6 +83,8 @@ class GateCounters:
     mode_lock_miss: int = 0
     contention: int = 0
     passages: int = 0
+    ungated: int = 0       # writer_gate() given something that is not a saved node
+    gate_error: int = 0    # the gate itself failed in 'off'; the writer ran anyway
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def add(self, name: str) -> None:
@@ -88,14 +93,41 @@ class GateCounters:
 
     def snapshot(self) -> dict:
         with self._lock:
-            return {"mode_lock_miss": self.mode_lock_miss, "contention": self.contention, "passages": self.passages}
+            return {"mode_lock_miss": self.mode_lock_miss, "contention": self.contention,
+                    "passages": self.passages, "ungated": self.ungated, "gate_error": self.gate_error}
 
     def reset(self) -> None:
         with self._lock:
-            self.mode_lock_miss = self.contention = self.passages = 0
+            self.mode_lock_miss = self.contention = self.passages = self.ungated = self.gate_error = 0
 
 
 counters = GateCounters()
+
+# The singleton is re-read at most once per this many seconds per process.
+# Every remote block of every writer passes through the gate, and a database
+# round-trip (and, on MariaDB, a pooled connection) for each one would be a
+# real cost on the poller and under load - for a value that, today, cannot
+# change at all. The batch that adds gate-mode transitions has to account
+# for this window (a writer may act on a mode up to this old).
+RUNTIME_CACHE_SECONDS = 5.0
+# The last value this process READ SUCCESSFULLY, and when it last tried. A
+# failed read (database down, schema check failed) keeps the previous good
+# value instead of replacing it: the gate then goes on acting on the last
+# mode it really saw - so "could not read" can never quietly relax a
+# stricter mode back to 'off' - and it does not hammer a struggling
+# database with a retry on every passage either. Only a process that has
+# never read the singleton at all treats "unreadable" as 'off'.
+_cached_runtime: Optional[GateRuntime] = None
+_checked_at: Optional[float] = None
+
+
+def reset_cache() -> None:
+    """Forgets what this process knows about the singleton (tests; and
+    whatever later changes the gate mode or the installation uuid)."""
+    global _cached_runtime, _checked_at
+    _cached_runtime, _checked_at = None, None
+
+
 _current: contextvars.ContextVar[Optional[ShadowGateContext]] = contextvars.ContextVar("node_gate_context", default=None)
 
 
@@ -146,15 +178,21 @@ def node_gate(node_id: int, *, session_factory: Optional[Callable] = None) -> It
     if type(node_id) is not int or node_id <= 0:
         raise ValueError("node_gate needs the id of a saved node")
 
-    # Order (design 10.6): shared mode lock FIRST, then read the mode, so a
-    # mode change (which takes the lock exclusively) can never slip between
-    # "this writer read 'off'" and "this writer started writing".
-    runtime = read_runtime(session_factory)
+    # The mode comes from the (briefly cached) singleton, then the shared
+    # mode lock is tried once. Making a mode CHANGE safe against writers
+    # that are already running is the transition batch's job (it takes the
+    # lock exclusively); nothing can change the mode yet.
+    global _cached_runtime, _checked_at
+    now = time.monotonic()
+    if _checked_at is None or now - _checked_at >= RUNTIME_CACHE_SECONDS:
+        fresh = read_runtime(session_factory)
+        _checked_at = now
+        if fresh is not None:
+            _cached_runtime = fresh
+    runtime = _cached_runtime
     mode_lock = _try_shared_mode_lock(runtime.installation_uuid) if runtime is not None else None
     node_lock: Optional[gate_locks.FileLock] = None
     try:
-        if mode_lock is not None:
-            runtime = read_runtime(session_factory) or runtime
         mode = runtime.gate_mode if runtime is not None else MODE_OFF
         epoch = runtime.gate_mode_epoch if runtime is not None else 0
 
@@ -192,3 +230,52 @@ def node_gate(node_id: int, *, session_factory: Optional[Callable] = None) -> It
             node_lock.release()
         if mode_lock is not None:
             mode_lock.release()
+
+
+@contextlib.contextmanager
+def writer_gate(node) -> Iterator[Optional[ShadowGateContext]]:
+    """What the existing ("legacy") remote writers use:
+
+        with writer_gate(node), MikrotikClient.for_node(node) as mt:
+            ...
+
+    node_gate(node.id), with one extra promise for 'off': the gate can
+    NEVER be the reason a legacy remote call does not happen. A node that
+    is not a saved row, or any unexpected failure inside the gate itself,
+    lets the block run un-gated (and is counted) instead of raising. Only
+    GateNotAvailable - which 'off' never raises - is allowed out, because
+    in the stricter modes "the gate could not grant this" must stop the
+    write. Exceptions of the block itself always propagate unchanged."""
+    node_id = getattr(node, "id", None)
+    gate = None
+    context = None
+    if type(node_id) is int and node_id > 0:
+        try:
+            gate = node_gate(node_id)
+            context = gate.__enter__()
+        except GateNotAvailable:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("writer_gate: gate failed for node %s - continuing un-gated", node_id)
+            counters.add("gate_error")
+            gate = None
+    else:
+        counters.add("ungated")
+
+    try:
+        yield context
+    except BaseException as exc:
+        if gate is not None:
+            try:
+                gate.__exit__(type(exc), exc, exc.__traceback__)
+            except BaseException as exit_exc:  # noqa: BLE001
+                if exit_exc is not exc:
+                    logger.exception("writer_gate: releasing the gate failed for node %s", node_id)
+        raise
+    else:
+        if gate is not None:
+            try:
+                gate.__exit__(None, None, None)
+            except Exception:  # noqa: BLE001
+                logger.exception("writer_gate: releasing the gate failed for node %s", node_id)
+                counters.add("gate_error")

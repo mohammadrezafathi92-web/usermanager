@@ -14,6 +14,7 @@ from ..database import get_db
 from ..services.jalali import fmt_jalali
 from ..deps import get_current_admin, require_confirm_password, require_permission, require_superadmin
 from ..services import user_ops, hierarchy, accounting, admin_billing, usage_stats
+from ..services.node_gate import writer_gate
 
 router = APIRouter(prefix="/api/users", tags=["users"], dependencies=[Depends(get_current_admin)])
 
@@ -1223,7 +1224,7 @@ def update_connection(
     )
     if renamed:
         try:
-            with user_ops.MikrotikClient.for_node(conn.node) as mt:
+            with writer_gate(conn.node), user_ops.MikrotikClient.for_node(conn.node) as mt:
                 mt.rename_peer(conn.node.mt_wireguard_interface, old_peer_name, new_peer_name)
         except user_ops.MikrotikError as exc:
             raise HTTPException(400, str(exc))
@@ -1243,7 +1244,7 @@ def update_connection(
         effective_peer_name = new_peer_name if renamed else old_peer_name
         effective_limit = data.get("speed_limit_mbps", conn.speed_limit_mbps) or None
         try:
-            with user_ops.MikrotikClient.for_node(conn.node) as mt:
+            with writer_gate(conn.node), user_ops.MikrotikClient.for_node(conn.node) as mt:
                 if renamed:
                     mt.remove_simple_queue(user_ops.wg_speed_queue_name(old_peer_name))
                 if effective_limit:

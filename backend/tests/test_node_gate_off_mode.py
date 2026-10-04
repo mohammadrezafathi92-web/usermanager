@@ -83,6 +83,7 @@ def set_runtime(**values):
         setattr(row, key, value)
     db.commit()
     db.close()
+    ng.reset_cache()      # the gate caches the singleton for a few seconds
 
 
 class FlockSpy:
@@ -165,7 +166,7 @@ check("no node lock file was even created", os.path.exists(gate_locks.node_lock_
 check("the shared lock is released afterwards (an exclusive hold is immediately possible)",
       exclusive_is_free(path, 0))
 check("counted as one passage, no miss, no contention", ng.counters.snapshot(),
-      {"mode_lock_miss": 0, "contention": 0, "passages": 1})
+      {"mode_lock_miss": 0, "contention": 0, "passages": 1, "ungated": 0, "gate_error": 0})
 
 print("--- off: two writers on the SAME node are not serialized (LP-168) ---")
 barrier = threading.Barrier(2, timeout=5)
@@ -219,9 +220,11 @@ check("...and the miss is counted", ng.counters.snapshot()["mode_lock_miss"], 1)
 os.environ["UM_LOCK_DIR"] = saved_dir
 
 ng.counters.reset()
+ng.reset_cache()          # as in a process that never managed to read the singleton
 ps.mark_not_ready("simulated: schema not verified")
 with ng.node_gate(5, session_factory=Session) as ctx:
-    check("schema not ready: the block still runs as 'off', without the lock", (ctx.mode, ctx.mode_lock_held), ("off", False))
+    check("schema not ready (nothing ever read): the block still runs as 'off', without the lock",
+          (ctx.mode, ctx.mode_lock_held), ("off", False))
 check("...and the miss is counted", ng.counters.snapshot()["mode_lock_miss"], 1)
 
 
@@ -231,7 +234,35 @@ def _broken_factory():
 
 ps.bootstrap(engine, Session)
 with ng.node_gate(5, session_factory=_broken_factory) as ctx:
-    check("database down: the block still runs as 'off'", (ctx.mode, ctx.mode_lock_held), ("off", False))
+    check("database down (nothing ever read): the block still runs as 'off'", (ctx.mode, ctx.mode_lock_held), ("off", False))
+ng.reset_cache()
+with ng.node_gate(5, session_factory=Session):
+    pass                                   # a successful passage: the singleton is now known
+saved_ttl = ng.RUNTIME_CACHE_SECONDS
+ng.RUNTIME_CACHE_SECONDS = 0               # force a (failing) re-read on the next passage
+with ng.node_gate(5, session_factory=_broken_factory) as ctx:
+    check("database down AFTER the singleton was read: keeps the last good value - 'off', WITH the shared lock",
+          (ctx.mode, ctx.mode_lock_held), ("off", True))
+ng.RUNTIME_CACHE_SECONDS = saved_ttl
+
+print("--- the singleton is not re-read on every passage ---")
+reads = []
+real_read = ng.read_runtime
+ng.read_runtime = lambda factory=None: (reads.append(1), real_read(factory))[1]
+ng.reset_cache()
+for _ in range(50):
+    with ng.node_gate(5, session_factory=Session):
+        pass
+check("50 passages in a row cost ONE database read", len(reads), 1)
+reads.clear()
+ng.read_runtime = lambda factory=None: (reads.append(1), None)[1]      # database down from the start
+ng.reset_cache()
+for _ in range(50):
+    with ng.node_gate(5, session_factory=Session) as ctx:
+        pass
+check("a failing read is not retried on every passage either (one attempt per cache window)", len(reads), 1)
+ng.read_runtime = real_read
+ng.reset_cache()
 
 ng.counters.reset()
 changing = gate_locks.FileLock(path).acquire(shared=False, timeout=0)   # a mode change in progress
@@ -294,7 +325,7 @@ check("first writer happens to hold the node lock",
       (first.mode, first.node_lock_held, first.gate_mode_epoch), ("shadow", True, 1))
 check("second writer on the same node proceeds WITHOUT it", (second.mode, second.node_lock_held), ("shadow", False))
 check("contention counted once; both passages counted", ng.counters.snapshot(),
-      {"mode_lock_miss": 0, "contention": 1, "passages": 2})
+      {"mode_lock_miss": 0, "contention": 1, "passages": 2, "ungated": 0, "gate_error": 0})
 check("locks taken: shared mode lock + a non-blocking try of node-5.lock, per writer",
       spy.calls, [("gate-mode.lock", "SH"), ("node-5.lock", "EX"), ("gate-mode.lock", "SH"), ("node-5.lock", "EX")])
 check("the context is still a ShadowGateContext - no exclusive token exists in this batch",
@@ -315,6 +346,94 @@ def _enforced():
 check("node_gate raises GateNotAvailable", raises(ng.GateNotAvailable, _enforced))
 check("...and the block did NOT run", ran, [])
 check("...and no lock is left held", exclusive_is_free(path, 0))
+
+print("--- a stricter mode is never relaxed by an unreadable state ---")
+# The process has just seen 'enforced' above. If the singleton now cannot be
+# read, falling back to 'off' would silently drop the protection.
+ran = []
+
+
+def _unreadable():
+    with ng.node_gate(5, session_factory=_broken_factory):
+        ran.append(True)
+
+
+ng.RUNTIME_CACHE_SECONDS = 0
+check("state unreadable after 'enforced' was read -> still refused (GateNotAvailable), block not run",
+      (raises(ng.GateNotAvailable, _unreadable), ran), (True, []))
+ng.RUNTIME_CACHE_SECONDS = saved_ttl
+ng.reset_cache()
+
+print("--- writer_gate: what the legacy writers use ---")
+set_runtime(gate_mode="off", owner_state="none", owner_host_id=None, owner_boot_id=None,
+            owner_claimed_at=None, owner_heartbeat_at=None, lock_backend="none", lock_verified_at=None)
+
+
+class _Node:
+    def __init__(self, node_id):
+        self.id = node_id
+
+
+real_default = ng.read_runtime
+ng.read_runtime = lambda factory=None: real_default(Session)     # writer_gate uses the default session factory
+ng.counters.reset()
+with FlockSpy() as spy:
+    with ng.writer_gate(_Node(5)) as ctx:
+        pass
+check("a saved node: one shared lock, context is the 'off' ShadowGateContext",
+      (spy.calls, ctx.mode, ctx.mode_lock_held), ([("gate-mode.lock", "SH")], "off", True))
+for label, node in (("None", None), ("an unsaved node (id None)", _Node(None)), ("id 0", _Node(0)), ("a str id", _Node("5"))):
+    ran = []
+    with ng.writer_gate(node) as ctx:
+        ran.append(ctx)
+    check(f"{label}: the block runs un-gated instead of failing", ran, [None])
+check("...each counted as ungated", ng.counters.snapshot()["ungated"], 4)
+
+
+class _Boom(Exception):
+    pass
+
+
+def _block_raises():
+    with ng.writer_gate(_Node(5)):
+        raise _Boom("from the block")
+
+
+check("an exception of the block propagates unchanged", raises(_Boom, _block_raises))
+check("...and the shared lock is released", exclusive_is_free(path))
+real_node_gate = ng.node_gate
+
+
+def _gate_explodes(node_id, **kw):
+    raise RuntimeError("the gate itself broke")
+
+
+ng.node_gate = _gate_explodes
+ng.counters.reset()
+ran = []
+with ng.writer_gate(_Node(5)) as ctx:
+    ran.append(ctx)
+ng.node_gate = real_node_gate
+check("the gate itself failing never stops a legacy writer: the block runs un-gated", ran, [None])
+check("...and that is counted as a gate error", ng.counters.snapshot()["gate_error"], 1)
+
+
+def _gate_refuses(node_id, **kw):
+    raise ng.GateNotAvailable("stricter mode cannot grant this")
+
+
+ng.node_gate = _gate_refuses
+ran = []
+
+
+def _refused():
+    with ng.writer_gate(_Node(5)):
+        ran.append(True)
+
+
+check("GateNotAvailable is the one thing that DOES stop the block", (raises(ng.GateNotAvailable, _refused), ran), (True, []))
+ng.node_gate = real_node_gate
+ng.read_runtime = real_default
 
 print()
 if failures:

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 from .. import models
 from ..database import SessionLocal
 from .mikrotik_client import MikrotikClient, MikrotikError, parse_ros_duration_seconds
+from .node_gate import writer_gate
 from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
 from .xray_client import XrayError, client_for_node
 from .softether_client import SoftEtherError, client_for_node as softether_client_for_node
@@ -625,7 +626,7 @@ def _set_connection_enabled(db: Session, connection: models.Connection, enabled:
     applied = True  # PPP has nothing to push to the node - the DB flag alone is the switch
     try:
         if connection.type == models.ConnectionType.wireguard:
-            with MikrotikClient.for_node(node) as mt:
+            with writer_gate(node), MikrotikClient.for_node(node) as mt:
                 peers = mt.list_peers(node.mt_wireguard_interface)
                 match = next((p for p in peers if p.get("comment") == connection.wg_peer_name), None)
                 if match:
@@ -647,7 +648,7 @@ def _set_connection_enabled(db: Session, connection: models.Connection, enabled:
             # manually if instant cutoff is required).
             pass
         elif connection.type == models.ConnectionType.xray:
-            with client_for_node(node) as xc:
+            with writer_gate(node), client_for_node(node) as xc:
                 applied = xc.set_client_enabled(
                     node.xr_inbound_tag, connection.xr_email, connection.xr_uuid,
                     connection.xr_flow or "", enabled,
@@ -659,7 +660,7 @@ def _set_connection_enabled(db: Session, connection: models.Connection, enabled:
                         "enabled" if enabled else "disabled", node.id, connection.id, connection.xr_email,
                     )
         elif connection.type == models.ConnectionType.softether:
-            with softether_client_for_node(node) as sc:
+            with writer_gate(node), softether_client_for_node(node) as sc:
                 applied = sc.set_client_enabled(connection.ppp_username, connection.ppp_password, enabled)
                 if not applied:
                     logger.warning(

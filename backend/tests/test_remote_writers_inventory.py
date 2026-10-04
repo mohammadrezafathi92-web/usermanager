@@ -1,7 +1,8 @@
-"""Lifecycle/P6 batch L1a-1 - the remote-writer inventory, and proof that
-this batch changed NOTHING about how the existing writers behave.
+"""Lifecycle/P6 batches L1a-1 and L1a-2 - the remote-writer inventory, the
+routing of every writer through writer_gate, and proof that doing so did not
+change what the writers do.
 
-Design v7.1, section 10.9. Run:
+Design v7.1, sections 10.2, 10.6, 10.9. Run:
     python3 backend/tests/test_remote_writers_inventory.py
 
   A. INVENTORY (LP-163, static half). services/remote_writers.py is
@@ -10,14 +11,22 @@ Design v7.1, section 10.9. Run:
      each registered function calls exactly the writer methods it declares,
      and nothing registered has disappeared.
 
-  B. NOT WIRED. No existing module imports the gate, the runner, the DTO
-     or the inventory; the runner has no real action registered. So the
-     new code cannot be on any production path yet.
+  B. ROUTING. Every one of those writer calls is lexically inside a
+     `with writer_gate(...)` block - a writer added later without one fails
+     here. Nothing else of the new machinery is used by existing code: the
+     runner, the DTO and the inventory are still imported by nobody, and
+     the runner has no real action registered.
 
-  C. CHARACTERIZATION. The remote call sequence of the existing writers,
-     recorded with fake clients - the baseline the later batches (which DO
-     route them through node_gate/the runner) must reproduce exactly. Here
-     it also shows the gate was never entered: zero passages.
+  C. CHARACTERIZATION (LP-133, LP-168). The remote call sequence of the
+     existing writers, recorded with fake clients BEFORE they were routed
+     through the gate, still holds exactly - same calls, same arguments,
+     same order, same return values and error behaviour - now with one
+     gate passage per remote block.
+
+  D. LIVE SHAPE. With a verified schema and a usable lock directory, a
+     legacy writer takes exactly one shared gate-mode lock per remote block
+     and no node lock; two writers on one node still run concurrently; a
+     broken gate does not break a writer.
 """
 from __future__ import annotations
 
@@ -68,6 +77,34 @@ def app_modules():
                 path = os.path.join(root, name)
                 dotted = "app." + os.path.relpath(path, APP_DIR)[:-3].replace(os.sep, ".")
                 yield dotted, path
+
+
+def ungated_writer_calls(path):
+    """Writer-method calls that are NOT lexically inside a `with` statement
+    one of whose items is a call to writer_gate(...): [(line, method)]."""
+    tree = ast.parse(open(path, encoding="utf-8").read())
+    loose = []
+
+    def is_gate(item):
+        call = item.context_expr
+        return (isinstance(call, ast.Call)
+                and ((isinstance(call.func, ast.Name) and call.func.id == "writer_gate")
+                     or (isinstance(call.func, ast.Attribute) and call.func.attr == "writer_gate")))
+
+    def visit(node, gated):
+        for child in ast.iter_child_nodes(node):
+            child_gated = gated
+            if isinstance(child, (ast.With, ast.AsyncWith)) and any(is_gate(i) for i in child.items):
+                child_gated = True
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                child_gated = False     # a nested function runs later, outside the with
+            if (isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+                    and child.func.attr in rw.WRITER_METHODS and not gated):
+                loose.append((child.lineno, child.func.attr))
+            visit(child, child_gated)
+
+    visit(tree, False)
+    return loose
 
 
 def writer_calls(path):
@@ -163,7 +200,26 @@ site = rw.site_for("app.services.user_ops", "provision_wireguard")
 check("a site is immutable", raises(Exception, lambda: setattr(site, "function", "x")))
 
 # ===========================================================================
-print("--- B. nothing existing is routed through the new code ---")
+print("--- B. every writer goes through writer_gate; nothing else of the new code is used ---")
+loose = {}
+for dotted, path in app_modules():
+    if dotted in rw.CLIENT_MODULES:
+        continue
+    found = ungated_writer_calls(path)
+    if found:
+        loose[dotted] = found
+check("no writer call outside a `with writer_gate(...)` block", loose, {})
+
+snippet = "def f(node):\n    with writer_gate(node), C.for_node(node) as mt:\n        mt.add_peer(1)\n    mt.remove_peer(2)\n"
+probe_path = os.path.join(BACKEND_DIR, "tests", "_gate_probe_tmp.py")
+with open(probe_path, "w", encoding="utf-8") as fh:
+    fh.write(snippet)
+try:
+    check("the detector itself: a call inside the block passes, one after it is caught",
+          ungated_writer_calls(probe_path), [(4, "remove_peer")])
+finally:
+    os.remove(probe_path)
+
 importers = {}
 for dotted, path in app_modules():
     short = dotted.split(".")[-1]
@@ -173,12 +229,18 @@ for dotted, path in app_modules():
     used = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            used |= {(node.module or "").split(".")[-1]} | {alias.name for alias in node.names}
+            module = (node.module or "").split(".")[-1]
+            if module in NEW_MODULES:
+                used |= {f"{module}.{alias.name}" for alias in node.names}
+            used |= {alias.name for alias in node.names if alias.name in NEW_MODULES}
         elif isinstance(node, ast.Import):
-            used |= {alias.name.split(".")[-1] for alias in node.names}
-    if used & NEW_MODULES:
-        importers[dotted] = sorted(used & NEW_MODULES)
-check("no pre-existing module imports the gate, the runner, the DTO or the inventory", importers, {})
+            used |= {alias.name.split(".")[-1] for alias in node.names if alias.name.split(".")[-1] in NEW_MODULES}
+    if used:
+        importers[dotted] = sorted(used)
+check("exactly the four writer modules use the gate, and only writer_gate from it",
+      importers,
+      {"app.routers.nodes": ["node_gate.writer_gate"], "app.routers.users": ["node_gate.writer_gate"],
+       "app.services.quota_manager": ["node_gate.writer_gate"], "app.services.user_ops": ["node_gate.writer_gate"]})
 check("the runner has no real action registered - it cannot reach a node",
       sorted(a.value for a in ACTIONS if not a.value.startswith("selftest_")), [])
 
@@ -325,8 +387,152 @@ log.clear()
 quota_manager._set_connection_enabled(db, xr, enabled=False)
 check("quota: already in the requested state -> no remote call at all", log, [])
 
-check("none of the writers above went through node_gate (zero passages, zero locks counted)",
-      node_gate.counters.snapshot(), {"mode_lock_miss": 0, "contention": 0, "passages": 0})
+check("each of the 12 remote blocks above made exactly one gate passage; the gate never failed or refused",
+      node_gate.counters.snapshot(),
+      {"mode_lock_miss": 12, "contention": 0, "passages": 12, "ungated": 0, "gate_error": 0})
+
+print("--- C. error behaviour is unchanged ---")
+from fastapi import HTTPException  # noqa: E402
+
+from app.services.mikrotik_client import MikrotikError  # noqa: E402
+from app.services.xray_client import XrayError  # noqa: E402
+
+
+def http_status(fn):
+    try:
+        fn()
+    except HTTPException as exc:
+        return exc.status_code, exc.detail
+    return None
+
+
+def failing(exc):
+    def call(*a, **k):
+        raise exc
+    return call
+
+
+log.clear()
+install_fakes(log, mikrotik_returns={"add_peer": failing(MikrotikError("router said no"))})
+before = db.query(models.Connection).count()
+check("provision_wireguard: a router error is still HTTP 400 with the router's message",
+      http_status(lambda: user_ops.provision_wireguard(db, user, mt_node)), (400, "router said no"))
+check("...and still leaves no Connection row", db.query(models.Connection).count(), before)
+install_fakes(log, xray_returns={"add_client": failing(XrayError("panel down"))})
+check("provision_xray: a panel error is still HTTP 400",
+      http_status(lambda: user_ops.provision_xray(db, user, xr_node)), (400, "panel down"))
+install_fakes(log, mikrotik_returns={"list_peers": failing(RuntimeError("unexpected"))})
+try:
+    user_ops.deprovision_connection(wg)
+    unexpected = None
+except RuntimeError as exc:
+    unexpected = str(exc)
+check("an unexpected exception type still propagates as itself (the gate neither hides nor rewraps it)",
+      unexpected, "unexpected")
+
+# ===========================================================================
+print("--- D. live shape: verified schema + usable lock directory ---")
+import fcntl  # noqa: E402
+import tempfile  # noqa: E402
+import threading  # noqa: E402
+
+from app.services import gate_locks, provisioning_schema as ps  # noqa: E402
+
+os.environ["UM_LOCK_DIR"] = tempfile.mkdtemp(prefix="um-writers-locks-")
+live_engine = create_engine(f"sqlite:///{os.path.join(tempfile.mkdtemp(prefix='um-writers-db-'), 'live.db')}",
+                            connect_args={"check_same_thread": False})
+LiveSession = sessionmaker(bind=live_engine)
+check("provisioning schema bootstraps", ps.bootstrap(live_engine, LiveSession)["ready"], True)
+real_read = node_gate.read_runtime
+node_gate.read_runtime = lambda factory=None: real_read(LiveSession)
+node_gate.reset_cache()
+node_gate.counters.reset()
+
+flocks = []
+real_flock = fcntl.flock
+
+
+def spy_flock(fd, operation):
+    try:
+        name = os.path.basename(os.readlink(f"/proc/self/fd/{fd}"))
+    except OSError:
+        name = os.path.basename(fcntl.fcntl(fd, fcntl.F_GETPATH, b"\0" * 1024).split(b"\0")[0].decode())
+    flocks.append((name, "SH" if operation & fcntl.LOCK_SH else "EX"))
+    return real_flock(fd, operation)
+
+
+gate_locks.fcntl.flock = spy_flock
+log.clear()
+install_fakes(log, mikrotik_returns={"add_peer": "*1"})
+live_wg = user_ops.provision_wireguard(db, user, mt_node, speed_limit_mbps=5)
+gate_locks.fcntl.flock = real_flock
+check("a legacy writer takes exactly ONE lock: the shared gate-mode lock; no node lock, nothing exclusive",
+      flocks, [("gate-mode.lock", "SH")])
+check("...and makes the same remote calls as before",
+      names(log), ["ensure_wireguard_interface", "ensure_interface_address", "add_peer", "upsert_simple_queue"])
+check("...one passage, no miss", node_gate.counters.snapshot(),
+      {"mode_lock_miss": 0, "contention": 0, "passages": 1, "ungated": 0, "gate_error": 0})
+check("no node lock file exists", [f for f in os.listdir(os.path.dirname(gate_locks.mode_lock_path(
+    LiveSession().get(__import__("app.models_provisioning", fromlist=["x"]).ProvisioningRuntimeState, 1).installation_uuid)))
+    if f.startswith("node-")], [])
+
+barrier = threading.Barrier(2, timeout=5)
+together = []
+
+
+class Meeting:
+    """A fake client whose remote call waits until BOTH writers are inside."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def list_peers(self, interface):
+        try:
+            barrier.wait()
+            together.append(True)
+        except threading.BrokenBarrierError:
+            together.append(False)
+        return []
+
+    def remove_simple_queue(self, name):
+        return None
+
+
+class MeetingFactory:
+    @classmethod
+    def for_node(cls, node):
+        return Meeting()
+
+
+user_ops.MikrotikClient = MeetingFactory
+threads = [threading.Thread(target=user_ops.deprovision_connection, args=(live_wg,)) for _ in range(2)]
+for thread in threads:
+    thread.start()
+for thread in threads:
+    thread.join()
+check("two legacy writers on the SAME node are inside their remote blocks at the same time (no serialization)",
+      together, [True, True])
+
+real_node_gate = node_gate.node_gate
+
+
+def broken_gate(node_id, **kw):
+    raise RuntimeError("gate is broken")
+
+
+node_gate.node_gate = broken_gate
+log.clear()
+install_fakes(log, mikrotik_returns={"list_peers": []})
+node_gate.counters.reset()
+user_ops.deprovision_connection(live_wg)
+node_gate.node_gate = real_node_gate
+check("a broken gate does not stop a legacy writer: the remote calls still happen",
+      names(log), ["list_peers", "remove_simple_queue"])
+check("...and it is counted", node_gate.counters.snapshot()["gate_error"], 1)
+node_gate.read_runtime = real_read
 db.close()
 
 print()

@@ -366,6 +366,8 @@ class RemoteBridge:
 
     async def redeem_discount(
         self, code: str, username: str, package_price: int = 0, owner_admin_id: Optional[int] = None,
+        approval_uuid: Optional[str] = None,
     ) -> dict:
-        payload = {"code": code, "username": username, "package_price": package_price, "owner_admin_id": owner_admin_id}
+        payload = {"code": code, "username": username, "package_price": package_price, "owner_admin_id": owner_admin_id,
+                   "approval_uuid": approval_uuid}
         return await self._call("POST", "/discount/redeem", json=payload)

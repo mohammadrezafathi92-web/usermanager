@@ -291,7 +291,8 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
                         pass
             if pending.get("discount_code"):
                 try:
-                    await api.redeem_discount(pending["discount_code"], pending["target_username"], pending["price"])
+                    await api.redeem_discount(pending["discount_code"], pending["target_username"], pending["price"],
+                                              approval_uuid=session.get("approval_uuid"))
                 except ApiError:
                     pass
             customer_msg = f"✅ پرداخت شما تایید شد!\n\nنام کاربری: <code>{pending['target_username']}</code>"
@@ -317,7 +318,8 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
                 )
             if pending.get("discount_code"):
                 try:
-                    await api.redeem_discount(pending["discount_code"], pending["target_username"], pending["price"])
+                    await api.redeem_discount(pending["discount_code"], pending["target_username"], pending["price"],
+                                              approval_uuid=session.get("approval_uuid"))
                 except ApiError:
                     pass
             if user.get("reserved_quota_gb") or user.get("reserved_duration_days"):

@@ -574,10 +574,12 @@ class PanelBridge:
         payload = schemas.DiscountValidateRequest(code=code, package_price=package_price, username=username, owner_admin_id=_scope(owner_admin_id))
         return _dump(await _call(bot_router.validate_discount, payload))
 
-    async def redeem_discount(self, code: str, username: str, package_price: int = 0, owner_admin_id: Optional[int] = None) -> dict:
+    async def redeem_discount(self, code: str, username: str, package_price: int = 0, owner_admin_id: Optional[int] = None,
+                              approval_uuid: Optional[str] = None) -> dict:
         """Called once at final purchase confirmation - actually consumes
         the code (bumps used_count, records a redemption row)."""
-        payload = schemas.DiscountRedeemRequest(code=code, username=username, package_price=package_price, owner_admin_id=_scope(owner_admin_id))
+        payload = schemas.DiscountRedeemRequest(code=code, username=username, package_price=package_price, owner_admin_id=_scope(owner_admin_id),
+                                               approval_uuid=approval_uuid)
         return _dump(await _call(bot_router.redeem_discount, payload))
 
 

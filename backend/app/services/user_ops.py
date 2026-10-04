@@ -257,7 +257,7 @@ def validate_discount_code(
 
 def redeem_discount_code(
     db: Session, code: str, username: str, package_price: int = 0,
-    owner_admin_id: Optional[int] = None,
+    owner_admin_id: Optional[int] = None, evidence_sink: Optional[list] = None,
 ) -> tuple[bool, str, int]:
     """Re-validates (a code can hit its cap/expire between the customer
     typing it and confirming payment) then, if still valid, atomically
@@ -280,16 +280,22 @@ def redeem_discount_code(
         )
         .first()
     )
-    row.used_count = (row.used_count or 0) + 1
+    used_before = row.used_count or 0
+    row.used_count = used_before + 1
     user = db.query(models.User).filter(models.User.username == username).first()
-    db.add(models.DiscountCodeRedemption(
+    redemption = models.DiscountCodeRedemption(
         code_id=row.id,
         user_id=user.id if user else None,
         username=username,
         package_price=package_price,
         discount_amount=amount,
-    ))
+    )
+    db.add(redemption)
     db.commit()
+    if evidence_sink is not None:
+        # receipt-approval evidence (services/receipt_approval_effects.py)
+        from .receipt_approval_effects import DiscountEvidence
+        evidence_sink.append((redemption, DiscountEvidence(used_before, used_before + 1)))
     return True, "", amount
 
 
@@ -323,6 +329,33 @@ def _resolve_status_after_reset(
     return models.UserStatus.active
 
 
+def _renewal_state(target) -> tuple:
+    """(quota, used, expiry, reserved quota, reserved days, reserved package,
+    package) of a User or a Purchase - the columns a renewal can touch."""
+    quota = target.total_quota_bytes if isinstance(target, models.User) else target.quota_bytes
+    return (int(quota or 0), int(target.used_bytes or 0), target.expire_at, target.reserved_quota_bytes,
+            target.reserved_duration_days, target.reserved_package_id, target.package_id)
+
+
+def _renewal_evidence(sink: Optional[list], mode: str, now: dt.datetime, add_gb: float, add_days: int,
+                      package_id: Optional[int], before: tuple, after: tuple) -> None:
+    """Receipt-approval evidence of one renewal (services/
+    receipt_approval_effects.py): which branch ran, with the values read
+    before and after it, and the very `now` the branch used. Only built
+    here, inside the function that did the renewal, and only when a caller
+    asked for it."""
+    if sink is None:
+        return
+    from .receipt_approval_effects import PurchaseRenewedEvidence
+    sink.append(PurchaseRenewedEvidence(
+        renewal_mode=mode, effective_now=now, add_quota_bytes=gb_to_bytes(add_gb) if add_gb else 0,
+        add_days=int(add_days or 0), package_id_requested=package_id,
+        q_before=before[0], u_before=before[1], e_before=before[2], rq_before=before[3], rd_before=before[4],
+        rp_before=before[5], pk_before=before[6],
+        q_after=after[0], u_after=after[1], e_after=after[2], rq_after=after[3], rd_after=after[4],
+        rp_after=after[5], pk_after=after[6]))
+
+
 def renew_user(
     db: Session,
     user: models.User,
@@ -330,6 +363,7 @@ def renew_user(
     add_days: int = 0,
     reset_usage: bool = False,
     package_id: Optional[int] = None,
+    evidence_sink: Optional[list] = None,
 ) -> models.User:
     """Renews a user - but NOT always immediately. If the user's CURRENT
     quota and expiry both still have room left (they haven't actually used
@@ -346,6 +380,7 @@ def renew_user(
     RESET, not an addition, per the requested behavior."""
     now = dt.datetime.utcnow()
     is_real_renewal = bool(add_gb or add_days)
+    before = _renewal_state(user)
 
     if is_real_renewal:
         quota_ok = not user.total_quota_bytes or user.used_bytes < user.total_quota_bytes
@@ -358,6 +393,7 @@ def renew_user(
                 user.reserved_package_id = package_id
             if user.reserved_created_at is None:
                 user.reserved_created_at = now
+            _renewal_evidence(evidence_sink, "reserved", now, add_gb, add_days, package_id, before, _renewal_state(user))
             db.commit()
             db.refresh(user)
             return user
@@ -393,6 +429,9 @@ def renew_user(
     if package_id is not None:
         user.package_id = package_id
     if is_real_renewal:
+        # (evidence first: it is about the renewal itself, before any
+        # loyalty reward below adds to the quota)
+        _renewal_evidence(evidence_sink, "immediate_reset", now, add_gb, add_days, package_id, before, _renewal_state(user))
         # Only a REAL renewal (actual quota/time added) counts toward
         # loyalty progress - a bare package re-tag or a reset-usage-only
         # call shouldn't silently advance it. See _maybe_grant_loyalty_reward.
@@ -1503,6 +1542,7 @@ def renew_purchase(
     add_days: int = 0,
     reset_usage: bool = False,
     package_id: Optional[int] = None,
+    evidence_sink: Optional[list] = None,
 ) -> models.Purchase:
     """Same reservation-queue renewal behavior as renew_user above (see its
     docstring), but scoped to just ONE independent Purchase instead of the
@@ -1510,6 +1550,7 @@ def renew_purchase(
     user bought without touching anything else they have."""
     now = dt.datetime.utcnow()
     is_real_renewal = bool(add_gb or add_days)
+    before = _renewal_state(purchase)
 
     if is_real_renewal:
         quota_ok = not purchase.quota_bytes or purchase.used_bytes < purchase.quota_bytes
@@ -1522,6 +1563,7 @@ def renew_purchase(
                 purchase.reserved_package_id = package_id
             if purchase.reserved_created_at is None:
                 purchase.reserved_created_at = now
+            _renewal_evidence(evidence_sink, "reserved", now, add_gb, add_days, package_id, before, _renewal_state(purchase))
             db.commit()
             db.refresh(purchase)
             return purchase
@@ -1546,6 +1588,8 @@ def renew_purchase(
         reconcile_purchase_connections(db, purchase)
     if package_id is not None:
         purchase.package_id = package_id
+    if is_real_renewal:
+        _renewal_evidence(evidence_sink, "immediate_reset", now, add_gb, add_days, package_id, before, _renewal_state(purchase))
     db.commit()
     db.refresh(purchase)
     return purchase

@@ -149,10 +149,47 @@ print("--- renewal ---")
 intent4 = ri.ApprovalIntent(pending_source_instance_id="inst", pending_local_id=4, kind="renew", target_username="newbie",
                             amount=800, package_id=package.id, claimed_telegram_id=999)
 uuid4 = reg.begin(db, internal, intent4, approval_mode="manual", approved_by_telegram_id=1000)["approval_uuid"]
+before = len(shadow_codes())
 bot_router.renew("newbie", schemas.BotRenewRequest(add_gb=10, add_days=30, package_id=package.id, paid_amount=800,
                                                     payment_method="card", approval_uuid=uuid4), db=db, principal=internal)
-check("the renewal's sale is recorded and tagged (the renewal effect itself comes with user_ops evidence)",
-      (effects(uuid4), db.query(models.LedgerEntry).filter_by(kind="sale_renew").one().approval_uuid), (["ledger_sale:sale"], uuid4))
+check("user-level renewal: the renewal itself (evidence from user_ops) and its sale, both recorded; sale tagged",
+      (effects(uuid4), shadow_codes()[before:], db.query(models.LedgerEntry).filter_by(kind="sale_renew").one().approval_uuid),
+      (["ledger_sale:sale", "purchase_renewed:renew"], [], uuid4))
+import json
+snapshot = json.loads(db.execute(select(F.c.resource_snapshot).where(F.c.approval_uuid == uuid4, F.c.effect_type == "purchase_renewed")).scalar())
+check("the snapshot says which branch ran and what it changed (needed to undo it later)",
+      (snapshot["renewal_mode"] in ("reserved", "immediate_reset"), snapshot["add_days"], "q_before" in snapshot), (True, 30, True))
+target_purchase = db.query(models.Purchase).filter(models.Purchase.user_id == db.query(models.User).filter_by(username="newbie").one().id).first()
+intent6 = ri.ApprovalIntent(pending_source_instance_id="inst", pending_local_id=6, kind="renew", target_username="newbie",
+                            amount=800, package_id=package.id, renew_purchase_id=target_purchase.id, claimed_telegram_id=999)
+uuid6 = reg.begin(db, internal, intent6, approval_mode="manual", approved_by_telegram_id=1000)["approval_uuid"]
+bot_router.renew_service("newbie", target_purchase.id, schemas.BotRenewRequest(
+    add_gb=10, add_days=30, package_id=package.id, paid_amount=800, payment_method="card", approval_uuid=uuid6),
+    db=db, principal=internal)
+check("service-level renewal: recorded against the Purchase",
+      (effects(uuid6), db.execute(select(F.c.resource_type).where(F.c.approval_uuid == uuid6, F.c.effect_type == "purchase_renewed")).scalar()),
+      (["ledger_sale:sale", "purchase_renewed:renew"], "Purchase"))
+legacy_user = db.query(models.User).filter_by(username="legacy").one()
+reserved_before = legacy_user.reserved_duration_days or 0
+bot_router.renew("legacy", schemas.BotRenewRequest(add_gb=1, add_days=5), db=db, principal=internal)
+db.expire_all()
+check("a renewal with no approval behaves exactly as before and records nothing",
+      ((db.query(models.User).filter_by(username="legacy").one().reserved_duration_days or 0) - reserved_before
+       + (0 if db.query(models.User).filter_by(username="legacy").one().reserved_duration_days else 5),
+       len(db.execute(select(F).where(F.c.approval_uuid.is_(None))).all())), (5, 0))
+
+print("--- discount ---")
+code = models.DiscountCode(code="OFF10", kind="percent", value=10)
+db.add(code)
+db.commit()
+intent7 = ri.ApprovalIntent(pending_source_instance_id="inst", pending_local_id=7, kind="renew", target_username="newbie",
+                            amount=900, package_id=package.id, discount_code="OFF10", list_price=1000, claimed_telegram_id=999)
+uuid7 = reg.begin(db, internal, intent7, approval_mode="manual", approved_by_telegram_id=1000)["approval_uuid"]
+result = bot_router.redeem_discount(schemas.DiscountRedeemRequest(code="OFF10", username="newbie", package_price=1000,
+                                                                 approval_uuid=uuid7), db=db, principal=internal)
+db.expire_all()
+check("redeeming with an approval records the optional discount effect; the code is consumed once",
+      (result.valid, effects(uuid7), db.get(models.DiscountCode, code.id).used_count), (True, [f"discount_redeemed:discount:{code.id}"], 1))
 
 print("--- top-up and card payment ---")
 from app.services import payment_cards
@@ -189,7 +226,7 @@ check("a wallet debit and a card payment without an approval behave as before",
 
 print("--- the bot passes the id along ---")
 check("...also to add_balance and record_card_payment",
-      (inspect.getsource(admin_pending.perform_approval).count('session.get("approval_uuid")'),), (3,))
+      (inspect.getsource(admin_pending.perform_approval).count('session.get("approval_uuid")'),), (5,))
 source = inspect.getsource(admin_pending.perform_approval)
 check("perform_approval puts the registered approval uuid into the sale details",
       'sale_info["approval_uuid"] = session["approval_uuid"]' in source, True)

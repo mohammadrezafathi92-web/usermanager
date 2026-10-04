@@ -119,7 +119,39 @@ check("the manual button passes who tapped it; the automatic path says auto",
       ("approved_by_telegram_id=call.from_user.id" in inspect.getsource(admin_pending.cb_approval),
        "perform_approval(pending, bot, auto=True)" in inspect.getsource(auto_approve.try_auto_approve)), (True, True))
 
+print("--- finish ---")
+calls = []
+real_finalize = panel_bridge.api.finalize_approval
+
+
+async def fake_finalize(uuid_, failed=False):
+    calls.append((uuid_, failed))
+    if uuid_ == "boom":
+        raise RuntimeError("down")
+    return {"state": "completed"}
+
+
+panel_bridge.api.finalize_approval = fake_finalize
+try:
+    run(approval_session.finish(approval_session.LEGACY, ok=True))
+    run(approval_session.finish({"approval_uuid": "u1"}, ok=True))
+    run(approval_session.finish({"approval_uuid": "u2"}, ok=False))
+    run(approval_session.finish({"approval_uuid": "boom"}, ok=True))
+finally:
+    panel_bridge.api.finalize_approval = real_finalize
+check("nothing for an unregistered approval; success and failure are reported; an error is swallowed",
+      calls, [("u1", False), ("u2", True), ("boom", False)])
+done = run(panel_bridge.api.finalize_approval(manual["approval_uuid"], failed=True))
+check("through the real in-process bridge: a registered approval with no effect, reported failed", done["state"], "failed")
+
 print("--- remote bridge ---")
+sent2 = {}
+bridge2 = RemoteBridge("http://panel:8000/api/bot", "k")
+bridge2._request = lambda method, path, **kw: sent2.update(method=method, path=path, **kw) or {"state": "completed"}
+run(bridge2.finalize_approval("abc", failed=True))
+check("finalize posts to the approval's own URL",
+      (sent2["base_url"] + sent2["path"], sent2["json"]),
+      ("http://panel:8000/api/accounting/receipt-approvals/abc/finalize", {"failed": True}))
 sent = {}
 bridge = RemoteBridge("http://panel:8000/api/bot", "k")
 bridge._request = lambda method, path, **kw: sent.update(method=method, path=path, **kw) or {"mode": "off"}

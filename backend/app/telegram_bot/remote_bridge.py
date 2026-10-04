@@ -295,6 +295,11 @@ class RemoteBridge:
         return await asyncio.to_thread(self._request, "POST", f"/accounting/receipt-approvals/{mode}",
                                        base_url=root, json=intent)
 
+    async def finalize_approval(self, approval_uuid: str, failed: bool = False) -> dict:
+        root = self.base_url[:-len("/bot")] if self.base_url.endswith("/api/bot") else self.base_url
+        return await asyncio.to_thread(self._request, "POST", f"/accounting/receipt-approvals/{approval_uuid}/finalize",
+                                       base_url=root, json={"failed": failed})
+
     async def record_card_payment(self, card_id: int, amount: int, approval_uuid: Optional[str] = None) -> None:
         await self._call("POST", f"/payment-cards/{card_id}/record-payment",
                          json={"amount": amount, "approval_uuid": approval_uuid})

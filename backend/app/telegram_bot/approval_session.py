@@ -74,3 +74,21 @@ async def begin(pending: dict, *, approved_by_telegram_id: Optional[int] = None,
         logger.warning("pending request %s: approval registration unavailable (%s) - proceeding as before",
                        pending.get("id"), exc)
         return dict(LEGACY)
+
+
+async def finish(session: dict, ok: bool) -> None:
+    """Tells the panel the approval is over: it went through (the panel
+    then checks that everything it expected was recorded) or it failed
+    before doing anything. Nothing to do for an unregistered approval.
+    Never raises - the approval's own outcome is already decided."""
+    approval_uuid = (session or {}).get("approval_uuid")
+    if not approval_uuid:
+        return
+    try:
+        from .panel_bridge import api
+        result = await api.finalize_approval(approval_uuid, failed=not ok)
+        if isinstance(result, dict) and ok and result.get("state") != "completed":
+            logger.info("approval %s finished but is %s (missing: %s)", approval_uuid, result.get("state"),
+                        result.get("missing_effects"))
+    except Exception as exc:
+        logger.warning("approval %s: could not be finalized (%s)", approval_uuid, exc)

@@ -343,3 +343,58 @@ def manifest_of(db: Session, approval_uuid: str) -> list[dict]:
                       .order_by(expected.c.effect_type, expected.c.effect_key)).mappings().all()
     return [{"effect_type": r["effect_type"], "effect_key": r["effect_key"], "requirement": r["requirement"],
              "expected": json.loads(r["expected"])} for r in rows]
+
+
+# ---------------------------------------------------------------- execution state (design 6.5)
+def begin_mutating(db: Session, approval_uuid: str) -> bool:
+    """registered -> mutating, when the approval's first effect is about to
+    be written. In the caller's transaction. In shadow this is bookkeeping
+    only: no execution token and no precondition is enforced (those belong
+    to 'required'). Returns whether the row moved."""
+    approvals = _tables()[0]
+    result = db.execute(approvals.update().where(
+        approvals.c.approval_uuid == approval_uuid, approvals.c.state == "registered")
+        .values(state="mutating", mutating_at=_now()))
+    return result.rowcount == 1
+
+
+def finalize(db: Session, principal: bot_auth.BotPrincipal, approval_uuid: str, *, reported_failure: bool = False) -> dict:
+    """Closes one approval, in the caller's transaction:
+
+      every required effect present      -> completed
+      no effect at all + the bot says it
+      failed                             -> failed (it can be retried)
+      anything else                      -> unchanged
+
+    Compares only the SET of (type, key) against the manifest - each
+    effect's values were already checked when it was written. An approval
+    that is already closed is reported as it is."""
+    approvals, expected, effects, _authority = _tables()
+    row = db.execute(select(approvals).where(approvals.c.approval_uuid == approval_uuid).with_for_update()).mappings().first()
+    if row is None:
+        raise RegistrationRejected(404, "approval_not_found")
+    if caller_key_instance(db, principal) != row["execution_key_instance_uuid"]:
+        raise RegistrationRejected(403, "execution_principal_mismatch")
+    manifest = db.execute(select(expected.c.effect_type, expected.c.effect_key, expected.c.requirement)
+                          .where(expected.c.approval_uuid == approval_uuid)).all()
+    written = {(r[0], r[1]) for r in db.execute(
+        select(effects.c.effect_type, effects.c.effect_key).where(effects.c.approval_uuid == approval_uuid))}
+    known = {(m[0], m[1]) for m in manifest}
+    missing = sorted(f"{m[0]}:{m[1]}" for m in manifest if m[2] == ri.REQUIRED and (m[0], m[1]) not in written)
+    unexpected = sorted(f"{t}:{k}" for t, k in written - known)
+    state = row["state"]
+    if state in ("registered", "mutating"):
+        if written and not missing and not unexpected:
+            state = "completed"
+            db.execute(approvals.update().where(approvals.c.approval_uuid == approval_uuid)
+                       .values(state=state, completed_at=_now()))
+        elif not written and reported_failure:
+            state = "failed"
+            db.execute(approvals.update().where(approvals.c.approval_uuid == approval_uuid)
+                       .values(state=state, failed_at=_now()))
+        elif not reported_failure:
+            runtime.record_shadow_event(
+                db, pending_source_instance_id=row["pending_source_instance_id"], pending_local_id=row["pending_local_id"],
+                stage="finalize", error_code="missing_effects" if missing else "unexpected_effects",
+                approval_uuid=approval_uuid)
+    return {"state": state, "effect_count": len(written), "missing_effects": missing, "unexpected_effects": unexpected}

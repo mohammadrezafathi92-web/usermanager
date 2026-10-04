@@ -317,6 +317,18 @@ def _record_bot_sale(
     )
 
 
+def _record_renewal_sale(db: Session, payload, sale_entry) -> None:
+    """Receipt-approval effects of a renewal, in shadow: the sale's ledger
+    row, tagged with the approval. The renewal itself (purchase_renewed)
+    needs before/after evidence from inside user_ops' renew functions and
+    is recorded once they provide it. No-op without an approval uuid."""
+    recorder = approval_effects.ShadowRecorder(db, getattr(payload, "approval_uuid", None))
+    if recorder.active and sale_entry is not None:
+        db.flush()
+        recorder.effect("ledger_sale", "sale", sale_entry)
+        recorder.tag_ledger(sale_entry)
+
+
 @router.get("/nodes", response_model=list[schemas.BotNodeInfo])
 @bot_route_policy(capability=None, resource_strategy="node_list")
 def list_nodes(db: Session = Depends(get_db), principal: BotPrincipal = Depends(get_bot_principal)):
@@ -555,7 +567,15 @@ def record_payment_card_use(
     ("threshold" mode's auto-switch-to-next-card bookkeeping; a harmless
     no-op for a pool in "manual"/"rotate" mode)."""
     bot_resources._get_payment_card_or_403(db, principal, card_id)  # authorization only - advance_after_payment re-fetches
-    payment_cards.advance_after_payment(db, card_id, payload.amount)
+    # With a registered approval the pool event carries its uuid (only once
+    # per approval - a repeat is recorded as an ordinary payment) and the
+    # event becomes the approval's card_payment effect. Otherwise unchanged.
+    recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)
+    event_uuid = recorder.card_event_uuid()
+    if payment_cards.advance_after_payment_core(db, card_id, payload.amount, approval_uuid=event_uuid):
+        if event_uuid:
+            recorder.card_payment()
+        db.commit()
     return {"ok": True}
 
 
@@ -932,7 +952,16 @@ def purchase_package(
         db, user, package, connections_override=override, comment=payload.comment, principal=principal,
     )
     _charge_seller(db, user, package)
-    _record_bot_sale(db, principal, "sale_new", payload, user, package, purchase_id=purchase.id)
+    sale_entry = _record_bot_sale(db, principal, "sale_new", payload, user, package, purchase_id=purchase.id)
+    recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)      # no-op without an approval
+    if recorder.active:
+        db.flush()
+        recorder.effect("purchase_created", "purchase", purchase,
+                        approval_effects.PurchaseCreatedEvidence(days=package.duration_days or None))
+        for connection in purchase.connections:
+            recorder.connection(connection)
+        recorder.effect("ledger_sale", "sale", sale_entry)
+        recorder.tag_ledger(sale_entry)
     db.commit()
     db.refresh(user)
     return schemas.BotPurchaseResponse(
@@ -1314,7 +1343,8 @@ def renew_service(
     user_ops.renew_purchase(db, purchase, payload.add_gb, payload.add_days, payload.reset_usage, package_id=payload.package_id)
     _charge_seller(db, user, renew_package, payload.add_gb or 0)
     if payload.package_id or payload.paid_amount is not None:
-        _record_bot_sale(db, principal, "sale_renew", payload, user, renew_package, purchase_id=purchase.id)
+        sale_entry = _record_bot_sale(db, principal, "sale_renew", payload, user, renew_package, purchase_id=purchase.id)
+        _record_renewal_sale(db, payload, sale_entry)
         db.commit()
     db.refresh(user)
     db.refresh(purchase)
@@ -1361,7 +1391,8 @@ def renew(
     # add_gb/add_days admin favor isn't a sale.
     _charge_seller(db, user, renew_package, payload.add_gb or 0)
     if payload.package_id or payload.paid_amount is not None:
-        _record_bot_sale(db, principal, "sale_renew", payload, user, renew_package)
+        sale_entry = _record_bot_sale(db, principal, "sale_renew", payload, user, renew_package)
+        _record_renewal_sale(db, payload, sale_entry)
         db.commit()
     return _user_response(user)
 
@@ -1431,6 +1462,8 @@ def add_balance(
             raise HTTPException(400, "موجودی کیف پول کافی نیست")
         db.refresh(user)
     else:
+        balance_before = int(user.balance or 0)
+        topup_entry = None
         user.balance = (user.balance or 0) + payload.amount
         # Accounting: a positive credit is an approved wallet top-up - cash
         # that actually arrived on a card (see services/accounting.py's
@@ -1445,13 +1478,20 @@ def add_balance(
             # ledger attribution once enforcement is on.
             if payload.payment_card_id is not None:
                 bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
-            accounting.record(
+            topup_entry = accounting.record(
                 db, "wallet_topup", payload.amount,
                 user=user,
                 admin_id=user.owner_admin_id,
                 payment_card_id=payload.payment_card_id,
                 payment_method="card",
             )
+        recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)      # no-op without an approval
+        if recorder.active and topup_entry is not None:
+            db.flush()
+            recorder.effect("wallet_credit_source_created", "credit:receipt_topup", user,
+                            approval_effects.WalletCreditEvidence(balance_before, int(user.balance or 0)))
+            recorder.effect("ledger_topup", "topup", topup_entry)
+            recorder.tag_ledger(topup_entry)
         db.commit()
         db.refresh(user)
     return _user_response(user)

@@ -345,6 +345,7 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
             user = await api.add_balance(
                 pending["target_username"], pending["price"],
                 payment_card_id=pending.get("payment_card_id"),
+                approval_uuid=session.get("approval_uuid"),
             )
             customer_msg = (
                 f"✅ پرداخت شما تایید شد و {pending['price']:,} تومان به اعتبار حساب «{pending['target_username']}» اضافه شد.\n"
@@ -391,7 +392,7 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
             logger.info("pending request %s has payment_card_id=%s but amount=%s - skipping card bookkeeping", pending["id"], card_id, amount)
         else:
             try:
-                await api.record_card_payment(card_id, amount)
+                await api.record_card_payment(card_id, amount, approval_uuid=session.get("approval_uuid"))
                 logger.info("pending request %s: recorded %s toman against payment card %s", pending["id"], amount, card_id)
             except ApiError:
                 logger.exception("pending request %s: record_card_payment failed for card %s", pending["id"], card_id)

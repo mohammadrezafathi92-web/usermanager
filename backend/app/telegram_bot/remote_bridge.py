@@ -295,8 +295,9 @@ class RemoteBridge:
         return await asyncio.to_thread(self._request, "POST", f"/accounting/receipt-approvals/{mode}",
                                        base_url=root, json=intent)
 
-    async def record_card_payment(self, card_id: int, amount: int) -> None:
-        await self._call("POST", f"/payment-cards/{card_id}/record-payment", json={"amount": amount})
+    async def record_card_payment(self, card_id: int, amount: int, approval_uuid: Optional[str] = None) -> None:
+        await self._call("POST", f"/payment-cards/{card_id}/record-payment",
+                         json={"amount": amount, "approval_uuid": approval_uuid})
 
     async def list_purchases(self, username: str, owner_admin_id: Optional[int] = None) -> list[dict]:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
@@ -343,8 +344,10 @@ class RemoteBridge:
             params["owner_admin_id"] = owner_admin_id
         return await self._call("POST", f"/users/{username}/set-enabled", params=params)
 
-    async def add_balance(self, username: str, amount: int, payment_card_id: Optional[int] = None) -> dict:
-        return await self._call("POST", f"/users/{username}/add-balance", json={"amount": amount, "payment_card_id": payment_card_id})
+    async def add_balance(self, username: str, amount: int, payment_card_id: Optional[int] = None,
+                          approval_uuid: Optional[str] = None) -> dict:
+        return await self._call("POST", f"/users/{username}/add-balance",
+                                json={"amount": amount, "payment_card_id": payment_card_id, "approval_uuid": approval_uuid})
 
     async def delete_user(self, username: str, owner_admin_id: Optional[int] = None) -> None:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}

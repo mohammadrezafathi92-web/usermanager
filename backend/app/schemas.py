@@ -1536,6 +1536,8 @@ class BotAddBalanceRequest(BaseModel):
     # (positive amounts) by the bot's top-up approval flow, for the
     # accounting ledger's wallet_topup row. See services/accounting.py.
     payment_card_id: Optional[int] = None
+    # receipt-approval registration: which approval this top-up belongs to
+    approval_uuid: Optional[str] = None
 
 
 class BotLinkTelegramRequest(BaseModel):
@@ -1668,6 +1670,7 @@ class BotRecordCardPaymentRequest(BaseModel):
     the toman value of a receipt/top-up just approved against this card,
     used for "threshold" mode's accumulated-total tracking."""
     amount: int
+    approval_uuid: Optional[str] = None
 
 
 class BotUserListItem(BaseModel):

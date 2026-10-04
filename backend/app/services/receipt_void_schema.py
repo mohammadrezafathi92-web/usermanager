@@ -50,10 +50,8 @@ ADDED_UNIQUE_INDEXES = {"api_keys": API_KEY_UUID_INDEX, "ledger_entries": LEDGER
 # What the two singletons must look like while P0 is the only phase
 # deployed: no code exists yet that may change these, so anything else is a
 # corrupted or foreign row. The phase that adds a writer removes its field.
-APPROVAL_RUNTIME_P0 = {
-    "registration_mode": "off", "auto_rate_limit_mode": "off", "loyalty_timing_mode": "legacy_activation",
-    "completeness_generation": 0, "activated_at": None,
-}
+# What stays pinned on the approval row until the joint activation (P9a).
+APPROVAL_RUNTIME_PINNED = {"loyalty_timing_mode": "legacy_activation", "completeness_generation": 0, "activated_at": None}
 WALLET_RUNTIME_P0 = {"phase": "normal", "epoch": 0, "external_fencing": "none"}
 
 
@@ -163,8 +161,12 @@ def seed_singletons(db) -> None:
 
 
 def validate_seed(db) -> list[str]:
+    """Each singleton exists, alone. The wallet row must still hold its P0
+    values (nothing may change it before phase P9). The approval row's
+    modes are operator-controlled from phase P3 on (off <-> shadow), so only
+    what no phase before P9a may touch is pinned."""
     problems: list[str] = []
-    for table, expected in ((rv.receipt_approval_runtime_state, APPROVAL_RUNTIME_P0),
+    for table, expected in ((rv.receipt_approval_runtime_state, APPROVAL_RUNTIME_PINNED),
                             (rv.wallet_runtime_state, WALLET_RUNTIME_P0)):
         rows = db.execute(select(table)).mappings().all()
         if len(rows) != 1 or rows[0]["id"] != SINGLETON_ID:

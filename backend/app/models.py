@@ -1,5 +1,6 @@
 import enum
 import datetime as dt
+import uuid
 from typing import Optional
 
 from sqlalchemy import (
@@ -14,6 +15,8 @@ from sqlalchemy import (
     Text,
     BigInteger,
     UniqueConstraint,
+    CHAR,
+    Index,
 )
 from sqlalchemy.orm import relationship, backref
 
@@ -503,6 +506,18 @@ class ApiKey(Base):
     # TENANT_INTEGRATION key FOR a specific admin sets owner_admin_id to
     # that admin, not to themselves).
     created_by_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True)
+
+    # --- Receipt Void P0 (docs/receipt-void-design-2026-10-02.md, 6.4) ---
+    # A random identity of THIS key row, independent of the key's value and
+    # of the numeric id (which SQLite may reuse after a delete). Nullable so
+    # the column can be added to an existing table; the startup readiness
+    # check (services/receipt_void_schema.py) backfills old rows. Uniqueness
+    # is the explicit Index below - only that form lands in table.indexes,
+    # which is what the additive auto-migration creates on an existing table.
+    key_instance_uuid = Column(CHAR(36), nullable=True, default=lambda: str(uuid.uuid4()))
+    # Protocol version the bot using this key last reported when registering
+    # an approval. Written by a later phase; NULL = never reported.
+    approval_protocol_version = Column(Integer, nullable=True)
 
 
 class IpBan(Base):
@@ -1704,6 +1719,11 @@ class DiscountCodeRedemption(Base):
     package_price = Column(BigInteger, nullable=True)  # price BEFORE discount, for the audit trail
     discount_amount = Column(BigInteger, nullable=True)  # actual toman amount knocked off
     created_at = Column(DateTime, default=now, index=True)
+    # --- Receipt Void P0: which approval caused this redemption, and
+    # whether a receipt void undid it. All nullable; written by later phases.
+    approval_uuid = Column(CHAR(36), nullable=True, index=True)
+    voided_at = Column(DateTime, nullable=True)
+    void_operation_id = Column(BigInteger, nullable=True)
 
     code = relationship("DiscountCode", back_populates="redemptions")
 
@@ -2068,6 +2088,17 @@ class LedgerEntry(Base):
     # username snapshot beside admin_id survived, but nothing queried it.
     # Scoping now reads owner_admin_id_snapshot, which nothing cascades.
     owner_admin_id_snapshot = Column(Integer, nullable=True, index=True)
+
+    # --- Receipt Void P0 (design 11.1, "additions on existing tables") ---
+    # All nullable; NULL on every row written before a later phase starts
+    # filling them. amount_source ('explicit' | 'fallback') is audit only.
+    approval_uuid = Column(CHAR(36), nullable=True, index=True)
+    amount_source = Column(String(8), nullable=True)
+    voided_at = Column(DateTime, nullable=True)
+    void_operation_id = Column(BigInteger, nullable=True)
+    # The row this one reverses. At most ONE reversal per row - enforced by
+    # the explicit unique index below (NULL-exempt on purpose).
+    reversal_of_id = Column(Integer, nullable=True)
 
     user = relationship("User", foreign_keys=[user_id])
     admin = relationship("AdminUser", foreign_keys=[admin_id])
@@ -2450,3 +2481,12 @@ class AdPost(Base):
     channel = relationship("AdChannel", back_populates="posts")
     package = relationship("Package")
     discount_code = relationship("DiscountCode")
+
+
+# Receipt Void P0: uniqueness on EXISTING tables has to be an explicit Index
+# (not Column(unique=True)) so that it sits in table.indexes, which is all the
+# additive auto-migration in main.py creates on a table that already exists.
+# That migration only warns if an index fails to build, so the presence of
+# both is verified at startup by services/receipt_void_schema.py.
+Index("uq_api_keys_key_instance_uuid", ApiKey.key_instance_uuid, unique=True)
+Index("uq_ledger_entries_reversal_of_id", LedgerEntry.reversal_of_id, unique=True)

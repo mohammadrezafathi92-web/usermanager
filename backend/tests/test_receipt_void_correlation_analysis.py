@@ -343,12 +343,16 @@ try:
           any(n in {c.name for c in sa_inspect(models.Purchase).columns}
               for n in ("pending_id", "approval_id", "approval_uuid")),
           False)
-    check("[FINDING] models.LedgerEntry has NO such column either - the closest thing "
-          "it has is payment_card_id/purchase_id/user_id, none of which identifies "
-          "WHICH approval (there can be many sales for the same user/card/package)",
-          any(n in {c.name for c in sa_inspect(models.LedgerEntry).columns}
-              for n in ("pending_id", "approval_id", "approval_uuid")),
-          False)
+    # Receipt Void P0 added a nullable LedgerEntry.approval_uuid column - the
+    # schema for the correlation. P0 only adds the column: nothing writes it
+    # yet, so the finding itself (the sale cannot be traced to its approval)
+    # still holds, and is asserted on the ACTUAL row below.
+    check("LedgerEntry now HAS the approval_uuid column (Receipt Void P0 schema)",
+          "approval_uuid" in {c.name for c in sa_inspect(models.LedgerEntry).columns}, True)
+    check("[FINDING] ...but nothing fills it: the ledger row of this very sale has "
+          "approval_uuid NULL, so it still does not identify WHICH approval produced it",
+          getattr(created_ledger, "approval_uuid", "missing") if created_ledger is not None else "no row",
+          None)
     check("[FINDING] a real Ledger row for the sale does exist, but reading it back "
           "gives no way to reconstruct which pending_purchases row (in a COMPLETELY "
           "SEPARATE sqlite file) produced it - only a human cross-referencing "

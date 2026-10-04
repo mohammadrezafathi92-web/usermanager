@@ -158,7 +158,7 @@ _TOKEN = re.compile(
     r"'(?:[^'\\]|''|\\.)*'"          # string literal
     r"|[A-Za-z_][A-Za-z0-9_$]*"      # identifier / keyword / function
     r"|[0-9]+(?:\.[0-9]+)?"          # number
-    r"|<>|!=|<=|>=|=|<|>|\(|\)|,"
+    r"|<>|!=|<=|>=|=|<|>|\(|\)|,|\+|-"
     r")"
 )
 # MariaDB re-prints LENGTH() as octet_length() - the same function, both
@@ -219,7 +219,8 @@ class _CheckParser:
         or_expr   := and_expr ( OR and_expr )*
         and_expr  := not_expr ( AND not_expr )*
         not_expr  := NOT not_expr | predicate
-        predicate := operand ( <cmp> operand | IS [NOT] NULL | [NOT] IN ( operand, ... ) )*
+        predicate := sum ( <cmp> sum | IS [NOT] NULL | [NOT] IN ( operand, ... ) )*
+        sum       := operand ( (+|-) operand )*
         operand   := literal | NULL | name | name ( args ) | ( or_expr )
 
     The result is a tree, so a pair of parentheses only disappears when it
@@ -279,18 +280,27 @@ class _CheckParser:
             inner = self._not()
             if inner[0] == "in":
                 return ("not_in",) + inner[1:]
+            if inner[0] == "cmp" and inner[1] == "=" and inner[2][0] == "name" and inner[3][0] in ("str", "num"):
+                return ("cmp", "<>") + inner[2:]
             if inner[0] == "is_null":
                 return ("is_not_null",) + inner[1:]
             return ("not", inner)
         return self._predicate()
 
-    def _predicate(self):
+    def _sum(self):
         left = self._operand()
+        while self._peek() in (("op", "+"), ("op", "-")):
+            operator = self._take()[1]
+            left = ("arith", operator, left, self._operand())
+        return left
+
+    def _predicate(self):
+        left = self._sum()
         while True:
             kind, value = self._peek()
             if kind == "op" and value in _COMPARISONS:
                 self._take()
-                left = ("cmp", value, left, self._operand())
+                left = ("cmp", value, left, self._sum())
             elif (kind, value) == ("kw", "is"):
                 self._take()
                 negated = self._at("kw", "not")
@@ -307,7 +317,13 @@ class _CheckParser:
                 if negated:
                     self._take()
                 self._take("kw", "in")
-                left = ("not_in" if negated else "in", left, self._list())
+                values = self._list()
+                if len(values) == 1:
+                    # `x IN (v)` and `x = v` are the same condition, and
+                    # MariaDB re-prints the former as the latter.
+                    left = ("cmp", "<>" if negated else "=", left, values[0])
+                else:
+                    left = ("not_in" if negated else "in", left, values)
             else:
                 return left
 
@@ -559,9 +575,9 @@ def _inspect_checks(inspector, table, dialect, problems: list[str]) -> None:
             )
 
 
-def inspect_schema(engine) -> list[str]:
-    """Every difference between the provisioning models and the live
-    database, as human-readable strings. Empty list == the database really
+def inspect_schema(engine, tables=None) -> list[str]:
+    """Every difference between the given tables' models (default: the
+    provisioning tables) and the live database, as human-readable strings. Empty list == the database really
     carries the schema. Anything that cannot be verified is itself a
     problem - "could not check" is never treated as "fine"."""
     dialect = engine.dialect
@@ -575,7 +591,7 @@ def inspect_schema(engine) -> list[str]:
     except Exception as exc:  # noqa: BLE001
         return [f"could not list tables: {exc}"]
 
-    for table in mp.PROVISIONING_TABLES:
+    for table in (mp.PROVISIONING_TABLES if tables is None else tables):
         if table.name not in live_tables:
             problems.append(f"{table.name}: table is missing")
             continue

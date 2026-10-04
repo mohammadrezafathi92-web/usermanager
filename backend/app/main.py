@@ -25,6 +25,7 @@ from .services import accounting as accounting_service
 from .services import purchase_migration
 from .services import ip_guard
 from .services import provisioning_schema
+from .services import receipt_void_schema
 from .telegram_bot import runner as telegram_bot_runner
 from .telegram_bot.config import parse_id_set
 
@@ -743,6 +744,21 @@ def _bootstrap_provisioning_schema() -> None:
             logging.exception("could not even record provisioning not-ready state")
 
 
+def _bootstrap_receipt_void_schema() -> None:
+    """Receipt Void phase P0: create, verify and seed its 36 tables and
+    verify the additive columns/indexes on existing tables
+    (services/receipt_void_schema.py). Same never-fatal contract as the
+    provisioning bootstrap above - a failure only keeps is_ready() False."""
+    try:
+        receipt_void_schema.bootstrap(engine, SessionLocal)
+    except Exception:  # noqa: BLE001
+        logging.exception("receipt void schema bootstrap raised - receipt void stays not-ready")
+        try:
+            receipt_void_schema.mark_not_ready("bootstrap raised before it could record a result")
+        except Exception:  # noqa: BLE001
+            logging.exception("could not even record receipt-void not-ready state")
+
+
 def _create_schema() -> None:
     """Everything startup does to the database schema, in order: the
     project's own tables exactly as before (create_all for brand-new
@@ -751,6 +767,7 @@ def _create_schema() -> None:
     Base.metadata.create_all(bind=engine)
     _auto_migrate_missing_columns()
     _bootstrap_provisioning_schema()
+    _bootstrap_receipt_void_schema()
 
 
 @app.on_event("startup")

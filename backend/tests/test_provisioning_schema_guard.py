@@ -565,6 +565,11 @@ for dialect_name in ("sqlite", "mariadb", "mysql"):
     check(f"[{dialect_name}] ...nor are OCTET_LENGTH and CHAR_LENGTH",
           N("char_length(`claim_key`) = 64", dialect_name) == N("octet_length(`claim_key`) = 64", dialect_name),
           False)
+check("a single-element IN is the equality MariaDB re-prints it as",
+      N("`reason` = 'third_party_reward_consumed'", "mariadb"), N("reason IN ('third_party_reward_consumed')", "mariadb"))
+check("...and a single-element NOT IN is the inequality",
+      N("`reason` <> 'x'", "mariadb"), N("reason NOT IN ('x')", "mariadb"))
+check("...but a two-element IN is not an equality", N("reason IN ('a', 'b')", "mariadb") == N("reason = 'a'", "mariadb"), False)
 check("NOT IN is one predicate, however it is spelled",
       N("`state` not in ('a','b')", "mariadb"), N("NOT (state IN ('a', 'b'))", "mariadb"))
 check("a literal containing '+' and '_' survives verbatim",

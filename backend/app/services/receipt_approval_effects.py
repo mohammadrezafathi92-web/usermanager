@@ -324,3 +324,59 @@ def record_effect_shadow(db: Session, approval_uuid: Optional[str], effect_type:
             db, pending_source_instance_id=pending[0] if pending else "?", pending_local_id=pending[1] if pending else 0,
             stage="effect", error_code=code, approval_uuid=approval_uuid if pending else None)
         return False
+
+
+class ShadowRecorder:
+    """What a mutation endpoint uses to record its effects for one approval
+    while registration is in shadow. Inactive (every call a no-op) when the
+    request carries no approval uuid - the legacy path - so an endpoint can
+    call it unconditionally. Never raises."""
+
+    def __init__(self, db: Session, approval_uuid: Optional[str]):
+        self.db = db
+        self.approval_uuid = approval_uuid or None
+        self._used_slots: set[str] = set()
+
+    @property
+    def active(self) -> bool:
+        return self.approval_uuid is not None
+
+    def effect(self, effect_type: str, effect_key: str, resource, evidence=None) -> bool:
+        if not self.active or resource is None:
+            return False
+        return record_effect_shadow(self.db, self.approval_uuid, effect_type, effect_key, resource, evidence)
+
+    def connection(self, connection) -> bool:
+        """Finds this connection's slot: the first unused connection row of
+        the manifest with the same (node, protocol, flow). No such slot is
+        itself a shadow error (effect_not_in_manifest)."""
+        if not self.active or connection is None:
+            return False
+        key = "conn:unexpected"
+        try:
+            _approvals, expected, _effects = _tables()
+            rows = self.db.execute(select(expected.c.effect_key, expected.c.expected).where(
+                expected.c.approval_uuid == self.approval_uuid, expected.c.effect_type == "connection_created")
+                .order_by(expected.c.id)).all()
+            wanted = (connection.node_id, _protocol(connection.type), connection.xr_flow or "")
+            for effect_key, raw in rows:
+                spec = json.loads(raw)
+                if effect_key not in self._used_slots and (spec["node_id"], spec["protocol"], spec["flow"]) == wanted:
+                    key = effect_key
+                    self._used_slots.add(effect_key)
+                    break
+        except Exception:
+            log.exception("receipt approval %s: could not look up connection slots", self.approval_uuid)
+        return self.effect("connection_created", key, connection, ConnectionCreatedEvidence(key))
+
+    def tag_ledger(self, entry) -> None:
+        """Puts the approval uuid on the sale's ledger row - the link the
+        void screen will follow. Only for an approval that really exists."""
+        if not self.active or entry is None:
+            return
+        try:
+            approvals = _tables()[0]
+            if self.db.execute(select(approvals.c.id).where(approvals.c.approval_uuid == self.approval_uuid)).first():
+                entry.approval_uuid = self.approval_uuid
+        except Exception:
+            log.exception("receipt approval %s: could not tag the ledger row", self.approval_uuid)

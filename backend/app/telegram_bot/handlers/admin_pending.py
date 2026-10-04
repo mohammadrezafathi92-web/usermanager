@@ -188,8 +188,8 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
     the panel first (approval_session.begin). A caller that passes neither
     - the free-trial path, which has no receipt - registers nothing."""
     # Never blocks and never raises in this phase - see approval_session.
-    await approval_session.begin(pending, approved_by_telegram_id=approved_by_telegram_id, auto=auto,
-                                 local_decision="allowed" if auto else None)
+    session = await approval_session.begin(pending, approved_by_telegram_id=approved_by_telegram_id, auto=auto,
+                                           local_decision="allowed" if auto else None)
     # approve
     pkg = None
     if pending["kind"] in ("new", "renew"):
@@ -216,6 +216,9 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
         "payment_card_id": pending.get("payment_card_id"),
         "discount_code": pending.get("discount_code"),
     }
+    if session.get("approval_uuid"):
+        # lets the panel record what this approval really did, next to it
+        sale_info["approval_uuid"] = session["approval_uuid"]
     try:
         if pending["kind"] == "new":
             if pending["node_id"]:

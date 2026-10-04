@@ -54,10 +54,11 @@ db.commit()
 internal = bot_auth.BotPrincipal.internal(None)
 
 
-def fake_provision(db_, user, node_, protocol, flow="", **_kwargs):
+def fake_provision(db_, user, node_, protocol, flow="", *args, **kwargs):
     """Stands in for the remote call: only the Connection row."""
+    batch = kwargs.get("purchase_batch") or next((a for a in args if isinstance(a, str) and len(a) == 32), None)
     connection = models.Connection(user_id=user.id, node_id=node_.id, type=models.ConnectionType(protocol),
-                                   wg_private_key="SECRET-KEY", purchase_batch=_kwargs.get("purchase_batch"))
+                                   wg_private_key="SECRET-KEY", purchase_batch=batch)
     db_.add(connection)
     db_.flush()
     return connection
@@ -129,7 +130,66 @@ check("the sale works, the ledger row is NOT tagged with an unknown uuid, effect
        db.query(models.LedgerEntry).filter_by(username_snapshot="ghost").one().approval_uuid,
        set(shadow_codes()[before:])), (1, None, {"effect_not_in_manifest"}))
 
+print("--- an existing customer buys another package ---")
+intent3 = ri.ApprovalIntent(pending_source_instance_id="inst", pending_local_id=3, kind="new", target_username="newbie",
+                            amount=900, package_id=package.id, claimed_telegram_id=999)
+uuid3 = reg.begin(db, internal, intent3, approval_mode="manual", approved_by_telegram_id=1000)["approval_uuid"]
+before = len(shadow_codes())
+try:
+    bot_router.purchase_package("newbie", schemas.BotPurchasePackageRequest(
+        package_id=package.id, paid_amount=900, payment_method="card", approval_uuid=uuid3), db=db, principal=internal)
+    purchase_error = None
+except Exception as exc:
+    purchase_error = repr(exc)
+check("purchase_package: purchase, both slots and the sale are recorded",
+      (purchase_error, effects(uuid3), shadow_codes()[before:]),
+      (None, sorted(f"{m['effect_type']}:{m['effect_key']}" for m in reg.manifest_of(db, uuid3)), []))
+
+print("--- renewal ---")
+intent4 = ri.ApprovalIntent(pending_source_instance_id="inst", pending_local_id=4, kind="renew", target_username="newbie",
+                            amount=800, package_id=package.id, claimed_telegram_id=999)
+uuid4 = reg.begin(db, internal, intent4, approval_mode="manual", approved_by_telegram_id=1000)["approval_uuid"]
+bot_router.renew("newbie", schemas.BotRenewRequest(add_gb=10, add_days=30, package_id=package.id, paid_amount=800,
+                                                    payment_method="card", approval_uuid=uuid4), db=db, principal=internal)
+check("the renewal's sale is recorded and tagged (the renewal effect itself comes with user_ops evidence)",
+      (effects(uuid4), db.query(models.LedgerEntry).filter_by(kind="sale_renew").one().approval_uuid), (["ledger_sale:sale"], uuid4))
+
+print("--- top-up and card payment ---")
+from app.services import payment_cards
+card = payment_cards.create_card(db, None, {"card_number": "6037-9999", "card_holder": "H"})     # new pool: event_logged
+db.commit()
+intent5 = ri.ApprovalIntent(pending_source_instance_id="inst", pending_local_id=5, kind="topup", target_username="newbie",
+                            amount=5000, payment_card_id=card.id, claimed_telegram_id=999)
+uuid5 = reg.begin(db, internal, intent5, approval_mode="manual", approved_by_telegram_id=1000)["approval_uuid"]
+balance = db.query(models.User).filter_by(username="newbie").one().balance or 0
+bot_router.add_balance("newbie", schemas.BotAddBalanceRequest(amount=5000, payment_card_id=card.id, approval_uuid=uuid5),
+                       db=db, principal=internal)
+bot_router.record_payment_card_use(card.id, schemas.BotRecordCardPaymentRequest(amount=5000, approval_uuid=uuid5),
+                                   db=db, principal=internal)
+db.expire_all()
+check("top-up: wallet credit, ledger_topup and the card payment - the whole manifest",
+      (effects(uuid5), db.query(models.User).filter_by(username="newbie").one().balance - balance),
+      (sorted(f"{m['effect_type']}:{m['effect_key']}" for m in reg.manifest_of(db, uuid5)), 5000))
+PE = rv.payment_card_pool_events
+check("the pool event carries the approval and is the voidable kind",
+      [(e.event_kind, e.approval_uuid == uuid5, e.amount) for e in db.execute(select(PE))], [("payment_recorded", True, 5000)])
+bot_router.record_payment_card_use(card.id, schemas.BotRecordCardPaymentRequest(amount=5000, approval_uuid=uuid5),
+                                   db=db, principal=internal)
+from app.services import payment_card_events
+check("a repeated record-payment for the same approval is an ordinary payment - the pool is NOT knocked back to legacy",
+      ([e.event_kind for e in db.execute(select(PE).order_by(PE.c.id))],
+       payment_card_events.lock_pool(db, None, create_as=None), db.get(models.PaymentCard, card.id).accumulated_amount),
+      (["payment_recorded", "payment_recorded_uncorrelated"], "event_logged", 10000))
+db.rollback()
+bot_router.add_balance("newbie", schemas.BotAddBalanceRequest(amount=-100), db=db, principal=internal)
+bot_router.record_payment_card_use(card.id, schemas.BotRecordCardPaymentRequest(amount=1), db=db, principal=internal)
+check("a wallet debit and a card payment without an approval behave as before",
+      (db.query(models.User).filter_by(username="newbie").one().balance - balance, db.get(models.PaymentCard, card.id).accumulated_amount),
+      (4900, 10001))
+
 print("--- the bot passes the id along ---")
+check("...also to add_balance and record_card_payment",
+      (inspect.getsource(admin_pending.perform_approval).count('session.get("approval_uuid")'),), (3,))
 source = inspect.getsource(admin_pending.perform_approval)
 check("perform_approval puts the registered approval uuid into the sale details",
       'sale_info["approval_uuid"] = session["approval_uuid"]' in source, True)

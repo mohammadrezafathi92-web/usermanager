@@ -491,8 +491,8 @@ class PanelBridge:
         intent = {**intent, "owner_admin_id": _scope(intent.get("owner_admin_id"))}
         return await _call(_begin, receipt_approvals.ApprovalIntentIn(**intent), mode)
 
-    async def record_card_payment(self, card_id: int, amount: int) -> None:
-        payload = schemas.BotRecordCardPaymentRequest(amount=amount)
+    async def record_card_payment(self, card_id: int, amount: int, approval_uuid: Optional[str] = None) -> None:
+        payload = schemas.BotRecordCardPaymentRequest(amount=amount, approval_uuid=approval_uuid)
         await _call(bot_router.record_payment_card_use, card_id, payload)
 
     async def list_purchases(self, username: str, owner_admin_id: Optional[int] = None) -> list[dict]:
@@ -550,8 +550,9 @@ class PanelBridge:
     async def set_enabled(self, username: str, enabled: bool, owner_admin_id: Optional[int] = None) -> dict:
         return _dump(await _call(bot_router.set_user_enabled, username, enabled, owner_admin_id=_scope(owner_admin_id)))
 
-    async def add_balance(self, username: str, amount: int, payment_card_id: Optional[int] = None) -> dict:
-        payload = schemas.BotAddBalanceRequest(amount=amount, payment_card_id=payment_card_id)
+    async def add_balance(self, username: str, amount: int, payment_card_id: Optional[int] = None,
+                          approval_uuid: Optional[str] = None) -> dict:
+        payload = schemas.BotAddBalanceRequest(amount=amount, payment_card_id=payment_card_id, approval_uuid=approval_uuid)
         return _dump(await _call(bot_router.add_balance, username, payload))
 
     async def delete_user(self, username: str, owner_admin_id: Optional[int] = None) -> None:

@@ -375,8 +375,42 @@ class ShadowRecorder:
         if not self.active or entry is None:
             return
         try:
-            approvals = _tables()[0]
-            if self.db.execute(select(approvals.c.id).where(approvals.c.approval_uuid == self.approval_uuid)).first():
+            if self._known():
                 entry.approval_uuid = self.approval_uuid
         except Exception:
             log.exception("receipt approval %s: could not tag the ledger row", self.approval_uuid)
+
+    def _known(self) -> bool:
+        approvals = _tables()[0]
+        return self.db.execute(select(approvals.c.id).where(approvals.c.approval_uuid == self.approval_uuid)).first() is not None
+
+    def card_event_uuid(self) -> Optional[str]:
+        """The uuid to put on this payment's pool event: only for an
+        approval that exists and has no card event yet (the event table
+        allows one per approval). None otherwise - the payment is then
+        recorded exactly as it would be without an approval."""
+        if not self.active:
+            return None
+        try:
+            from .. import models_receipt_void as rv
+            events = rv.payment_card_pool_events
+            if self._known() and self.db.execute(
+                    select(events.c.id).where(events.c.approval_uuid == self.approval_uuid)).first() is None:
+                return self.approval_uuid
+        except Exception:
+            log.exception("receipt approval %s: could not check the card event", self.approval_uuid)
+        return None
+
+    def card_payment(self) -> bool:
+        """Records the pool event written for this approval, if the pool
+        logs events at all (a 'legacy' pool writes none)."""
+        if not self.active:
+            return False
+        try:
+            from .. import models_receipt_void as rv
+            events = rv.payment_card_pool_events
+            row = self.db.execute(select(events).where(events.c.approval_uuid == self.approval_uuid)).mappings().first()
+        except Exception:
+            log.exception("receipt approval %s: could not read the card event", self.approval_uuid)
+            return False
+        return self.effect("card_payment_recorded", "card_payment", dict(row)) if row else False

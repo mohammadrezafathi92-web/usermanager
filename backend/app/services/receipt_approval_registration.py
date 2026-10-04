@@ -89,10 +89,30 @@ def _key_is_live(db: Session, key_instance_uuid: Optional[str]) -> bool:
     return bool(key and key.enabled)
 
 
+def _shared_bot_admin_ids(db: Session) -> set[int]:
+    """The Telegram ids in the shared bot's own admin list
+    (BotSettings.admin_ids, the «آیدی عددی ادمین» field)."""
+    row = db.get(models.BotSettings, 1)
+    ids = set()
+    for part in ((row.admin_ids if row else "") or "").split(","):
+        part = part.strip()
+        if part.lstrip("-").isdigit():
+            ids.add(int(part))
+    return ids
+
+
 def resolve_approver(db: Session, telegram_id: Optional[int], owner_admin_id: Optional[int],
-                     payment_card_id: Optional[int]) -> Approver:
-    """Design 6.4: exactly the three ways the bot accepts an approver today,
-    now checked by the backend. Nothing matches -> 403."""
+                     payment_card_id: Optional[int], principal: Optional[bot_auth.BotPrincipal] = None) -> Approver:
+    """Design 6.4: the ways the bot accepts an approver today, now checked
+    by the backend. Nothing matches -> 403.
+
+    Besides the three of the design (the owner, an admin above the owner,
+    the card's own approver) the SHARED bot has a fourth that the design
+    text missed and production uses: a Telegram id in the bot's own admin
+    list, with no panel account behind it (telegram_bot/admin_scope.py's
+    "config only" admin - unscoped, handles every request of that bot). It
+    is recorded as 'linked_admin' with no admin id; only a principal that
+    is not bound to one owner (the shared bot) may claim it."""
     if not telegram_id:
         raise RegistrationRejected(403, "manual_approver_not_authorized")
     admin = db.query(models.AdminUser).filter(models.AdminUser.telegram_id == int(telegram_id)).first()
@@ -108,6 +128,9 @@ def resolve_approver(db: Session, telegram_id: Optional[int], owner_admin_id: Op
         card = db.get(models.PaymentCard, payment_card_id)
         if card is not None and card.approval_telegram_id is not None and int(card.approval_telegram_id) == int(telegram_id):
             return Approver(int(telegram_id), "card_approver", None)
+    if principal is not None and principal.valid and principal.owner_admin_id is None \
+            and int(telegram_id) in _shared_bot_admin_ids(db):
+        return Approver(int(telegram_id), "linked_admin", None)
     raise RegistrationRejected(403, "manual_approver_not_authorized")
 
 
@@ -175,7 +198,7 @@ def _register_once(db: Session, principal: bot_auth.BotPrincipal, intent: ri.App
 
     approver = None
     if approval_mode == MANUAL:
-        approver = resolve_approver(db, approved_by_telegram_id, target.owner_admin_id, intent.payment_card_id)
+        approver = resolve_approver(db, approved_by_telegram_id, target.owner_admin_id, intent.payment_card_id, principal)
 
     if last is not None and last["state"] != "cancelled":
         same_key = key_uuid == last["execution_key_instance_uuid"]

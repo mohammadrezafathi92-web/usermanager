@@ -6,6 +6,7 @@ the panel's own database already uses, so it survives container
 rebuilds/restarts just like everything else."""
 import datetime as dt
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from typing import Optional
 
@@ -113,6 +114,18 @@ def init_db():
                 conn.execute(f"ALTER TABLE pending_purchases ADD COLUMN {col} {coltype}")
             except sqlite3.OperationalError:
                 pass  # column already exists - normal on every restart after the first
+
+
+def instance_id() -> str:
+    """A random id of THIS storage file, made once and kept. Request ids
+    are only unique inside one file, so (instance_id, request id) is what
+    identifies a pending request to the panel (receipt-approval
+    registration) - the shared bot, each remote installation and a
+    restored copy all have their own."""
+    with _conn() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS bot_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("INSERT OR IGNORE INTO bot_meta (key, value) VALUES ('instance_id', ?)", (str(uuid.uuid4()),))
+        return conn.execute("SELECT value FROM bot_meta WHERE key = 'instance_id'").fetchone()[0]
 
 
 def create_pending(

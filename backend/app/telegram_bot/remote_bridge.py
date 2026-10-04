@@ -31,7 +31,7 @@ class RemoteBridge:
     def _request(self, method: str, path: str, **kwargs):
         from .panel_bridge import ApiError  # local import - see module docstring for why
 
-        url = f"{self.base_url}{path}"
+        url = f"{kwargs.pop('base_url', self.base_url)}{path}"
         try:
             resp = requests.request(method, url, headers=self._headers(), timeout=self.timeout, **kwargs)
         except requests.RequestException as exc:
@@ -87,7 +87,7 @@ class RemoteBridge:
         return out
 
     def _download(self, path: str) -> Optional[bytes]:
-        url = f"{self.base_url}{path}"
+        url = f"{kwargs.pop('base_url', self.base_url)}{path}"
         try:
             resp = requests.get(url, headers=self._headers(), timeout=self.timeout)
         except requests.RequestException:
@@ -287,6 +287,13 @@ class RemoteBridge:
         payload = {"package_id": package_id, "connections": connections or [], "comment": comment, **(sale_info or {})}
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         return await self._call("POST", f"/users/{username}/purchase-package", json=payload, params=params)
+
+    async def begin_approval(self, intent: dict, mode: str) -> dict:
+        """Same as PanelBridge.begin_approval, over HTTP. The endpoint lives
+        under /api/accounting, next to /api/bot which base_url points at."""
+        root = self.base_url[:-len("/bot")] if self.base_url.endswith("/api/bot") else self.base_url
+        return await asyncio.to_thread(self._request, "POST", f"/accounting/receipt-approvals/{mode}",
+                                       base_url=root, json=intent)
 
     async def record_card_payment(self, card_id: int, amount: int) -> None:
         await self._call("POST", f"/payment-cards/{card_id}/record-payment", json={"amount": amount})

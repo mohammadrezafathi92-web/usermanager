@@ -10,7 +10,7 @@ from ..admin_scope import resolve_admin_scope
 from ..callbacks import MenuCB, ApprovalCB
 from ..config import config
 from ..keyboards import approval_kb, home_kb
-from .. import storage
+from .. import approval_session, storage
 from .customer import send_package_extras
 from ..connection_sender import send_connections
 from ..utils import fmt_date_jalali
@@ -169,7 +169,8 @@ async def cmd_admin_pending(message: Message) -> None:
 
 
 
-async def perform_approval(pending: dict, bot: Bot) -> tuple[bool, str]:
+async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: Optional[int] = None,
+                           auto: bool = False) -> tuple[bool, str]:
     """Everything an approval actually DOES - provisioning, crediting,
     accounting, and messaging the customer - with no UI in it.
 
@@ -180,7 +181,15 @@ async def perform_approval(pending: dict, bot: Bot) -> tuple[bool, str]:
 
     The caller is responsible for claiming the request first
     (storage.claim_pending) and for reporting the returned message.
-    Returns (ok, message)."""
+    Returns (ok, message).
+
+    approved_by_telegram_id (the admin who tapped Approve) or auto=True
+    (services/auto_approve.py) says WHO approved; that is registered with
+    the panel first (approval_session.begin). A caller that passes neither
+    - the free-trial path, which has no receipt - registers nothing."""
+    # Never blocks and never raises in this phase - see approval_session.
+    await approval_session.begin(pending, approved_by_telegram_id=approved_by_telegram_id, auto=auto,
+                                 local_decision="allowed" if auto else None)
     # approve
     pkg = None
     if pending["kind"] in ("new", "renew"):
@@ -512,7 +521,7 @@ async def cb_approval(call: CallbackQuery, callback_data: ApprovalCB, bot: Bot) 
         await call.answer("رد شد")
         return
 
-    ok, result = await perform_approval(pending, bot)
+    ok, result = await perform_approval(pending, bot, approved_by_telegram_id=call.from_user.id)
     if not ok:
         await call.answer(result, show_alert=True)
         return

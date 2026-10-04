@@ -181,7 +181,7 @@ async def try_auto_approve(pending: dict, bot) -> tuple[bool, str]:
         logger.info("درخواست %s همین الان توسط ادمین رسیدگی شد", pending.get("id"))
         return False, "همین الان توسط ادمین رسیدگی شد"
 
-    ok, result = await perform_approval(pending, bot)
+    ok, result = await perform_approval(pending, bot, auto=True)
     if not ok:
         # perform_approval already released the claim on failure, so the
         # request is back in the admins' queue rather than lost.

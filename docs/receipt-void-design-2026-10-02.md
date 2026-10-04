@@ -2489,7 +2489,7 @@ captured_at           NOT NULL
 payment_card_pool_events
 id                           PK                                 -- ترتیب اعمال
 pool_key                     VARCHAR(32) NOT NULL  FK payment_card_pool_states(pool_key) ON DELETE RESTRICT
-event_kind                   VARCHAR(28) NOT NULL  CHECK IN ('payment_recorded','payment_recorded_uncorrelated')
+event_kind                   VARCHAR(32) NOT NULL  CHECK IN ('payment_recorded','payment_recorded_uncorrelated')
 card_id                      INT         NULL      FK payment_cards(id) ON DELETE SET NULL
 card_id_snapshot             INT         NOT NULL               -- کارت واقعی این رویداد؛ immutable
 card_label_snapshot          VARCHAR(32) NULL                   -- فقط ۴ رقم آخر + نام دارنده

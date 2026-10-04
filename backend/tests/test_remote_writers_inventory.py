@@ -107,6 +107,19 @@ def ungated_writer_calls(path):
     return loose
 
 
+def imports_adapter(path) -> bool:
+    for node in ast.walk(ast.parse(open(path, encoding="utf-8").read())):
+        if isinstance(node, ast.ImportFrom):
+            names = [(node.module or "").split(".")[-1]] + [alias.name for alias in node.names]
+        elif isinstance(node, ast.Import):
+            names = [alias.name.split(".")[-1] for alias in node.names]
+        else:
+            continue
+        if any(name.startswith("adapter_") and name != "adapter_base" for name in names):
+            return True
+    return False
+
+
 def writer_calls(path):
     """{enclosing top-level function (or '<module>'): {writer method, ...}}
     for every `<something>.<writer method>(...)` call in the file."""
@@ -137,6 +150,8 @@ for dotted, path in app_modules():
         for methods in calls.values():
             client_internal.setdefault(dotted, set()).update(methods)
         continue
+    if dotted in rw.ADAPTER_MODULES:
+        continue
     for function, methods in calls.items():
         in_code[(dotted, function)] = methods
 
@@ -165,6 +180,11 @@ check("writer calls inside client modules are the known internal ones only",
           "app.services.threexui_client": ["add_client"],
           "app.services.xray_client": ["add_client", "remove_client", "restart_service", "write_config"],
       })
+check("every adapter module listed exists, and no existing module imports an adapter yet",
+      (sorted(rw.ADAPTER_MODULES - {dotted for dotted, _ in app_modules()}),
+       sorted(dotted for dotted, path in app_modules()
+              if dotted not in rw.ADAPTER_MODULES and imports_adapter(path))),
+      ([], []))
 called_anywhere = set().union(*in_code.values()) | set().union(*client_internal.values())
 check("the three MikroTik writer methods without any caller are exactly the declared ones",
       sorted(rw.WRITER_METHODS - called_anywhere), sorted(rw.UNCALLED_WRITER_METHODS))
@@ -203,7 +223,7 @@ check("a site is immutable", raises(Exception, lambda: setattr(site, "function",
 print("--- B. every writer goes through writer_gate; nothing else of the new code is used ---")
 loose = {}
 for dotted, path in app_modules():
-    if dotted in rw.CLIENT_MODULES:
+    if dotted in rw.CLIENT_MODULES or dotted in rw.ADAPTER_MODULES:
         continue
     found = ungated_writer_calls(path)
     if found:

@@ -11,8 +11,8 @@ begin() wraps it in the off / shadow contract: in 'off' nothing is written,
 and in 'shadow' a registration that fails for ANY reason is logged and the
 caller is told to carry on the way it always did.
 
-Not here yet: the central auto-approval evaluator and its 60-minute cap
-(design 5.4) - the auto path registers, but decides nothing.
+The auto path also runs the central evaluator and the 60-minute cap
+(receipt_approval_auto); in shadow both are recorded and gate nothing.
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import models
-from . import bot_auth, hierarchy, receipt_approval_runtime as runtime
+from . import bot_auth, hierarchy, receipt_approval_auto as auto_policy, receipt_approval_runtime as runtime
 from . import receipt_approval_intent as ri
 
 log = logging.getLogger(__name__)
@@ -150,7 +150,8 @@ def _change_authority(db: Session, last: dict, *, reason: str, to_mode: str, app
 
 
 def _register_once(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalIntent, approval_mode: str,
-                   approved_by_telegram_id: Optional[int], registered_under_mode: str) -> Registration:
+                   approved_by_telegram_id: Optional[int], registered_under_mode: str,
+                   local_decision: Optional[str] = None, rate_limit_mode: str = runtime.OFF) -> Registration:
     approvals, expected, effects, _authority = _tables()
     if approval_mode == MANUAL and not ri.is_managed_principal(principal):
         raise RegistrationRejected(403, "manual_requires_managed_bot")
@@ -212,6 +213,25 @@ def _register_once(db: Session, principal: bot_auth.BotPrincipal, intent: ri.App
 
     now = _now()
     approval_uuid = str(uuid.uuid4())
+    policy, subject, outcome, reason, retry_after = {}, None, None, None, None
+    if approval_mode == AUTO:
+        # The central decision and the 60-minute cap. In shadow neither gates
+        # anything: the bot's local decision stays the reference and this
+        # is only recorded next to it.
+        settings = auto_policy.load_settings(db, target.owner_admin_id)
+        returning = auto_policy.history_returning(db, target.tenant_scope_key, target.telegram_id)
+        allowed, reason = auto_policy.evaluate(
+            kind=intent.kind, amount=intent.amount, telegram_id=target.telegram_id, settings=settings,
+            returning=returning, hour=auto_policy.local_hour(now))
+        policy = auto_policy.policy_snapshot(settings, allowed, reason, returning)
+        subject = auto_policy.lock_subject(db, target.tenant_scope_key, target.telegram_id)
+        retry_after = auto_policy.retry_after_seconds(subject["last_granted_at"] if subject else None, now)
+        if not allowed:
+            outcome = "policy_denied"
+        elif retry_after is not None and rate_limit_mode != runtime.OFF:
+            outcome, reason = "shadow_would_limit", "within_60_minutes"
+        else:
+            outcome, reason = "granted", None
     db.execute(approvals.insert().values(
         approval_uuid=approval_uuid, pending_source_instance_id=intent.pending_source_instance_id,
         pending_local_id=intent.pending_local_id,
@@ -228,7 +248,7 @@ def _register_once(db: Session, principal: bot_auth.BotPrincipal, intent: ri.App
         approved_by_admin_id=approver.admin_id if approver else None,
         approved_by_telegram_id=approver.telegram_id if approver else None,
         approver_evidence_kind=approver.evidence_kind if approver else None,
-        auto_approve_policy_snapshot="{}", owner_admin_id_snapshot=target.owner_admin_id,
+        auto_approve_policy_snapshot=runtime.canonical_json(policy), owner_admin_id_snapshot=target.owner_admin_id,
         tenant_scope_key=target.tenant_scope_key, telegram_id_snapshot=target.telegram_id,
         telegram_id_source=target.telegram_id_source, target_user_id_snapshot=target.user_id,
         target_username_snapshot=intent.target_username, receipt_file_id_snapshot=intent.receipt_file_id,
@@ -238,11 +258,19 @@ def _register_once(db: Session, principal: bot_auth.BotPrincipal, intent: ri.App
         db.execute(expected.insert().values(
             approval_uuid=approval_uuid, effect_type=row.effect_type, effect_key=row.effect_key,
             requirement=row.requirement, expected=runtime.canonical_json(row.expected), created_at=now))
+    if approval_mode == AUTO:
+        auto_policy.record_grant(db, target.tenant_scope_key, target.telegram_id, approval_uuid, now, subject)
+        auto_policy.record_event(
+            db, tenant_scope_key=target.tenant_scope_key, telegram_id=target.telegram_id, outcome=outcome,
+            reason_code=reason, local_decision=local_decision, approval_uuid=approval_uuid,
+            pending_source_instance_id=intent.pending_source_instance_id, pending_local_id=intent.pending_local_id,
+            retry_after=retry_after if outcome == "shadow_would_limit" else None, now=now)
     return _response(_reload(db, approval_uuid), created=True)
 
 
 def register(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalIntent, *, approval_mode: str,
-             approved_by_telegram_id: Optional[int] = None, registered_under_mode: str = runtime.SHADOW) -> Registration:
+             approved_by_telegram_id: Optional[int] = None, registered_under_mode: str = runtime.SHADOW,
+             local_decision: Optional[str] = None, rate_limit_mode: str = runtime.OFF) -> Registration:
     """In the caller's transaction (inside one savepoint). Two concurrent
     registrations of one pending compute the same seq; the loser's
     IntegrityError is retried exactly once and then finds the winner."""
@@ -251,7 +279,8 @@ def register(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalI
     for attempt in (1, 2):
         try:
             with db.begin_nested():
-                return _register_once(db, principal, intent, approval_mode, approved_by_telegram_id, registered_under_mode)
+                return _register_once(db, principal, intent, approval_mode, approved_by_telegram_id,
+                                      registered_under_mode, local_decision, rate_limit_mode)
         except IntegrityError:
             if attempt == 2:
                 raise RegistrationRejected(409, "registration_conflict")
@@ -259,7 +288,7 @@ def register(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalI
 
 
 def begin(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalIntent, *, approval_mode: str,
-          approved_by_telegram_id: Optional[int] = None) -> dict:
+          approved_by_telegram_id: Optional[int] = None, local_decision: Optional[str] = None) -> dict:
     """The structured answer of design 5.6. Commits. Only the backend
     decides the mode; nothing in the request can claim one."""
     state = runtime.read_state(db)
@@ -276,7 +305,9 @@ def begin(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalInte
     if error is None:
         try:
             result = register(db, principal, intent, approval_mode=approval_mode,
-                              approved_by_telegram_id=approved_by_telegram_id, registered_under_mode=runtime.SHADOW)
+                              approved_by_telegram_id=approved_by_telegram_id, registered_under_mode=runtime.SHADOW,
+                              local_decision=local_decision,
+                              rate_limit_mode=runtime.effective_auto_rate_limit_mode(state))
             db.commit()
         except RegistrationRejected as exc:
             db.rollback()
@@ -293,7 +324,17 @@ def begin(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalInte
         return {"mode": "shadow", "approval_uuid": None, "shadow_error": error, "proceed_legacy": True}
     return {"mode": "shadow", "approval_uuid": result.approval_uuid, "execution_token": result.execution_token,
             "registration_seq": result.registration_seq, "state": result.state, "created": result.created,
-            "proceed_legacy": False}
+            "proceed_legacy": False, "central_decision": central_decision(db, result.approval_uuid)}
+
+
+def central_decision(db: Session, approval_uuid: str) -> dict:
+    """What the central evaluator said when the approval was registered -
+    diagnostic only while in shadow. Empty for a manual approval."""
+    approvals = _tables()[0]
+    raw = db.execute(select(approvals.c.auto_approve_policy_snapshot)
+                     .where(approvals.c.approval_uuid == approval_uuid)).scalar()
+    snapshot = json.loads(raw or "{}")
+    return {k: snapshot[k] for k in ("central_allowed", "central_reason", "returning") if k in snapshot}
 
 
 def manifest_of(db: Session, approval_uuid: str) -> list[dict]:

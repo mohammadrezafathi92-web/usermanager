@@ -608,10 +608,23 @@ class UserManagerRadiusServer(Server):
 
     @staticmethod
     def _close_active_session(db, connection_id: int, session_id: str) -> None:
-        db.query(models.RadiusActiveSession).filter(
+        """Removes the session's row THROUGH the session, not with a bulk
+        DELETE. _session_delta has usually just changed that same row, and
+        our sessions run with autoflush off: a bulk DELETE left that UPDATE
+        pending, the commit then updated a row that was already gone
+        (StaleDataError) and rolled the whole Stop back - its final usage
+        was never counted and the row stayed as a phantom online session.
+        A row _session_delta only just created (we never saw the Start) is
+        still pending and is simply dropped again."""
+        for obj in list(db.new):
+            if (isinstance(obj, models.RadiusActiveSession) and obj.connection_id == connection_id
+                    and obj.session_id == session_id):
+                db.expunge(obj)
+        for row in db.query(models.RadiusActiveSession).filter(
             models.RadiusActiveSession.connection_id == connection_id,
             models.RadiusActiveSession.session_id == session_id,
-        ).delete(synchronize_session=False)
+        ).all():
+            db.delete(row)
 
     @staticmethod
     def _session_delta(db, connection_id: int, session_id: str, in_octets: int, out_octets: int) -> tuple[int, int]:

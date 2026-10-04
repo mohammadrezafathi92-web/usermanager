@@ -43,6 +43,14 @@ CLIENT_MODULES = frozenset({
     "app.services.marzneshin_client", "app.services.sui_client",
 })
 
+# Backend adapters (design section 9). They call writer methods on a client
+# they are handed, and are themselves only ever run by a runner action that
+# already holds the node gate - so, like the clients, they are not sites.
+ADAPTER_MODULES = frozenset({
+    "app.services.adapter_mikrotik_wg", "app.services.adapter_radius_ppp",
+    "app.services.adapter_xray", "app.services.adapter_softether",
+})
+
 # Writer methods that exist on MikrotikClient but have no caller today. They
 # have no action_type; a future caller must register a site first.
 UNCALLED_WRITER_METHODS = frozenset({"ensure_masquerade", "setup_socks_proxy", "disable_socks_proxy"})

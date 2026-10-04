@@ -188,6 +188,22 @@ class ThreeXUIClient:
         data = self._get(f"/panel/api/inbounds/get/{self.inbound_id}")
         return data.get("obj") or {}
 
+    def get_inbound_clients_strict(self) -> list[dict]:
+        """Read-only, strict: the inbound's client list, or XrayError.
+        list_client_emails turns a missing inbound or unparseable settings
+        into an empty list - indistinguishable from "no clients" - which a
+        caller deciding whether something is ABSENT cannot accept."""
+        obj = self._get_inbound()
+        if not obj or "settings" not in obj:
+            raise XrayError("اینباند در پاسخ پنل 3X-UI نبود")
+        try:
+            clients = json.loads(obj.get("settings") or "").get("clients")
+        except (ValueError, TypeError, AttributeError):
+            raise XrayError("تنظیمات اینباند 3X-UI قابل خواندن نبود") from None
+        if not isinstance(clients, list):
+            raise XrayError("فهرست کلاینت‌های اینباند 3X-UI قابل خواندن نبود")
+        return clients
+
     def test_connection(self):
         """Lightweight, side-effect-free check used by the "تست اتصال"
         button - logs in (or verifies the token) and confirms the

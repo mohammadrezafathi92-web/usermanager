@@ -315,6 +315,18 @@ class XrayClient:
         self.write_config(config)
         self.restart_service()
 
+    def get_inbound_clients_strict(self, inbound_tag: str) -> list[dict]:
+        """Read-only: the raw client entries of this inbound from the
+        server's config.json (each has "email" and "id", or "password" for
+        trojan). Raises XrayError if the config or the inbound cannot be
+        read - never returns an empty list for "could not read"."""
+        config = self.read_config()
+        inbound = self._find_inbound(config, inbound_tag)
+        clients = inbound.get("settings", {}).get("clients", [])
+        if not isinstance(clients, list):
+            raise XrayError("فهرست کلاینت‌های اینباند در کانفیگ قابل خواندن نبود")
+        return clients
+
     def list_client_emails(self, inbound_tag: str) -> list[str]:
         """Every client email currently configured on this inbound - used
         by scripts/report_orphan_connections.py to find clients with no

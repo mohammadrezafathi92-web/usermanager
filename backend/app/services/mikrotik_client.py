@@ -176,6 +176,15 @@ class MikrotikClient:
         except Exception as exc:
             raise MikrotikError(f"به‌روزرسانی آدرس IP اینترفیس WireGuard ناموفق بود: {exc}") from exc
 
+    def list_interface_addresses(self, interface: str) -> list[dict]:
+        """Read-only: every /ip/address row of this interface, as RouterOS
+        returns it (".id", "address" like "10.66.66.1/24", "interface").
+        Unlike ensure_interface_address - which only asks "is there ANY
+        address?" - this lets a caller compare the router's actual prefix
+        with what the panel expects (services/adapter_mikrotik_wg.py)."""
+        path = self._api.path("ip", "address")
+        return [dict(r) for r in path.select(Key(".id"), Key("address"), Key("interface")).where(Key("interface") == interface)]
+
     def list_peers(self, interface: Optional[str] = None) -> list[dict]:
         path = self._api.path("interface", "wireguard", "peers")
         rows = list(path)

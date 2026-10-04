@@ -142,7 +142,12 @@ class SoftEtherClient:
             )
         error = data.get("error")
         if error:
-            raise SoftEtherError(f"خطای SoftEther ({error.get('code')}): {error.get('message')}")
+            exc = SoftEtherError(f"خطای SoftEther ({error.get('code')}): {error.get('message')}")
+            # The JSON-RPC error code, for callers that must tell one
+            # specific server answer from every other failure (see
+            # delete_user_typed) - matching on the message text is not safe.
+            exc.rpc_code = error.get("code")
+            raise exc
         return data.get("result") or {}
 
     # ------------------------------------------------------------------
@@ -177,6 +182,35 @@ class SoftEtherClient:
             if "not exist" in str(exc).lower() or "does not exist" in str(exc).lower():
                 return
             raise
+
+    def user_exists(self, username: str) -> bool:
+        """Read-only, strict: True/False only when the hub really answered
+        with a user list. Unlike query_all_user_stats it does NOT skip
+        users without traffic (a just-created user has none), and anything
+        that is not a proper list raises instead of reading as "no users"."""
+        result = self._call("EnumUser", {"HubName_str": self.hub_name})
+        users = result.get("UserList")
+        if not isinstance(users, list):
+            raise SoftEtherError("پاسخ EnumUser فهرست کاربران نداشت")
+        return any(item.get("Name_str") == username for item in users if isinstance(item, dict))
+
+    def delete_user_typed(self, username: str, not_exist_codes=()) -> str:
+        """DeleteUser with a typed outcome instead of remove_client's
+        tolerant text match:
+
+        'deleted'    the hub answered without an error
+        'not_exist'  the hub answered with a JSON-RPC error whose code is
+                     in not_exist_codes (codes verified on that very node)
+        'ambiguous'  anything else - connection error, non-JSON, another
+                     error code. Never to be read as "gone"."""
+        try:
+            self._call("DeleteUser", {"HubName_str": self.hub_name, "Name_str": username})
+            return "deleted"
+        except SoftEtherError as exc:
+            code = getattr(exc, "rpc_code", None)
+            if code is not None and code in tuple(not_exist_codes):
+                return "not_exist"
+            return "ambiguous"
 
     def set_client_enabled(self, username: str, password: str, enabled: bool) -> bool:
         """Toggles access via SetUser's policy:Access_bool WITHOUT ever

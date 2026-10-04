@@ -24,7 +24,7 @@ import datetime as dt
 import logging
 import uuid
 
-from sqlalchemy import func, inspect, select, update
+from sqlalchemy import func, inspect, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from .. import models
@@ -89,7 +89,31 @@ def mark_not_ready(reason: str) -> dict:
     return _record([reason])
 
 
+def _widen_card_event_kind(engine) -> None:
+    """payment_card_pool_events.event_kind was first created as VARCHAR(28),
+    one short of 'payment_recorded_uncorrelated'. Nothing could be written
+    to the table in that shape, so: MariaDB widens the column in place,
+    SQLite (which cannot alter a column) drops the still-empty table and
+    lets create_all build it again."""
+    name = rv.payment_card_pool_events.name
+    inspector = inspect(engine)
+    if name not in inspector.get_table_names():
+        return
+    column = next((c for c in inspector.get_columns(name) if c["name"] == "event_kind"), None)
+    if column is None or getattr(column["type"], "length", None) != 28:
+        return
+    with engine.begin() as conn:
+        if engine.dialect.name == "sqlite":
+            if conn.execute(text(f"SELECT COUNT(*) FROM {name}")).scalar():
+                return
+            conn.execute(text(f"DROP TABLE {name}"))
+        else:
+            conn.execute(text(f"ALTER TABLE {name} MODIFY event_kind VARCHAR(32) NOT NULL"))
+    logger.info("receipt void schema: widened %s.event_kind to 32", name)
+
+
 def create_tables(engine) -> None:
+    _widen_card_event_kind(engine)
     rv.RECEIPT_VOID_METADATA.create_all(bind=engine, tables=list(rv.RECEIPT_VOID_TABLES))
 
 

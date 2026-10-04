@@ -882,7 +882,9 @@ payment_card_pool_events = Table(
     "payment_card_pool_events", _md,
     _pk(),
     Column("pool_key", String(32), ForeignKey("payment_card_pool_states.pool_key", ondelete="RESTRICT"), nullable=False),
-    Column("event_kind", String(28), nullable=False),
+    # 32, not the 28 of the design text: 'payment_recorded_uncorrelated' is 29
+    # characters (receipt_void_schema widens a table created with 28).
+    Column("event_kind", String(32), nullable=False),
     Column("card_id", Integer, ForeignKey(models.PaymentCard.__table__.c.id, ondelete="SET NULL"), nullable=True),
     Column("card_id_snapshot", Integer, nullable=False),
     Column("card_label_snapshot", String(32), nullable=True),

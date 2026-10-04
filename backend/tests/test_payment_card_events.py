@@ -200,10 +200,34 @@ check("unknown action", cli.main(["x", "nope"]), 2)
 
 db.close()
 
+print("--- a table created with the too-short event_kind column is repaired ---")
+from sqlalchemy import inspect as sa_inspect, text as sa_text
+
+
+def repaired_width(target):
+    """Puts event_kind back to the old VARCHAR(28), bootstraps, returns
+    (schema ready, column length now)."""
+    with target.begin() as conn:
+        if target.dialect.name == "sqlite":
+            conn.execute(sa_text("DROP TABLE payment_card_pool_events"))
+            E.c.event_kind.type.length = 28
+            try:
+                E.create(conn)
+            finally:
+                E.c.event_kind.type.length = 32
+        else:
+            conn.execute(sa_text("DELETE FROM payment_card_pool_events"))
+            conn.execute(sa_text("ALTER TABLE payment_card_pool_events MODIFY event_kind VARCHAR(28) NOT NULL"))
+    ready = receipt_void_schema.bootstrap(target, sessionmaker(bind=target))["ready"]
+    column = next(c for c in sa_inspect(target).get_columns("payment_card_pool_events") if c["name"] == "event_kind")
+    return ready, column["type"].length
+
+
+check("SQLite: old shape -> ready again, width 32", repaired_width(engine), (True, 32))
+
 print("--- the same path on a real MariaDB (locking reads, savepoints, CHECKs) ---")
 mariadb_url = os.environ.get("MARIADB_TEST_URL", "").strip()
 if mariadb_url:
-    from sqlalchemy import inspect as sa_inspect
     maria = create_engine(mariadb_url)
 
     def drop_everything():
@@ -243,6 +267,7 @@ if mariadb_url:
         check("MariaDB: deleting a card keeps its events, detached",
               [(r["card_id"], r["card_id_snapshot"]) for r in event_rows()][:2], [(None, x.id), (None, x.id)])
         db.close()
+        check("MariaDB: old shape -> ready again, width 32", repaired_width(maria), (True, 32))
     finally:
         drop_everything()
         maria.dispose()

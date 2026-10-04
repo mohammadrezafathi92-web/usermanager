@@ -8,6 +8,13 @@ from .config import settings
 
 logger = logging.getLogger("security")
 
+# passlib 1.7.4 reads bcrypt.__about__.__version__, which bcrypt >= 4.1 no
+# longer has. passlib traps the AttributeError and carries on - hashing and
+# verifying are unaffected - but it logs the whole traceback at WARNING on
+# the first password check after every start. That one line made every
+# "grep Traceback" on the backend log look like something had broken.
+logging.getLogger("passlib.handlers.bcrypt").setLevel(logging.ERROR)
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 

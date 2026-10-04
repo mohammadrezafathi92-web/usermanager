@@ -289,8 +289,19 @@ def update_settings(
             if changed:
                 _require_superadmin_for_shared_row(admin)
 
+    # The global card pool's three settings are written by the card service,
+    # not by the generic loop below (Receipt Void P1: one place for every
+    # card-pool writer). Same values, same transaction.
+    pool_settings = {
+        argument: data.pop(field)
+        for field, argument in (("payment_card_mode", "mode"), ("active_payment_card_id", "active_card_id"),
+                                ("payment_card_switch_threshold", "switch_threshold"))
+        if field in data
+    }
     for k, v in data.items():
         setattr(row, k, v)
+    if pool_settings:
+        payment_cards_service.set_pool_settings(db, None, **pool_settings)
     db.commit()
     db.refresh(row)
     # services/jalali.py caches this offset in a module global (it is read
@@ -328,18 +339,7 @@ def _reject_bot_approval_id(db: Session, payload) -> None:
              dependencies=[Depends(require_superadmin)])
 def create_payment_card(payload: schemas.PaymentCardCreate, db: Session = Depends(get_db)):
     _reject_bot_approval_id(db, payload)
-    was_empty = not payment_cards_service.list_cards(db, None)
-    card = models.PaymentCard(owner_admin_id=None, **payload.model_dump())
-    db.add(card)
-    db.flush()
-    if was_empty:
-        # First card ever added to an empty pool - make it the active one
-        # right away instead of leaving active_payment_card_id null (which
-        # would otherwise silently keep showing the legacy single
-        # payment_card_number field until the admin remembers to activate
-        # something).
-        row = _get_or_create(db)
-        row.active_payment_card_id = card.id
+    card = payment_cards_service.create_card(db, None, payload.model_dump())
     db.commit()
     db.refresh(card)
     return card
@@ -352,8 +352,7 @@ def update_payment_card(card_id: int, payload: schemas.PaymentCardUpdate, db: Se
     card = db.get(models.PaymentCard, card_id)
     if not card or card.owner_admin_id is not None:
         raise HTTPException(404, "کارت پیدا نشد")
-    for k, v in payload.model_dump(exclude_unset=True).items():
-        setattr(card, k, v)
+    payment_cards_service.update_card(db, card, payload.model_dump(exclude_unset=True))
     db.commit()
     db.refresh(card)
     return card
@@ -364,15 +363,8 @@ def delete_payment_card(card_id: int, db: Session = Depends(get_db), _confirm=De
     card = db.get(models.PaymentCard, card_id)
     if not card or card.owner_admin_id is not None:
         raise HTTPException(404, "کارت پیدا نشد")
-    row = _get_or_create(db)
-    db.delete(card)
-    db.flush()
-    if row.active_payment_card_id == card_id:
-        # Was the active card - fall back to whatever's left in the pool
-        # (None if this was the last card) instead of leaving a dangling
-        # pointer to a deleted row.
-        remaining = payment_cards_service.list_cards(db, None)
-        row.active_payment_card_id = remaining[0].id if remaining else None
+    _get_or_create(db)
+    payment_cards_service.delete_card(db, card)
     db.commit()
     return {"ok": True}
 
@@ -387,7 +379,7 @@ def activate_payment_card(card_id: int, db: Session = Depends(get_db)):
     if not card or card.owner_admin_id is not None:
         raise HTTPException(404, "کارت پیدا نشد")
     row = _get_or_create(db)
-    row.active_payment_card_id = card.id
+    payment_cards_service.activate_card(db, card)
     db.commit()
     db.refresh(row)
     return _settings_out(db, row)
@@ -551,12 +543,15 @@ def update_my_payment(
         admin.own_payment_instructions = (data["payment_instructions"] or "").strip() or None
     if "topup_presets" in data:
         admin.own_topup_presets = (data["topup_presets"] or "").strip() or None
+    own_pool = {}
     if "payment_card_mode" in data:
-        admin.own_payment_card_mode = data["payment_card_mode"] or "manual"
+        own_pool["mode"] = data["payment_card_mode"] or "manual"
     if "active_payment_card_id" in data:
-        admin.own_active_payment_card_id = data["active_payment_card_id"]
+        own_pool["active_card_id"] = data["active_payment_card_id"]
     if "payment_card_switch_threshold" in data:
-        admin.own_payment_card_switch_threshold = data["payment_card_switch_threshold"]
+        own_pool["switch_threshold"] = data["payment_card_switch_threshold"]
+    if own_pool:
+        payment_cards_service.set_pool_settings(db, admin.id, **own_pool)
     if "support_contact_text" in data:
         admin.own_support_contact_text = (data["support_contact_text"] or "").strip() or None
     db.commit()
@@ -581,12 +576,7 @@ def create_my_payment_card(
 ):
     _require_not_superadmin(admin)
     _reject_bot_approval_id(db, payload)
-    was_empty = not payment_cards_service.list_cards(db, admin.id)
-    card = models.PaymentCard(owner_admin_id=admin.id, **payload.model_dump())
-    db.add(card)
-    db.flush()
-    if was_empty:
-        admin.own_active_payment_card_id = card.id
+    card = payment_cards_service.create_card(db, admin.id, payload.model_dump())
     db.commit()
     db.refresh(card)
     return card
@@ -609,8 +599,7 @@ def update_my_payment_card(
     _require_not_superadmin(admin)
     _reject_bot_approval_id(db, payload)
     card = _get_own_card_or_404(db, admin, card_id)
-    for k, v in payload.model_dump(exclude_unset=True).items():
-        setattr(card, k, v)
+    payment_cards_service.update_card(db, card, payload.model_dump(exclude_unset=True))
     db.commit()
     db.refresh(card)
     return card
@@ -623,11 +612,7 @@ def delete_my_payment_card(
 ):
     _require_not_superadmin(admin)
     card = _get_own_card_or_404(db, admin, card_id)
-    db.delete(card)
-    db.flush()
-    if admin.own_active_payment_card_id == card_id:
-        remaining = payment_cards_service.list_cards(db, admin.id)
-        admin.own_active_payment_card_id = remaining[0].id if remaining else None
+    payment_cards_service.delete_card(db, card)
     db.commit()
     return {"ok": True}
 
@@ -638,7 +623,7 @@ def activate_my_payment_card(
 ):
     _require_not_superadmin(admin)
     card = _get_own_card_or_404(db, admin, card_id)
-    admin.own_active_payment_card_id = card.id
+    payment_cards_service.activate_card(db, card)
     db.commit()
     db.refresh(admin)
     return _own_payment_out(db, admin)

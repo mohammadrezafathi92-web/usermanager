@@ -97,8 +97,13 @@ def resolve_active_card(
     return cards[0]
 
 
-def advance_after_payment(db: Session, card_id: int, amount: int) -> None:
-    """Called once a card-to-card payment/top-up is actually CONFIRMED (an
+def advance_after_payment_core(db: Session, card_id: int, amount: int) -> bool:
+    """The mutation of advance_after_payment WITHOUT its commit - for a
+    caller that records the payment inside a larger transaction (Lifecycle/P6
+    design 7.3). Same logic, same best-effort no-ops. Returns whether
+    anything was written (False for the two silent no-ops).
+
+    Called once a card-to-card payment/top-up is actually CONFIRMED (an
     admin approves the receipt - see telegram_bot/handlers/admin_pending.py)
     for a specific card. Always records the amount (see
     PaymentCard.accumulated_amount's docstring for why this happens
@@ -113,10 +118,10 @@ def advance_after_payment(db: Session, card_id: int, amount: int) -> None:
     already-successful approval, never something that should be able to
     make that approval fail."""
     if amount <= 0:
-        return
+        return False
     card = db.get(models.PaymentCard, card_id)
     if not card:
-        return
+        return False
     card.accumulated_amount = (card.accumulated_amount or 0) + amount
 
     if card.owner_admin_id is None:
@@ -140,5 +145,89 @@ def advance_after_payment(db: Session, card_id: int, amount: int) -> None:
             else:
                 admin.own_active_payment_card_id = next_card.id
         card.accumulated_amount = 0
+    return True
 
+
+def advance_after_payment(db: Session, card_id: int, amount: int) -> None:
+    """advance_after_payment_core, then one commit if (and only if) it wrote
+    something - exactly what this function always did, and what every
+    existing caller relies on (routers/bot.py's record_card_payment)."""
+    if not advance_after_payment_core(db, card_id, amount):
+        return
     db.commit()
+
+
+# --------------------------------------------------------------------------
+# Every OTHER write to a card pool. (Receipt Void design, phase P1: all
+# writers of PaymentCard rows and of the three per-pool settings - mode,
+# active-card pointer, switch threshold - live in this module, so that the
+# later phases can put the pool lock and the causal event log in exactly one
+# place. tests/test_payment_card_service.py fails if a writer appears
+# anywhere else.)
+#
+# None of these commits: the calling endpoint does, exactly as before, so
+# each request is still one transaction and behaves as it always did.
+# owner_admin_id=None is the global pool, otherwise that admin's own pool.
+_UNSET = object()
+
+
+def _pool_holder(db: Session, owner_admin_id: Optional[int]):
+    """(row, mode attr, pointer attr, threshold attr) holding this pool's
+    three settings: the PanelSettings singleton or the owning AdminUser."""
+    if owner_admin_id is None:
+        row = db.get(models.PanelSettings, 1)
+        if row is None:
+            row = models.PanelSettings(id=1)
+            db.add(row)
+            db.flush()
+        return row, "payment_card_mode", "active_payment_card_id", "payment_card_switch_threshold"
+    admin = db.get(models.AdminUser, owner_admin_id)
+    return admin, "own_payment_card_mode", "own_active_payment_card_id", "own_payment_card_switch_threshold"
+
+
+def set_pool_settings(db: Session, owner_admin_id: Optional[int], *, mode=_UNSET, active_card_id=_UNSET,
+                      switch_threshold=_UNSET) -> None:
+    """Writes whichever of the pool's three settings were given - verbatim,
+    no validation beyond what the caller already did."""
+    holder, mode_attr, pointer_attr, threshold_attr = _pool_holder(db, owner_admin_id)
+    if mode is not _UNSET:
+        setattr(holder, mode_attr, mode)
+    if active_card_id is not _UNSET:
+        setattr(holder, pointer_attr, active_card_id)
+    if switch_threshold is not _UNSET:
+        setattr(holder, threshold_attr, switch_threshold)
+
+
+def create_card(db: Session, owner_admin_id: Optional[int], fields: dict) -> models.PaymentCard:
+    """Adds a card to the pool. The first card of an empty pool becomes the
+    active one right away (otherwise the pointer would stay NULL and the
+    legacy single-card field would keep being shown)."""
+    was_empty = not list_cards(db, owner_admin_id)
+    card = models.PaymentCard(owner_admin_id=owner_admin_id, **fields)
+    db.add(card)
+    db.flush()
+    if was_empty:
+        set_pool_settings(db, owner_admin_id, active_card_id=card.id)
+    return card
+
+
+def update_card(db: Session, card: models.PaymentCard, fields: dict) -> models.PaymentCard:
+    for key, value in fields.items():
+        setattr(card, key, value)
+    return card
+
+
+def delete_card(db: Session, card: models.PaymentCard) -> None:
+    """Deletes the card; if it was the pool's active one, the pointer moves
+    to whatever is left (None for an emptied pool) instead of dangling."""
+    owner_admin_id, card_id = card.owner_admin_id, card.id
+    holder, _mode_attr, pointer_attr, _threshold_attr = _pool_holder(db, owner_admin_id)
+    db.delete(card)
+    db.flush()
+    if getattr(holder, pointer_attr) == card_id:
+        remaining = list_cards(db, owner_admin_id)
+        setattr(holder, pointer_attr, remaining[0].id if remaining else None)
+
+
+def activate_card(db: Session, card: models.PaymentCard) -> None:
+    set_pool_settings(db, card.owner_admin_id, active_card_id=card.id)

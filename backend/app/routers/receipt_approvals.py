@@ -88,6 +88,7 @@ class ApprovalIntentIn(BaseModel):
     telegram_id: Optional[int] = None
     owner_admin_id: Optional[int] = None
     approved_by_telegram_id: Optional[int] = None      # manual only
+    local_decision: Optional[str] = None               # auto only: the bot's own verdict, logged, never trusted
 
     def to_intent(self) -> intents.ApprovalIntent:
         return intents.ApprovalIntent(
@@ -107,7 +108,8 @@ def begin_approval(db: Session, principal: bot_auth.BotPrincipal, payload: Appro
     try:
         return registration.begin(
             db, principal, payload.to_intent(), approval_mode=approval_mode,
-            approved_by_telegram_id=payload.approved_by_telegram_id if approval_mode == registration.MANUAL else None)
+            approved_by_telegram_id=payload.approved_by_telegram_id if approval_mode == registration.MANUAL else None,
+            local_decision=payload.local_decision if approval_mode == registration.AUTO else None)
     except registration.RegistrationRejected as exc:
         raise HTTPException(status_code=exc.status, detail=exc.code)
 

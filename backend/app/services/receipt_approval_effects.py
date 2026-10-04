@@ -400,20 +400,32 @@ class ShadowRecorder:
 
     def card_event_uuid(self) -> Optional[str]:
         """The uuid to put on this payment's pool event: only for an
-        approval that exists and has no card event yet (the event table
-        allows one per approval). None otherwise - the payment is then
-        recorded exactly as it would be without an approval."""
+        approval that exists. None otherwise - the payment is then recorded
+        exactly as it would be without an approval."""
         if not self.active:
             return None
         try:
-            from .. import models_receipt_void as rv
-            events = rv.payment_card_pool_events
-            if self._known() and self.db.execute(
-                    select(events.c.id).where(events.c.approval_uuid == self.approval_uuid)).first() is None:
+            if self._known():
                 return self.approval_uuid
         except Exception:
-            log.exception("receipt approval %s: could not check the card event", self.approval_uuid)
+            log.exception("receipt approval %s: could not check the approval", self.approval_uuid)
         return None
+
+    def card_payment_already_recorded(self) -> bool:
+        """Has this approval's card payment been recorded before? Then a
+        second record-payment call (a retry after a timeout) must change
+        nothing: a void by approval only ever knows ONE event, so a second
+        counter increment could never be taken back. Only knowable for a
+        pool that logs events."""
+        if not self.active:
+            return False
+        try:
+            from .. import models_receipt_void as rv
+            events = rv.payment_card_pool_events
+            return self.db.execute(select(events.c.id).where(events.c.approval_uuid == self.approval_uuid)).first() is not None
+        except Exception:
+            log.exception("receipt approval %s: could not check the card event", self.approval_uuid)
+            return False
 
     def card_payment(self) -> bool:
         """Records the pool event written for this approval, if the pool

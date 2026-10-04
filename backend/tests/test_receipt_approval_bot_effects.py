@@ -213,16 +213,18 @@ check("the pool event carries the approval and is the voidable kind",
 bot_router.record_payment_card_use(card.id, schemas.BotRecordCardPaymentRequest(amount=5000, approval_uuid=uuid5),
                                    db=db, principal=internal)
 from app.services import payment_card_events
-check("a repeated record-payment for the same approval is an ordinary payment - the pool is NOT knocked back to legacy",
+check("a repeated record-payment for the same approval (a retry after a timeout) changes NOTHING: one event, "
+      "the counter counted once, the pool still event_logged",
       ([e.event_kind for e in db.execute(select(PE).order_by(PE.c.id))],
-       payment_card_events.lock_pool(db, None, create_as=None), db.get(models.PaymentCard, card.id).accumulated_amount),
-      (["payment_recorded", "payment_recorded_uncorrelated"], "event_logged", 10000))
+       payment_card_events.lock_pool(db, None, create_as=None), db.get(models.PaymentCard, card.id).accumulated_amount,
+       payment_card_events.accumulator(db, None, card.id)),
+      (["payment_recorded"], "event_logged", 5000, 5000))
 db.rollback()
 bot_router.add_balance("newbie", schemas.BotAddBalanceRequest(amount=-100), db=db, principal=internal)
 bot_router.record_payment_card_use(card.id, schemas.BotRecordCardPaymentRequest(amount=1), db=db, principal=internal)
 check("a wallet debit and a card payment without an approval behave as before",
       (db.query(models.User).filter_by(username="newbie").one().balance - balance, db.get(models.PaymentCard, card.id).accumulated_amount),
-      (4900, 10001))
+      (4900, 5001))
 
 print("--- execution state and finalize ---")
 A = rv.receipt_approvals
@@ -271,6 +273,33 @@ for principal_, target in ((bot_auth.BotPrincipal.from_api_key(other_key), uuid8
         codes.append((exc.status_code, exc.detail))
 check("only the executing principal may finalize; an unknown approval is 404",
       codes, [(403, "execution_principal_mismatch"), (404, "approval_not_found")])
+import sqlalchemy
+attempts = []
+real_finalize = reg.finalize
+
+
+def busy_then_ok(*args, **kwargs):
+    attempts.append(1)
+    if len(attempts) < 3:
+        raise sqlalchemy.exc.OperationalError("UPDATE", {}, Exception("database is locked"))
+    return real_finalize(*args, **kwargs)
+
+
+reg.finalize = busy_then_ok
+reg.time.sleep = lambda seconds: None
+try:
+    retried = approvals_router.finalize_approval(db, internal, uuid_)
+    attempts.clear()
+    reg.finalize = lambda *a, **k: (_ for _ in ()).throw(sqlalchemy.exc.OperationalError("UPDATE", {}, Exception("locked")))
+    try:
+        approvals_router.finalize_approval(db, internal, uuid_)
+        busy = None
+    except HTTPException as exc:
+        busy = (exc.status_code, exc.detail)
+finally:
+    reg.finalize = real_finalize
+check("finalize retries a busy database like registration does, and gives up with a clear 503",
+      (retried["state"], busy), ("completed", (503, "database_busy")))
 from app.services import receipt_approval_auto
 check("a completed approval is what makes the customer 'returning' for the central evaluator",
       receipt_approval_auto.history_returning(db, "shared", 999), True)

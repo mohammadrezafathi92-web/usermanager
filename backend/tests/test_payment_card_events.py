@@ -166,6 +166,35 @@ cards.advance_after_payment(db, c.id, 1)
 check("an event the database rejects (CHECK) also only demotes the pool; the live reset still happened",
       (counters(c), phase()), ((0,), "legacy"))
 
+print("--- event AND demotion both fail: the counter write is thrown away too ---")
+events.capture_baseline(db, None)
+db.get(models.PanelSettings, 1).payment_card_switch_threshold = 1000
+db.commit()
+counter_before = counters(c)[0]
+events_before = len(event_rows())
+real_label, real_set_phase = events.card_label, events._set_phase
+events.card_label = lambda card: 1 / 0
+
+
+def broken_set_phase(*args, **kwargs):
+    raise RuntimeError("state row unavailable")
+
+
+events._set_phase = broken_set_phase
+try:
+    try:
+        cards.advance_after_payment(db, c.id, 10)
+        outcome = "returned"
+    except events.PoolLogBroken:
+        outcome = "PoolLogBroken"
+finally:
+    events.card_label, events._set_phase = real_label, real_set_phase
+check("it raises, and nothing is left behind: same counter, no event, pool still event_logged and consistent",
+      (outcome, counters(c)[0], len(event_rows()), phase(), events.accumulator(db, None, c.id) == counters(c)[0]),
+      ("PoolLogBroken", counter_before, events_before, "event_logged", True))
+events.revert_to_legacy(db, None)
+db.commit()
+
 print("--- a brand new pool starts event_logged ---")
 mine = cards.create_card(db, reseller.id, {"card_number": "5022-9999", "card_holder": "R"})
 db.commit()

@@ -39,6 +39,10 @@ EVENT_LOGGED = "event_logged"
 AFTER_EVENT_KEY = "_after_event_id"
 
 
+class PoolLogBroken(RuntimeError):
+    """An event could not be written AND the pool could not be demoted."""
+
+
 def pool_key(owner_admin_id: Optional[int]) -> str:
     return "global" if owner_admin_id is None else f"admin:{owner_admin_id}"
 
@@ -111,8 +115,14 @@ def record_payment(db: Session, card: models.PaymentCard, *, amount: int, accumu
                    rotated_to_card_id: Optional[int], mode: str, threshold: Optional[int],
                    approval_uuid: Optional[str] = None) -> bool:
     """Writes the event row of one payment, with the values the live logic
-    just used. On any failure the pool goes back to 'legacy' and the payment
-    itself is unaffected. Returns whether the event was written."""
+    just used. Returns True when it was written. When it cannot be, the pool
+    goes back to 'legacy' (its events are then ignored) and False is
+    returned - the counter write of the caller stands.
+
+    If the pool cannot be put back to 'legacy' either, PoolLogBroken is
+    raised: the caller must NOT keep its counter write, because an
+    event_logged pool with a counter change and no event is exactly the
+    state the log exists to rule out."""
     _states, _baselines, events = _tables()
     key = pool_key(card.owner_admin_id)
     try:
@@ -137,8 +147,9 @@ def record_payment(db: Session, card: models.PaymentCard, *, amount: int, accumu
         try:
             with db.begin_nested():
                 _set_phase(db, key, LEGACY)
-        except Exception:
+        except Exception as exc:
             log.exception("card pool %s: could not be set back to 'legacy' either", key)
+            raise PoolLogBroken(key) from exc
         return False
 
 

@@ -94,6 +94,7 @@ def show(user: models.User, plan: dict, days: int, delete_user: bool) -> None:
 
 def execute(db, user: models.User, plan: dict, delete_user: bool) -> int:
     kept = 0
+    kept_ids: set[int] = set()
     for purchase in plan["purchases"]:
         failed = []
         for connection in list(purchase.connections):
@@ -104,26 +105,39 @@ def execute(db, user: models.User, plan: dict, delete_user: bool) -> int:
                 failed.append(f"{connection.type.value}: {type(exc).__name__}")
         if failed:
             kept += 1
+            kept_ids.add(purchase.id)
             print(f"  KEPT service #{purchase.id}: could not remove from its node ({', '.join(failed)})")
             continue
         db.delete(purchase)
         db.commit()
         print(f"  deleted service #{purchase.id}")
-    for redemption in plan["redemptions"]:
+    # A service that is still there keeps its whole money trail: its sale and
+    # renewal rows, what they added to a card, and - because a discount use
+    # cannot be tied to one service - every discount use of the window.
+    rows = [row for row in plan["ledger"] if row.purchase_id not in kept_ids]
+    redemptions = [] if kept_ids else plan["redemptions"]
+    for redemption in redemptions:
         code = db.get(models.DiscountCode, redemption.code_id)
         if code is not None and (code.used_count or 0) > 0:
             code.used_count -= 1
         db.delete(redemption)
-    for card_id, amount in plan["card_totals"].items():
+    card_totals: dict[int, int] = {}
+    for row in rows:
+        if row.payment_card_id is not None:
+            card_totals[row.payment_card_id] = card_totals.get(row.payment_card_id, 0) + int(row.amount or 0)
+    for card_id, amount in card_totals.items():
         card = db.get(models.PaymentCard, card_id)
         if card is not None:
             payment_cards.take_back(db, card, amount)
-    user.balance = max(0, int(user.balance or 0) - plan["topup_total"])
-    for row in plan["ledger"]:
+    user.balance = max(0, int(user.balance or 0) - sum(int(r.amount or 0) for r in rows if r.kind == "wallet_topup"))
+    for row in rows:
         db.delete(row)
     db.commit()
-    print(f"  deleted {len(plan['ledger'])} accounting row(s), undid {len(plan['redemptions'])} discount use(s), "
+    print(f"  deleted {len(rows)} accounting row(s), undid {len(redemptions)} discount use(s), "
           f"wallet balance now {int(user.balance or 0):,}")
+    if kept_ids:
+        print(f"  left in place for the kept service(s): {len(plan['ledger']) - len(rows)} accounting row(s) "
+              f"and {len(plan['redemptions'])} discount use(s) - run again once the node is reachable")
     if delete_user:
         if kept:
             print("  account NOT deleted: a service above could not be removed from its node")

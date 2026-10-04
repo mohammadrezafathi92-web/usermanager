@@ -1103,6 +1103,7 @@ class DiscountRedeemRequest(BaseModel):
     username: str
     package_price: int = 0
     owner_admin_id: Optional[int] = None
+    approval_uuid: Optional[str] = None  # receipt-approval registration
 
 
 class ReferralApplyRequest(BaseModel):

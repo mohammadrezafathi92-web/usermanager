@@ -317,14 +317,19 @@ def _record_bot_sale(
     )
 
 
-def _record_renewal_sale(db: Session, payload, sale_entry) -> None:
-    """Receipt-approval effects of a renewal, in shadow: the sale's ledger
-    row, tagged with the approval. The renewal itself (purchase_renewed)
-    needs before/after evidence from inside user_ops' renew functions and
-    is recorded once they provide it. No-op without an approval uuid."""
+def _record_renewal(db: Session, payload, resource, evidence: list, sale_entry) -> None:
+    """Receipt-approval effects of a renewal, in shadow: the renewal itself
+    (with the evidence user_ops' renew function produced) and the sale's
+    ledger row, tagged with the approval. No-op without an approval uuid.
+    The renewal already committed inside user_ops; this runs right after it
+    and is committed by the caller."""
     recorder = approval_effects.ShadowRecorder(db, getattr(payload, "approval_uuid", None))
-    if recorder.active and sale_entry is not None:
-        db.flush()
+    if not recorder.active:
+        return
+    db.flush()
+    if evidence:
+        recorder.effect("purchase_renewed", "renew", resource, evidence[0])
+    if sale_entry is not None:
         recorder.effect("ledger_sale", "sale", sale_entry)
         recorder.tag_ledger(sale_entry)
 
@@ -1022,10 +1027,16 @@ def redeem_discount(
     DiscountCodeRedemption row). See services/user_ops.py's
     redeem_discount_code."""
     owner_admin_id = resolve_claimed_owner(db, principal, payload.owner_admin_id, endpoint="redeem_discount")
+    discount_evidence: list = []
     ok, reason, amount = user_ops.redeem_discount_code(
         db, payload.code, payload.username, payload.package_price,
-        owner_admin_id=owner_admin_id,
+        owner_admin_id=owner_admin_id, evidence_sink=discount_evidence,
     )
+    recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)      # no-op without an approval
+    if recorder.active and discount_evidence:
+        redemption, evidence = discount_evidence[0]
+        recorder.effect("discount_redeemed", f"discount:{redemption.code_id}", redemption, evidence)
+        db.commit()
     return schemas.DiscountValidateResult(
         valid=ok,
         reason=reason or None,
@@ -1340,12 +1351,15 @@ def renew_service(
     # authorized before it too, not inside _record_bot_sale afterward.
     if payload.payment_card_id is not None:
         bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
-    user_ops.renew_purchase(db, purchase, payload.add_gb, payload.add_days, payload.reset_usage, package_id=payload.package_id)
+    renewal_evidence: list = []
+    user_ops.renew_purchase(db, purchase, payload.add_gb, payload.add_days, payload.reset_usage,
+                            package_id=payload.package_id, evidence_sink=renewal_evidence)
+    sale_entry = None
     _charge_seller(db, user, renew_package, payload.add_gb or 0)
     if payload.package_id or payload.paid_amount is not None:
         sale_entry = _record_bot_sale(db, principal, "sale_renew", payload, user, renew_package, purchase_id=purchase.id)
-        _record_renewal_sale(db, payload, sale_entry)
-        db.commit()
+    _record_renewal(db, payload, purchase, renewal_evidence, sale_entry)
+    db.commit()
     db.refresh(user)
     db.refresh(purchase)
     out = _user_response(user)
@@ -1385,15 +1399,18 @@ def renew(
     renew_package = bot_resources._get_package_or_403(db, principal, payload.package_id) if payload.package_id else None
     if payload.payment_card_id is not None:
         bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
-    user_ops.renew_user(db, user, payload.add_gb, payload.add_days, payload.reset_usage, package_id=payload.package_id)
+    renewal_evidence: list = []
+    user_ops.renew_user(db, user, payload.add_gb, payload.add_days, payload.reset_usage,
+                        package_id=payload.package_id, evidence_sink=renewal_evidence)
+    sale_entry = None
     # Accounting: only a package-based renewal (or one where the bot sent
     # the exact paid amount) is a paid event - a bare reset_usage or manual
     # add_gb/add_days admin favor isn't a sale.
     _charge_seller(db, user, renew_package, payload.add_gb or 0)
     if payload.package_id or payload.paid_amount is not None:
         sale_entry = _record_bot_sale(db, principal, "sale_renew", payload, user, renew_package)
-        _record_renewal_sale(db, payload, sale_entry)
-        db.commit()
+    _record_renewal(db, payload, user, renewal_evidence, sale_entry)
+    db.commit()
     return _user_response(user)
 
 

@@ -480,6 +480,17 @@ class PanelBridge:
         )
         return _dump(await _call(bot_router.purchase_package, username, payload, owner_admin_id=_scope(owner_admin_id)))
 
+    async def begin_approval(self, intent: dict, mode: str) -> dict:
+        """Registers the approval of one pending request with the panel
+        (routers/receipt_approvals.py). mode is 'auto' or 'manual'."""
+        from ..routers import receipt_approvals
+
+        def _begin(payload, approval_mode, db, principal):
+            return receipt_approvals.begin_approval(db, principal, payload, approval_mode)
+
+        intent = {**intent, "owner_admin_id": _scope(intent.get("owner_admin_id"))}
+        return await _call(_begin, receipt_approvals.ApprovalIntentIn(**intent), mode)
+
     async def record_card_payment(self, card_id: int, amount: int) -> None:
         payload = schemas.BotRecordCardPaymentRequest(amount=amount)
         await _call(bot_router.record_payment_card_use, card_id, payload)

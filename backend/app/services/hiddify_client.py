@@ -145,6 +145,42 @@ class HiddifyClient:
             raise XrayError(f"خطا در دریافت لیست کاربران Hiddify (کد {status})")
         return data if isinstance(data, list) else []
 
+    # --- strict, typed access for the durable adapter (adapter_xray_panels) ---
+    def _send_strict(self, method, path, **kwargs):
+        """(status, parsed body or None). Unlike _send, a body that is not
+        JSON is an error, not {} - an HTML error page must never read as
+        "an empty answer"."""
+        try:
+            resp = self.session.request(method, self._url(path), timeout=self.timeout, **kwargs)
+        except requests.RequestException as exc:
+            raise XrayError(f"خطا در ارتباط با پنل Hiddify: {type(exc).__name__}") from None
+        if not resp.content:
+            return resp.status_code, None
+        try:
+            return resp.status_code, resp.json()
+        except ValueError:
+            raise XrayError(f"پاسخ پنل Hiddify به فرمت JSON نبود (کد {resp.status_code})") from None
+
+    def list_users_raw(self):
+        return self._send_strict("GET", "/api/v2/admin/user/")
+
+    def create_user_only(self, name, client_uuid):
+        """POST only - no PATCH fallback over an existing user."""
+        status, data = self._send_strict("POST", "/api/v2/admin/user/", json={
+            "name": name, "uuid": client_uuid, "enable": True,
+            "usage_limit_GB": 1_000_000, "package_days": 10_000, "mode": "no_reset",
+        })
+        if not (200 <= status < 300):
+            raise XrayError(f"خطا در ایجاد کاربر Hiddify (کد {status})")
+
+    def enable_user_only(self, client_uuid):
+        status, data = self._send_strict("PATCH", f"/api/v2/admin/user/{client_uuid}/", json={"enable": True})
+        if not (200 <= status < 300):
+            raise XrayError(f"خطا در فعال‌سازی کاربر Hiddify (کد {status})")
+
+    def delete_user_raw(self, client_uuid):
+        return self._send_strict("DELETE", f"/api/v2/admin/user/{client_uuid}/")
+
     def list_client_emails(self, inbound_tag):
         return [u.get("name") for u in self._list_users() if u.get("name")]
 

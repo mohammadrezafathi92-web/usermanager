@@ -49,6 +49,7 @@ CLIENT_MODULES = frozenset({
 ADAPTER_MODULES = frozenset({
     "app.services.adapter_mikrotik_wg", "app.services.adapter_radius_ppp",
     "app.services.adapter_xray", "app.services.adapter_softether",
+    "app.services.adapter_xray_panels",
 })
 
 # Writer methods that exist on MikrotikClient but have no caller today. They

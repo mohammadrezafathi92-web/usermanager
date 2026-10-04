@@ -316,6 +316,33 @@ class MarzbanClient:
             self._put(f"/api/user/{email}", body)
         return client_uuid
 
+    # --- strict, typed access for the durable adapter (adapter_xray_panels) ---
+    # These return the panel's raw (status, body) or do exactly ONE write.
+    # None of them falls back to another request, and none decides what a
+    # 404 means - that is the adapter's job, against the node's contract.
+    def get_user_raw(self, username: str) -> tuple[int, dict]:
+        return self._get(f"/api/user/{username}")
+
+    def create_user_only(self, username: str, client_uuid: str, flow: str = "") -> None:
+        """POST only. Unlike add_client there is NO "it failed, so PUT over
+        whatever is there" fallback."""
+        self._post("/api/user", {
+            "username": username,
+            "proxies": {"vless": {"id": client_uuid, "flow": flow or ""}},
+            "inbounds": {"vless": [self.inbound_tag]},
+            "data_limit": 0, "expire": 0, "status": "active",
+        })
+
+    def enable_user_only(self, username: str) -> None:
+        """PUT {status: active} and nothing else - unlike set_client_enabled
+        it never re-creates (and so never overwrites) a user on a 404."""
+        status, data = self._request("PUT", f"/api/user/{username}", json={"status": "active"})
+        if status != 200:
+            raise XrayError(f"فعال‌سازی کاربر Marzban ناموفق بود (کد HTTP {status})")
+
+    def delete_user_raw(self, username: str) -> tuple[int, dict]:
+        return self._request("DELETE", f"/api/user/{username}")
+
     def remove_client(self, inbound_tag: str, email: str, client_uuid: Optional[str] = None):
         status, data = self._request("DELETE", f"/api/user/{email}")
         if status not in (200, 204, 404):

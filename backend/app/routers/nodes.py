@@ -11,6 +11,7 @@ from ..services.mikrotik_client import MikrotikClient, MikrotikError
 from ..services.xray_client import XrayError, client_for_node
 from ..services.softether_client import SoftEtherError, client_for_node as softether_client_for_node
 from ..services import user_ops, hierarchy, node_monitor
+from ..services.node_gate import writer_gate
 from ..services.keys import generate_password
 
 
@@ -250,7 +251,7 @@ def push_radius_config(node_id: int, payload: schemas.RadiusPushRequest, db: Ses
         )
 
     try:
-        with MikrotikClient.for_node(node) as mt:
+        with writer_gate(node), MikrotikClient.for_node(node) as mt:
             mt.push_radius_config(
                 panel_host=panel_host,
                 secret=node.mt_radius_secret,
@@ -282,7 +283,7 @@ def push_pptp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Ses
 
     panel_host = _resolve_panel_host(payload.panel_host)
     try:
-        with MikrotikClient.for_node(node) as mt:
+        with writer_gate(node), MikrotikClient.for_node(node) as mt:
             mt.push_radius_config(
                 panel_host=panel_host,
                 secret=node.mt_radius_secret,
@@ -314,7 +315,7 @@ def push_sstp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Ses
     port = node.mt_sstp_port or 443
 
     try:
-        with MikrotikClient.for_node(node) as mt:
+        with writer_gate(node), MikrotikClient.for_node(node) as mt:
             mt.push_radius_config(
                 panel_host=panel_host,
                 secret=node.mt_radius_secret,
@@ -350,7 +351,7 @@ def push_l2tp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Ses
         db.commit()
 
     try:
-        with MikrotikClient.for_node(node) as mt:
+        with writer_gate(node), MikrotikClient.for_node(node) as mt:
             mt.push_radius_config(
                 panel_host=panel_host,
                 secret=node.mt_radius_secret,
@@ -389,7 +390,7 @@ def push_ikev2_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Se
         db.commit()
 
     try:
-        with MikrotikClient.for_node(node) as mt:
+        with writer_gate(node), MikrotikClient.for_node(node) as mt:
             mt.push_radius_config(
                 panel_host=panel_host,
                 secret=node.mt_radius_secret,
@@ -454,7 +455,7 @@ def rebuild_node_clients(node_id: int, db: Session = Depends(get_db), admin: mod
     imported: list[str] = []
     skipped: list[schemas.PppImportSkipped] = []
     try:
-        with client_for_node(node) as xc:
+        with writer_gate(node), client_for_node(node) as xc:
             # Only the 3X-UI client can enumerate what's already there; the
             # SSH-managed one has no such call, but ITS add_client already
             # replaces any same-email entry in config.json, so re-adding is

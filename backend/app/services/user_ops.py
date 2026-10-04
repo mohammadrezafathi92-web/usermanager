@@ -25,6 +25,7 @@ from .bot_auth import (
     resolve_package_authorization_scope,
 )
 from .mikrotik_client import MikrotikClient, MikrotikError
+from .node_gate import writer_gate
 from .xray_client import XrayError, client_for_node
 from .marzneshin_client import sanitize_username as marzneshin_sanitize_username
 from .softether_client import SoftEtherError, client_for_node as softether_client_for_node
@@ -964,7 +965,7 @@ def provision_wireguard(
     peer_name = f"user-{user.username}-{uuid.uuid4().hex[:6]}"
 
     try:
-        with MikrotikClient.for_node(node) as mt:
+        with writer_gate(node), MikrotikClient.for_node(node) as mt:
             mt.ensure_wireguard_interface(node.mt_wireguard_interface, node.mt_endpoint_port or 13231)
             if subnet_expanded:
                 # The gateway's prefix length just grew (e.g. /24 -> /23) -
@@ -1140,7 +1141,7 @@ def provision_xray(
 
     email = f"{user.username[:12]}{uuid.uuid4().hex[:4]}@usermanager.local"
     try:
-        with client_for_node(node) as xc:
+        with writer_gate(node), client_for_node(node) as xc:
             client_uuid = xc.add_client(node.xr_inbound_tag, email, flow=flow or "")
     except XrayError as exc:
         raise HTTPException(400, str(exc))
@@ -1188,7 +1189,7 @@ def provision_softether(
     username = f"{user.username[:12]}{uuid.uuid4().hex[:4]}"
     password = generate_password()
     try:
-        with softether_client_for_node(node) as sc:
+        with writer_gate(node), softether_client_for_node(node) as sc:
             sc.add_client(username, password)
     except SoftEtherError as exc:
         raise HTTPException(400, str(exc))
@@ -1654,7 +1655,7 @@ def deprovision_connection(connection: models.Connection):
     node = connection.node
     try:
         if connection.type == models.ConnectionType.wireguard:
-            with MikrotikClient.for_node(node) as mt:
+            with writer_gate(node), MikrotikClient.for_node(node) as mt:
                 peers = mt.list_peers(node.mt_wireguard_interface)
                 match = next((p for p in peers if p.get("comment") == connection.wg_peer_name), None)
                 if match:
@@ -1686,10 +1687,10 @@ def deprovision_connection(connection: models.Connection):
             # (done by the caller) is all that's needed.
             pass
         elif connection.type == models.ConnectionType.xray:
-            with client_for_node(node) as xc:
+            with writer_gate(node), client_for_node(node) as xc:
                 xc.remove_client(node.xr_inbound_tag, connection.xr_email, connection.xr_uuid)
         elif connection.type == models.ConnectionType.softether:
-            with softether_client_for_node(node) as sc:
+            with writer_gate(node), softether_client_for_node(node) as sc:
                 sc.remove_client(connection.ppp_username)
     except (MikrotikError, XrayError, SoftEtherError) as exc:
         raise HTTPException(400, str(exc))
@@ -1743,7 +1744,7 @@ def kick_connection(db: Session, connection: models.Connection) -> bool:
     if connection.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp,
                               models.ConnectionType.pptp):
         try:
-            with MikrotikClient.for_node(node) as mt:
+            with writer_gate(node), MikrotikClient.for_node(node) as mt:
                 found = mt.kick_ppp_session(connection.ppp_username)
         except MikrotikError as exc:
             raise HTTPException(400, str(exc))
@@ -1758,7 +1759,7 @@ def kick_connection(db: Session, connection: models.Connection) -> bool:
         if not connection.online:
             return False
         try:
-            with MikrotikClient.for_node(node) as mt:
+            with writer_gate(node), MikrotikClient.for_node(node) as mt:
                 peers = mt.list_peers(node.mt_wireguard_interface)
                 match = next((p for p in peers if p.get("comment") == connection.wg_peer_name), None)
                 if not match:
@@ -1775,7 +1776,7 @@ def kick_connection(db: Session, connection: models.Connection) -> bool:
         if not connection.online:
             return False
         try:
-            with client_for_node(node) as xc:
+            with writer_gate(node), client_for_node(node) as xc:
                 xc.set_client_enabled(node.xr_inbound_tag, connection.xr_email, connection.xr_uuid, connection.xr_flow or "", False)
                 xc.set_client_enabled(node.xr_inbound_tag, connection.xr_email, connection.xr_uuid, connection.xr_flow or "", True)
         except XrayError as exc:
@@ -1788,7 +1789,7 @@ def kick_connection(db: Session, connection: models.Connection) -> bool:
         if not connection.online:
             return False
         try:
-            with softether_client_for_node(node) as sc:
+            with writer_gate(node), softether_client_for_node(node) as sc:
                 sc.set_client_enabled(connection.ppp_username, connection.ppp_password, False)
                 sc.set_client_enabled(connection.ppp_username, connection.ppp_password, True)
         except SoftEtherError as exc:

@@ -49,3 +49,80 @@ def recheck_runtime_mode(db: Session = Depends(get_db)):
         raise HTTPException(status_code=503, detail="receipt_void_schema_not_ready")
     receipt_void_schema.compute_key_identity(engine, SessionLocal)
     return runtime.describe(db)
+
+
+# ---------------------------------------------------------------- registration (bots)
+# Called by the sales bots (X-API-Key, or in-process), never by a panel
+# admin session - hence a router of its own with no superadmin dependency.
+from fastapi import Response  # noqa: E402
+
+from ..deps import get_bot_principal  # noqa: E402
+from ..services import bot_auth  # noqa: E402
+from ..services import receipt_approval_intent as intents  # noqa: E402
+from ..services import receipt_approval_registration as registration  # noqa: E402
+
+bot_router = APIRouter(prefix="/api/accounting/receipt-approvals", tags=["receipt-approvals"])
+
+
+class ConnectionSpecIn(BaseModel):
+    node_id: int
+    protocol: str
+    flow: Optional[str] = ""
+
+
+class ApprovalIntentIn(BaseModel):
+    pending_source_instance_id: str
+    pending_local_id: int
+    kind: str
+    target_username: str
+    amount: int
+    package_id: Optional[int] = None
+    renew_purchase_id: Optional[int] = None
+    payment_card_id: Optional[int] = None
+    receipt_file_id: Optional[str] = None
+    discount_code: Optional[str] = None
+    referral_code: Optional[str] = None
+    list_price: Optional[int] = None
+    connections: list[ConnectionSpecIn] = []
+    # identities are only ever COMPARED with what the backend derives
+    telegram_id: Optional[int] = None
+    owner_admin_id: Optional[int] = None
+    approved_by_telegram_id: Optional[int] = None      # manual only
+
+    def to_intent(self) -> intents.ApprovalIntent:
+        return intents.ApprovalIntent(
+            pending_source_instance_id=self.pending_source_instance_id, pending_local_id=self.pending_local_id,
+            kind=self.kind, target_username=self.target_username, amount=self.amount, package_id=self.package_id,
+            renew_purchase_id=self.renew_purchase_id, payment_card_id=self.payment_card_id,
+            receipt_file_id=self.receipt_file_id, discount_code=self.discount_code, referral_code=self.referral_code,
+            list_price=self.list_price,
+            connections=tuple(intents.ConnectionSpec(c.node_id, c.protocol, c.flow or "") for c in self.connections),
+            claimed_telegram_id=self.telegram_id, claimed_owner_admin_id=self.owner_admin_id)
+
+
+def begin_approval(db: Session, principal: bot_auth.BotPrincipal, payload: ApprovalIntentIn, approval_mode: str) -> dict:
+    """Shared by both endpoints and by the in-process bot. The mode comes
+    from which endpoint was called, never from a body field."""
+    bot_auth._ensure_valid(principal, f"receipt_approval_{approval_mode}")
+    try:
+        return registration.begin(
+            db, principal, payload.to_intent(), approval_mode=approval_mode,
+            approved_by_telegram_id=payload.approved_by_telegram_id if approval_mode == registration.MANUAL else None)
+    except registration.RegistrationRejected as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.code)
+
+
+@bot_router.post("/auto")
+def register_auto(payload: ApprovalIntentIn, response: Response, db: Session = Depends(get_db),
+                  principal: bot_auth.BotPrincipal = Depends(get_bot_principal)):
+    body = begin_approval(db, principal, payload, registration.AUTO)
+    response.status_code = 201 if body.get("created") else 200
+    return body
+
+
+@bot_router.post("/manual")
+def register_manual(payload: ApprovalIntentIn, response: Response, db: Session = Depends(get_db),
+                    principal: bot_auth.BotPrincipal = Depends(get_bot_principal)):
+    body = begin_approval(db, principal, payload, registration.MANUAL)
+    response.status_code = 201 if body.get("created") else 200
+    return body

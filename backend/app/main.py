@@ -160,6 +160,7 @@ app.include_router(miniapp.router)
 app.include_router(subscription.router)
 app.include_router(accounting_router.router)
 app.include_router(receipt_approvals_router.router)
+app.include_router(receipt_approvals_router.bot_router)
 app.include_router(ads_router.router)
 app.include_router(license_router.router)
 # The two licence routes that must work WITHOUT a session - a panel locked

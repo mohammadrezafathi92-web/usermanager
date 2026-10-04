@@ -247,3 +247,12 @@ def delete_card(db: Session, card: models.PaymentCard) -> None:
 
 def activate_card(db: Session, card: models.PaymentCard) -> None:
     set_pool_settings(db, card.owner_admin_id, active_card_id=card.id)
+
+
+def take_back(db: Session, card: models.PaymentCard, amount: int) -> None:
+    """Removes an amount from a card's running total (never below zero) -
+    for scripts/void_test_sales.py, which deletes test payments outright.
+    Does not move the active-card pointer and writes no event: this is NOT
+    the causal void of the receipt-void design (section 15.5)."""
+    if amount > 0:
+        card.accumulated_amount = max(0, int(card.accumulated_amount or 0) - int(amount))

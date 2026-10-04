@@ -1,0 +1,147 @@
+"""Receipt Void phase P3 (seventh batch) - the bot's create_user endpoint
+records what an approval really did, in shadow, without ever affecting the
+sale itself (design 5.2, 5.6).
+Run:  python3 backend/tests/test_receipt_approval_bot_effects.py
+"""
+from __future__ import annotations
+
+import inspect
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.environ.setdefault("DATABASE_URL", "sqlite://")
+
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
+
+from app import models, models_receipt_void as rv, schemas
+from app.routers import bot as bot_router
+from app.services import bot_auth, receipt_void_schema, user_ops
+from app.services import receipt_approval_intent as ri
+from app.services import receipt_approval_registration as reg
+from app.services import receipt_approval_runtime as runtime
+from app.telegram_bot.handlers import admin_pending
+
+failures: list[str] = []
+F, SH = rv.receipt_approval_effects, rv.receipt_approval_shadow_events
+
+
+def check(label, got, expected=True):
+    if got == expected:
+        print(f"PASS  {label}")
+    else:
+        failures.append(label)
+        print(f"FAIL  {label}\n        got:      {got!r}\n        expected: {expected!r}")
+
+
+engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+models.Base.metadata.create_all(engine)
+Session = sessionmaker(bind=engine)
+receipt_void_schema.bootstrap(engine, Session)
+db = Session()
+root = models.AdminUser(username="root", hashed_password="x", is_superadmin=True, telegram_id=1000)
+node = models.Node(name="n1", type=models.NodeType.mikrotik)
+db.add_all([root, node, models.PanelSettings(id=1)])
+db.flush()
+package = models.Package(name="P", quota_gb=10, duration_days=30, price=1000)
+db.add(package)
+db.flush()
+slots = [models.PackageConnection(package_id=package.id, node_id=node.id, protocol=models.ConnectionType.wireguard) for _ in range(2)]
+db.add_all(slots)
+db.commit()
+internal = bot_auth.BotPrincipal.internal(None)
+
+
+def fake_provision(db_, user, node_, protocol, flow="", **_kwargs):
+    """Stands in for the remote call: only the Connection row."""
+    connection = models.Connection(user_id=user.id, node_id=node_.id, type=models.ConnectionType(protocol),
+                                   wg_private_key="SECRET-KEY", purchase_batch=_kwargs.get("purchase_batch"))
+    db_.add(connection)
+    db_.flush()
+    return connection
+
+
+user_ops.provision_connection = fake_provision
+specs = [schemas.BotCreateConnectionSpec(node_id=node.id, protocol="wireguard", flow="") for _ in range(2)]
+
+
+def request(username, telegram_id, approval_uuid=None, **extra):
+    fields = dict(username=username, quota_gb=10, expire_days=30, telegram_id=telegram_id, connections=specs,
+                  package_name="P", package_id=package.id, paid_amount=900, payment_method="card",
+                  approval_uuid=approval_uuid)
+    fields.update(extra)
+    return schemas.BotCreateUserRequest(**fields)
+
+
+def effects(uuid):
+    return sorted(f"{r.effect_type}:{r.effect_key}" for r in db.execute(select(F).where(F.c.approval_uuid == uuid)))
+
+
+def shadow_codes():
+    return [r.error_code for r in db.execute(select(SH).order_by(SH.c.id))]
+
+
+print("--- no approval uuid: exactly the old behaviour ---")
+bot_router.create_user(request("legacy", 1), db=db, principal=internal)
+check("user, purchase and sale exist; nothing recorded; the ledger row has no approval",
+      (db.query(models.User).filter_by(username="legacy").count(), len(db.execute(select(F)).all()), shadow_codes(),
+       db.query(models.LedgerEntry).filter_by(username_snapshot="legacy").one().approval_uuid), (1, 0, [], None))
+
+print("--- with a registered approval ---")
+runtime.set_requested_mode(db, registration_mode="shadow")
+db.commit()
+intent = ri.ApprovalIntent(pending_source_instance_id="inst", pending_local_id=1, kind="new", target_username="newbie",
+                           amount=900, package_id=package.id, list_price=1000, claimed_telegram_id=999)
+answer = reg.begin(db, internal, intent, approval_mode="manual", approved_by_telegram_id=1000)
+uuid_ = answer["approval_uuid"]
+bot_router.create_user(request("newbie", 999, uuid_), db=db, principal=internal)
+manifest = sorted(f"{m['effect_type']}:{m['effect_key']}" for m in reg.manifest_of(db, uuid_))
+check("every expected effect was recorded - user, purchase, both connection slots, sale", (effects(uuid_), shadow_codes()),
+      (manifest, []))
+check("two identical connections landed on two different slots",
+      len({r.resource_id for r in db.execute(select(F).where(F.c.approval_uuid == uuid_, F.c.effect_type == "connection_created"))}), 2)
+check("the sale's ledger row now points at the approval",
+      db.query(models.LedgerEntry).filter_by(username_snapshot="newbie").one().approval_uuid, uuid_)
+stored = " ".join(str(v) for r in db.execute(select(F)).mappings() for v in r.values())
+check("no credential in the effects", "SECRET-KEY" in stored, False)
+
+print("--- a sale that differs from what was registered still goes through ---")
+intent2 = ri.ApprovalIntent(pending_source_instance_id="inst", pending_local_id=2, kind="new", target_username="other",
+                            amount=900, package_id=package.id, claimed_telegram_id=555)
+uuid2 = reg.begin(db, internal, intent2, approval_mode="manual", approved_by_telegram_id=1000)["approval_uuid"]
+bot_router.create_user(request("other", 555, uuid2, paid_amount=123, connections=specs[:1] + [
+    schemas.BotCreateConnectionSpec(node_id=node.id, protocol="l2tp", flow="")]), db=db, principal=internal)
+check("the customer was created and sold to regardless",
+      (db.query(models.User).filter_by(username="other").count(), db.query(models.LedgerEntry).filter_by(username_snapshot="other").one().amount),
+      (1, 123))
+check("...and the differences are shadow events: an unexpected connection, a different amount",
+      sorted(shadow_codes()), ["effect_manifest_mismatch", "effect_not_in_manifest"])
+check("what did match is recorded", effects(uuid2),
+      sorted(["user_created:user", "purchase_created:purchase", f"connection_created:conn:package_connection:{slots[0].id}"]))
+
+print("--- an approval uuid the panel never issued ---")
+before = len(shadow_codes())
+bot_router.create_user(request("ghost", 777, "00000000-0000-0000-0000-000000000000"), db=db, principal=internal)
+check("the sale works, the ledger row is NOT tagged with an unknown uuid, effects are refused",
+      (db.query(models.User).filter_by(username="ghost").count(),
+       db.query(models.LedgerEntry).filter_by(username_snapshot="ghost").one().approval_uuid,
+       set(shadow_codes()[before:])), (1, None, {"effect_not_in_manifest"}))
+
+print("--- the bot passes the id along ---")
+source = inspect.getsource(admin_pending.perform_approval)
+check("perform_approval puts the registered approval uuid into the sale details",
+      'sale_info["approval_uuid"] = session["approval_uuid"]' in source, True)
+check("all three sale request schemas accept it",
+      ["approval_uuid" in m.model_fields for m in (schemas.BotCreateUserRequest, schemas.BotPurchasePackageRequest,
+                                                   schemas.BotRenewRequest)], [True, True, True])
+
+db.close()
+print()
+if failures:
+    print(f"{len(failures)} FAILED:")
+    for label in failures:
+        print(f"  - {label}")
+    sys.exit(1)
+print("all checks passed")

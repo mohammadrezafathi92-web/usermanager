@@ -23,6 +23,7 @@ from ..database import get_db
 from ..deps import get_bot_principal
 from ..services import user_ops, hierarchy, payment_cards, accounting, admin_billing, trial
 from ..services import bot_resources
+from ..services import receipt_approval_effects as approval_effects
 from ..services.bot_auth import (
     BROADCAST,
     CUSTOMER_READ,
@@ -278,7 +279,7 @@ def _ensure_one_time_package_not_reused(
 def _record_bot_sale(
     db: Session, principal: BotPrincipal, kind: str, payload, user: models.User,
     package: Optional[models.Package], purchase_id: Optional[int] = None,
-) -> None:
+) -> Optional[models.LedgerEntry]:
     """Shared accounting hook for every bot sale endpoint below (see
     services/accounting.py). Uses the exact paid amount when the bot sent
     it (new bot builds pass the post-discount final price), otherwise falls
@@ -298,12 +299,12 @@ def _record_bot_sale(
     paid = getattr(payload, "paid_amount", None)
     if paid is None:
         if package is None:
-            return  # package-less admin-created user - nothing was sold
+            return None  # package-less admin-created user - nothing was sold
         paid = accounting.sale_fallback_price(db, package, user.owner_admin_id)
     payment_card_id = getattr(payload, "payment_card_id", None)
     if payment_card_id is not None:
         bot_resources._get_payment_card_or_403(db, principal, payment_card_id)
-    accounting.record(
+    return accounting.record(
         db, kind, paid,
         user=user,
         admin_id=user.owner_admin_id,
@@ -822,20 +823,30 @@ def create_user(
     # instead of «بدون ادمین» for a bot signup that legitimately has no
     # owning reseller - see models.User.created_via.
     user.created_via = "bot"
+    # Receipt-approval effects (services/receipt_approval_effects.py). A
+    # no-op unless the bot registered this approval, i.e. unless the
+    # panel's registration mode is 'shadow'; never raises, never blocks.
+    recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)
+    if recorder.active:
+        db.flush()
+        recorder.effect("user_created", "user", user, approval_effects.UserCreatedEvidence(
+            package_id=payload.package_id, quota_bytes=int(user.total_quota_bytes or 0),
+            days=payload.expire_days or None))
     # Every connection in this one request is one purchase - share a single
     # batch (see models.Connection.purchase_batch) so the bot's "اکانت من"
     # groups them together instead of listing each service separately.
     batch = uuid.uuid4().hex if payload.connections else None
     connection_authorization_scope = resolve_bot_authorization_scope(principal)
+    created_connections = []
     for spec in payload.connections:
         node = db.get(models.Node, spec.node_id)
         if not node:
             continue
-        user_ops.provision_connection(
+        created_connections.append(user_ops.provision_connection(
             db, user, node, spec.protocol, spec.flow or "",
             purchase_batch=batch, package_name=payload.package_name,
             authorization_scope=connection_authorization_scope,
-        )
+        ))
 
     # Turn what was just provisioned into a real, independently-enforced
     # service instead of leaving it on the customer's shared pool.
@@ -852,8 +863,9 @@ def create_user(
     # the Purchase 1:1 - so nothing is double-counted: once any Purchase
     # exists, User.effective_quota_bytes stops reading the user-level
     # number at all.
+    new_purchase = None
     if payload.connections:
-        user_ops.absorb_legacy_pool_into_purchase(db, user, comment=payload.comment)
+        new_purchase = user_ops.absorb_legacy_pool_into_purchase(db, user, comment=payload.comment)
 
     # Reuses the same already-authorized fetch above rather than a second
     # raw db.get - one _get_package_or_403 call per package_id per request.
@@ -864,7 +876,15 @@ def create_user(
     # them nothing. The reseller goes into debt instead - which their
     # overdraft is for, and which the superadmin can see.
     _charge_seller(db, user, package)
-    _record_bot_sale(db, principal, "sale_new", payload, user, package)
+    sale_entry = _record_bot_sale(db, principal, "sale_new", payload, user, package)
+    if recorder.active:
+        db.flush()
+        recorder.effect("purchase_created", "purchase", new_purchase,
+                        approval_effects.PurchaseCreatedEvidence(days=payload.expire_days or None))
+        for connection in created_connections:
+            recorder.connection(connection)
+        recorder.effect("ledger_sale", "sale", sale_entry)
+        recorder.tag_ledger(sale_entry)
     db.commit()
     db.refresh(user)
     return _user_response(user)

@@ -1498,6 +1498,8 @@ class BotCreateUserRequest(BaseModel):
     # deployed bots that don't send them keep working; the panel falls back
     # to the package's list price with no payment-method detail. ---
     paid_amount: Optional[int] = None  # final tomans actually paid (after discount)
+    # receipt-approval registration (routers/receipt_approvals.py): which approval this sale belongs to
+    approval_uuid: Optional[str] = None
     payment_method: Optional[str] = None  # "card" | "wallet"
     payment_card_id: Optional[int] = None
     discount_code: Optional[str] = None
@@ -1515,6 +1517,8 @@ class BotRenewRequest(BaseModel):
     package_id: Optional[int] = None
     # --- accounting - same optional fields/fallback as BotCreateUserRequest ---
     paid_amount: Optional[int] = None
+    # receipt-approval registration (routers/receipt_approvals.py): which approval this sale belongs to
+    approval_uuid: Optional[str] = None
     payment_method: Optional[str] = None
     payment_card_id: Optional[int] = None
     discount_code: Optional[str] = None
@@ -1646,6 +1650,8 @@ class BotPurchasePackageRequest(BaseModel):
     comment: Optional[str] = None
     # --- accounting - same optional fields/fallback as BotCreateUserRequest ---
     paid_amount: Optional[int] = None
+    # receipt-approval registration (routers/receipt_approvals.py): which approval this sale belongs to
+    approval_uuid: Optional[str] = None
     payment_method: Optional[str] = None
     payment_card_id: Optional[int] = None
     discount_code: Optional[str] = None

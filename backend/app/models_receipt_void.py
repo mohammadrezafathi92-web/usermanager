@@ -658,7 +658,9 @@ wallet_writeoffs = Table(
     uq("uq_walletwriteoff_operation_lot", "wallet_operation_id", "wallet_lot_id"),
     Index("ix_walletwriteoff_identity", "customer_identity_id"),
     ck("ck_walletwriteoff_amount_positive", "amount > 0"),
-    ck("ck_walletwriteoff_reason", _in("reason", ("third_party_reward_consumed",))),
+    # One allowed value today. Written as "=" rather than IN (...): MariaDB
+    # re-prints a single-element IN as an equality anyway.
+    ck("ck_walletwriteoff_reason", "reason = 'third_party_reward_consumed'"),
 )
 
 wallet_cache_repair_events = Table(

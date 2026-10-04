@@ -80,6 +80,17 @@ def drop_all(engine):
         table.drop(engine, checkfirst=True)
 
 
+def drop_everything(engine):
+    """Empties a scratch MariaDB database. The project's own metadata has a
+    foreign-key cycle (admin_users <-> payment_cards), so metadata.drop_all
+    cannot order the drops; with foreign key checks off, order is irrelevant."""
+    with engine.begin() as conn:
+        conn.exec_driver_sql("SET FOREIGN_KEY_CHECKS = 0")
+        for name in inspect(conn).get_table_names():
+            conn.exec_driver_sql(f"DROP TABLE IF EXISTS `{name}`")
+        conn.exec_driver_sql("SET FOREIGN_KEY_CHECKS = 1")
+
+
 print("--- shape ---")
 check("36 tables", len(rv.RECEIPT_VOID_TABLES), 36)
 check("398 columns", sum(len(t.columns) for t in rv.RECEIPT_VOID_TABLES), 398)
@@ -466,7 +477,7 @@ mariadb_url = os.environ.get("MARIADB_TEST_URL", "").strip()
 if mariadb_url:
     print("--- real MariaDB ---")
     maria = create_engine(mariadb_url)
-    drop_all(maria)
+    drop_everything(maria)
     models.Base.metadata.create_all(maria)
     try:
         run_bootstrap_checks(maria, "mariadb")
@@ -474,8 +485,7 @@ if mariadb_url:
         rvs.create_tables(maria)
         run_constraint_checks(maria, "mariadb")
     finally:
-        drop_all(maria)
-        models.Base.metadata.drop_all(maria)
+        drop_everything(maria)
         maria.dispose()
 elif os.environ.get("CI"):
     check("CI must provide MARIADB_TEST_URL (real MariaDB is mandatory in CI, never skipped)", False)

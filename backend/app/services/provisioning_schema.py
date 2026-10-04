@@ -280,6 +280,8 @@ class _CheckParser:
             inner = self._not()
             if inner[0] == "in":
                 return ("not_in",) + inner[1:]
+            if inner[0] == "cmp" and inner[1] == "=" and inner[2][0] == "name" and inner[3][0] in ("str", "num"):
+                return ("cmp", "<>") + inner[2:]
             if inner[0] == "is_null":
                 return ("is_not_null",) + inner[1:]
             return ("not", inner)
@@ -315,7 +317,13 @@ class _CheckParser:
                 if negated:
                     self._take()
                 self._take("kw", "in")
-                left = ("not_in" if negated else "in", left, self._list())
+                values = self._list()
+                if len(values) == 1:
+                    # `x IN (v)` and `x = v` are the same condition, and
+                    # MariaDB re-prints the former as the latter.
+                    left = ("cmp", "<>" if negated else "=", left, values[0])
+                else:
+                    left = ("not_in" if negated else "in", left, values)
             else:
                 return left
 

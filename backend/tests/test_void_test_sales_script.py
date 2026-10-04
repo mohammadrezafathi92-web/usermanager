@@ -157,8 +157,13 @@ print("--- a node that cannot be reached ---")
 db = Session()
 tester = db.query(models.User).filter_by(username="tester").one()
 stuck, stuck_conn = purchase(tester, RECENT)
-ledger(tester, "sale_new", 50, RECENT, stuck.id)
+ledger(tester, "sale_new", 50, RECENT, stuck.id, 1)
+ledger(tester, "wallet_topup", 30, RECENT, None, 1)
+db.add(models.DiscountCodeRedemption(code_id=1, user_id=tester.id, username="tester", created_at=RECENT))
+db.get(models.DiscountCode, 1).used_count = 3
+tester.balance = 230
 db.commit()
+card_before = db.get(models.PaymentCard, 1).accumulated_amount
 unreachable.add(stuck_conn.id)
 stuck_id = stuck.id
 db.close()
@@ -166,6 +171,11 @@ code_, text = run("tester", "--execute", "--confirm", "tester", "--delete-user")
 after = snapshot()
 check("the service is KEPT and reported, the exit code says so, and the account is not deleted",
       (code_, f"KEPT service #{stuck_id}" in text, stuck_id in after["purchases"], "account NOT deleted" in text), (1, True, True, True))
+check("a kept service keeps its money trail: its sale row and what it added to the card stay, its discount use stays",
+      ([r for r in after["ledger"] if r == ("sale_new", 50)], after["code_used"], "left in place for the kept service" in text),
+      ([("sale_new", 50)], 3, True))
+check("...while what is NOT tied to it (the top-up) is still removed: wallet 230 - 30, card - 30 only",
+      (after["balance"], card_before - after["card"], ("wallet_topup", 30) in after["ledger"]), (200, 30, False))
 
 print("--- deleting the account as well ---")
 unreachable.clear()

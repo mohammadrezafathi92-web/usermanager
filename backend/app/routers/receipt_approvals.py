@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from ..database import SessionLocal, engine, get_db
@@ -129,14 +130,20 @@ class FinalizeIn(BaseModel):
 def finalize_approval(db: Session, principal: bot_auth.BotPrincipal, approval_uuid: str, failed: bool = False) -> dict:
     """Shared by the endpoint and the in-process bot."""
     bot_auth._ensure_valid(principal, "receipt_approval_finalize")
-    try:
-        registration.take_write_lock(db)
-        result = registration.finalize(db, principal, approval_uuid, reported_failure=failed)
-        db.commit()
-        return result
-    except registration.RegistrationRejected as exc:
-        db.rollback()
-        raise HTTPException(status_code=exc.status, detail=exc.code)
+    for attempt in range(1, registration.WRITE_ATTEMPTS + 1):
+        try:
+            registration.take_write_lock(db)
+            result = registration.finalize(db, principal, approval_uuid, reported_failure=failed)
+            db.commit()
+            return result
+        except registration.RegistrationRejected as exc:
+            db.rollback()
+            raise HTTPException(status_code=exc.status, detail=exc.code)
+        except OperationalError:                 # database busy: wait and try again, as begin() does
+            db.rollback()
+            if attempt == registration.WRITE_ATTEMPTS:
+                raise HTTPException(status_code=503, detail="database_busy")
+            registration.time.sleep(0.3 * attempt)
 
 
 @bot_router.post("/{approval_uuid}/finalize")

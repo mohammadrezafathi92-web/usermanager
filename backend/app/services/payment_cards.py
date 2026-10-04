@@ -166,8 +166,14 @@ def advance_after_payment(db: Session, card_id: int, amount: int) -> None:
     """advance_after_payment_core, then one commit if (and only if) it wrote
     something - exactly what this function always did, and what every
     existing caller relies on (routers/bot.py's record_card_payment)."""
-    if not advance_after_payment_core(db, card_id, amount):
-        return
+    try:
+        if not advance_after_payment_core(db, card_id, amount):
+            return
+    except payment_card_events.PoolLogBroken:
+        # counter and event must agree: without the event (and without a
+        # demotion) the counter write is thrown away too
+        db.rollback()
+        raise
     db.commit()
 
 

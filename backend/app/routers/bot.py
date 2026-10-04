@@ -23,6 +23,7 @@ from ..database import get_db
 from ..deps import get_bot_principal
 from ..services import user_ops, hierarchy, payment_cards, accounting, admin_billing, trial
 from ..services import bot_resources
+from ..services import payment_card_events
 from ..services import receipt_approval_effects as approval_effects
 from ..services.bot_auth import (
     BROADCAST,
@@ -576,8 +577,15 @@ def record_payment_card_use(
     # per approval - a repeat is recorded as an ordinary payment) and the
     # event becomes the approval's card_payment effect. Otherwise unchanged.
     recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)
+    if recorder.card_payment_already_recorded():
+        return {"ok": True}             # a repeat for the same approval: counted once
     event_uuid = recorder.card_event_uuid()
-    if payment_cards.advance_after_payment_core(db, card_id, payload.amount, approval_uuid=event_uuid):
+    try:
+        written = payment_cards.advance_after_payment_core(db, card_id, payload.amount, approval_uuid=event_uuid)
+    except payment_card_events.PoolLogBroken:
+        db.rollback()                   # no event and no demotion: no counter change either
+        raise HTTPException(503, "ثبت پرداخت کارت موقتاً ممکن نیست")
+    if written:
         if event_uuid:
             recorder.card_payment()
         db.commit()

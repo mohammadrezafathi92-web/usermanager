@@ -55,7 +55,10 @@ check("2500 bytes in 1000-byte slices: three parts, named in order",
       ([p.name for p in parts], [p.stat().st_size for p in parts]),
       ([f"{big.name}.part01of03", f"{big.name}.part02of03", f"{big.name}.part03of03"], [1000, 1000, 500]))
 check("an exact multiple makes no empty last part", len(backup.split_for_telegram(big, part_bytes=1250)), 2)
-check("the real limit leaves room under Telegram's 50MB", backup.TELEGRAM_PART_BYTES < 50 * 1024 * 1024, True)
+check("pieces are well under Telegram's 50MB (a 45MB piece did not get through a proxy in production)",
+      backup.TELEGRAM_PART_BYTES <= 20 * 1024 * 1024, True)
+check("the upload timeout grows with the piece: 90s base, a 19MB piece gets over six minutes",
+      (backup._send_timeout(0), backup._send_timeout(19 * 1024 * 1024) > 360), (90.0, True))
 
 print("--- joining ---")
 uploads = [(p.name, p.read_bytes()) for p in parts]
@@ -89,9 +92,29 @@ check("the temporary pieces are removed afterwards", [p.name for p in folder.ite
 sent_files.clear(); sent_texts.clear()
 backup.TELEGRAM_PART_BYTES = 10_000
 check("a small backup: one file, no explanation", (backup.send_backup_to_telegram(big), len(sent_files), sent_texts), ((2, 2), 2, []))
-runner.send_document_sync = lambda chat_id, path, caption="", **kw: chat_id != 22
+attempts = []
+sent_texts.clear()
+
+
+def flaky(chat_id, path, caption="", **kw):
+    attempts.append((chat_id, Path(path).name[-10:], kw.get("timeout")))
+    if chat_id == 22 and "part01" in path:
+        return False                                    # the big first piece never gets through for this admin
+    if chat_id == 11 and "part02" in path:
+        return len([a for a in attempts if a[:2] == (11, "part02of03")]) >= 2      # second try works
+    return True
+
+
+runner.send_document_sync = flaky
 backup.TELEGRAM_PART_BYTES = 1000
-check("an admin who did not receive every part is not counted as sent", backup.send_backup_to_telegram(big), (1, 2))
+result = backup.send_backup_to_telegram(big)
+check("a piece that fails is retried; an admin who still misses one is not counted as sent", result, (1, 2))
+check("the failing piece was tried three times, the flaky one twice, each with a timeout",
+      (len([a for a in attempts if a[:2] == (22, "part01of03")]), len([a for a in attempts if a[:2] == (11, "part02of03")]),
+       all(a[2] and a[2] >= 90 for a in attempts)), (3, 2, True))
+check("the admin with a missing piece is TOLD the set is incomplete; the other gets the normal explanation",
+      ([("کامل نرسید" in t, "تکه‌(های) 1 از 3" in t) for c, t in sent_texts if c == 22],
+       ["بازگردانی" in t and "کامل نرسید" not in t for c, t in sent_texts if c == 11]), ([(True, True)], [True]))
 
 print("--- the backup copy is compacted, the live database is not touched ---")
 live = folder / "live.db"

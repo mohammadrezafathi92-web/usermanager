@@ -390,6 +390,7 @@ def send_backup_to_telegram(path: Path) -> tuple[int, int]:
     size_mb = path.stat().st_size / (1024 ** 2)
     when = fmt_jalali_long(dt.datetime.utcnow(), with_time=True)
     parts = split_for_telegram(path)
+    failed_parts: dict[int, list[int]] = {}
     try:
         sent = 0
         for chat_id in admin_ids:
@@ -399,11 +400,19 @@ def send_backup_to_telegram(path: Path) -> tuple[int, int]:
                     caption = f"💾 بک‌آپ دیتابیس — {when}"
                 else:
                     caption = f"💾 بک‌آپ دیتابیس — {when}\nتکه {index} از {len(parts)}"
-                if not telegram_bot_runner.send_document_sync(chat_id, str(part), caption=caption):
+                if not _send_part(telegram_bot_runner, chat_id, part, caption):
                     delivered = False
+                    failed_parts.setdefault(chat_id, []).append(index)
                     logger.warning("failed to send backup %s to admin chat %s - see send_document_sync's own log "
                                    "line above for the reason", part.name, chat_id)
-            if len(parts) > 1:
+            if failed_parts.get(chat_id):
+                # An incomplete set is useless for a restore - say so, in
+                # Telegram, instead of leaving pieces that look like a backup.
+                telegram_bot_runner.send_message_sync(chat_id, (
+                    f"⚠️ بک‌آپ کامل نرسید: تکه‌(های) {'، '.join(str(i) for i in failed_parts[chat_id])} از {len(parts)} "
+                    f"ارسال نشد.\nبا این تکه‌ها بازگردانی ممکن نیست. فایل کامل روی سرور هست: <code>{path.name}</code>"
+                ))
+            elif len(parts) > 1:
                 # Said IN TELEGRAM, next to the files: what these pieces
                 # are and how to turn them back into one backup. (Before
                 # this, a backup over Telegram's 50MB bot-upload limit was
@@ -426,7 +435,27 @@ def send_backup_to_telegram(path: Path) -> tuple[int, int]:
 # Backups larger than Telegram allows a bot to upload (50MB) are sent as
 # several plain byte slices of the same file. Nothing is re-compressed or
 # re-encoded: joining the slices in order gives back the exact backup file.
-TELEGRAM_PART_BYTES = 45 * 1024 * 1024
+# 19MB, not "just under 50": on the first real over-limit backup
+# (2026-10-04) the 45MB first piece never arrived and only the small last
+# piece did - a large upload through a Telegram-API proxy within one fixed
+# timeout is exactly what fails. Smaller pieces, a timeout that grows with
+# the piece, and a few attempts each.
+TELEGRAM_PART_BYTES = 19 * 1024 * 1024
+SEND_ATTEMPTS = 3
+
+
+def _send_timeout(size_bytes: int) -> float:
+    """90s as before, plus 15s for every megabyte."""
+    return 90.0 + 15.0 * (size_bytes / (1024 * 1024))
+
+
+def _send_part(runner, chat_id: int, part: Path, caption: str) -> bool:
+    timeout = _send_timeout(part.stat().st_size)
+    for attempt in range(1, SEND_ATTEMPTS + 1):
+        if runner.send_document_sync(chat_id, str(part), caption=caption, timeout=timeout):
+            return True
+        logger.warning("backup piece %s to %s: attempt %s of %s failed", part.name, chat_id, attempt, SEND_ATTEMPTS)
+    return False
 _PART_NAME = re.compile(r"^(?P<base>.+)\.part(?P<index>\d{2,3})of(?P<total>\d{2,3})$")
 
 

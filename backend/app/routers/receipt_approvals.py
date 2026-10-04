@@ -130,6 +130,7 @@ def finalize_approval(db: Session, principal: bot_auth.BotPrincipal, approval_uu
     """Shared by the endpoint and the in-process bot."""
     bot_auth._ensure_valid(principal, "receipt_approval_finalize")
     try:
+        registration.take_write_lock(db)
         result = registration.finalize(db, principal, approval_uuid, reported_failure=failed)
         db.commit()
         return result

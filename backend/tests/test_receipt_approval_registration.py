@@ -275,7 +275,59 @@ try:
     crashed = reg.begin(db, internal, fresh(), approval_mode="auto")
 finally:
     reg.register = real
-check("an unexpected crash inside registration is also only a shadow error", crashed["shadow_error"], "registration_error")
+check("an unexpected crash inside registration is also only a shadow error - named by its class, with no values",
+      crashed["shadow_error"], "registration_error:ZeroDivisionError")
+
+print("--- SQLite: the write lock is taken up front (production, 2026-10-04) ---")
+# What production did (reproduced with the app's own engine settings before
+# this fix): the registration opens a savepoint and reads; another
+# connection commits a write; the registration's own first write then fails
+# at once with "database is locked". With the write lock taken first,
+# nobody else can commit in between.
+import sqlite3
+real_register = reg.register
+seen = {}
+
+
+def register_and_probe(db_, *args, **kwargs):
+    seen["in_transaction"] = db_.connection().connection.dbapi_connection.in_transaction
+    intruder = sqlite3.connect(engine.url.database, timeout=0.1)
+    try:
+        intruder.execute("INSERT INTO users (username) VALUES ('intruder')")
+        intruder.commit()
+        seen["intruder"] = "wrote"
+    except sqlite3.OperationalError as exc:
+        seen["intruder"] = str(exc)
+    finally:
+        intruder.close()
+    return real_register(db_, *args, **kwargs)
+
+
+reg.register = register_and_probe
+try:
+    answer = reg.begin(db, internal, fresh(), approval_mode="manual", approved_by_telegram_id=1000)
+finally:
+    reg.register = real_register
+check("the write transaction is open before anything is read, so no other connection can commit in between",
+      (seen, answer.get("shadow_error"), bool(answer["approval_uuid"])),
+      ({"in_transaction": True, "intruder": "database is locked"}, None, True))
+import sqlalchemy
+calls = []
+
+
+def locked(*a, **k):
+    calls.append(1)
+    raise sqlalchemy.exc.OperationalError("INSERT", {}, Exception("database is locked"))
+
+
+reg.register = locked
+reg.time.sleep = lambda seconds: None
+try:
+    busy = reg.begin(db, internal, fresh(), approval_mode="manual", approved_by_telegram_id=1000)
+finally:
+    reg.register = real_register
+check("a busy database is retried, then reported by class - and the bot still proceeds",
+      (len(calls), busy["shadow_error"], busy["proceed_legacy"]), (reg.WRITE_ATTEMPTS, "registration_error:Exception", True))
 db.execute(rv.receipt_approval_runtime_state.update().values(
     registration_mode="required", loyalty_timing_mode="payment_event", completeness_generation=1, key_identity_ready=False,
     key_identity_failure="x"))

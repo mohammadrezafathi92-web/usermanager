@@ -37,6 +37,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from .. import models
+from . import payment_card_events
 
 VALID_MODES = ("manual", "rotate", "threshold")
 
@@ -97,7 +98,7 @@ def resolve_active_card(
     return cards[0]
 
 
-def advance_after_payment_core(db: Session, card_id: int, amount: int) -> bool:
+def advance_after_payment_core(db: Session, card_id: int, amount: int, approval_uuid: Optional[str] = None) -> bool:
     """The mutation of advance_after_payment WITHOUT its commit - for a
     caller that records the payment inside a larger transaction (Lifecycle/P6
     design 7.3). Same logic, same best-effort no-ops. Returns whether
@@ -116,35 +117,48 @@ def advance_after_payment_core(db: Session, card_id: int, amount: int) -> bool:
     Best-effort by design - amount<=0 or a since-deleted card is a silent
     no-op rather than an error, since this is bookkeeping on the side of an
     already-successful approval, never something that should be able to
-    make that approval fail."""
+    make that approval fail.
+
+    For a pool whose logging phase is 'event_logged' (Receipt Void design
+    15.2) the same transaction also writes the payment's event row; a
+    'legacy' pool behaves exactly as it always did."""
     if amount <= 0:
         return False
     card = db.get(models.PaymentCard, card_id)
     if not card:
         return False
-    card.accumulated_amount = (card.accumulated_amount or 0) + amount
+    logged = payment_card_events.phase_for_payment(db, card.owner_admin_id) == payment_card_events.EVENT_LOGGED
+    if logged:
+        # the pool is locked now: take the counter as committed, not as this
+        # session happened to read it earlier in the request
+        db.refresh(card, with_for_update=True)
+    accumulated_before = card.accumulated_amount or 0
+    card.accumulated_amount = accumulated_before + amount
 
-    if card.owner_admin_id is None:
-        settings = db.get(models.PanelSettings, 1)
-        mode = (settings.payment_card_mode if settings else None) or "manual"
-        threshold = settings.payment_card_switch_threshold if settings else None
-        is_active_pointer = bool(settings and settings.active_payment_card_id == card.id)
-    else:
-        admin = db.get(models.AdminUser, card.owner_admin_id)
-        mode = (admin.own_payment_card_mode if admin else None) or "manual"
-        threshold = admin.own_payment_card_switch_threshold if admin else None
-        is_active_pointer = bool(admin and admin.own_active_payment_card_id == card.id)
+    holder, mode_attr, pointer_attr, threshold_attr = _pool_holder(db, card.owner_admin_id, create=False)
+    mode = (getattr(holder, mode_attr) if holder else None) or "manual"
+    threshold = getattr(holder, threshold_attr) if holder else None
+    active_before = getattr(holder, pointer_attr) if holder else None
+    is_active_pointer = bool(holder and active_before == card.id)
 
+    reset_after, rotated_to, card_order = False, None, None
     if mode == "threshold" and threshold and is_active_pointer and card.accumulated_amount >= threshold:
         cards = _pool_query(db, card.owner_admin_id).all()
+        card_order = [c.id for c in cards]
         if len(cards) > 1:
             idx = next((i for i, c in enumerate(cards) if c.id == card.id), 0)
             next_card = cards[(idx + 1) % len(cards)]
-            if card.owner_admin_id is None:
-                settings.active_payment_card_id = next_card.id
-            else:
-                admin.own_active_payment_card_id = next_card.id
+            setattr(holder, pointer_attr, next_card.id)
+            rotated_to = next_card.id
         card.accumulated_amount = 0
+        reset_after = True
+    if logged:
+        if card_order is None:
+            card_order = [c.id for c in _pool_query(db, card.owner_admin_id).all()]
+        payment_card_events.record_payment(
+            db, card, amount=amount, accumulated_before=accumulated_before, active_card_id_before=active_before,
+            card_order=card_order, reset_after=reset_after, rotated_to_card_id=rotated_to, mode=mode,
+            threshold=threshold, approval_uuid=approval_uuid)
     return True
 
 
@@ -171,12 +185,12 @@ def advance_after_payment(db: Session, card_id: int, amount: int) -> None:
 _UNSET = object()
 
 
-def _pool_holder(db: Session, owner_admin_id: Optional[int]):
+def _pool_holder(db: Session, owner_admin_id: Optional[int], create: bool = True):
     """(row, mode attr, pointer attr, threshold attr) holding this pool's
     three settings: the PanelSettings singleton or the owning AdminUser."""
     if owner_admin_id is None:
         row = db.get(models.PanelSettings, 1)
-        if row is None:
+        if row is None and create:
             row = models.PanelSettings(id=1)
             db.add(row)
             db.flush()
@@ -208,6 +222,7 @@ def create_card(db: Session, owner_admin_id: Optional[int], fields: dict) -> mod
     db.flush()
     if was_empty:
         set_pool_settings(db, owner_admin_id, active_card_id=card.id)
+        payment_card_events.start_new_pool(db, owner_admin_id)
     return card
 
 
@@ -222,6 +237,7 @@ def delete_card(db: Session, card: models.PaymentCard) -> None:
     to whatever is left (None for an emptied pool) instead of dangling."""
     owner_admin_id, card_id = card.owner_admin_id, card.id
     holder, _mode_attr, pointer_attr, _threshold_attr = _pool_holder(db, owner_admin_id)
+    payment_card_events.detach_card(db, owner_admin_id, card_id)
     db.delete(card)
     db.flush()
     if getattr(holder, pointer_attr) == card_id:

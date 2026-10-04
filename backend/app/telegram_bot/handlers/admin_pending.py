@@ -355,6 +355,7 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
             )
     except ApiError as exc:
         storage.release_pending(pending["id"])
+        await approval_session.finish(session, ok=False)
         return False, f"خطا: {exc}"
     except Exception:
         # Anything NOT wrapped as ApiError (a bug here, an unexpected None,
@@ -368,6 +369,7 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
         # back to 'pending' and an admin can simply tap Approve again.
         logger.exception("Unexpected error approving pending request %s", pending["id"])
         storage.release_pending(pending["id"])
+        await approval_session.finish(session, ok=False)
         return False, "خطای غیرمنتظره - دوباره تلاش کنید"
 
     # Best-effort "threshold" mode bookkeeping (see services/
@@ -400,6 +402,7 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
                 logger.exception("pending request %s: record_card_payment failed for card %s", pending["id"], card_id)
 
     storage.set_status(pending["id"], "approved")
+    await approval_session.finish(session, ok=True)
     # customer_msg intentionally has no keyboard here - if connections/files
     # follow it below, THEY become the last messages in the chat, so the
     # "🏠 منوی اصلی" button has to live on whatever truly is the last

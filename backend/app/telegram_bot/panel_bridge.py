@@ -491,6 +491,14 @@ class PanelBridge:
         intent = {**intent, "owner_admin_id": _scope(intent.get("owner_admin_id"))}
         return await _call(_begin, receipt_approvals.ApprovalIntentIn(**intent), mode)
 
+    async def finalize_approval(self, approval_uuid: str, failed: bool = False) -> dict:
+        from ..routers import receipt_approvals
+
+        def _finalize(uuid_, failed_, db, principal):
+            return receipt_approvals.finalize_approval(db, principal, uuid_, failed_)
+
+        return await _call(_finalize, approval_uuid, failed)
+
     async def record_card_payment(self, card_id: int, amount: int, approval_uuid: Optional[str] = None) -> None:
         payload = schemas.BotRecordCardPaymentRequest(amount=amount, approval_uuid=approval_uuid)
         await _call(bot_router.record_payment_card_use, card_id, payload)

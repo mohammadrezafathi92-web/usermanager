@@ -122,6 +122,28 @@ def register_auto(payload: ApprovalIntentIn, response: Response, db: Session = D
     return body
 
 
+class FinalizeIn(BaseModel):
+    failed: bool = False                # the bot reports that the approval did not go through
+
+
+def finalize_approval(db: Session, principal: bot_auth.BotPrincipal, approval_uuid: str, failed: bool = False) -> dict:
+    """Shared by the endpoint and the in-process bot."""
+    bot_auth._ensure_valid(principal, "receipt_approval_finalize")
+    try:
+        result = registration.finalize(db, principal, approval_uuid, reported_failure=failed)
+        db.commit()
+        return result
+    except registration.RegistrationRejected as exc:
+        db.rollback()
+        raise HTTPException(status_code=exc.status, detail=exc.code)
+
+
+@bot_router.post("/{approval_uuid}/finalize")
+def finalize(approval_uuid: str, payload: FinalizeIn, db: Session = Depends(get_db),
+             principal: bot_auth.BotPrincipal = Depends(get_bot_principal)):
+    return finalize_approval(db, principal, approval_uuid, payload.failed)
+
+
 @bot_router.post("/manual")
 def register_manual(payload: ApprovalIntentIn, response: Response, db: Session = Depends(get_db),
                     principal: bot_auth.BotPrincipal = Depends(get_bot_principal)):

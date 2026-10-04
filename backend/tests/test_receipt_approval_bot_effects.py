@@ -224,7 +224,61 @@ check("a wallet debit and a card payment without an approval behave as before",
       (db.query(models.User).filter_by(username="newbie").one().balance - balance, db.get(models.PaymentCard, card.id).accumulated_amount),
       (4900, 10001))
 
+print("--- execution state and finalize ---")
+A = rv.receipt_approvals
+from app.routers import receipt_approvals as approvals_router
+
+
+def state_of(uuid):
+    db.expire_all()
+    return db.execute(select(A.c.state).where(A.c.approval_uuid == uuid)).scalar()
+
+
+check("the first recorded effect moved each approval from registered to mutating",
+      [state_of(u) for u in (uuid_, uuid2, uuid3, uuid5)], ["mutating"] * 4)
+done = approvals_router.finalize_approval(db, internal, uuid_)
+check("finalize with every required effect present -> completed",
+      (done, state_of(uuid_), db.execute(select(A.c.completed_at).where(A.c.approval_uuid == uuid_)).scalar() is not None),
+      ({"state": "completed", "effect_count": 5, "missing_effects": [], "unexpected_effects": []}, "completed", True))
+check("finalizing again changes nothing", approvals_router.finalize_approval(db, internal, uuid_)["state"], "completed")
+before = len(shadow_codes())
+partial = approvals_router.finalize_approval(db, internal, uuid2)
+check("required effects missing: stays mutating, says what is missing, one shadow event",
+      (partial["state"], sorted(partial["missing_effects"]), shadow_codes()[before:]),
+      ("mutating", sorted(["ledger_sale:sale", f"connection_created:conn:package_connection:{slots[1].id}"]), ["missing_effects"]))
+check("a top-up with all three effects completes (the optional discount row never blocks)",
+      (approvals_router.finalize_approval(db, internal, uuid5)["state"], approvals_router.finalize_approval(db, internal, uuid7)["state"]),
+      ("completed", "mutating"))
+intent8 = ri.ApprovalIntent(pending_source_instance_id="inst", pending_local_id=8, kind="renew", target_username="newbie",
+                            amount=1, package_id=package.id, claimed_telegram_id=999)
+uuid8 = reg.begin(db, internal, intent8, approval_mode="manual", approved_by_telegram_id=1000)["approval_uuid"]
+check("no effect and the bot reports a failure -> failed; registering the same pending again retries it in place",
+      (approvals_router.finalize_approval(db, internal, uuid8, failed=True)["state"],
+       reg.begin(db, internal, intent8, approval_mode="manual", approved_by_telegram_id=1000)["state"], state_of(uuid8)),
+      ("failed", "registered", "registered"))
+check("a reported failure never fails an approval that already did something",
+      approvals_router.finalize_approval(db, internal, uuid2, failed=True)["state"], "mutating")
+from fastapi import HTTPException
+other_key = models.ApiKey(key="kx", label="x", key_type=bot_auth.KeyType.REMOTE_SHARED_BOT)
+db.add(other_key)
+db.commit()
+codes = []
+for principal_, target in ((bot_auth.BotPrincipal.from_api_key(other_key), uuid8), (internal, "no-such-uuid")):
+    try:
+        approvals_router.finalize_approval(db, principal_, target)
+        codes.append(None)
+    except HTTPException as exc:
+        codes.append((exc.status_code, exc.detail))
+check("only the executing principal may finalize; an unknown approval is 404",
+      codes, [(403, "execution_principal_mismatch"), (404, "approval_not_found")])
+from app.services import receipt_approval_auto
+check("a completed approval is what makes the customer 'returning' for the central evaluator",
+      receipt_approval_auto.history_returning(db, "shared", 999), True)
+
 print("--- the bot passes the id along ---")
+check("perform_approval finishes the session on success and on both failure paths",
+      (inspect.getsource(admin_pending.perform_approval).count("approval_session.finish(session, ok=True)"),
+       inspect.getsource(admin_pending.perform_approval).count("approval_session.finish(session, ok=False)")), (1, 2))
 check("...also to add_balance and record_card_payment",
       (inspect.getsource(admin_pending.perform_approval).count('session.get("approval_uuid")'),), (5,))
 source = inspect.getsource(admin_pending.perform_approval)

@@ -336,6 +336,7 @@ class ShadowRecorder:
         self.db = db
         self.approval_uuid = approval_uuid or None
         self._used_slots: set[str] = set()
+        self._begun = False
 
     @property
     def active(self) -> bool:
@@ -344,7 +345,20 @@ class ShadowRecorder:
     def effect(self, effect_type: str, effect_key: str, resource, evidence=None) -> bool:
         if not self.active or resource is None:
             return False
+        self._begin()
         return record_effect_shadow(self.db, self.approval_uuid, effect_type, effect_key, resource, evidence)
+
+    def _begin(self) -> None:
+        """registered -> mutating, once, before this approval's first effect."""
+        if self._begun:
+            return
+        self._begun = True
+        try:
+            from . import receipt_approval_registration
+            with self.db.begin_nested():
+                receipt_approval_registration.begin_mutating(self.db, self.approval_uuid)
+        except Exception:
+            log.exception("receipt approval %s: could not be marked as mutating", self.approval_uuid)
 
     def connection(self, connection) -> bool:
         """Finds this connection's slot: the first unused connection row of

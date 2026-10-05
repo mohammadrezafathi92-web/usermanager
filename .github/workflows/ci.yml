@@ -46,7 +46,12 @@ jobs:
     env:
       # Those tests treat a missing URL as a FAILURE when CI is set (GitHub
       # sets CI=true), so the MariaDB half can never be skipped silently.
-      MARIADB_TEST_URL: mysql+pymysql://um_ci:ci-local-only@127.0.0.1:3306/um_ci_scratch?charset=utf8mb4
+      # The tests never use an existing database: tests/_mariadb_scratch.py
+      # CREATEs its own randomly named um_test_run_* database for each test
+      # and DROPs only that. Hence an account that may create databases -
+      # root of this throwaway container. um_ci_scratch is only the database
+      # the connection is opened on; nothing is created or dropped in it.
+      MARIADB_TEST_URL: mysql+pymysql://root:ci-root-local-only@127.0.0.1:3306/um_ci_scratch?charset=utf8mb4
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

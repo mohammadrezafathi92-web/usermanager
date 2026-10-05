@@ -20,7 +20,9 @@ What it does for the customer, limited to the last N days:
     back (never below zero).
   - with --delete-user: the account itself is deleted too.
 
-Not handled (reported if it applies): a renewal of an OLDER service, a
+Left alone (and reported): a renewal of an OLDER service - the service and
+the quota/days it was given stay, and so does that renewal's accounting
+row; a user-level renewal with no service at all. Not handled: a
 reseller's credit that was charged for these sales, loyalty counters.
 
 Without --execute nothing is changed: it only prints what it would do.
@@ -73,18 +75,22 @@ def show(user: models.User, plan: dict, days: int, delete_user: bool) -> None:
     for purchase in plan["purchases"]:
         print(f"    service #{purchase.id}  {purchase.package_name_snapshot or '-'}  "
               f"created {purchase.created_at:%m-%d %H:%M}  connections: {len(purchase.connections)}")
-    print(f"  accounting rows to delete: {len(plan['ledger'])}")
-    for row in plan["ledger"]:
+    kept_rows = {row.id for row in plan["old_renewals"]}
+    rows = [row for row in plan["ledger"] if row.id not in kept_rows]
+    print(f"  accounting rows to delete: {len(rows)}")
+    for row in rows:
         print(f"    #{row.id}  {row.kind:<12} {int(row.amount or 0):>12,}  {row.created_at:%m-%d %H:%M}")
-    print(f"  total removed from the books: {sum(int(r.amount or 0) for r in plan['ledger']):,}")
+    print(f"  total removed from the books: {sum(int(r.amount or 0) for r in rows):,}")
     print(f"  wallet: balance {balance:,}, top-ups to take back {plan['topup_total']:,} "
           f"-> {max(0, balance - plan['topup_total']):,}")
     print(f"  discount uses to undo: {len(plan['redemptions'])}")
     for card_id, amount in sorted(plan["card_totals"].items()):
         print(f"  bank card #{card_id}: take {amount:,} back out of its running total")
     if plan["old_renewals"]:
-        print(f"  WARNING: {len(plan['old_renewals'])} renewal(s) of an older service - the accounting row is "
-              f"deleted, but the quota/days added to that service are NOT taken back")
+        print(f"  WARNING: {len(plan['old_renewals'])} renewal(s) of an older service are LEFT ALONE - that service "
+              f"keeps the quota/days it was given, so its accounting row is kept too:")
+        for row in plan["old_renewals"]:
+            print(f"    #{row.id}  {row.kind:<12} {int(row.amount or 0):>12,}  service #{row.purchase_id}")
     if user.owner_admin_id is not None:
         print("  WARNING: this customer belongs to a reseller - credit the reseller was charged is NOT refunded")
     if int(getattr(user, "purchase_count", 0) or 0):
@@ -114,7 +120,10 @@ def execute(db, user: models.User, plan: dict, delete_user: bool) -> int:
     # A service that is still there keeps its whole money trail: its sale and
     # renewal rows, what they added to a card, and - because a discount use
     # cannot be tied to one service - every discount use of the window.
-    rows = [row for row in plan["ledger"] if row.purchase_id not in kept_ids]
+    # The same goes for a renewal of an OLDER service: that service stays,
+    # with the quota/days the renewal gave it, so its accounting row stays.
+    old_renewal_ids = {row.id for row in plan["old_renewals"]}
+    rows = [row for row in plan["ledger"] if row.purchase_id not in kept_ids and row.id not in old_renewal_ids]
     redemptions = [] if kept_ids else plan["redemptions"]
     for redemption in redemptions:
         code = db.get(models.DiscountCode, redemption.code_id)
@@ -136,8 +145,8 @@ def execute(db, user: models.User, plan: dict, delete_user: bool) -> int:
     print(f"  deleted {len(rows)} accounting row(s), undid {len(redemptions)} discount use(s), "
           f"wallet balance now {int(user.balance or 0):,}")
     if kept_ids:
-        print(f"  left in place for the kept service(s): {len(plan['ledger']) - len(rows)} accounting row(s) "
-              f"and {len(plan['redemptions'])} discount use(s) - run again once the node is reachable")
+        print(f"  left in place for the kept service(s): their accounting row(s) and {len(plan['redemptions'])} "
+              f"discount use(s) - run again once the node is reachable")
     if delete_user:
         if kept:
             print("  account NOT deleted: a service above could not be removed from its node")

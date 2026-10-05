@@ -195,6 +195,46 @@ check("it raises, and nothing is left behind: same counter, no event, pool still
 events.revert_to_legacy(db, None)
 db.commit()
 
+print("--- one approval, one card payment - sequential AND concurrent ---")
+events.capture_baseline(db, None)
+db.get(models.PanelSettings, 1).payment_card_switch_threshold = 10**9
+db.commit()
+UUID_X = "00000000-0000-0000-0000-0000000000aa"
+cards.advance_after_payment_core(db, c.id, 40, approval_uuid=UUID_X)
+db.commit()
+once = (counters(c)[0], len(event_rows()))
+again = cards.advance_after_payment_core(db, c.id, 40, approval_uuid=UUID_X)
+db.commit()
+check("a second call for the same approval is refused under the pool lock: nothing written",
+      (again, (counters(c)[0], len(event_rows())) == once), (False, True))
+# Two requests at the same moment: both pass the check, the first one's
+# event is committed, the second one's insert hits the unique approval_uuid.
+real_exists = events.approval_event_exists
+calls = []
+
+
+def blind_first_time(db_, approval_uuid):
+    calls.append(1)
+    return False if len(calls) == 1 else real_exists(db_, approval_uuid)
+
+
+events.approval_event_exists = blind_first_time
+try:
+    try:
+        cards.advance_after_payment_core(db, c.id, 40, approval_uuid=UUID_X)
+        raced = "returned"
+    except events.DuplicateApprovalPayment:
+        raced = "DuplicateApprovalPayment"
+        db.rollback()
+finally:
+    events.approval_event_exists = real_exists
+check("the loser of the race is a duplicate, not a broken log: its counter write is dropped, the pool STAYS "
+      "event_logged, and the counter still equals the event log",
+      (raced, (counters(c)[0], len(event_rows())) == once, phase(), events.accumulator(db, None, c.id) == counters(c)[0]),
+      ("DuplicateApprovalPayment", True, "event_logged", True))
+events.revert_to_legacy(db, None)
+db.commit()
+
 print("--- a brand new pool starts event_logged ---")
 mine = cards.create_card(db, reseller.id, {"card_number": "5022-9999", "card_holder": "R"})
 db.commit()
@@ -291,6 +331,13 @@ if mariadb_url:
         db.commit()
         cards.advance_after_payment(db, y.id, 5)
         check("MariaDB: re-capture ignores the earlier events", (events.accumulator(db, None, y.id), counters(y)), (35, (35,)))
+        UUID_M = "00000000-0000-0000-0000-0000000000bb"
+        first_call = cards.advance_after_payment_core(db, y.id, 7, approval_uuid=UUID_M)
+        db.commit()
+        second_call = cards.advance_after_payment_core(db, y.id, 7, approval_uuid=UUID_M)
+        db.commit()
+        check("MariaDB: the same approval's card payment is counted once",
+              (first_call, second_call, counters(y), events.accumulator(db, None, y.id)), (True, False, (42,), 42))
         cards.delete_card(db, x)
         db.commit()
         check("MariaDB: deleting a card keeps its events, detached",

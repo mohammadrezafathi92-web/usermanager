@@ -209,8 +209,8 @@ check("the SHARED bot's principal has no owner (matches config.bot_owner_admin_i
       shared_bot.owner_admin_id, None)
 check("...is not scoped", shared_bot.is_scoped, False)
 check("...but IS internal", shared_bot.is_internal, True)
-check("...and has every capability (this server's own trusted code)",
-      shared_bot.capabilities, bot_auth.ALL_CAPABILITIES)
+check("...and has every capability, plus the two receipt-approval ones that only a panel-managed bot ever holds",
+      shared_bot.capabilities, bot_auth.ALL_CAPABILITIES | bot_auth.MANAGED_BOT_CAPABILITIES)
 
 # Real hierarchy fixtures from here on (not a magic id like 42) - resolve_
 # claimed_owner is hierarchy-aware now (point below) and needs real

@@ -359,6 +359,58 @@ check("the auto endpoint ignores approved_by_telegram_id from the body (mode com
 check("POST manual on the same pending is a takeover",
       (router.register_manual(payload, response, db=db, principal=internal)["execution_token"], response.status_code,
        row(body["approval_uuid"])["approval_mode"]), (1, 200, "manual"))
+print("--- who may call the registration endpoints at all (design 6.4) ---")
+from app.services.bot_auth import MANAGED_BOT_CAPABILITIES, RECEIPT_AUTO_APPROVAL_WRITE, RECEIPT_MANUAL_APPROVAL_WRITE
+check("the two approval capabilities are not ordinary ones: not in ALL_CAPABILITIES, dropped by the parser, "
+      "so they cannot be stored on a key or picked in the key-creation UI",
+      (MANAGED_BOT_CAPABILITIES & bot_auth.ALL_CAPABILITIES,
+       bot_auth.parse_capabilities(bot_auth.serialize_capabilities(bot_auth.ALL_CAPABILITIES)) & MANAGED_BOT_CAPABILITIES
+       if bot_auth.parse_capabilities(bot_auth.serialize_capabilities(bot_auth.ALL_CAPABILITIES)) else frozenset(),
+       MANAGED_BOT_CAPABILITIES & frozenset().union(*bot_auth.DEFAULT_CAPABILITIES_BY_KEY_TYPE.values())),
+      (frozenset(), frozenset(), frozenset()))
+legacy_key = models.ApiKey(key="kl", label="legacy")                                   # key_type NULL = legacy global
+global_key = models.ApiKey(key="kg", label="global", key_type=bot_auth.KeyType.GLOBAL_INTEGRATION)
+tenant_key = models.ApiKey(key="kt", label="tenant", key_type=bot_auth.KeyType.TENANT_INTEGRATION,
+                           owner_admin_id=admin.id, scope_enforced=True,
+                           capabilities=bot_auth.serialize_capabilities(bot_auth.ALL_CAPABILITIES))
+forged_key = models.ApiKey(key="kf", label="forged", key_type=bot_auth.KeyType.GLOBAL_INTEGRATION,
+                           capabilities='["customer_read","receipt_manual_approval_write","receipt_auto_approval_write"]')
+key_c = models.ApiKey(key="kc", label="c", key_type=bot_auth.KeyType.REMOTE_SHARED_BOT,
+                      capabilities=bot_auth.serialize_capabilities(bot_auth.ALL_CAPABILITIES))   # as an existing deployed key has it
+db.add_all([legacy_key, global_key, tenant_key, forged_key, key_c])
+db.commit()
+principals = {name: bot_auth.BotPrincipal.from_api_key(key) for name, key in (
+    ("legacy", legacy_key), ("global", global_key), ("tenant", tenant_key), ("forged", forged_key), ("remote", key_c))}
+check("granted by what the caller IS: the in-process bot and a panel-minted remote-bot key have both - even a remote "
+      "key created before these capabilities existed; every integration key has neither, even with all ordinary "
+      "capabilities, even with the names forged into its stored list",
+      {name: sorted(p.capabilities & MANAGED_BOT_CAPABILITIES) for name, p in {**principals, "internal": internal}.items()},
+      {"legacy": [], "global": [], "tenant": [], "forged": [],
+       "remote": sorted(MANAGED_BOT_CAPABILITIES), "internal": sorted(MANAGED_BOT_CAPABILITIES)})
+
+
+def endpoint_status(fn, principal_, *args):
+    try:
+        fn(*args, db=db, principal=principal_)
+        return 200
+    except HTTPException as exc:
+        return exc.status_code
+
+
+gate_payload = router.ApprovalIntentIn(pending_source_instance_id="inst", pending_local_id=9100, kind="renew",
+                                       target_username="ali", amount=1000, package_id=package.id, approved_by_telegram_id=1000)
+check("auto, manual and finalize are all 403 for every integration key - before anything is read or written",
+      {name: (endpoint_status(router.register_auto, principals[name], gate_payload, Response()),
+              endpoint_status(router.register_manual, principals[name], gate_payload, Response()),
+              endpoint_status(router.finalize, principals[name], body["approval_uuid"], router.FinalizeIn()))
+       for name in ("legacy", "global", "tenant", "forged")},
+      {name: (403, 403, 403) for name in ("legacy", "global", "tenant", "forged")})
+check("...and nothing was registered for that pending",
+      db.execute(select(A.c.id).where(A.c.pending_local_id == 9100)).first(), None)
+check("the remote bot's key passes the gate (and registers)",
+      (endpoint_status(router.register_auto, principals["remote"], gate_payload, Response()),
+       db.execute(select(A.c.registered_by_api_key_id).where(A.c.pending_local_id == 9100)).scalar()), (200, key_c.id))
+
 invalid = bot_auth.BotPrincipal._invalid(1, "bad")
 try:
     router.register_auto(payload, response, db=db, principal=invalid)

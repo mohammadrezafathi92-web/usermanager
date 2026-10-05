@@ -143,6 +143,19 @@ ALL_CAPABILITIES = frozenset({
     PAYMENT_WRITE, FILES_READ, BROADCAST, ADMIN_LOOKUP,
 })
 
+# Receipt-approval registration (Receipt Void design 6.4). These two are NOT
+# in ALL_CAPABILITIES, on purpose: they are never stored on a key, never
+# offered by the key-creation UI and never survive parse_capabilities. They
+# are GRANTED BY WHAT THE CALLER IS - the in-process bot, or a key the panel
+# itself minted for a remote installation (KeyType.REMOTE_SHARED_BOT) - see
+# MANAGED_BOT_CAPABILITIES below. A third-party integration key, global or
+# tenant, can therefore never register or finalize an approval, whatever
+# its stored capability list says: such a key would otherwise be a way to
+# declare a manual approval that no human made.
+RECEIPT_AUTO_APPROVAL_WRITE = "receipt_auto_approval_write"
+RECEIPT_MANUAL_APPROVAL_WRITE = "receipt_manual_approval_write"
+MANAGED_BOT_CAPABILITIES = frozenset({RECEIPT_AUTO_APPROVAL_WRITE, RECEIPT_MANUAL_APPROVAL_WRITE})
+
 # What a NEW key of each type gets by default (Phase B - key creation UI).
 # TENANT_INTEGRATION deliberately excludes wallet_write/payment_write/
 # broadcast/identity_write - a scoped integration has to be handed those
@@ -357,6 +370,9 @@ class BotPrincipal:
         capabilities = parse_capabilities(raw_capabilities)
         if capabilities is None:
             capabilities = DEFAULT_CAPABILITIES_BY_KEY_TYPE.get(key_type, frozenset())
+        if key_type == KeyType.REMOTE_SHARED_BOT:
+            # by key type, not by the stored list - see MANAGED_BOT_CAPABILITIES
+            capabilities = frozenset(capabilities) | MANAGED_BOT_CAPABILITIES
 
         return cls(
             key_id=key.id, key_type=key_type, owner_admin_id=owner_admin_id,
@@ -396,7 +412,7 @@ class BotPrincipal:
         ever needs to (none does yet)."""
         return cls(
             key_id=None, key_type=KeyType.INTERNAL, owner_admin_id=owner_admin_id,
-            capabilities=ALL_CAPABILITIES, label=label, is_internal=True,
+            capabilities=ALL_CAPABILITIES | MANAGED_BOT_CAPABILITIES, label=label, is_internal=True,
             scope_enforced=scope_enforced,
         )
 

@@ -39,14 +39,23 @@ def refused(fn, *args, **kwargs):
     return None
 
 
-listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)      # opened BEFORE the guard: bind/listen are local
-listener.bind(("127.0.0.1", 0))
-listener.listen(1)
-allowed_port = listener.getsockname()[1]
-udp_receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-udp_receiver.bind(("127.0.0.1", 0))
-udp_port = udp_receiver.getsockname()[1]
-udp_receiver.settimeout(2)
+# Two local listeners for the "what is allowed" checks, opened BEFORE the
+# guard (bind/listen are local). Some sandboxes forbid even that; then those
+# few checks are skipped and every refusal check below still runs.
+try:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    allowed_port = listener.getsockname()[1]
+    udp_receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udp_receiver.bind(("127.0.0.1", 0))
+    udp_port = udp_receiver.getsockname()[1]
+    udp_receiver.settimeout(2)
+    can_listen = True
+except OSError as exc:
+    print(f"NOTE  cannot open a local listener here ({type(exc).__name__}); the 'allowed' checks are skipped")
+    listener = udp_receiver = None
+    allowed_port, udp_port, can_listen = 39999, 39998, False
 
 guard.install([f"mysql+pymysql://u:p@127.0.0.1:{allowed_port}/x"])
 guard.attempts.clear()
@@ -82,22 +91,71 @@ check("a literal address and a local name need no lookup and still work",
        refused(socket.getaddrinfo, "localhost", 80), guard.attempts[1:]), (None, None, None, []))
 guard.attempts.clear()
 
+print("--- every resolver API, not just getaddrinfo ---")
+NAME = "api.telegram.example.invalid"
+check("gethostbyname (the project itself calls it, services/wg_tunnel.py) is refused and recorded",
+      (refused(socket.gethostbyname, NAME), guard.attempts), ("gaierror", [(NAME, None)]))
+check("gethostbyname_ex too", (refused(socket.gethostbyname_ex, NAME), guard.attempts[-1]), ("gaierror", (NAME, None)))
+guard.attempts.clear()
+check("reverse lookups ask a DNS server even for a literal address: gethostbyaddr and getnameinfo are refused",
+      (refused(socket.gethostbyaddr, "192.0.2.10"), refused(socket.getnameinfo, ("192.0.2.10", 80), 0), guard.attempts),
+      ("gaierror", "gaierror", [("192.0.2.10", None), ("192.0.2.10", 80)]))
+guard.attempts.clear()
+check("getfqdn of a remote address goes through gethostbyaddr: no lookup leaves, the attempt is recorded",
+      (socket.getfqdn("192.0.2.10"), guard.attempts), ("192.0.2.10", [("192.0.2.10", None)]))
+guard.attempts.clear()
+check("what needs no DNS server still works: a literal address forward, numeric getnameinfo, local names",
+      (refused(socket.gethostbyname, "192.0.2.10"), refused(socket.gethostbyname, "127.0.0.1"),
+       refused(socket.getnameinfo, ("192.0.2.10", 80), socket.NI_NUMERICHOST | socket.NI_NUMERICSERV),
+       socket.gethostbyname("192.0.2.10"), guard.attempts), (None, None, None, "192.0.2.10", []))
+
+print("--- nothing claimed that is not replaced ---")
+check("every function the guard lists is really replaced on this platform",
+      [f"{getattr(owner, '__name__', owner)}.{name}" for owner, name in guard.GUARDED
+       if hasattr(owner, name) and getattr(owner, name) is guard._real.get((owner, name))], [])
+resolver_api = sorted(n for n in dir(socket) if n in ("getaddrinfo", "gethostbyname", "gethostbyname_ex", "gethostbyaddr",
+                                                       "getnameinfo"))
+check("...and that list covers the socket module's whole name-resolution API",
+      sorted(name for owner, name in guard.GUARDED if owner is socket), resolver_api)
+check("getfqdn is covered through gethostbyaddr (it is a Python function calling the module's own name)",
+      "gethostbyaddr" in socket.getfqdn.__code__.co_names, True)
+import ast
+app_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app")
+guarded_names = {name for _owner, name in guard.GUARDED} | {"create_connection", "getfqdn", "send", "sendall", "sendfile"}
+used = set()
+for folder, _dirs, files in os.walk(app_dir):
+    for filename in files:
+        if filename.endswith(".py"):
+            tree = ast.parse(open(os.path.join(folder, filename), encoding="utf-8").read())
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "socket"
+                        and node.attr.startswith(("get", "create_conn"))) and node.attr not in ("gethostname", "getdefaulttimeout"):
+                    used.add(node.attr)
+check("every socket.* resolver/connector the APPLICATION calls is one the guard stops",
+      sorted(used - guarded_names), [])
+
 print("--- what is allowed ---")
+if not can_listen:
+    print("SKIP  the allowed-database checks (no local listener in this environment)")
+    listener = udp_receiver = None
 client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 client.settimeout(2)
-check("the database server named at install() is reachable", refused(client.connect, ("127.0.0.1", allowed_port)), None)
+if can_listen:
+    check("the database server named at install() is reachable", refused(client.connect, ("127.0.0.1", allowed_port)), None)
 client.close()
 other = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 check("...but another port on this machine is not",
       (refused(other.connect, ("127.0.0.1", udp_port)), guard.attempts), ("NetworkRefused", [("127.0.0.1", udp_port)]))
 other.close()
 guard.attempts.clear()
-guard.allow_database(f"mysql+pymysql://u:p@127.0.0.1:{udp_port}/x")
-sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sender.sendto(b"ok", ("127.0.0.1", udp_port))
-check("an allowed address also works over UDP - the guard refuses by address, not by breaking sockets",
-      (udp_receiver.recvfrom(16)[0], guard.attempts), (b"ok", []))
-sender.close()
+if can_listen:
+    guard.allow_database(f"mysql+pymysql://u:p@127.0.0.1:{udp_port}/x")
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sender.sendto(b"ok", ("127.0.0.1", udp_port))
+    check("an allowed address also works over UDP - the guard refuses by address, not by breaking sockets",
+          (udp_receiver.recvfrom(16)[0], guard.attempts), (b"ok", []))
+    sender.close()
+guard.attempts.clear()
 
 print("--- a real client library ---")
 import urllib.request
@@ -109,8 +167,9 @@ except Exception as exc:  # noqa: BLE001
 check("an HTTP request to another host fails immediately and is on the record",
       (outcome, guard.attempts), ("NetworkRefused", [("192.0.2.10", 8080)]))
 
-listener.close()
-udp_receiver.close()
+for opened in (listener, udp_receiver):
+    if opened is not None:
+        opened.close()
 print()
 if failures:
     print(f"{len(failures)} FAILED:")

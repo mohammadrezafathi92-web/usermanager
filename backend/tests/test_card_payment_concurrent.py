@@ -26,9 +26,10 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATABASE_URL", "sqlite://")
 
-from sqlalchemy import create_engine, event, inspect as sa_inspect, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 
+import _mariadb_scratch as scratch
 from app import models, models_receipt_void as rv, schemas
 from app.routers import bot as bot_router
 from app.services import bot_auth, payment_card_events as events, payment_cards, receipt_void_schema
@@ -46,14 +47,6 @@ def check(label, got, expected=True):
     else:
         failures.append(label)
         print(f"FAIL  {label}\n        got:      {got!r}\n        expected: {expected!r}")
-
-
-def drop_everything(engine):
-    with engine.begin() as conn:
-        conn.exec_driver_sql("SET FOREIGN_KEY_CHECKS = 0")
-        for name in sa_inspect(conn).get_table_names():
-            conn.exec_driver_sql(f"DROP TABLE IF EXISTS `{name}`")
-        conn.exec_driver_sql("SET FOREIGN_KEY_CHECKS = 1")
 
 
 def scenario(label: str, engine) -> None:
@@ -176,16 +169,20 @@ scenario("SQLite", sqlite_engine)
 print("--- real MariaDB (REPEATABLE READ) ---")
 mariadb_url = os.environ.get("MARIADB_TEST_URL", "").strip()
 if mariadb_url:
-    maria = create_engine(mariadb_url)
-    drop_everything(maria)
     try:
-        with maria.connect() as conn:
-            isolation = conn.exec_driver_sql("SELECT @@transaction_isolation").scalar()
-        check("MariaDB runs at REPEATABLE READ, the level the review is about", isolation, "REPEATABLE-READ")
-        scenario("MariaDB", maria)
-    finally:
-        drop_everything(maria)
-        maria.dispose()
+        maria = scratch.claim(mariadb_url)
+    except scratch.ScratchRefused as refused:
+        maria = None
+        check(f"MARIADB_TEST_URL must point at a throwaway database ({refused})", False)
+    if maria is not None:
+        try:
+            scratch.wipe(maria)
+            with maria.connect() as conn:
+                isolation = conn.exec_driver_sql("SELECT @@transaction_isolation").scalar()
+            check("MariaDB runs at REPEATABLE READ, the level the review is about", isolation, "REPEATABLE-READ")
+            scenario("MariaDB", maria)
+        finally:
+            scratch.release(maria)
 elif os.environ.get("CI"):
     check("CI must provide MARIADB_TEST_URL (real MariaDB is mandatory in CI, never skipped)", False)
 else:

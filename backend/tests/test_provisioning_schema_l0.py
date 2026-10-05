@@ -43,6 +43,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.schema import CreateIndex, CreateTable
 
+import _mariadb_scratch as scratch
 from app import models
 from app import models_provisioning as mp
 from app.services import provisioning_schema as ps
@@ -572,19 +573,23 @@ check("unique index keys stay under InnoDB's 3072-byte limit at utf8mb4 (4 bytes
 mariadb_url = mariadb_url_or_fail()
 if mariadb_url:
     print("--- real MariaDB (MARIADB_TEST_URL) ---")
-    maria = create_engine(mariadb_url)
-    drop_provisioning_tables(maria)
     try:
-        run_bootstrap_checks(maria, "mariadb")
-        # A clean set of tables for the row-level checks (bootstrap seeded
-        # the singleton and the type modes, which those checks insert).
-        drop_provisioning_tables(maria)
-        ps.create_tables(maria)
-        check("[mariadb] inspector finds no difference on freshly created tables", ps.inspect_schema(maria), [])
-        run_constraint_checks(maria, "mariadb")
-    finally:
-        drop_provisioning_tables(maria)
-        maria.dispose()
+        maria = scratch.claim(mariadb_url)
+    except scratch.ScratchRefused as refused:
+        maria = None
+        check(f"MARIADB_TEST_URL must point at a throwaway database ({refused})", False)
+    if maria is not None:
+        try:
+            scratch.wipe(maria)
+            run_bootstrap_checks(maria, "mariadb")
+            # A clean set of tables for the row-level checks (bootstrap seeded
+            # the singleton and the type modes, which those checks insert).
+            drop_provisioning_tables(maria)
+            ps.create_tables(maria)
+            check("[mariadb] inspector finds no difference on freshly created tables", ps.inspect_schema(maria), [])
+            run_constraint_checks(maria, "mariadb")
+        finally:
+            scratch.release(maria)
 elif not os.environ.get("CI"):
     print("SKIP  real MariaDB execution (MARIADB_TEST_URL not set, not in CI) - "
           "locally MariaDB is covered by compiled DDL only")

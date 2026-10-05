@@ -75,47 +75,59 @@ def scenario(label: str, engine) -> None:
     uuid_ = approval.approval_uuid
     db.close()
 
-    a_has_lock, b_is_waiting = threading.Event(), threading.Event()
     real_phase, real_record = events.phase_for_payment, events.record_payment
-    results: dict[str, object] = {}
 
-    def phase_hook(db_, owner):
-        if threading.current_thread().name == "B":
-            b_is_waiting.set()               # B has read (its snapshot exists) and now asks for the lock
-            return real_phase(db_, owner)
-        phase = real_phase(db_, owner)
-        a_has_lock.set()
-        return phase
+    def run_pair(approval_uuid):
+        """Requests A and B at the same moment, forced into the order
+        described at the top of this file. Returns {name: answer}."""
+        a_has_lock, b_is_waiting = threading.Event(), threading.Event()
+        results: dict[str, object] = {}
+        started: set[str] = set()
 
-    def record_hook(*args, **kwargs):
-        written = real_record(*args, **kwargs)
-        if threading.current_thread().name == "A":
-            b_is_waiting.wait(3)             # hold the lock, uncommitted, until B is queued behind it
-            time.sleep(0.4)
-        return written
-
-    def request(name):
-        session = Session()
-        try:
+        def phase_hook(db_, owner):
+            name = threading.current_thread().name
+            first_time = name not in started
+            started.add(name)
             if name == "B":
-                a_has_lock.wait(5)
-            results[name] = bot_router.record_payment_card_use(
-                card_id, schemas.BotRecordCardPaymentRequest(amount=AMOUNT, approval_uuid=uuid_),
-                db=session, principal=internal)
-        except Exception as exc:  # noqa: BLE001
-            results[name] = f"{type(exc).__name__}: {exc}"
-        finally:
-            session.close()
+                if first_time:
+                    b_is_waiting.set()       # B has read (its snapshot exists) and now asks for the lock
+                return real_phase(db_, owner)
+            phase = real_phase(db_, owner)
+            a_has_lock.set()
+            return phase
 
-    events.phase_for_payment, events.record_payment = phase_hook, record_hook
-    try:
-        threads = [threading.Thread(target=request, args=(name,), name=name) for name in ("A", "B")]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(30)
-    finally:
-        events.phase_for_payment, events.record_payment = real_phase, real_record
+        def record_hook(*args, **kwargs):
+            written = real_record(*args, **kwargs)
+            if threading.current_thread().name == "A":
+                b_is_waiting.wait(3)         # hold the lock, uncommitted, until B is queued behind it
+                time.sleep(0.4)
+            return written
+
+        def request(name):
+            session = Session()
+            try:
+                if name == "B":
+                    a_has_lock.wait(5)
+                results[name] = bot_router.record_payment_card_use(
+                    card_id, schemas.BotRecordCardPaymentRequest(amount=AMOUNT, approval_uuid=approval_uuid),
+                    db=session, principal=internal)
+            except Exception as exc:  # noqa: BLE001
+                results[name] = f"{type(exc).__name__}: {exc}"
+            finally:
+                session.close()
+
+        events.phase_for_payment, events.record_payment = phase_hook, record_hook
+        try:
+            threads = [threading.Thread(target=request, args=(name,), name=name) for name in ("A", "B")]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(30)
+        finally:
+            events.phase_for_payment, events.record_payment = real_phase, real_record
+        return results
+
+    results = run_pair(uuid_)
 
     db = Session()
     rows = [(r.event_kind, r.approval_uuid == uuid_, int(r.amount)) for r in db.execute(select(PE).order_by(PE.c.id))]
@@ -130,6 +142,20 @@ def scenario(label: str, engine) -> None:
                                                db=db, principal=internal)
     check(f"{label}: a later repeat changes nothing either",
           (third, int(db.get(models.PaymentCard, card_id).accumulated_amount or 0)), ({"ok": True}, AMOUNT))
+    db.close()
+
+    # Two DIFFERENT payments on the same card at the same moment (no
+    # approval): both must be counted, each with its own event - the one
+    # that waited must not fail on a stale view of the card row.
+    results = run_pair(None)
+    db = Session()
+    kinds = [r.event_kind for r in db.execute(select(PE).order_by(PE.c.id))]
+    counter = int(db.get(models.PaymentCard, card_id).accumulated_amount or 0)
+    check(f"{label}: two different simultaneous payments are BOTH counted, with one event each",
+          (results, counter, kinds, events.accumulator(db, None, card_id), events.lock_pool(db, None, create_as=None)),
+          ({"A": {"ok": True}, "B": {"ok": True}}, 3 * AMOUNT,
+           ["payment_recorded", "payment_recorded_uncorrelated", "payment_recorded_uncorrelated"], 3 * AMOUNT, "event_logged"))
+    db.rollback()
     db.close()
 
 

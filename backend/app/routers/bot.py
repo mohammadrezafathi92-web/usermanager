@@ -11,11 +11,13 @@ the network instead of in-process."""
 import datetime as dt
 import logging
 import os
+import time
 import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -578,27 +580,39 @@ def record_payment_card_use(
     # the approval's card_payment effect; a repeat for the same approval
     # changes nothing. Without an approval: unchanged.
     recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)
-    if recorder.active:
-        # One approval, one card payment - also when two requests for it
-        # arrive at the same moment. On SQLite the whole request becomes a
-        # write transaction first (a locking read means nothing there); on
-        # MariaDB the pool's state row lock inside the core serializes them.
-        approval_registration.take_write_lock(db)
-    if recorder.card_payment_already_recorded():
-        return {"ok": True}             # a repeat for the same approval: counted once
-    event_uuid = recorder.card_event_uuid()
-    try:
-        written = payment_cards.advance_after_payment_core(db, card_id, payload.amount, approval_uuid=event_uuid)
-    except payment_card_events.DuplicateApprovalPayment:
-        db.rollback()                   # lost the race to the same approval's other request: counted once
-        return {"ok": True}
-    except payment_card_events.PoolLogBroken:
-        db.rollback()                   # no event and no demotion: no counter change either
-        raise HTTPException(503, "ثبت پرداخت کارت موقتاً ممکن نیست")
-    if written:
-        if event_uuid:
-            recorder.card_payment()
-        db.commit()
+    # Counter and event log change together or not at all, and one approval
+    # is counted once - also when two requests arrive at the same moment.
+    #  - SQLite: the request becomes a write transaction first, so nobody
+    #    can commit in between.
+    #  - MariaDB: the pool's state row lock serializes the requests, and the
+    #    one that waited restarts in a FRESH transaction when the database
+    #    says its view is stale (error 1020 under snapshot isolation, or a
+    #    deadlock/lock timeout): the retry then sees what the first wrote.
+    for attempt in range(1, approval_registration.WRITE_ATTEMPTS + 1):
+        try:
+            if payment_card_events.enabled():
+                approval_registration.take_write_lock(db)
+            if recorder.card_payment_already_recorded():
+                db.rollback()
+                return {"ok": True}         # a repeat for the same approval: counted once
+            event_uuid = recorder.card_event_uuid()
+            written = payment_cards.advance_after_payment_core(db, card_id, payload.amount, approval_uuid=event_uuid)
+            if written:
+                if event_uuid:
+                    recorder.card_payment()
+                db.commit()
+            return {"ok": True}
+        except payment_card_events.DuplicateApprovalPayment:
+            db.rollback()                   # lost the race to the same approval's other request: counted once
+            return {"ok": True}
+        except payment_card_events.PoolLogBroken:
+            db.rollback()                   # no event and no demotion: no counter change either
+            raise HTTPException(503, "ثبت پرداخت کارت موقتاً ممکن نیست")
+        except OperationalError:
+            db.rollback()
+            if attempt == approval_registration.WRITE_ATTEMPTS:
+                raise HTTPException(503, "ثبت پرداخت کارت موقتاً ممکن نیست")
+            time.sleep(0.2 * attempt)
     return {"ok": True}
 
 

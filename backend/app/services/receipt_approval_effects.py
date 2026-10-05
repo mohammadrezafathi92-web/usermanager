@@ -419,13 +419,10 @@ class ShadowRecorder:
         pool that logs events."""
         if not self.active:
             return False
-        try:
-            from .. import models_receipt_void as rv
-            events = rv.payment_card_pool_events
-            return self.db.execute(select(events.c.id).where(events.c.approval_uuid == self.approval_uuid)).first() is not None
-        except Exception:
-            log.exception("receipt approval %s: could not check the card event", self.approval_uuid)
-            return False
+        from . import payment_card_events
+        # A current read; a database error here is NOT "no": it propagates
+        # and the request is retried in a fresh transaction.
+        return payment_card_events.approval_event_exists(self.db, self.approval_uuid)
 
     def card_payment(self) -> bool:
         """Records the pool event written for this approval, if the pool

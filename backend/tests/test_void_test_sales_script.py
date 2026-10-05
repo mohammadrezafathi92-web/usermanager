@@ -90,7 +90,7 @@ other_purchase, other_conn = purchase(bystander, RECENT)
 ledger(tester, "sale_new", 111, OLD, old_purchase.id, card.id)
 ledger(tester, "sale_new", 1000, RECENT, new_a.id, card.id)
 ledger(tester, "sale_new", 900, RECENT, new_b.id, card.id)
-ledger(tester, "sale_renew", 400, RECENT, old_purchase.id)              # renewal of an OLDER service
+ledger(tester, "sale_renew", 400, RECENT, old_purchase.id, card.id)     # renewal of an OLDER service, paid by card
 ledger(tester, "wallet_topup", 500, RECENT, None, card.id)
 ledger(bystander, "sale_new", 777, RECENT, other_purchase.id, card.id)
 db.add(models.DiscountCodeRedemption(code_id=code.id, user_id=tester.id, username="tester", created_at=RECENT))
@@ -131,6 +131,8 @@ code_, text = run("tester", "--days", "3")
 check("dry run: lists the two recent services, three accounting rows, the totals - and changes nothing",
       (code_, "services to delete: 2" in text, "accounting rows to delete: 3" in text, "2,400" in text,
        "NOTHING was changed" in text, snapshot() == before, backups, removed_from_nodes), (0, True, True, True, True, True, [], []))
+check("the preview's card figure is what will really be taken back - the kept renewal's 400 is not in it",
+      ("take 2,400 back" in text, "take 2,800 back" in text), (True, False))
 check("the dry run says the renewal of an older service is left alone",
       ("renewal(s) of an older service are LEFT ALONE" in text, "400" in text), (True, True))
 check("--execute without --confirm, or with another name: still nothing",

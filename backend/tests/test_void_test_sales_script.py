@@ -128,10 +128,11 @@ before = snapshot()
 
 print("--- nothing happens without an explicit, matching confirmation ---")
 code_, text = run("tester", "--days", "3")
-check("dry run: lists the two recent services, four accounting rows, the totals - and changes nothing",
-      (code_, "services to delete: 2" in text, "accounting rows to delete: 4" in text, "2,800" in text,
+check("dry run: lists the two recent services, three accounting rows, the totals - and changes nothing",
+      (code_, "services to delete: 2" in text, "accounting rows to delete: 3" in text, "2,400" in text,
        "NOTHING was changed" in text, snapshot() == before, backups, removed_from_nodes), (0, True, True, True, True, True, [], []))
-check("the dry run warns about the renewal of an older service", "renewal(s) of an older service" in text, True)
+check("the dry run says the renewal of an older service is left alone",
+      ("renewal(s) of an older service are LEFT ALONE" in text, "400" in text), (True, True))
 check("--execute without --confirm, or with another name: still nothing",
       (run("tester", "--execute")[0], run("tester", "--execute", "--confirm", "bystander")[0], snapshot() == before, backups),
       (2, 2, True, []))
@@ -144,8 +145,9 @@ check("a backup is taken first", (backups, "backup taken first" in text), (["tak
 check("the two recent services and their connections are gone - from the nodes too; the old one is untouched",
       (after["purchases"], sorted(removed_from_nodes), after["connections"]),
       (sorted([ids["old"], ids["other"]]), sorted([ids["conn_a"], ids["conn_b"]]), 2))
-check("the customer's recent accounting rows are gone; older rows and another customer's rows stay",
-      after["ledger"], [("sale_new", 111), ("sale_new", 777)])
+check("the customer's recent accounting rows are gone; older rows, another customer's rows AND the renewal of the "
+      "older service (which keeps what that renewal gave it) stay",
+      after["ledger"], [("sale_new", 111), ("sale_new", 777), ("sale_renew", 400)])
 check("wallet: the top-up is taken back (700 - 500)", after["balance"], 200)
 check("bank card running total: 5000 - (1000 + 900 + 500)", after["card"], 2600)
 check("the recent discount use is undone, the old one stays", (after["code_used"], after["redemptions"]), (2, 1))

@@ -220,6 +220,25 @@ check("a repeated record-payment for the same approval (a retry after a timeout)
        payment_card_events.accumulator(db, None, card.id)),
       (["payment_recorded"], "event_logged", 5000, 5000))
 db.rollback()
+# Two record-payment requests for the same approval at the same moment: the
+# second passed both checks before the first one's event was committed.
+from app.services import receipt_approval_effects as fx_module
+real_seen, real_exists = fx_module.ShadowRecorder.card_payment_already_recorded, payment_card_events.approval_event_exists
+blind = []
+fx_module.ShadowRecorder.card_payment_already_recorded = lambda self: False
+payment_card_events.approval_event_exists = lambda db_, u: (blind.append(1), False if len(blind) == 1 else real_exists(db_, u))[1]
+try:
+    raced = bot_router.record_payment_card_use(card.id, schemas.BotRecordCardPaymentRequest(amount=5000, approval_uuid=uuid5),
+                                               db=db, principal=internal)
+finally:
+    fx_module.ShadowRecorder.card_payment_already_recorded = real_seen
+    payment_card_events.approval_event_exists = real_exists
+db.expire_all()
+check("the request that lost the race answers ok and changes nothing; event logging of the pool is NOT switched off",
+      (raced, [e.event_kind for e in db.execute(select(PE).order_by(PE.c.id))],
+       payment_card_events.lock_pool(db, None, create_as=None), db.get(models.PaymentCard, card.id).accumulated_amount),
+      ({"ok": True}, ["payment_recorded"], "event_logged", 5000))
+db.rollback()
 bot_router.add_balance("newbie", schemas.BotAddBalanceRequest(amount=-100), db=db, principal=internal)
 bot_router.record_payment_card_use(card.id, schemas.BotRecordCardPaymentRequest(amount=1), db=db, principal=internal)
 check("a wallet debit and a card payment without an approval behave as before",

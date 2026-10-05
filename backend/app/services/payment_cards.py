@@ -129,6 +129,11 @@ def advance_after_payment_core(db: Session, card_id: int, amount: int, approval_
         return False
     logged = payment_card_events.phase_for_payment(db, card.owner_admin_id) == payment_card_events.EVENT_LOGGED
     if logged:
+        # Under the pool lock, so two requests for the same approval cannot
+        # both pass: its card payment is counted once (design 15.1, UNIQUE
+        # approval_uuid). A repeat changes nothing.
+        if payment_card_events.approval_event_exists(db, approval_uuid):
+            return False
         # the pool is locked now: take the counter as committed, not as this
         # session happened to read it earlier in the request
         db.refresh(card, with_for_update=True)

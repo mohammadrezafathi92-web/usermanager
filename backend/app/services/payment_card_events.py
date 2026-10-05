@@ -43,6 +43,18 @@ class PoolLogBroken(RuntimeError):
     """An event could not be written AND the pool could not be demoted."""
 
 
+class DuplicateApprovalPayment(RuntimeError):
+    """This approval's card payment already has its event. The caller must
+    drop its counter write: an approval is counted exactly once."""
+
+
+def approval_event_exists(db: Session, approval_uuid: Optional[str]) -> bool:
+    if not approval_uuid:
+        return False
+    _states, _baselines, events = _tables()
+    return db.execute(select(events.c.id).where(events.c.approval_uuid == approval_uuid)).first() is not None
+
+
 def pool_key(owner_admin_id: Optional[int]) -> str:
     return "global" if owner_admin_id is None else f"admin:{owner_admin_id}"
 
@@ -143,6 +155,16 @@ def record_payment(db: Session, card: models.PaymentCard, *, amount: int, accumu
                 mode_snapshot=(mode or "manual")[:16], threshold_snapshot=threshold, created_at=_now()))
         return True
     except Exception:
+        # Lost a race with another request for the SAME approval (it wrote
+        # the event between our check and our insert, and the unique
+        # approval_uuid refused ours): not a broken log - a duplicate. The
+        # pool stays event_logged and the caller drops its counter write.
+        try:
+            duplicate = approval_event_exists(db, approval_uuid)
+        except Exception:
+            duplicate = False
+        if duplicate:
+            raise DuplicateApprovalPayment(approval_uuid)
         log.exception("card pool %s: payment event could not be written; pool set back to 'legacy'", key)
         try:
             with db.begin_nested():

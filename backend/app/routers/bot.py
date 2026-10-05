@@ -25,6 +25,7 @@ from ..services import user_ops, hierarchy, payment_cards, accounting, admin_bil
 from ..services import bot_resources
 from ..services import payment_card_events
 from ..services import receipt_approval_effects as approval_effects
+from ..services import receipt_approval_registration as approval_registration
 from ..services.bot_auth import (
     BROADCAST,
     CUSTOMER_READ,
@@ -573,15 +574,24 @@ def record_payment_card_use(
     ("threshold" mode's auto-switch-to-next-card bookkeeping; a harmless
     no-op for a pool in "manual"/"rotate" mode)."""
     bot_resources._get_payment_card_or_403(db, principal, card_id)  # authorization only - advance_after_payment re-fetches
-    # With a registered approval the pool event carries its uuid (only once
-    # per approval - a repeat is recorded as an ordinary payment) and the
-    # event becomes the approval's card_payment effect. Otherwise unchanged.
+    # With a registered approval the pool event carries its uuid and becomes
+    # the approval's card_payment effect; a repeat for the same approval
+    # changes nothing. Without an approval: unchanged.
     recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)
+    if recorder.active:
+        # One approval, one card payment - also when two requests for it
+        # arrive at the same moment. On SQLite the whole request becomes a
+        # write transaction first (a locking read means nothing there); on
+        # MariaDB the pool's state row lock inside the core serializes them.
+        approval_registration.take_write_lock(db)
     if recorder.card_payment_already_recorded():
         return {"ok": True}             # a repeat for the same approval: counted once
     event_uuid = recorder.card_event_uuid()
     try:
         written = payment_cards.advance_after_payment_core(db, card_id, payload.amount, approval_uuid=event_uuid)
+    except payment_card_events.DuplicateApprovalPayment:
+        db.rollback()                   # lost the race to the same approval's other request: counted once
+        return {"ok": True}
     except payment_card_events.PoolLogBroken:
         db.rollback()                   # no event and no demotion: no counter change either
         raise HTTPException(503, "ثبت پرداخت کارت موقتاً ممکن نیست")

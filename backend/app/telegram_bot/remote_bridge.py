@@ -359,8 +359,8 @@ class RemoteBridge:
         await self._call("DELETE", f"/users/{username}", params=params)
 
     # ------------------------------------------------ referral & discount
-    async def apply_referral(self, username: str, referral_code: str) -> dict:
-        payload = {"username": username, "referral_code": referral_code}
+    async def apply_referral(self, username: str, referral_code: str, approval_uuid: Optional[str] = None) -> dict:
+        payload = {"username": username, "referral_code": referral_code, "approval_uuid": approval_uuid}
         return await self._call("POST", "/referral/apply", json=payload)
 
     async def validate_discount(

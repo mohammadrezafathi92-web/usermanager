@@ -1021,7 +1021,17 @@ def apply_referral(
     referrer and the new user get a gift, per the confirmed design - not
     just the referrer)."""
     user = bot_resources._get_user_or_403(db, principal, payload.username, None)
-    ok, reason = user_ops.apply_referral_code(db, user, payload.referral_code)
+    referral_evidence: list = []
+    ok, reason = user_ops.apply_referral_code(db, user, payload.referral_code, evidence_sink=referral_evidence)
+    # Receipt-approval effects of the rewards that were really applied (a
+    # no-op without an approval; never changes the outcome above). A reward
+    # the approval's manifest did not expect - or expected on another
+    # resource - is refused there and logged as a shadow event.
+    recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)
+    if recorder.active and referral_evidence:
+        for effect_type, effect_key, resource, evidence in referral_evidence:
+            recorder.effect(effect_type, effect_key, resource, evidence)
+        db.commit()
     return {"ok": ok, "reason": reason}
 
 

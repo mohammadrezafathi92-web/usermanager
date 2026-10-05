@@ -13,8 +13,16 @@ Three pure steps, none of which writes anything:
                      with a fixed key known before anything runs, plus the
                      hash that locks them.
 
-Not built yet (they need the reward-target resolver of design 14.1 and the
-loyalty cutover): the referral and loyalty rows of the manifest.
+Referral rewards (design 5.3, 14.1) are in the manifest: both credits, and
+each quota reward only when resolve_quota_reward_target finds exactly one
+finite target - never a guessed one.
+
+Loyalty rows are deliberately NOT built here: the frozen design allows them
+only when loyalty_timing_mode is 'payment_event', i.e. after the joint
+activation of phase P9a ("until then loyalty works exactly as today and no
+loyalty row is in the manifest", section 14.2; RV-344). They need the
+policy epochs, the loyalty event ledger and sale_payment_evidence, none of
+which exist before that phase.
 """
 from __future__ import annotations
 
@@ -101,6 +109,66 @@ def tenant_scope_key(db: Session, owner_admin_id: Optional[int]) -> str:
     admin = db.get(models.AdminUser, owner_admin_id)
     root = hierarchy.parent_admin_scope_id(admin) if admin else None
     return f"admin:{root or owner_admin_id}"
+
+
+def resolve_quota_reward_target(purchases_after: list, user_quota_after: int):
+    """Design 14.1, verbatim. Input is the topology AFTER the approval, not
+    the state at registration. Returns ("User", None), ("Purchase", purchase)
+    or None. None means: no quota row in the manifest and no quota reward -
+    it is never written to some other resource instead.
+
+        no purchase:        the User if its quota is finite (> 0), else None (unlimited)
+        exactly one:        that Purchase if its quota is finite, else None (unlimited)
+        more than one:      None (ambiguous)
+    """
+    if not purchases_after:
+        return ("User", None) if int(user_quota_after or 0) > 0 else None
+    if len(purchases_after) == 1:
+        only = purchases_after[0]
+        return ("Purchase", only) if int(only.quota_bytes or 0) > 0 else None
+    return None
+
+
+def _referral_rows(db: Session, intent: ApprovalIntent, target: Target, package: models.Package,
+                   has_connections: bool, quota_bytes: int) -> list[ManifestRow]:
+    """The referral rewards this approval is expected to produce, frozen at
+    registration (design 5.3): only for a brand-new customer, only for a
+    code that resolves to a referrer, each amount from PanelSettings as it
+    is now. A code that resolves to nobody adds nothing - the approval goes
+    on without a referral, as the sale itself always has."""
+    code = (intent.referral_code or "").strip().upper()
+    if target.shape != "new_user" or not code:
+        return []
+    referrer = db.query(models.User).filter(models.User.referral_code == code).first()
+    settings_row = db.get(models.PanelSettings, 1)
+    if referrer is None or settings_row is None:
+        return []
+    rows: list[ManifestRow] = []
+    referrer_credit = int(settings_row.referral_referrer_reward_credit or 0)
+    new_user_credit = int(settings_row.referral_new_user_reward_credit or 0)
+    referrer_bytes = user_ops.gb_to_bytes(settings_row.referral_referrer_reward_gb or 0)
+    new_user_bytes = user_ops.gb_to_bytes(settings_row.referral_new_user_reward_gb or 0)
+    if referrer_credit > 0:
+        rows.append(ManifestRow("wallet_credit_source_created", "credit:referral_reward:referrer", REQUIRED, {
+            "referrer_user_id": referrer.id, "referrer_username": referrer.username, "amount": referrer_credit}))
+    if new_user_credit > 0:
+        rows.append(ManifestRow("wallet_credit_source_created", "credit:referral_reward:new_user", REQUIRED, {
+            "user": USER_REF, "amount": new_user_credit}))
+    if referrer_bytes > 0:
+        # the referrer's topology is not changed by this approval
+        purchases = db.query(models.Purchase).filter(models.Purchase.user_id == referrer.id).all()
+        found = resolve_quota_reward_target(purchases, referrer.total_quota_bytes)
+        if found is not None:
+            kind, purchase = found
+            binding = {"type": "Purchase", "id": purchase.id} if kind == "Purchase" else {"type": "User", "id": referrer.id}
+            rows.append(ManifestRow("quota_reward_granted", "quota:referral:referrer", REQUIRED,
+                                    {"target": binding, "bytes": referrer_bytes}))
+    if new_user_bytes > 0 and quota_bytes > 0:
+        # after this approval the new customer has exactly one Purchase (the
+        # one it creates) when the sale has connections, and none otherwise
+        rows.append(ManifestRow("quota_reward_granted", "quota:referral:new_user", REQUIRED, {
+            "target": PURCHASE_REF if has_connections else USER_REF, "bytes": new_user_bytes}))
+    return rows
 
 
 def is_managed_principal(principal: bot_auth.BotPrincipal) -> bool:
@@ -244,6 +312,7 @@ def build_manifest(db: Session, intent: ApprovalIntent, target: Target) -> list[
         rows.append(ManifestRow("ledger_sale", "sale", REQUIRED, {
             "user": user_binding, "ledger_kind": "sale_new", "amount": intent.amount,
             "payment_card_id": intent.payment_card_id}))
+        rows.extend(_referral_rows(db, intent, target, package, bool(connections), quota_bytes))
 
     if package is not None and target.owner_admin_id is not None:
         owner = db.get(models.AdminUser, target.owner_admin_id)

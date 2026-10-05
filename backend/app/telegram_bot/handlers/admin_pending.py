@@ -286,7 +286,8 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
                 # the purchase that already succeeded.
                 if pending.get("referral_code"):
                     try:
-                        await api.apply_referral(pending["target_username"], pending["referral_code"])
+                        await api.apply_referral(pending["target_username"], pending["referral_code"],
+                                                 approval_uuid=session.get("approval_uuid"))
                     except ApiError:
                         pass
             if pending.get("discount_code"):

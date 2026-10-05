@@ -154,7 +154,8 @@ def create_user_record(
     return user
 
 
-def apply_referral_code(db: Session, user: models.User, referral_code: str) -> tuple[bool, str]:
+def apply_referral_code(db: Session, user: models.User, referral_code: str,
+                        evidence_sink: Optional[list] = None) -> tuple[bool, str]:
     """Called once, right after a brand-new customer's account is created
     (routers/bot.py's apply_referral, itself called from
     telegram_bot/handlers/admin_pending.py right after create_user
@@ -187,6 +188,8 @@ def apply_referral_code(db: Session, user: models.User, referral_code: str) -> t
         ref_gb = settings_row.referral_referrer_reward_gb or 0
         new_credit = settings_row.referral_new_user_reward_credit or 0
         new_gb = settings_row.referral_new_user_reward_gb or 0
+        before = {"ref_balance": int(referrer.balance or 0), "ref_quota": int(referrer.total_quota_bytes or 0),
+                  "new_balance": int(user.balance or 0), "new_quota": int(user.total_quota_bytes or 0)}
         if ref_credit:
             referrer.balance = (referrer.balance or 0) + ref_credit
         if ref_gb:
@@ -195,8 +198,30 @@ def apply_referral_code(db: Session, user: models.User, referral_code: str) -> t
             user.balance = (user.balance or 0) + new_credit
         if new_gb:
             user.total_quota_bytes = (user.total_quota_bytes or 0) + gb_to_bytes(new_gb)
+        _referral_evidence(evidence_sink, referrer, user, before)
     db.commit()
     return True, ""
+
+
+def _referral_evidence(sink: Optional[list], referrer: models.User, user: models.User, before: dict) -> None:
+    """Receipt-approval evidence of what apply_referral_code just did
+    (services/receipt_approval_effects.py): one entry per reward that really
+    changed something, naming the resource it was written to - today always
+    the User row - with the value read before and after. Built only here,
+    and only when a caller asked for it."""
+    if sink is None:
+        return
+    from .receipt_approval_effects import QuotaRewardEvidence, WalletCreditEvidence
+    for key, target, balance_before, quota_before in (
+            ("referrer", referrer, before["ref_balance"], before["ref_quota"]),
+            ("new_user", user, before["new_balance"], before["new_quota"])):
+        balance_after, quota_after = int(target.balance or 0), int(target.total_quota_bytes or 0)
+        if balance_after != balance_before:
+            sink.append(("wallet_credit_source_created", f"credit:referral_reward:{key}", target,
+                         WalletCreditEvidence(balance_before, balance_after)))
+        if quota_after != quota_before:
+            sink.append(("quota_reward_granted", f"quota:referral:{key}", target,
+                         QuotaRewardEvidence("User", target.id, quota_before, quota_after, quota_before == 0)))
 
 
 # ---------------------------------------------------- discount codes

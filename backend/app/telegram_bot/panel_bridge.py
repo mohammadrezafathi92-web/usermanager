@@ -567,12 +567,12 @@ class PanelBridge:
         await _call(bot_router.delete_user, username, owner_admin_id=_scope(owner_admin_id))
 
     # ------------------------------------------------ referral & discount
-    async def apply_referral(self, username: str, referral_code: str) -> dict:
+    async def apply_referral(self, username: str, referral_code: str, approval_uuid: Optional[str] = None) -> dict:
         """Called once, right after create_user, for a brand-new customer
         who entered someone else's invite code - see
         handlers/admin_pending.py (the receipt-approval handler is the one
         choke point new accounts are created through)."""
-        payload = schemas.ReferralApplyRequest(username=username, referral_code=referral_code)
+        payload = schemas.ReferralApplyRequest(username=username, referral_code=referral_code, approval_uuid=approval_uuid)
         return _dump(await _call(bot_router.apply_referral, payload))
 
     async def validate_discount(self, code: str, package_price: int = 0, username: Optional[str] = None, owner_admin_id: Optional[int] = None) -> dict:

@@ -327,8 +327,8 @@ print("--- the bot passes the id along ---")
 check("perform_approval finishes the session on success and on both failure paths",
       (inspect.getsource(admin_pending.perform_approval).count("approval_session.finish(session, ok=True)"),
        inspect.getsource(admin_pending.perform_approval).count("approval_session.finish(session, ok=False)")), (1, 2))
-check("...also to add_balance and record_card_payment",
-      (inspect.getsource(admin_pending.perform_approval).count('session.get("approval_uuid")'),), (5,))
+check("...also to add_balance, record_card_payment, redeem_discount and apply_referral",
+      (inspect.getsource(admin_pending.perform_approval).count('session.get("approval_uuid")'),), (6,))
 source = inspect.getsource(admin_pending.perform_approval)
 check("perform_approval puts the registered approval uuid into the sale details",
       'sale_info["approval_uuid"] = session["approval_uuid"]' in source, True)

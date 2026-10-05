@@ -49,10 +49,18 @@ class DuplicateApprovalPayment(RuntimeError):
 
 
 def approval_event_exists(db: Session, approval_uuid: Optional[str]) -> bool:
+    """Is there, RIGHT NOW, an event for this approval? A locking read, on
+    purpose: under MariaDB's default REPEATABLE READ a plain SELECT answers
+    from the snapshot this transaction took when it first read anything -
+    a request that then waited for the pool lock would still not see the
+    event its rival committed in the meantime, and would count the payment
+    a second time. A locking read always sees the latest committed rows.
+    (On SQLite the request is already a write transaction by now.)"""
     if not approval_uuid:
         return False
     _states, _baselines, events = _tables()
-    return db.execute(select(events.c.id).where(events.c.approval_uuid == approval_uuid)).first() is not None
+    return db.execute(select(events.c.id).where(events.c.approval_uuid == approval_uuid)
+                      ).first() is not None  # TEMP: plain read, to show the new test fails on MariaDB
 
 
 def pool_key(owner_admin_id: Optional[int]) -> str:
@@ -159,12 +167,16 @@ def record_payment(db: Session, card: models.PaymentCard, *, amount: int, accumu
         # the event between our check and our insert, and the unique
         # approval_uuid refused ours): not a broken log - a duplicate. The
         # pool stays event_logged and the caller drops its counter write.
-        try:
-            duplicate = approval_event_exists(db, approval_uuid)
-        except Exception:
-            duplicate = False
-        if duplicate:
-            raise DuplicateApprovalPayment(approval_uuid)
+        # (approval_event_exists is a current read, not a snapshot read.) If
+        # even that check cannot be made, nothing may be concluded from a
+        # stale view: the counter write is dropped, the pool is not demoted.
+        if approval_uuid:
+            try:
+                duplicate = approval_event_exists(db, approval_uuid)
+            except Exception as exc:
+                raise PoolLogBroken(key) from exc
+            if duplicate:
+                raise DuplicateApprovalPayment(approval_uuid)
         log.exception("card pool %s: payment event could not be written; pool set back to 'legacy'", key)
         try:
             with db.begin_nested():

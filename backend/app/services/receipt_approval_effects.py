@@ -420,9 +420,8 @@ class ShadowRecorder:
         if not self.active:
             return False
         try:
-            from .. import models_receipt_void as rv
-            events = rv.payment_card_pool_events
-            return self.db.execute(select(events.c.id).where(events.c.approval_uuid == self.approval_uuid)).first() is not None
+            from . import payment_card_events
+            return payment_card_events.approval_event_exists(self.db, self.approval_uuid)     # a current read
         except Exception:
             log.exception("receipt approval %s: could not check the card event", self.approval_uuid)
             return False

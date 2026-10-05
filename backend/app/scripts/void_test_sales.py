@@ -57,14 +57,16 @@ def collect(db, user: models.User, cutoff: dt.datetime) -> dict:
     redemptions = (db.query(models.DiscountCodeRedemption)
                    .filter(models.DiscountCodeRedemption.user_id == user.id,
                            models.DiscountCodeRedemption.created_at >= cutoff).all())
+    old_renewals = [r for r in ledger if r.kind == "sale_renew" and r.purchase_id not in purchase_ids]
+    kept_rows = {r.id for r in old_renewals}
     card_totals: dict[int, int] = {}
     for row in ledger:
-        if row.payment_card_id is not None:
+        if row.payment_card_id is not None and row.id not in kept_rows:      # only what will really be deleted
             card_totals[row.payment_card_id] = card_totals.get(row.payment_card_id, 0) + int(row.amount or 0)
     return {
         "purchases": purchases, "ledger": ledger, "redemptions": redemptions, "card_totals": card_totals,
         "topup_total": sum(int(r.amount or 0) for r in ledger if r.kind == "wallet_topup"),
-        "old_renewals": [r for r in ledger if r.kind == "sale_renew" and r.purchase_id not in purchase_ids],
+        "old_renewals": old_renewals,
     }
 
 

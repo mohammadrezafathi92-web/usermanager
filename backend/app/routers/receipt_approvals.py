@@ -105,7 +105,10 @@ class ApprovalIntentIn(BaseModel):
 def begin_approval(db: Session, principal: bot_auth.BotPrincipal, payload: ApprovalIntentIn, approval_mode: str) -> dict:
     """Shared by both endpoints and by the in-process bot. The mode comes
     from which endpoint was called, never from a body field."""
-    bot_auth._ensure_valid(principal, f"receipt_approval_{approval_mode}")
+    bot_auth.require_bot_capability(
+        principal,
+        bot_auth.RECEIPT_MANUAL_APPROVAL_WRITE if approval_mode == registration.MANUAL else bot_auth.RECEIPT_AUTO_APPROVAL_WRITE,
+        endpoint=f"receipt_approval_{approval_mode}")
     try:
         return registration.begin(
             db, principal, payload.to_intent(), approval_mode=approval_mode,
@@ -130,6 +133,8 @@ class FinalizeIn(BaseModel):
 def finalize_approval(db: Session, principal: bot_auth.BotPrincipal, approval_uuid: str, failed: bool = False) -> dict:
     """Shared by the endpoint and the in-process bot."""
     bot_auth._ensure_valid(principal, "receipt_approval_finalize")
+    if not (bot_auth.MANAGED_BOT_CAPABILITIES & principal.capabilities):        # either of the two (design 6.4)
+        bot_auth.require_bot_capability(principal, bot_auth.RECEIPT_AUTO_APPROVAL_WRITE, endpoint="receipt_approval_finalize")
     for attempt in range(1, registration.WRITE_ATTEMPTS + 1):
         try:
             registration.take_write_lock(db)

@@ -143,6 +143,15 @@ def _referral_rows(db: Session, intent: ApprovalIntent, target: Target, package:
     settings_row = db.get(models.PanelSettings, 1)
     if referrer is None or settings_row is None:
         return []
+    if referrer.telegram_id is not None and target.telegram_id is not None \
+            and int(referrer.telegram_id) == int(target.telegram_id):
+        # "A code that belongs to the customer themself: no referral row"
+        # (design 5.3). A brand-new customer has no user row to compare, so
+        # "themself" is the identity the design uses everywhere else: the
+        # Telegram id. The manifest therefore expects no referral reward
+        # here. (What the legacy reward code does in this case is not
+        # changed by this module: it only compares user rows.)
+        return []
     rows: list[ManifestRow] = []
     referrer_credit = int(settings_row.referral_referrer_reward_credit or 0)
     new_user_credit = int(settings_row.referral_new_user_reward_credit or 0)

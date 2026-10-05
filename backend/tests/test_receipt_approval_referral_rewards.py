@@ -26,6 +26,11 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 import _mariadb_scratch as scratch
+import _no_network
+
+# Nothing in this test may reach a node: every outgoing connection is refused
+# and recorded, except to the MariaDB test server.
+_no_network.install([os.environ.get("MARIADB_TEST_URL", "").strip()])
 from app import models, models_receipt_void as rv, schemas
 from app.routers import bot as bot_router
 from app.routers import receipt_approvals as approvals_router
@@ -62,6 +67,9 @@ check("more than one purchase: ambiguous, nothing - even if all but one are unli
 check("the resolver is pure: no database, no session", "db" in inspect.signature(ri.resolve_quota_reward_target).parameters, False)
 
 real_provision = user_ops.provision_connection
+# create_user's response asks the NODE for a WireGuard connection's config
+# (user_ops.get_connection_share -> MikroTik). Not in a test.
+user_ops.get_connection_share = lambda connection: {}
 
 
 def fake_provision(db_, user, node_, protocol, flow="", *args, **kwargs):
@@ -213,6 +221,53 @@ def scenario(label: str, engine) -> None:
            snapshot["quota_after"], snapshot["before_was_unlimited"]),
           ("User", ids.r_user, 2 * GB, before[1], before[1] + 2 * GB, False))
 
+    print(f"--- {label}: the reward and its record are ONE transaction ---")
+    from sqlalchemy import event as sa_event
+    seen = {}
+
+    def at_commit(session):
+        if session.in_nested_transaction():
+            return                       # a savepoint being released, not the transaction's commit
+        # what this very transaction holds at the moment it is about to commit
+        seen["effects"] = sorted(k for k in (f"{r.effect_type}:{r.effect_key}" for r in session.execute(
+            select(F).where(F.c.approval_uuid == seen["uuid"]))) if "referral" in k)
+        seen["referred"] = session.query(models.User).filter_by(username=seen["buyer"]).one().referred_by_id
+        if seen.pop("crash", False):
+            raise RuntimeError("process died at commit")
+
+    the_intent = intent("buyer_atomic", ids.plain, "RUSER", 650)
+    uuid_x = reg.begin(db, internal, the_intent, approval_mode="manual", approved_by_telegram_id=1000)["approval_uuid"]
+    bot_router.create_user(schemas.BotCreateUserRequest(
+        username="buyer_atomic", quota_gb=10, expire_days=30, telegram_id=650, package_id=ids.plain, paid_amount=900,
+        payment_method="card", approval_uuid=uuid_x), db=db, principal=internal)
+    referrer_before = (user("ref_user_level").balance, user("ref_user_level").total_quota_bytes)
+    seen.update(uuid=uuid_x, buyer="buyer_atomic", crash=True)
+    sa_event.listen(db, "before_commit", at_commit)
+    try:
+        try:
+            bot_router.apply_referral(schemas.ReferralApplyRequest(username="buyer_atomic", referral_code="RUSER",
+                                                                   approval_uuid=uuid_x), db=db, principal=internal)
+            crashed = "no"
+        except RuntimeError:
+            crashed = "yes"
+            db.rollback()
+        check(L + "at the moment of commit the SAME transaction already holds the reward AND all four effects",
+              (crashed, seen["effects"], seen["referred"]), ("yes", ALL_FOUR, ids.r_user))
+        check(L + "a crash at that commit leaves NOTHING: no reward, no referral link, no effect - so nothing is stuck",
+              ((user("ref_user_level").balance, user("ref_user_level").total_quota_bytes) == referrer_before,
+               user("buyer_atomic").referred_by_id, user("buyer_atomic").referral_reward_granted,
+               [k for k in effects(uuid_x) if "referral" in k]), (True, None, False, []))
+        retried = bot_router.apply_referral(schemas.ReferralApplyRequest(username="buyer_atomic", referral_code="RUSER",
+                                                                         approval_uuid=uuid_x), db=db, principal=internal)
+    finally:
+        sa_event.remove(db, "before_commit", at_commit)
+    check(L + "the retry then applies the reward once and records it, and the approval completes",
+          (retried["ok"], user("ref_user_level").balance - referrer_before[0], [k for k in effects(uuid_x) if "referral" in k],
+           approvals_router.finalize_approval(db, internal, uuid_x)["state"]), (True, 3000, ALL_FOUR, "completed"))
+    check(L + "the endpoint records through apply_referral_code's before_commit hook, with no commit of its own",
+          ("before_commit=" in inspect.getsource(bot_router.apply_referral), "db.commit()" in inspect.getsource(bot_router.apply_referral)),
+          (True, False))
+
     print(f"--- {label}: retry and idempotency ---")
     state_before = (user("ref_user_level").balance, user("ref_user_level").total_quota_bytes, user("buyer_a").balance,
                     len(effects(uuid_a)))
@@ -250,6 +305,23 @@ def scenario(label: str, engine) -> None:
           (result_e["ok"], [k for k in effects(uuid_e) if "referral" in k], shadow_codes(uuid_e), final_e["state"],
            user("buyer_e").referred_by_id), (False, [], [], "completed", None))
 
+    print(f"--- {label}: the customer's own code ---")
+    own = intent("buyer_self", ids.plain, "RUSER", 1)          # Telegram id 1 is ref_user_level's own id
+    check(L + "a referrer with the customer's own Telegram id is not a referral: the manifest has no referral row",
+          (reward_keys(own), "user_created:user" in rows_of(own)), ([], True))
+    no_tg = models.User(username="ref_no_telegram", referral_code="RNOTG", total_quota_bytes=GB)
+    db.add(no_tg)
+    db.commit()
+    check(L + "a referrer with no Telegram id cannot be 'the same person': their code is an ordinary referral",
+          len(reward_keys(intent("buyer_g", ids.plain, "RNOTG", 607))), 4)
+    referrer_before = user("ref_user_level").balance
+    uuid_s, result_s, final_s = sell("buyer_self", ids.plain, "RUSER", 1)
+    check(L + "what the panel does with such a code is NOT changed here (it still pays, as it always has) - but none of it "
+              "is recorded as this approval's effect: each reward is refused as not-in-manifest and logged",
+          (result_s["ok"], user("ref_user_level").balance - referrer_before, [k for k in effects(uuid_s) if "referral" in k],
+           shadow_codes(uuid_s), final_s["state"]),
+          (True, 3000, [], ["effect_not_in_manifest"] * 4, "completed"))
+
     print(f"--- {label}: without an approval nothing at all is different ---")
     bot_router.create_user(schemas.BotCreateUserRequest(username="legacy_buyer", quota_gb=10, expire_days=30, telegram_id=701,
                                                         package_id=ids.plain, paid_amount=900, payment_method="card"),
@@ -283,6 +355,7 @@ def scenario(label: str, engine) -> None:
     db.get(models.PanelSettings, 1).loyalty_purchase_threshold = 100
     db.commit()
     db.close()
+    check(L + "the whole scenario made no attempt to reach a node or any other host", _no_network.attempts, [])
 
 
 print("--- evidence and projection rules ---")

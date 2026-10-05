@@ -155,7 +155,7 @@ def create_user_record(
 
 
 def apply_referral_code(db: Session, user: models.User, referral_code: str,
-                        evidence_sink: Optional[list] = None) -> tuple[bool, str]:
+                        evidence_sink: Optional[list] = None, before_commit=None) -> tuple[bool, str]:
     """Called once, right after a brand-new customer's account is created
     (routers/bot.py's apply_referral, itself called from
     telegram_bot/handlers/admin_pending.py right after create_user
@@ -199,6 +199,13 @@ def apply_referral_code(db: Session, user: models.User, referral_code: str,
         if new_gb:
             user.total_quota_bytes = (user.total_quota_bytes or 0) + gb_to_bytes(new_gb)
         _referral_evidence(evidence_sink, referrer, user, before)
+    if before_commit is not None:
+        # The caller's chance to write, into THIS transaction, the record of
+        # what was just applied (receipt-approval effects). Reward and record
+        # then commit together or not at all: a crash can no longer leave a
+        # reward that is granted, can never be granted again (the two flags
+        # above), and has no effect row - an approval stuck for ever.
+        before_commit()
     db.commit()
     return True, ""
 

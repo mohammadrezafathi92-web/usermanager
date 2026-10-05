@@ -101,6 +101,45 @@ check("a later test of the same run may claim it again", tables("um_ci_scratch")
 scratch.release(again)
 check("release leaves it empty", tables("um_ci_scratch"), [])
 
+print("--- the marker alone proves nothing: every table must be a known one ---")
+engine = scratch.claim(url("um_test_leftover"))
+with engine.begin() as conn:
+    conn.exec_driver_sql("CREATE TABLE users (x INTEGER)")                 # the app's own table: ours
+    conn.exec_driver_sql("CREATE TABLE customer_invoices (x INTEGER)")     # somebody else's, added later
+engine.dispose()
+leftover = [scratch.MARKER, "customer_invoices", "users"]
+check("a claimed database that later got a foreign table: claim is refused, NOTHING is dropped - not even our own tables",
+      (refused(scratch.claim, url("um_test_leftover")), tables("um_test_leftover")), (True, sorted(leftover)))
+engine = create_engine(url("um_test_leftover"))
+check("wipe and release refuse it too", (refused(scratch.wipe, engine), tables("um_test_leftover")), (True, sorted(leftover)))
+scratch.release(engine)
+check("...release leaves every table in place", tables("um_test_leftover"), sorted(leftover))
+make("um_test_fake_marker", scratch.MARKER, "users")
+check("a table that merely has the marker's NAME (no claim row / another shape) is not a claim",
+      (refused(scratch.claim, url("um_test_fake_marker")), tables("um_test_fake_marker")), (True, sorted([scratch.MARKER, "users"])))
+engine = create_engine(url("um_test_wrong_token"))
+with engine.begin() as conn:
+    conn.exec_driver_sql(f"CREATE TABLE {scratch.MARKER} (claimed_by VARCHAR(64) NOT NULL)")
+    conn.exec_driver_sql(f"INSERT INTO {scratch.MARKER} VALUES ('someone-else')")
+    conn.exec_driver_sql("CREATE TABLE users (x INTEGER)")
+engine.dispose()
+check("a marker holding another claim is refused", (refused(scratch.claim, url("um_test_wrong_token")),
+                                                     "users" in tables("um_test_wrong_token")), (True, True))
+engine = scratch.claim(url("um_test_interrupted"))
+with engine.begin() as conn:
+    conn.exec_driver_sql("CREATE TABLE users (x INTEGER)")
+    conn.exec_driver_sql("CREATE TABLE receipt_approvals (x INTEGER)")
+engine.dispose()                                                           # a run that died before cleaning up
+engine = scratch.claim(url("um_test_interrupted"))
+scratch.wipe(engine)
+check("a run that died halfway (valid claim, only known tables) can be claimed again and cleaned",
+      tables("um_test_interrupted"), [scratch.MARKER])
+scratch.release(engine)
+known = scratch.known_tables()
+check("the allowlist is the application's schema (all three metadatas) plus the marker and the probe",
+      ({"users", "ledger_entries", "provisioning_operations", "receipt_approvals", scratch.MARKER, scratch.PROBE} <= known,
+       "customer_invoices" in known, len(known) > 60), (True, False, True))
+
 print("--- no test drops tables on MARIADB_TEST_URL by itself ---")
 tests_dir = os.path.dirname(os.path.abspath(__file__))
 offenders = []
@@ -130,7 +169,7 @@ if mariadb_url:
     check("CI's database is accepted as a scratch database", claimed, True)
     if maria is not None:
         with maria.begin() as conn:
-            conn.exec_driver_sql("CREATE TABLE guard_probe (x INT)")
+            conn.exec_driver_sql(f"CREATE TABLE {scratch.PROBE} (x INT)")
         scratch.wipe(maria)
         with maria.connect() as conn:
             left = sorted(inspect(conn).get_table_names())

@@ -8,15 +8,19 @@ this module, which refuses unless ALL of this holds:
   1. the database NAME says it is disposable: one of its underscore-
      separated words is 'scratch' or 'test' (CI uses um_ci_scratch);
   2. the database is EMPTY, or already carries this module's marker table
-     from an earlier test of the same run - i.e. every table in it was
-     created by these tests. A database with other tables and no marker is
-     never touched, whatever it is called;
-  3. it is not a database a running panel is configured to use
+     WITH this module's claim row in it, from an earlier test. A database
+     with tables and no valid claim is never touched, whatever it is called;
+  3. EVERY table in it is one these tests can create: a table of the
+     application's own schema, the marker, or the guard's probe table. The
+     marker alone proves nothing about the other tables - a run that died
+     halfway leaves it behind, and someone may add a table later. One
+     unknown table and the whole operation is refused: nothing is dropped;
+  4. it is not a database a running panel is configured to use
      (DATABASE_URL).
 
-claim() checks and puts the marker in; wipe() drops the tables these tests
-made (everything except the marker - by rule 2 nothing else can be there);
-release() also removes the marker.
+claim() checks and puts the marker in; wipe() re-checks all of the above
+and drops the known tables (everything except the marker); release() also
+removes the marker.
 """
 from __future__ import annotations
 
@@ -27,6 +31,19 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.engine import Engine, make_url
 
 MARKER = "um_test_scratch_marker"
+CLAIM_TOKEN = "usermanager-backend-tests"
+PROBE = "um_test_scratch_probe"            # the only non-application table a test may create
+
+
+def known_tables() -> frozenset[str]:
+    """Every table name these tests can create: the application's schema
+    (all three metadatas), the marker and the probe."""
+    from app import models, models_provisioning, models_receipt_void
+    names = set(models.Base.metadata.tables)
+    names.update(table.name for table in models_provisioning.PROVISIONING_TABLES)
+    names.update(table.name for table in models_receipt_void.RECEIPT_VOID_TABLES)
+    names.update((MARKER, PROBE))
+    return frozenset(names)
 _DISPOSABLE_WORD = re.compile(r"(^|_)(scratch|test)(_|$)", re.IGNORECASE)
 
 
@@ -60,19 +77,39 @@ def _tables(engine: Engine) -> list[str]:
         return inspect(conn).get_table_names()
 
 
+def _verify(engine: Engine) -> list[str]:
+    """The table names, after proving the database is ours to wipe: either
+    empty, or validly claimed with nothing but known tables in it."""
+    existing = _tables(engine)
+    if not existing:
+        return existing
+    name = _database_name(engine)
+    if MARKER not in existing:
+        raise ScratchRefused(f"database '{name}' has {len(existing)} table(s) and no {MARKER} - not created by these tests")
+    with engine.connect() as conn:
+        try:
+            claims = [row[0] for row in conn.exec_driver_sql(f"SELECT claimed_by FROM {MARKER}")]
+        except Exception as exc:  # noqa: BLE001 - a marker of another shape is not our marker
+            raise ScratchRefused(f"database '{name}': {MARKER} is not this guard's marker") from exc
+    if claims != [CLAIM_TOKEN]:
+        raise ScratchRefused(f"database '{name}': {MARKER} does not hold this guard's claim")
+    unknown = sorted(set(existing) - known_tables())
+    if unknown:
+        raise ScratchRefused(f"database '{name}' contains table(s) these tests never create: {', '.join(unknown[:5])}"
+                             f"{' ...' if len(unknown) > 5 else ''} - refusing to drop anything")
+    return existing
+
+
 def claim(url: str) -> Engine:
     """An engine on a database that is provably disposable, with the marker
     in place. Raises ScratchRefused (and changes nothing) otherwise."""
     _check_name(url)
     engine = create_engine(url)
     try:
-        existing = _tables(engine)
-        if existing and MARKER not in existing:
-            raise ScratchRefused(f"database '{_database_name(engine)}' already has {len(existing)} table(s) that these "
-                                 f"tests did not create (no {MARKER}) - refusing to use it")
-        if MARKER not in existing:
+        if not _verify(engine):
             with engine.begin() as conn:
                 conn.exec_driver_sql(f"CREATE TABLE {MARKER} (claimed_by VARCHAR(64) NOT NULL)")
+                conn.exec_driver_sql(f"INSERT INTO {MARKER} (claimed_by) VALUES ('{CLAIM_TOKEN}')")
         return engine
     except Exception:
         engine.dispose()
@@ -92,9 +129,10 @@ def _drop(engine: Engine, names: list[str]) -> None:
 
 
 def wipe(engine: Engine) -> None:
-    """Drops every table except the marker. Only on a claimed database."""
+    """Drops every table except the marker - after checking, again, that
+    the database is validly claimed and holds nothing but known tables."""
     _check_name(engine)
-    existing = _tables(engine)
+    existing = _verify(engine)
     if MARKER not in existing:
         raise ScratchRefused(f"database '{_database_name(engine)}' was not claimed by these tests - nothing dropped")
     _drop(engine, [name for name in existing if name != MARKER])

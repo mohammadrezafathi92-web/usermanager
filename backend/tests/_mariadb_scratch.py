@@ -31,7 +31,10 @@ from sqlalchemy.engine import Engine, make_url
 
 RUN_PREFIX = "um_test_run_"
 _RUN_NAME = re.compile(r"^um_test_run_[0-9a-f]{12}$")
-_created: dict[int, str] = {}              # id(engine) -> the database THIS process created for it
+# The engines claim() handed out, with the database created for each. The
+# engine OBJECT is kept (not its id(), which Python reuses once an object is
+# gone), so "is this ours?" is an identity check against a live object.
+_created: list[tuple[Engine, str]] = []
 
 
 class ScratchRefused(RuntimeError):
@@ -40,10 +43,21 @@ class ScratchRefused(RuntimeError):
 
 def _own_database(engine: Engine) -> str:
     """The name of the run database behind this engine, or a refusal."""
-    name = _created.get(id(engine))
+    name = next((created for owner, created in _created if owner is engine), None)
     if name is None or not _RUN_NAME.match(name) or engine.url.database != name:
         raise ScratchRefused("this engine is not on a database created by scratch.claim() in this process")
     return name
+
+
+def _drop_database(server_url, name: str) -> None:
+    if not _RUN_NAME.match(name):
+        raise ScratchRefused(f"'{name}' is not a run database name")
+    server = create_engine(server_url)
+    try:
+        with server.connect() as conn:
+            conn.exec_driver_sql(f"DROP DATABASE IF EXISTS `{name}`")
+    finally:
+        server.dispose()
 
 
 def claim(url: str) -> Engine:
@@ -63,8 +77,12 @@ def claim(url: str) -> Engine:
                              f"in MARIADB_TEST_URL needs CREATE/DROP on {RUN_PREFIX}*") from exc
     finally:
         server.dispose()
-    engine = create_engine(parsed.set(database=name))
-    _created[id(engine)] = name
+    try:
+        engine = create_engine(parsed.set(database=name))
+    except Exception:
+        _drop_database(parsed, name)        # we created it a moment ago: do not leave it behind
+        raise
+    _created.append((engine, name))
     return engine
 
 
@@ -75,25 +93,22 @@ def wipe(engine: Engine) -> None:
         if conn.exec_driver_sql("SELECT DATABASE()").scalar() != name:
             raise ScratchRefused("connected to another database than the one this process created")
         conn.exec_driver_sql("SET FOREIGN_KEY_CHECKS = 0")     # the app's schema has a foreign-key cycle
-        for table in inspect(conn).get_table_names():
-            conn.exec_driver_sql(f"DROP TABLE IF EXISTS `{name}`.`{table}`")
-        conn.exec_driver_sql("SET FOREIGN_KEY_CHECKS = 1")
+        try:
+            for table in inspect(conn).get_table_names(schema=name):
+                conn.exec_driver_sql(f"DROP TABLE IF EXISTS `{name}`.`{table.replace('`', '``')}`")
+        finally:
+            conn.exec_driver_sql("SET FOREIGN_KEY_CHECKS = 1")
 
 
 def release(engine: Engine) -> None:
-    """Drops the run database itself. A no-op for anything else."""
+    """Drops the run database itself. A no-op for anything else. The
+    engine is forgotten only once its database is really gone: if the drop
+    fails the error is raised and release() can be called again."""
     try:
         name = _own_database(engine)
     except ScratchRefused:
         engine.dispose()
         return
-    try:
-        engine.dispose()
-        server = create_engine(engine.url.set(database=None))
-        try:
-            with server.connect() as conn:
-                conn.exec_driver_sql(f"DROP DATABASE IF EXISTS `{name}`")
-        finally:
-            server.dispose()
-    finally:
-        _created.pop(id(engine), None)
+    engine.dispose()
+    _drop_database(engine.url.set(database=None), name)
+    _created[:] = [(owner, created) for owner, created in _created if owner is not engine]

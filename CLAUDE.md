@@ -16,7 +16,14 @@ The full Persian README (`README.md`) is the source of truth for deployment/oper
 
 ## Commands
 
-There is no test suite, linter, or CI in this repo (confirmed absent, not just undocumented) — the closest thing to verification is a manual compile/parse check, described below.
+There IS a test suite and CI (this file used to say otherwise). Tests are standalone scripts, not pytest: every `backend/tests/test_*.py` runs on its own and `backend/tests/run_all.py` runs each one in a subprocess. CI (`.github/workflows/ci.yml`) runs that suite plus `compileall`, a real `mariadb:11` service for the schema/concurrency tests, and the frontend build, on every pull request. There is no linter.
+
+```bash
+cd backend && venv/bin/python tests/run_all.py     # the whole suite
+cd backend && venv/bin/python tests/test_<name>.py # one file
+```
+
+A test that needs MariaDB must go through `backend/tests/_mariadb_scratch.py` (`claim` / `wipe` / `release`): it creates its own randomly named database and drops only that. Never open `MARIADB_TEST_URL` directly from a test.
 
 **Backend (FastAPI, Python 3, SQLite via SQLAlchemy):**
 ```bash
@@ -26,7 +33,7 @@ pip install -r requirements.txt
 cp .env.example .env            # then edit SECRET_KEY / DEFAULT_ADMIN_PASSWORD
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
-Sanity-check backend edits compile before considering them done (there's no pytest to run instead):
+Backend edits must also compile:
 ```bash
 python3 -m py_compile $(find app -name "*.py")
 ```

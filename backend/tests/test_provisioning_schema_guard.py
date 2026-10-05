@@ -45,6 +45,7 @@ from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.schema import CreateIndex, CreateTable
 
+import _mariadb_scratch as scratch
 from app import main, models
 from app import models_provisioning as mp
 from app.services import provisioning_schema as ps
@@ -644,12 +645,17 @@ run_inspector_checks(new_engine(), "sqlite")
 
 mariadb_url = os.environ.get("MARIADB_TEST_URL", "").strip()
 if mariadb_url:
-    maria = create_engine(mariadb_url)
     try:
-        run_inspector_checks(maria, "mariadb")
-    finally:
-        drop_provisioning_tables(maria)
-        maria.dispose()
+        maria = scratch.claim(mariadb_url)
+    except scratch.ScratchRefused as refused:
+        maria = None
+        check(f"MARIADB_TEST_URL must point at a throwaway database ({refused})", False)
+    if maria is not None:
+        try:
+            scratch.wipe(maria)
+            run_inspector_checks(maria, "mariadb")
+        finally:
+            scratch.release(maria)
 elif os.environ.get("CI"):
     check("CI must provide MARIADB_TEST_URL (real MariaDB is mandatory in CI, never skipped)", False)
 else:

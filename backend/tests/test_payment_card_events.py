@@ -20,6 +20,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite://")
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
+import _mariadb_scratch as scratch
 from app import models, models_receipt_void as rv
 from app.services import payment_card_events as events
 from app.services import payment_cards as cards
@@ -297,56 +298,52 @@ check("SQLite: old shape -> ready again, width 32", repaired_width(engine), (Tru
 print("--- the same path on a real MariaDB (locking reads, savepoints, CHECKs) ---")
 mariadb_url = os.environ.get("MARIADB_TEST_URL", "").strip()
 if mariadb_url:
-    maria = create_engine(mariadb_url)
-
-    def drop_everything():
-        with maria.begin() as conn:
-            conn.exec_driver_sql("SET FOREIGN_KEY_CHECKS = 0")
-            for name in sa_inspect(conn).get_table_names():
-                conn.exec_driver_sql(f"DROP TABLE IF EXISTS `{name}`")
-            conn.exec_driver_sql("SET FOREIGN_KEY_CHECKS = 1")
-
-    drop_everything()
     try:
-        models.Base.metadata.create_all(maria)
-        MSession = sessionmaker(bind=maria)
-        check("MariaDB: schema ready", receipt_void_schema.bootstrap(maria, MSession)["ready"], True)
-        db = MSession()
-        db.add(models.PanelSettings(id=1))
-        db.commit()
-        x = cards.create_card(db, None, {"card_number": "1111", "card_holder": "X"})
-        y = cards.create_card(db, None, {"card_number": "2222", "card_holder": "Y", "sort_order": 1})
-        cards.set_pool_settings(db, None, mode="threshold", switch_threshold=100)
-        db.commit()
-        check("MariaDB: a never-seen pool starts event_logged", phase(), "event_logged")
-        for amount in (60, 50):
-            cards.advance_after_payment(db, x.id, amount)
-        cards.advance_after_payment(db, y.id, 30)
-        check("MariaDB: live counters, pointer, events and accumulator agree",
-              (counters(x, y), pointer(), [bool(r["reset_after"]) for r in event_rows()],
-               [events.accumulator(db, None, card.id) for card in (x, y)], phase()),
-              ((0, 30), y.id, [False, True, False], [0, 30], "event_logged"))
-        events.revert_to_legacy(db, None)
-        events.capture_baseline(db, None)
-        db.commit()
-        cards.advance_after_payment(db, y.id, 5)
-        check("MariaDB: re-capture ignores the earlier events", (events.accumulator(db, None, y.id), counters(y)), (35, (35,)))
-        UUID_M = "00000000-0000-0000-0000-0000000000bb"
-        first_call = cards.advance_after_payment_core(db, y.id, 7, approval_uuid=UUID_M)
-        db.commit()
-        second_call = cards.advance_after_payment_core(db, y.id, 7, approval_uuid=UUID_M)
-        db.commit()
-        check("MariaDB: the same approval's card payment is counted once",
-              (first_call, second_call, counters(y), events.accumulator(db, None, y.id)), (True, False, (42,), 42))
-        cards.delete_card(db, x)
-        db.commit()
-        check("MariaDB: deleting a card keeps its events, detached",
-              [(r["card_id"], r["card_id_snapshot"]) for r in event_rows()][:2], [(None, x.id), (None, x.id)])
-        db.close()
-        check("MariaDB: old shape -> ready again, width 32", repaired_width(maria), (True, 32))
-    finally:
-        drop_everything()
-        maria.dispose()
+        maria = scratch.claim(mariadb_url)
+    except scratch.ScratchRefused as refused:
+        maria = None
+        check(f"MARIADB_TEST_URL must point at a throwaway database ({refused})", False)
+    if maria is not None:
+        scratch.wipe(maria)
+        try:
+            models.Base.metadata.create_all(maria)
+            MSession = sessionmaker(bind=maria)
+            check("MariaDB: schema ready", receipt_void_schema.bootstrap(maria, MSession)["ready"], True)
+            db = MSession()
+            db.add(models.PanelSettings(id=1))
+            db.commit()
+            x = cards.create_card(db, None, {"card_number": "1111", "card_holder": "X"})
+            y = cards.create_card(db, None, {"card_number": "2222", "card_holder": "Y", "sort_order": 1})
+            cards.set_pool_settings(db, None, mode="threshold", switch_threshold=100)
+            db.commit()
+            check("MariaDB: a never-seen pool starts event_logged", phase(), "event_logged")
+            for amount in (60, 50):
+                cards.advance_after_payment(db, x.id, amount)
+            cards.advance_after_payment(db, y.id, 30)
+            check("MariaDB: live counters, pointer, events and accumulator agree",
+                  (counters(x, y), pointer(), [bool(r["reset_after"]) for r in event_rows()],
+                   [events.accumulator(db, None, card.id) for card in (x, y)], phase()),
+                  ((0, 30), y.id, [False, True, False], [0, 30], "event_logged"))
+            events.revert_to_legacy(db, None)
+            events.capture_baseline(db, None)
+            db.commit()
+            cards.advance_after_payment(db, y.id, 5)
+            check("MariaDB: re-capture ignores the earlier events", (events.accumulator(db, None, y.id), counters(y)), (35, (35,)))
+            UUID_M = "00000000-0000-0000-0000-0000000000bb"
+            first_call = cards.advance_after_payment_core(db, y.id, 7, approval_uuid=UUID_M)
+            db.commit()
+            second_call = cards.advance_after_payment_core(db, y.id, 7, approval_uuid=UUID_M)
+            db.commit()
+            check("MariaDB: the same approval's card payment is counted once",
+                  (first_call, second_call, counters(y), events.accumulator(db, None, y.id)), (True, False, (42,), 42))
+            cards.delete_card(db, x)
+            db.commit()
+            check("MariaDB: deleting a card keeps its events, detached",
+                  [(r["card_id"], r["card_id_snapshot"]) for r in event_rows()][:2], [(None, x.id), (None, x.id)])
+            db.close()
+            check("MariaDB: old shape -> ready again, width 32", repaired_width(maria), (True, 32))
+        finally:
+            scratch.release(maria)
 elif os.environ.get("CI"):
     check("CI must provide MARIADB_TEST_URL (real MariaDB is mandatory in CI, never skipped)", False)
 else:

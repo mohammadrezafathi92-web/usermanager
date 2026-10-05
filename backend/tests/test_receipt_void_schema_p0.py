@@ -33,6 +33,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.schema import CreateTable
 
+import _mariadb_scratch as scratch
 from app import main, models
 from app import models_receipt_void as rv
 from app.services import provisioning_schema as ps, receipt_void_schema as rvs
@@ -78,17 +79,6 @@ def insert(engine, table, **values):
 def drop_all(engine):
     for table in reversed(rv.RECEIPT_VOID_TABLES):
         table.drop(engine, checkfirst=True)
-
-
-def drop_everything(engine):
-    """Empties a scratch MariaDB database. The project's own metadata has a
-    foreign-key cycle (admin_users <-> payment_cards), so metadata.drop_all
-    cannot order the drops; with foreign key checks off, order is irrelevant."""
-    with engine.begin() as conn:
-        conn.exec_driver_sql("SET FOREIGN_KEY_CHECKS = 0")
-        for name in inspect(conn).get_table_names():
-            conn.exec_driver_sql(f"DROP TABLE IF EXISTS `{name}`")
-        conn.exec_driver_sql("SET FOREIGN_KEY_CHECKS = 1")
 
 
 print("--- shape ---")
@@ -476,17 +466,21 @@ check("the card foreign key is ON DELETE SET NULL, everything else RESTRICT",
 mariadb_url = os.environ.get("MARIADB_TEST_URL", "").strip()
 if mariadb_url:
     print("--- real MariaDB ---")
-    maria = create_engine(mariadb_url)
-    drop_everything(maria)
-    models.Base.metadata.create_all(maria)
     try:
-        run_bootstrap_checks(maria, "mariadb")
-        drop_all(maria)
-        rvs.create_tables(maria)
-        run_constraint_checks(maria, "mariadb")
-    finally:
-        drop_everything(maria)
-        maria.dispose()
+        maria = scratch.claim(mariadb_url)
+    except scratch.ScratchRefused as refused:
+        maria = None
+        check(f"MARIADB_TEST_URL must point at a throwaway database ({refused})", False)
+    if maria is not None:
+        try:
+            scratch.wipe(maria)
+            models.Base.metadata.create_all(maria)
+            run_bootstrap_checks(maria, "mariadb")
+            drop_all(maria)
+            rvs.create_tables(maria)
+            run_constraint_checks(maria, "mariadb")
+        finally:
+            scratch.release(maria)
 elif os.environ.get("CI"):
     check("CI must provide MARIADB_TEST_URL (real MariaDB is mandatory in CI, never skipped)", False)
 else:

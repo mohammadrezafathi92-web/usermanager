@@ -62,9 +62,36 @@ check("the run-database name form", [bool(scratch._RUN_NAME.match(n)) for n in
                                       ("um_test_run_0123456789ab", "um_test_run_", "um_test_run_0123456789abX", "usermanager",
                                        "um_test", "um_test_run_0123456789AB")], [True, False, False, False, False, False])
 source = open(scratch.__file__, encoding="utf-8").read()
-check("the guard has no statement that could reach an existing database: every DROP names the run database",
-      (source.count("DROP DATABASE IF EXISTS `{name}`"), source.count("DROP TABLE IF EXISTS `{name}`.`{table}`"),
-       source.count('exec_driver_sql(f"DROP')), (1, 1, 2))
+check("the guard has exactly two destructive statements, and both name the run database it created",
+      (source.count("DROP DATABASE IF EXISTS `{name}`"), source.count("DROP TABLE IF EXISTS `{name}`.`"),
+       source.count('exec_driver_sql(f"DROP'), source.count("TRUNCATE"), source.count("DELETE FROM")), (1, 1, 2, 0, 0))
+own_tree = ast.parse(open(os.path.abspath(__file__), encoding="utf-8").read())
+
+
+def _sql_text(node):
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(part.value for part in node.values if isinstance(part, ast.Constant))
+    return "?"
+
+
+observer_statements, observer_transactions = [], 0
+for node in ast.walk(own_tree):
+    if isinstance(node, ast.With):
+        for item in node.items:
+            call = item.context_expr
+            if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                    and isinstance(call.func.value, ast.Name) and call.func.value.id == "observer"):
+                if call.func.attr != "connect":
+                    observer_transactions += 1
+                for inner in ast.walk(node):
+                    if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute) and inner.func.attr == "exec_driver_sql":
+                        observer_statements.append(_sql_text(inner.args[0]).split()[0].upper())
+check("this test only READS the URL's database: every statement on the observer connection is SELECT/SHOW/CHECKSUM, "
+      "and it never opens a write transaction there",
+      (sorted(set(observer_statements)), observer_transactions), (["CHECKSUM", "SELECT", "SHOW"], 0))
+check("an engine object is tracked by identity, not by id() (which Python reuses)", isinstance(scratch._created, list), True)
 
 print("--- no test opens MARIADB_TEST_URL by itself ---")
 tests_dir = os.path.dirname(os.path.abspath(__file__))
@@ -84,47 +111,61 @@ check("every test that uses MARIADB_TEST_URL goes through scratch.claim and has 
 print("--- on the real server ---")
 mariadb_url = os.environ.get("MARIADB_TEST_URL", "").strip()
 if mariadb_url:
-    PRE = "um_guard_preexisting"                    # stands for data that was there before the tests
-    base = create_engine(mariadb_url)               # the URL's own database - the one that must stay untouched
-    with base.begin() as conn:
-        conn.exec_driver_sql(f"DROP TABLE IF EXISTS {PRE}")
-        conn.exec_driver_sql(f"CREATE TABLE {PRE} (x INT)")
-        conn.exec_driver_sql(f"INSERT INTO {PRE} VALUES (42)")
+    # The URL's own database is only OBSERVED here, never written to: no
+    # witness table is planted in it (an earlier version did, and dropped a
+    # fixed table name there - on a real database that is exactly the harm
+    # this module exists to prevent).
+    observer = create_engine(mariadb_url)
 
-    def preexisting():
-        with base.connect() as conn:
-            return conn.exec_driver_sql(f"SELECT x FROM {PRE}").scalar()
+    def base_state():
+        """What the URL's own database looks like: every table with its row count and checksum."""
+        with observer.connect() as conn:
+            state = {}
+            for table in sorted(inspect(conn).get_table_names()):
+                rows = conn.exec_driver_sql(f"SELECT COUNT(*) FROM `{table}`").scalar()
+                checksum = conn.exec_driver_sql(f"CHECKSUM TABLE `{table}`").fetchone()[1]
+                state[table] = (rows, checksum)
+            return state
 
     def databases():
-        with base.connect() as conn:
+        with observer.connect() as conn:
             return {row[0] for row in conn.exec_driver_sql("SHOW DATABASES")}
 
+    base_before, databases_before = base_state(), databases()
     try:
         engine = scratch.claim(mariadb_url)
-        run_name = engine.url.database
-        check("claim made a NEW database with a run name, different from the URL's own",
-              (bool(scratch._RUN_NAME.match(run_name)), run_name != base.url.database, run_name in databases()), (True, True, True))
-        with engine.begin() as conn:
-            conn.exec_driver_sql("CREATE TABLE users (x INT)")
-            conn.exec_driver_sql(f"CREATE TABLE {PRE} (x INT)")     # same NAME as the pre-existing table, in OUR database
+        witness = scratch.claim(mariadb_url)            # stands for "somebody else's database" - also one WE created
+        run_name, witness_name = engine.url.database, witness.url.database
+        check("claim made NEW databases with run names, different from the URL's own and from each other",
+              ([bool(scratch._RUN_NAME.match(n)) for n in (run_name, witness_name)],
+               len({run_name, witness_name, observer.url.database}), {run_name, witness_name} <= databases()),
+              ([True, True], 3, True))
+        for target in (engine, witness):
+            with target.begin() as conn:
+                conn.exec_driver_sql("CREATE TABLE users (x INT)")
+                conn.exec_driver_sql("INSERT INTO users VALUES (42)")
         scratch.wipe(engine)
         with engine.connect() as conn:
             emptied = inspect(conn).get_table_names()
-        check("wipe empties the run database; the table of the same name in the URL's database keeps its row",
-              (emptied, preexisting()), ([], 42))
-        impostor = create_engine(engine.url)        # same database, but not the engine claim() returned
-        check("an engine not handed out by claim() is refused even on the run database", refused(scratch.wipe, impostor), True)
+        with witness.connect() as conn:
+            kept = conn.exec_driver_sql("SELECT x FROM users").scalar()
+        check("wipe empties its own run database; a table of the SAME NAME in another database keeps its row",
+              (emptied, kept), ([], 42))
+        impostor = create_engine(engine.url)            # same database, but not the engine claim() returned
+        check("an engine not handed out by claim() is refused even on a run database", refused(scratch.wipe, impostor), True)
         impostor.dispose()
-        second = scratch.claim(mariadb_url)
-        check("each claim is its own database", second.url.database != run_name, True)
-        scratch.release(second)
         scratch.release(engine)
-        check("release dropped both run databases and nothing else: the pre-existing table still has its row",
-              (run_name in databases(), second.url.database in databases(), preexisting()), (False, False, 42))
+        check("release drops exactly its own database", (run_name in databases(), witness_name in databases()), (False, True))
+        scratch.release(engine)                         # a second release of the same engine is a no-op
+        scratch.release(witness)
+        check("afterwards the server has exactly the databases it had before", databases(), databases_before)
+        check("...and the URL's own database is byte-for-byte what it was: same tables, same row counts, same checksums",
+              base_state(), base_before)
+        check("nothing is remembered once released", scratch._created, [])
     finally:
-        with base.begin() as conn:
-            conn.exec_driver_sql(f"DROP TABLE IF EXISTS {PRE}")     # the one table this test itself put there
-        base.dispose()
+        for leftover, _name in list(scratch._created):  # only databases this very process created
+            scratch.release(leftover)
+        observer.dispose()
 elif os.environ.get("CI"):
     check("CI must provide MARIADB_TEST_URL (real MariaDB is mandatory in CI, never skipped)", False)
 else:

@@ -36,6 +36,7 @@ RESELLER_WRITERS = {
     ("routers/admins.py", "_apply_balance_change"),
     ("services/admin_billing.py", "debit_admin"),
     ("services/admin_billing.py", "refund_for_package"),
+    ("services/reseller_refund_settlement.py", "settle"),
 }
 
 failures: list[str] = []
@@ -138,6 +139,18 @@ def scan(allowed: set) -> tuple[list[str], set]:
 violations, matched = scan(RESELLER_WRITERS)
 check("RV-60 no module but wallet_service writes the customer wallet", violations, [])
 check("every listed reseller-credit writer still writes a balance (no stale entry)", matched, RESELLER_WRITERS)
+refund_source = (APP / "services/reseller_refund_settlement.py").read_text(encoding="utf-8")
+refund_tree = ast.parse(refund_source)
+refund_writes = balance_writes(refund_source)
+refund_statements = [ast.get_source_segment(refund_source, node) for node in ast.walk(refund_tree)
+                     if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "values"
+                     and any(keyword.arg == "balance" for keyword in node.keywords)]
+check("the refund exception is exactly one explicitly AdminUser UPDATE, never a User wallet write",
+      ([(function, kind) for function, _line, kind in refund_writes],
+       len(refund_statements),
+       all("models.AdminUser.__table__.update()" in statement and
+           "balance=models.AdminUser.balance + amount" in statement for statement in refund_statements)),
+      ([("settle", "values")], 1, True))
 unfiltered, _ = scan(set())
 check("control: with the reseller list empty the scan reports those writers, so it does see balance writes",
       len(unfiltered) >= len(RESELLER_WRITERS), True)

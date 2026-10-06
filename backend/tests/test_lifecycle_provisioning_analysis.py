@@ -32,7 +32,8 @@ Round 3 state (after three rounds of independent review):
               design question, not something this file claims to solve.
     [E]       routers/users.py's single-user create_user charges the
               admin's wallet (which commits internally) BEFORE the User
-              row's own commit, with no refund covering that window.
+              row's own commit. P5 now refunds a failed User transaction;
+              this section is a regression check for that repaired window.
     [G1]/[G2] the bot's REVERSED ordering (charge AFTER create/purchase,
               not before) is not safe either - a later charge failure
               still leaves an already-committed, unbilled, fully
@@ -721,7 +722,7 @@ check("[D3] FINDING: ...but no Connection row exists for it either - same orphan
 # ===========================================================================
 print("\n" + "=" * 72)
 print("--- [E] panel create_user: wallet charge commits BEFORE the User row's ---")
-print("--- own commit - a failure there leaves the admin charged with nothing ---")
+print("--- own commit - P5 refunds the charge when that transaction fails ---")
 print("=" * 72)
 
 admin_e = add_admin(db, "admin_e", balance=1_000_000)
@@ -766,14 +767,11 @@ check("[E] the simulated failure on the User row's own commit really propagated 
       raised_e, True)
 db.rollback()
 db.refresh(admin_e)
-check("[E] FINDING: the admin's wallet was ALREADY durably debited (charge_for_package's own "
-      "internal commit succeeded first, and nothing rolled that back)",
-      before_balance_e - admin_e.balance, 20000)
-check("[E] FINDING: a matching Ledger row was durably written too",
-      db.query(models.LedgerEntry).count() - before_ledger_e, 1)
-check("[E] FINDING: ...but no User row was ever created - the refund-on-failure try/except in "
-      "routers/users.py's create_user only wraps provision_package_connections, which starts "
-      "AFTER this exact commit, so it never got a chance to run",
+check("[E] FIXED: failed User commit restores the previously committed admin debit",
+      before_balance_e - admin_e.balance, 0)
+check("[E] FIXED: ledger retains the original spend and compensating refund",
+      db.query(models.LedgerEntry).count() - before_ledger_e, 2)
+check("[E] FIXED: no User row survives the failed transaction",
       db.query(models.User).filter(models.User.username == "finding_e_user").first(), None)
 
 print("\n--- [E2] CORRECTED (round 2's own [E2] conclusion was wrong): the bot's REVERSED ---")

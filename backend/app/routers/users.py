@@ -13,7 +13,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..services.jalali import fmt_jalali
 from ..deps import get_current_admin, require_confirm_password, require_permission, require_superadmin
-from ..services import user_ops, hierarchy, accounting, admin_billing, usage_stats, wallet_service
+from ..services import user_ops, hierarchy, accounting, admin_billing, usage_stats, wallet_service, wallet_accounts
 from ..services.node_gate import writer_gate
 from ..services import reseller_refund
 from ..services import reseller_refund_worker
@@ -455,9 +455,17 @@ def create_user(
         data["max_concurrent_sessions"] = package.max_concurrent_sessions
         data["package_id"] = package.id
 
-    user = models.User(**data)
-    db.add(user)
-    db.commit()
+    try:
+        user = wallet_accounts.create_user_with_wallet(db, **data)
+        db.add(user)
+        db.commit()
+    except Exception:
+        # charge_for_package commits its debit before User construction.
+        # A failed account transaction must not leave that charge behind.
+        db.rollback()
+        if package:
+            admin_billing.refund_for_package(db, admin, package, units=1)
+        raise
     db.refresh(user)
 
     if package:

@@ -47,7 +47,7 @@ db.add_all([first, second, other])
 db.commit()
 db.execute(rv.wallet_runtime_state.insert().values(id=1, phase="normal"))
 db.execute(rv.customer_identities.insert().values(
-    id=1, tenant_scope_key="test", identity_key="telegram:901", telegram_id=901))
+    id=1, tenant_scope_key="shared", identity_key="tg:901", telegram_id=901))
 for user in (first, second):
     db.execute(rv.wallet_accounts.insert().values(
         id=user.id, lineage_key=f"00000000-0000-0000-0000-{user.id:012d}",
@@ -88,6 +88,10 @@ with patch.object(policy.receipt_void_schema, "is_ready", return_value=True):
     db.execute(rv.wallet_debts.update().values(settled_amount=90, state="settled"))
     db.commit()
     check("settled debt permits purchase", result(lambda: policy.can_purchase(db, second)), "allowed")
+    second.telegram_id = 903
+    db.commit()
+    check("stale identity refuses enforced top-up", result(lambda: policy.can_topup(db, second)), (503, "wallet_identity_rebind_required"))
+    check("stale identity refuses enforced purchase", result(lambda: policy.can_purchase(db, second)), (503, "wallet_identity_rebind_required"))
     phase("fencing")
     check("fencing purchase fails closed", result(lambda: policy.can_purchase(db, second)), (503, "wallet_policy_unavailable"))
     check("fencing top-up fails closed", result(lambda: policy.can_topup(db, second)), (503, "wallet_policy_unavailable"))

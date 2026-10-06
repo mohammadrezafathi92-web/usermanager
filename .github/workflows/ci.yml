@@ -63,6 +63,10 @@ jobs:
         run: pip install -r requirements.txt
       - name: Compile Python sources
         run: python -m compileall -q app
+      # Check the account race/FKs early so a failure need not wait for the
+      # entire standalone suite. It remains in run_all.py as well.
+      - name: Wallet account database preflight
+        run: python -u tests/test_wallet_accounts.py
       - name: Run isolated backend checks
         run: python tests/run_all.py
 

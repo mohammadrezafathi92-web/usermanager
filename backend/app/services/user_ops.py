@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from . import hierarchy
-from . import wallet_service
+from . import wallet_service, wallet_accounts
 from .bot_auth import (
     BotPrincipal,
     NodeAuthorizationScope,
@@ -126,7 +126,7 @@ def create_user_record(
     expire_at = None
     if expire_days:
         expire_at = dt.datetime.utcnow() + dt.timedelta(days=expire_days)
-    user = models.User(
+    user = wallet_accounts.create_user_with_wallet(db,
         username=username,
         full_name=full_name,
         notes=notes,
@@ -559,6 +559,7 @@ def reconcile_user_connections(db: Session, user: models.User):
 
 
 def delete_user_cascade(db: Session, user: models.User):
+    wallet_account_id = wallet_accounts.prepare_user_deletion(db, user)
     connection_ids = [c.id for c in user.connections]
     for conn in list(user.connections):
         deprovision_connection(conn)
@@ -586,6 +587,7 @@ def delete_user_cascade(db: Session, user: models.User):
             models.RadiusLimitEventLog.connection_id.in_(connection_ids)
         ).update({"connection_id": None}, synchronize_session=False)
 
+    wallet_accounts.tombstone_user_account(db, user, account_id=wallet_account_id)
     db.delete(user)
     db.commit()
 
@@ -788,8 +790,20 @@ def bulk_create_users(
             skipped.append({"name": username, "reason": "این نام کاربری قبلا وجود دارد"})
             continue
 
+        try:
+            user = create_user_record(db, username, notes=notes, owner_admin_id=owner_admin_id,
+                                      quota_gb=0 if package else quota_gb,
+                                      expire_days=None if package else expire_days)
+        except HTTPException as exc:
+            if exc.status_code != 503 or not str(exc.detail).startswith("wallet_"):
+                raise
+            # Earlier users are already committed. Return the partial count
+            # so the caller refunds ONLY the unused portion of its reserve.
+            db.rollback()
+            skipped.append({"name": username, "reason": str(exc.detail)})
+            break
+
         if package:
-            user = create_user_record(db, username, notes=notes)
             user.total_quota_bytes = gb_to_bytes(package.quota_gb) if package.quota_gb else 0
             user.expire_at = (
                 dt.datetime.utcnow() + dt.timedelta(days=package.duration_days) if package.duration_days else None
@@ -810,7 +824,6 @@ def bulk_create_users(
                 absorb_legacy_pool_into_purchase(db, user)
                 db.commit()
         else:
-            user = create_user_record(db, username, quota_gb=quota_gb, expire_days=expire_days, notes=notes)
             user.owner_admin_id = owner_admin_id
             db.commit()
             # Every service picked in this bulk-create form is one bundle
@@ -1944,7 +1957,7 @@ def import_ppp_secrets(db: Session, node: models.Node) -> dict:
 
         user = db.query(models.User).filter(models.User.username == name).first()
         if not user:
-            user = models.User(
+            user = wallet_accounts.create_user_with_wallet(db,
                 username=name,
                 notes="ایمپورت‌شده خودکار از PPP secret میکروتیک",
             )
@@ -2311,7 +2324,7 @@ def import_usermanager_accounts(db: Session, node: models.Node, admin: models.Ad
                 # only. NOT written into used_bytes (see docstring above) so
                 # it never counts against the current profile's quota.
                 notes += f" - مصرف قبلی طبق میکروتیک: {round(lifetime_used / (1024 ** 3), 2)} گیگابایت (در سهمیه فعلی اعمال نشده)"
-            user = models.User(
+            user = wallet_accounts.create_user_with_wallet(db,
                 username=name,
                 notes=notes,
                 package_id=_package_for_profile(profile_name) if profile_name else None,
@@ -2414,7 +2427,7 @@ def import_threexui_clients(db: Session, node: models.Node) -> dict:
 
         user = db.query(models.User).filter(models.User.username == username).first()
         if not user:
-            user = models.User(
+            user = wallet_accounts.create_user_with_wallet(db,
                 username=username,
                 notes="ایمپورت‌شده خودکار از پنل 3X-UI",
                 used_bytes=used_bytes,

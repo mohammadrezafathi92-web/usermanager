@@ -48,3 +48,6 @@ checks that a fresh whole-request retry preserves both creations with one
 identity. The panel refunds its already-committed reseller debit when
 construction fails. This batch does not add automatic creation retries to
 legacy callers. The earlier unsafe statement-only retry was removed.
+For bulk creation, a wallet refusal stops the remaining work and returns
+the committed partial count; only the unused reserve is refunded. Already
+created users are not accidentally made free by refunding the whole batch.

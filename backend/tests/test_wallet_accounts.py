@@ -169,6 +169,25 @@ def scenario(engine, name):
         db.refresh(admin)
         check(name + " panel failed creation refunds committed debit", admin.balance, before_balance)
         check(name + " panel conflict creates no user", db.query(models.User).filter_by(username="failed_creation").count(), 0)
+        real_factory = wallet_accounts.create_user_with_wallet
+        factory_calls = []
+
+        def fail_second_creation(session, **attributes):
+            factory_calls.append(attributes["username"])
+            if len(factory_calls) == 2:
+                raise HTTPException(503, "wallet_creation_retry_required")
+            return real_factory(session, **attributes)
+
+        with patch.object(users_router, "_get_scoped_package", return_value=package), \
+                patch.object(wallet_accounts, "create_user_with_wallet", side_effect=fail_second_creation):
+            result = users_router.bulk_create_users(
+                schemas.BulkCreateUsersRequest(prefix="partial_", count=2, package_id=package.id),
+                db=db, admin=admin, _perm=None)
+        db.refresh(admin)
+        check(name + " bulk conflict preserves completed creation count", result["created_count"], 1)
+        check(name + " bulk conflict refunds only unused reserve", admin.balance, before_balance - 100)
+        check(name + " bulk conflict retains first user", db.query(models.User).filter_by(username="partial_1").count(), 1)
+        check(name + " bulk conflict leaves no second user", db.query(models.User).filter_by(username="partial_2").count(), 0)
         check(name + " no financial operations", count(rv.wallet_operations), 0)
         check(name + " no financial lots", count(rv.wallet_lots), 0)
         owner_id = admin.id

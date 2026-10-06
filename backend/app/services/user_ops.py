@@ -790,8 +790,20 @@ def bulk_create_users(
             skipped.append({"name": username, "reason": "این نام کاربری قبلا وجود دارد"})
             continue
 
+        try:
+            user = create_user_record(db, username, notes=notes, owner_admin_id=owner_admin_id,
+                                      quota_gb=0 if package else quota_gb,
+                                      expire_days=None if package else expire_days)
+        except HTTPException as exc:
+            if exc.status_code != 503 or not str(exc.detail).startswith("wallet_"):
+                raise
+            # Earlier users are already committed. Return the partial count
+            # so the caller refunds ONLY the unused portion of its reserve.
+            db.rollback()
+            skipped.append({"name": username, "reason": str(exc.detail)})
+            break
+
         if package:
-            user = create_user_record(db, username, notes=notes, owner_admin_id=owner_admin_id)
             user.total_quota_bytes = gb_to_bytes(package.quota_gb) if package.quota_gb else 0
             user.expire_at = (
                 dt.datetime.utcnow() + dt.timedelta(days=package.duration_days) if package.duration_days else None
@@ -812,8 +824,6 @@ def bulk_create_users(
                 absorb_legacy_pool_into_purchase(db, user)
                 db.commit()
         else:
-            user = create_user_record(db, username, quota_gb=quota_gb, expire_days=expire_days,
-                                      notes=notes, owner_admin_id=owner_admin_id)
             user.owner_admin_id = owner_admin_id
             db.commit()
             # Every service picked in this bulk-create form is one bundle

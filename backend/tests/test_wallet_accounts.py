@@ -3,11 +3,12 @@ import ast
 import contextlib
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import sys
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("DATABASE_URL", "sqlite://")
@@ -17,6 +18,7 @@ _no_network.install([os.environ.get("MARIADB_TEST_URL", "").strip()])
 
 from fastapi import HTTPException
 from sqlalchemy import create_engine, event, select, func
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from app import models, models_receipt_void as rv
 from app.services import receipt_void_schema, user_ops, wallet_accounts
@@ -171,6 +173,37 @@ def scenario(engine, name):
             identities = [future.result(timeout=30) for future in futures]
         check(name + " concurrent creation shares exactly one identity", len(set(identities)), 1)
         check(name + " concurrent creation preserves both users", db.query(models.User).filter(models.User.username.in_(("race_1", "race_2"))).count(), 2)
+        if engine.dialect.name in ("mysql", "mariadb"):
+            db.rollback()
+            loser = Session()
+            original_identity = wallet_accounts._identity
+
+            def winner_after_snapshot(session, **kwargs):
+                if session is loser:
+                    session.execute(select(rv.customer_identities.c.id).where(
+                        rv.customer_identities.c.identity_key == "tg:998")).first()
+                    winner = Session()
+                    try:
+                        wallet_accounts.create_user_with_wallet(
+                            winner, username="snapshot_winner", telegram_id=998, owner_admin_id=owner_id)
+                        winner.commit()
+                    finally:
+                        winner.close()
+                return original_identity(session, **kwargs)
+
+            try:
+                with patch.object(wallet_accounts, "_identity", side_effect=winner_after_snapshot):
+                    wallet_accounts.create_user_with_wallet(
+                        loser, username="snapshot_loser", telegram_id=998, owner_admin_id=owner_id)
+                    loser.commit()
+            finally:
+                loser.rollback()
+                loser.close()
+            check(name + " stale snapshot preserves both creations", db.query(models.User).filter(
+                models.User.username.in_(("snapshot_winner", "snapshot_loser"))).count(), 2)
+            check(name + " stale snapshot has one exact identity", db.execute(select(func.count()).select_from(
+                rv.customer_identities).where(rv.customer_identities.c.tenant_scope_key == f"admin:{owner_id}",
+                    rv.customer_identities.c.identity_key == "tg:998")).scalar_one(), 1)
         check(name + " no outgoing network attempts", _no_network.attempts, [])
     finally:
         db.rollback()
@@ -186,6 +219,24 @@ for file in app.rglob("*.py"):
                     and node.func.value.id == "models"):
                 constructors.append(str(file.relative_to(app)))
 check("only the wallet factory constructs User", constructors, ["services/wallet_accounts.py"])
+
+for dialect, code, found, accepted in (
+        ("mysql", 1020, 77, True), ("mariadb", 1020, 77, True),
+        ("mysql", 1020, None, False), ("mysql", 1213, 77, False),
+        ("mysql", 1205, 77, False), ("sqlite", 1020, 77, False)):
+    fake = Mock()
+    fake.get_bind.return_value = SimpleNamespace(dialect=SimpleNamespace(name=dialect))
+    error = OperationalError("upsert", {}, Exception(code, "injected"))
+    read = Mock()
+    read.scalar_one_or_none.return_value = found
+    fake.execute.side_effect = [error, read]
+    try:
+        actual = wallet_accounts._identity(fake, lineage="test", telegram_id=900, owner_admin_id=None)
+        check(f"{dialect} {code} winner={found} accepted", actual, 77 if accepted else "must raise")
+    except OperationalError as exc:
+        check(f"{dialect} {code} winner={found} propagated", not accepted and exc is error)
+    check(f"{dialect} {code} never rolls back caller", fake.rollback.call_count, 0)
+    check(f"{dialect} {code} never commits caller", fake.commit.call_count, 0)
 
 with contextlib.ExitStack() as cleanup:
     folder = cleanup.enter_context(tempfile.TemporaryDirectory(prefix="wallet_accounts_"))

@@ -10,6 +10,7 @@ import uuid
 
 from fastapi import HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
@@ -45,10 +46,27 @@ def _identity(db, *, lineage, telegram_id, owner_admin_id):
         statement = statement.on_duplicate_key_update(id=rv.customer_identities.c.id)
     else:
         raise HTTPException(503, "wallet_dialect_not_supported")
-    db.execute(statement)
-    return db.execute(select(rv.customer_identities.c.id).where(
+    current_identity = select(rv.customer_identities.c.id).where(
         rv.customer_identities.c.tenant_scope_key == scope,
-        rv.customer_identities.c.identity_key == key).with_for_update()).scalar_one()
+        rv.customer_identities.c.identity_key == key).with_for_update()
+    try:
+        db.execute(statement)
+    except OperationalError as exc:
+        # MariaDB can report 1020 when the competing unique-key insert
+        # committed after this transaction's read view was established.
+        # This direct execute failed only the upsert statement, not an ORM
+        # flush. Accept ONLY that code AND an exact current locking match;
+        # never rollback the caller's User/other pending work or ignore a
+        # deadlock, timeout, missing winner, or unrelated database failure.
+        args = getattr(exc.orig, "args", ())
+        code = args[0] if args else None
+        if dialect not in ("mysql", "mariadb") or code != 1020:
+            raise
+        identity = db.execute(current_identity).scalar_one_or_none()
+        if identity is None:
+            raise
+        return identity
+    return db.execute(current_identity).scalar_one()
 
 
 def create_user_with_wallet(db, **attributes):

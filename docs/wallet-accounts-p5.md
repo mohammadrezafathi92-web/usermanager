@@ -30,3 +30,9 @@ private identity, tombstone retention, explicitly reused User ID, and
 normal-only lifecycle. SQLite runs with foreign keys enabled. Real MariaDB
 is mandatory in CI through a freshly created `_mariadb_scratch` database.
 An AST check rejects any application User constructor outside the factory.
+
+MariaDB's 1020 unique-key race is accepted only after an exact current
+locking read finds the winning identity. It does not rollback the caller's
+User or pending work. Missing winner, deadlock, timeout and other errors
+are not swallowed. CI also forces a stale read snapshot before another
+session commits the identity and checks that both User creations survive.

@@ -94,24 +94,60 @@ async def run():
     styles = {button.text: button.style for row in kb.keyboard for button in row}
     check("renewal and purchase get Telegram's blue primary style",
           [styles["♻️ تمدید سرویس"], styles["🎁 خرید اشتراک"]], ["primary", "primary"])
-    check("wallet and services get the green success style",
-          [styles["💵 کیف پول + شارژ"], styles["👤 سرویس‌های من"]], ["success", "success"])
+    check("shop actions use blue while account browsing stays neutral",
+          [styles["💵 کیف پول + شارژ"], styles["👤 سرویس‌های من"]], ["primary", None])
     check("native color styles are included in the Telegram API payload",
           kb.model_dump(exclude_none=True, by_alias=True)["keyboard"][0][0].get("style"), "primary")
     check("secondary actions keep the app-default style",
           [styles["🔗 وصل کردن حساب قبلی"], styles["🆔 آیدی عددی من"], styles["📋 تعرفه سرویس‌ها"]], [None, None, None])
-    check("agent request is highlighted green",
-          styles["🤝 درخواست نمایندگی"], "success")
+    check("informational destinations remain neutral",
+          [styles["🎧 پشتیبانی"], styles["📚 آموزش"], styles["👥 دعوت دوستان"], styles["📊 مصرف سرویس‌ها"]],
+          [None, None, None, None])
+    check("agent request is highlighted as a primary action",
+          styles["🤝 درخواست نمایندگی"], "primary")
     check("tariffs and agent request occupy the last full-width rows",
           [len(row) for row in kb.keyboard[-2:]], [1, 1])
     inline = await _isolated(keyboards.main_menu_kb(None))
     inline_styles = {button.text: button.style for row in inline.inline_keyboard for button in row}
     check("inline menu uses the same blue purchase style", inline_styles["🎁 خرید اشتراک"], "primary")
-    check("inline menu uses the same green wallet style", inline_styles["💵 کیف پول + شارژ"], "success")
+    check("inline menu uses the same blue wallet-action style", inline_styles["💵 کیف پول + شارژ"], "primary")
     check("inline menu exposes the tariff screen", "📋 تعرفه سرویس‌ها" in inline_styles, True)
     check("two per row", all(len(r) <= 2 for r in kb.keyboard), True)
     check("it resizes instead of taking half the screen", kb.resize_keyboard, True)
     check("and stays open", kb.is_persistent, True)
+
+    print("\n--- colors follow action meaning, not decoration ---")
+    admin_menu = await _isolated(keyboards.main_menu_kb({"is_full_admin": True}))
+    admin_styles = {button.text: button.style for row in admin_menu.inline_keyboard for button in row}
+    check("admin creation and pending review are primary actions",
+          [admin_styles["➕ ساخت کاربر"], admin_styles["📥 درخواست‌های در انتظار"]],
+          ["primary", "primary"])
+    check("admin list and broadcast entry remain neutral",
+          [admin_styles["👥 لیست کاربران"], admin_styles["📣 پیام همگانی"]], [None, None])
+
+    active_user = keyboards.admin_user_detail_kb("sample", True, allow_reset=True)
+    active_styles = {button.text: getattr(button, "style", None) for row in active_user.inline_keyboard for button in row}
+    check("disabling and irreversible admin actions are red",
+          [active_styles["⛔️ غیرفعال‌سازی"], active_styles["🔄 ریست مصرف"], active_styles["🗑 حذف کاربر"]],
+          ["danger", "danger", "danger"])
+    check("account renewal and package actions are blue",
+          [active_styles["♻️ تمدید سرویس"], active_styles["📦 افزودن پکیج"]], ["primary", "primary"])
+
+    inactive_user = keyboards.admin_user_detail_kb("sample", False)
+    inactive_styles = {button.text: getattr(button, "style", None) for row in inactive_user.inline_keyboard for button in row}
+    check("activating an account is green", inactive_styles["✅ فعال‌سازی"], "success")
+
+    approval = keyboards.approval_kb(17)
+    approval_styles = {button.text: getattr(button, "style", None) for row in approval.inline_keyboard for button in row}
+    check("approval decision uses green for approve and red for reject",
+          [approval_styles["✅ تایید و فعال‌سازی"], approval_styles["❌ رد کردن"]], ["success", "danger"])
+    receipt = keyboards.receipt_choice_kb(True, 1200)
+    receipt_styles = {button.text: getattr(button, "style", None) for row in receipt.inline_keyboard for button in row}
+    check("immediate wallet payment is a green confirmation action",
+          receipt_styles["💰 پرداخت فوری از اعتبار (1,200 تومان)"], "success")
+    confirm_user = keyboards.confirm_delete_kb("sample")
+    confirm_styles = {button.text: getattr(button, "style", None) for row in confirm_user.inline_keyboard for button in row}
+    check("delete confirmation is red", confirm_styles["✅ بله، حذف کن"], "danger")
 
     panel_bridge.api.get_customer_menu_disabled_items = AsyncMock(
         return_value=["cust_topup", "cust_myid", "cust_link"])

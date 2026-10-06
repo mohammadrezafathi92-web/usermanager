@@ -220,23 +220,38 @@ for file in app.rglob("*.py"):
                 constructors.append(str(file.relative_to(app)))
 check("only the wallet factory constructs User", constructors, ["services/wallet_accounts.py"])
 
-for dialect, code, found, accepted in (
-        ("mysql", 1020, 77, True), ("mariadb", 1020, 77, True),
-        ("mysql", 1020, None, False), ("mysql", 1213, 77, False),
-        ("mysql", 1205, 77, False), ("sqlite", 1020, 77, False)):
+for dialect, code in (("mysql", 1020), ("mariadb", 1020),
+                      ("mysql", 1213), ("mysql", 1205), ("sqlite", 1020)):
     fake = Mock()
     fake.get_bind.return_value = SimpleNamespace(dialect=SimpleNamespace(name=dialect))
     error = OperationalError("upsert", {}, Exception(code, "injected"))
-    read = Mock()
-    read.scalar_one_or_none.return_value = found
-    fake.execute.side_effect = [error, read]
+    fake.execute.side_effect = error
     try:
-        actual = wallet_accounts._identity(fake, lineage="test", telegram_id=900, owner_admin_id=None)
-        check(f"{dialect} {code} winner={found} accepted", actual, 77 if accepted else "must raise")
+        wallet_accounts._identity(fake, lineage="test", telegram_id=900, owner_admin_id=None)
+        check(f"{dialect} {code} must propagate", False)
     except OperationalError as exc:
-        check(f"{dialect} {code} winner={found} propagated", not accepted and exc is error)
+        check(f"{dialect} {code} propagated", exc is error)
     check(f"{dialect} {code} never rolls back caller", fake.rollback.call_count, 0)
     check(f"{dialect} {code} never commits caller", fake.commit.call_count, 0)
+
+for dialect, row, allowed in (
+        ("mysql", {"id": 77, "telegram_id": 900, "owner_admin_id_snapshot": None}, True),
+        ("mariadb", None, False),
+        ("mysql", {"id": 77, "telegram_id": 901, "owner_admin_id_snapshot": None}, False)):
+    fake = Mock()
+    fake.get_bind.return_value = SimpleNamespace(dialect=SimpleNamespace(name=dialect))
+    inserted, read = Mock(), Mock()
+    inserted.rowcount = 1
+    read.mappings.return_value.one_or_none.return_value = row
+    fake.execute.side_effect = [inserted, read]
+    try:
+        actual = wallet_accounts._identity(fake, lineage="test", telegram_id=900, owner_admin_id=None)
+        check(f"{dialect} exact identity result", actual if allowed else "must refuse", 77)
+    except HTTPException as exc:
+        check(f"{dialect} invalid identity refused", not allowed and exc.status_code == 503)
+    statement = str(fake.execute.call_args_list[0].args[0].compile())
+    check(f"{dialect} does not update existing identity", "ON DUPLICATE KEY UPDATE" not in statement)
+    check(f"{dialect} insert-ignore", "INSERT IGNORE" in statement)
 
 with contextlib.ExitStack() as cleanup:
     folder = cleanup.enter_context(tempfile.TemporaryDirectory(prefix="wallet_accounts_"))

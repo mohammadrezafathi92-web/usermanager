@@ -31,8 +31,12 @@ normal-only lifecycle. SQLite runs with foreign keys enabled. Real MariaDB
 is mandatory in CI through a freshly created `_mariadb_scratch` database.
 An AST check rejects any application User constructor outside the factory.
 
-MariaDB's 1020 unique-key race is accepted only after an exact current
-locking read finds the winning identity. It does not rollback the caller's
-User or pending work. Missing winner, deadlock, timeout and other errors
-are not swallowed. CI also forces a stale read snapshot before another
-session commits the identity and checks that both User creations survive.
+Identity insertion never updates an existing identity: SQLite uses a
+targeted conflict-do-nothing and MySQL/MariaDB uses insert-ignore on this
+immutable, bounded-value table. An exact current locking read validates
+the identity and its Telegram value; a newly inserted row's owner snapshot
+must match too. Missing/mismatched data refuses the operation. No 1020,
+deadlock or other database exception is caught and treated as success.
+CI forces a stale read snapshot before another session commits the identity
+and checks that both User creations survive. The earlier duplicate-update
+1020 handling was rejected by this test and removed before merge.

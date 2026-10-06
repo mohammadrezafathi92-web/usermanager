@@ -16,6 +16,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite://")
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
+import _no_network
 from app import models, models_receipt_void as rv, schemas
 from app.routers import bot as bot_router
 from app.services import bot_auth, receipt_void_schema, user_ops
@@ -65,6 +66,11 @@ def fake_provision(db_, user, node_, protocol, flow="", *args, **kwargs):
 
 
 user_ops.provision_connection = fake_provision
+# The endpoints' responses ask the NODE for a WireGuard connection's config
+# (user_ops.get_connection_share -> MikroTik). Not in a test: stubbed, and
+# every outgoing connection is refused and recorded as proof.
+user_ops.get_connection_share = lambda connection: {}
+_no_network.install()
 specs = [schemas.BotCreateConnectionSpec(node_id=node.id, protocol="wireguard", flow="") for _ in range(2)]
 
 
@@ -327,8 +333,8 @@ print("--- the bot passes the id along ---")
 check("perform_approval finishes the session on success and on both failure paths",
       (inspect.getsource(admin_pending.perform_approval).count("approval_session.finish(session, ok=True)"),
        inspect.getsource(admin_pending.perform_approval).count("approval_session.finish(session, ok=False)")), (1, 2))
-check("...also to add_balance and record_card_payment",
-      (inspect.getsource(admin_pending.perform_approval).count('session.get("approval_uuid")'),), (5,))
+check("...also to add_balance, record_card_payment, redeem_discount and apply_referral",
+      (inspect.getsource(admin_pending.perform_approval).count('session.get("approval_uuid")'),), (6,))
 source = inspect.getsource(admin_pending.perform_approval)
 check("perform_approval puts the registered approval uuid into the sale details",
       'sale_info["approval_uuid"] = session["approval_uuid"]' in source, True)
@@ -336,6 +342,7 @@ check("all three sale request schemas accept it",
       ["approval_uuid" in m.model_fields for m in (schemas.BotCreateUserRequest, schemas.BotPurchasePackageRequest,
                                                    schemas.BotRenewRequest)], [True, True, True])
 
+check("the whole test made no attempt to reach a node or any other host", _no_network.attempts, [])
 db.close()
 print()
 if failures:

@@ -26,7 +26,7 @@ from typing import Optional
 from fastapi import HTTPException
 import time
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
@@ -174,6 +174,40 @@ def _change_authority(db: Session, last: dict, *, reason: str, to_mode: str, app
     return _reload(db, last["approval_uuid"])
 
 
+def has_mutation_evidence(db: Session, approval_uuid: str) -> bool:
+    """Effects OR an approval-tagged ledger row prove that money/service
+    mutation committed, even if best-effort shadow correlation did not."""
+    _approvals, _expected, effects, _authority = _tables()
+    effect_exists = db.execute(select(effects.c.id).where(
+        effects.c.approval_uuid == approval_uuid).limit(1).with_for_update()).first() is not None
+    if effect_exists:
+        return True
+    return db.query(models.LedgerEntry.id).filter(
+        models.LedgerEntry.approval_uuid == approval_uuid).with_for_update().first() is not None
+
+
+def recover_failed_with_mutation(db: Session, row: dict) -> dict:
+    """Repair historical shadow rows marked failed after a ledger/effect
+    committed. This is not a retry or authority change: preserve version,
+    move to mutating, and emit one best-effort audit event in the same tx."""
+    approvals = _tables()[0]
+    result = db.execute(approvals.update().where(
+        approvals.c.approval_uuid == row["approval_uuid"],
+        approvals.c.state == "failed",
+        approvals.c.version == row["version"],
+    ).values(state="mutating", failed_at=None,
+             mutating_at=func.coalesce(approvals.c.mutating_at, _now())))
+    if result.rowcount == 1:
+        ledger_exists = db.query(models.LedgerEntry.id).filter(
+            models.LedgerEntry.approval_uuid == row["approval_uuid"]).with_for_update().first() is not None
+        runtime.record_shadow_event(
+            db, pending_source_instance_id=row["pending_source_instance_id"],
+            pending_local_id=row["pending_local_id"], stage="finalize",
+            error_code=("failed_with_ledger_recovered" if ledger_exists else "failed_with_effect_recovered"),
+            approval_uuid=row["approval_uuid"])
+    return _reload(db, row["approval_uuid"])
+
+
 def _register_once(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalIntent, approval_mode: str,
                    approved_by_telegram_id: Optional[int], registered_under_mode: str,
                    local_decision: Optional[str] = None, rate_limit_mode: str = runtime.OFF) -> Registration:
@@ -204,8 +238,19 @@ def _register_once(db: Session, principal: bot_auth.BotPrincipal, intent: ri.App
 
     if last is not None and last["state"] != "cancelled":
         same_key = key_uuid == last["execution_key_instance_uuid"]
-        has_effects = db.execute(select(effects.c.id).where(effects.c.approval_uuid == last["approval_uuid"])).first() is not None
-        if last["state"] in OPEN_STATES and not has_effects:
+        has_effects = db.execute(select(effects.c.id).where(
+            effects.c.approval_uuid == last["approval_uuid"]).with_for_update()).first() is not None
+        has_ledger = db.query(models.LedgerEntry.id).filter(
+            models.LedgerEntry.approval_uuid == last["approval_uuid"]).with_for_update().first() is not None
+        has_mutation = has_effects or has_ledger
+        if last["state"] == "failed" and has_mutation:
+            same_approver = (approval_mode != MANUAL or
+                             (approver is not None and last["approved_by_telegram_id"] == approver.telegram_id))
+            if same_key and last["approval_mode"] == approval_mode and same_approver:
+                last = recover_failed_with_mutation(db, last)
+                return _response(last)
+            raise RegistrationRejected(409, "approval_has_effects")
+        if last["state"] in OPEN_STATES and not has_mutation:
             if approval_mode == AUTO:
                 if last["approval_mode"] == MANUAL:
                     raise RegistrationRejected(409, "approval_is_manual")
@@ -326,10 +371,14 @@ def take_write_lock(db: Session) -> None:
     whose RADIUS accounting commits all the time that is not rare (seen on
     production 2026-10-04). Taking the write lock up front makes this
     transaction wait its turn instead, and then read current data."""
-    if db.get_bind().dialect.name != "sqlite":
-        return
-    db.rollback()                       # end whatever read transaction is open
-    db.execute(text("BEGIN IMMEDIATE"))
+    # Authentication dependencies may have queried (and occasionally
+    # committed) on this request session. End that transaction on BOTH
+    # dialects so the first statement in the approval transaction is its
+    # required runtime locking read. SQLite additionally needs an immediate
+    # write transaction before its first read.
+    db.rollback()
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
 
 
 def describe_error(exc: BaseException) -> str:
@@ -341,31 +390,45 @@ def begin(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalInte
           approved_by_telegram_id: Optional[int] = None, local_decision: Optional[str] = None) -> dict:
     """The structured answer of design 5.6. Commits. Only the backend
     decides the mode; nothing in the request can claim one."""
-    state = runtime.read_state(db)
-    mode = runtime.effective_registration_mode(state)
-    if mode == runtime.OFF:
-        return {"mode": "off", "approval_uuid": None, "proceed_legacy": True}
-    if mode == runtime.BLOCKED:
-        raise RegistrationRejected(503, "receipt_approval_blocked")
-    if mode == runtime.REQUIRED:
-        raise RegistrationRejected(503, "required_mode_not_available")      # exists only after phase P9a
-
-    error = runtime.shadow_error(state)
-    result = None
     for attempt in range(1, WRITE_ATTEMPTS + 1):
-        if error is not None:
-            break
         try:
             take_write_lock(db)
+            state = runtime.read_state(db, lock=True, shared_lock=True)
+            mode = runtime.effective_registration_mode(state)
+            if mode == runtime.OFF:
+                db.rollback()
+                return {"mode": "off", "approval_uuid": None, "proceed_legacy": True}
+            if mode == runtime.BLOCKED:
+                db.rollback()
+                raise RegistrationRejected(503, "receipt_approval_blocked")
+            if mode == runtime.REQUIRED:
+                db.rollback()
+                raise RegistrationRejected(503, "required_mode_not_available")
+
+            error = runtime.shadow_error(state)
+            if error is not None:
+                db.rollback()
+                runtime.record_shadow_event(
+                    db, pending_source_instance_id=str(intent.pending_source_instance_id or "?"),
+                    pending_local_id=intent.pending_local_id if isinstance(intent.pending_local_id, int) else 0,
+                    stage="registration", error_code=error)
+                db.commit()
+                return {"mode": "shadow", "approval_uuid": None, "shadow_error": error, "proceed_legacy": True}
+
             result = register(db, principal, intent, approval_mode=approval_mode,
                               approved_by_telegram_id=approved_by_telegram_id, registered_under_mode=runtime.SHADOW,
                               local_decision=local_decision,
                               rate_limit_mode=runtime.effective_auto_rate_limit_mode(state))
             db.commit()
-            break
+            return {"mode": "shadow", "approval_uuid": result.approval_uuid, "execution_token": result.execution_token,
+                    "registration_seq": result.registration_seq, "state": result.state, "created": result.created,
+                    "proceed_legacy": False, "central_decision": central_decision(db, result.approval_uuid)}
         except RegistrationRejected as exc:
             db.rollback()
+            if exc.status == 503:
+                raise
             error = exc.code
+            break
         except OperationalError as exc:              # database busy: wait and try again
             db.rollback()
             if attempt == WRITE_ATTEMPTS:
@@ -378,15 +441,11 @@ def begin(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalInte
             db.rollback()
             log.exception("receipt approval shadow registration failed (%s)", describe_error(exc))
             error = describe_error(exc)
-    if result is None:
-        runtime.record_shadow_event(db, pending_source_instance_id=str(intent.pending_source_instance_id or "?"),
-                                    pending_local_id=intent.pending_local_id if isinstance(intent.pending_local_id, int) else 0,
-                                    stage="registration", error_code=error)
-        db.commit()
-        return {"mode": "shadow", "approval_uuid": None, "shadow_error": error, "proceed_legacy": True}
-    return {"mode": "shadow", "approval_uuid": result.approval_uuid, "execution_token": result.execution_token,
-            "registration_seq": result.registration_seq, "state": result.state, "created": result.created,
-            "proceed_legacy": False, "central_decision": central_decision(db, result.approval_uuid)}
+    runtime.record_shadow_event(db, pending_source_instance_id=str(intent.pending_source_instance_id or "?"),
+                                pending_local_id=intent.pending_local_id if isinstance(intent.pending_local_id, int) else 0,
+                                stage="registration", error_code=error)
+    db.commit()
+    return {"mode": "shadow", "approval_uuid": None, "shadow_error": error, "proceed_legacy": True}
 
 
 def central_decision(db: Session, approval_uuid: str) -> dict:
@@ -445,12 +504,48 @@ def finalize(db: Session, principal: bot_auth.BotPrincipal, approval_uuid: str, 
     missing = sorted(f"{m[0]}:{m[1]}" for m in manifest if m[2] == ri.REQUIRED and (m[0], m[1]) not in written)
     unexpected = sorted(f"{t}:{k}" for t, k in written - known)
     state = row["state"]
+    ledger_exists = db.query(models.LedgerEntry.id).filter(
+        models.LedgerEntry.approval_uuid == approval_uuid).with_for_update().first() is not None
+    mutation_exists = bool(written) or ledger_exists
+
+    # Repair records made by older shadow code, which could commit the
+    # financial row and then mark the approval failed because its
+    # best-effort effect was refused. Do this before applying the normal
+    # completion/failure rules, while still holding the approval row lock.
+    recovered_failed = state == "failed" and mutation_exists
+    if recovered_failed:
+        row = recover_failed_with_mutation(db, dict(row))
+        state = row["state"]
+
     if state in ("registered", "mutating"):
         if written and not missing and not unexpected:
             state = "completed"
             db.execute(approvals.update().where(approvals.c.approval_uuid == approval_uuid)
                        .values(state=state, completed_at=_now()))
-        elif not written and reported_failure:
+        elif mutation_exists:
+            # A tagged ledger row is durable mutation evidence even when
+            # shadow effect recording failed. Never label it failed or make
+            # it eligible for the no-effect retry/takeover path.
+            was_registered = state == "registered"
+            state = "mutating"
+            if was_registered:
+                db.execute(approvals.update().where(
+                    approvals.c.approval_uuid == approval_uuid,
+                    approvals.c.state == "registered").values(
+                        state="mutating", failed_at=None,
+                        mutating_at=func.coalesce(approvals.c.mutating_at, _now())))
+            if missing or unexpected:
+                event_code = "missing_effects" if missing else "unexpected_effects"
+                prior_event = db.execute(select(runtime._events().c.id).where(
+                    runtime._events().c.approval_uuid == approval_uuid,
+                    runtime._events().c.stage == "finalize",
+                    runtime._events().c.error_code == event_code)).first()
+                if prior_event is None:
+                    runtime.record_shadow_event(
+                        db, pending_source_instance_id=row["pending_source_instance_id"],
+                        pending_local_id=row["pending_local_id"], stage="finalize",
+                        error_code=event_code, approval_uuid=approval_uuid)
+        elif reported_failure:
             state = "failed"
             db.execute(approvals.update().where(approvals.c.approval_uuid == approval_uuid)
                        .values(state=state, failed_at=_now()))

@@ -1109,6 +1109,7 @@ class DiscountRedeemRequest(BaseModel):
 class ReferralApplyRequest(BaseModel):
     username: str  # the brand-new user who was just created
     referral_code: str  # the code they entered
+    approval_uuid: Optional[str] = None  # receipt-approval registration
 
 
 # ---------- Panel-wide settings (payment info shown by the sales bot) ----------

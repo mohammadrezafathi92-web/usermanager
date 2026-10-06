@@ -42,7 +42,8 @@ from .bot_auth import (
 # ------------------------------------------------------------------------- User
 
 def _get_user_or_403(
-    db: Session, principal: BotPrincipal, username: str, claimed_owner_admin_id: Optional[int],
+    db: Session, principal: BotPrincipal, username: str, claimed_owner_admin_id: Optional[int], *,
+    for_update: bool = False,
 ) -> models.User:
     """Single-user lookup by username. claimed_owner_admin_id is mandatory
     (no default, matching _list_users_query's own convention below) - the
@@ -73,8 +74,13 @@ def _get_user_or_403(
        list case).
     2. require_bot_user_access - the NEW principal-identity-bound check,
        still a no-op today for the same unscoped case, but the one that
-       matters once scope_enforced is actually true on a row."""
-    user = db.query(models.User).filter(models.User.username == username).first()
+       matters once scope_enforced is actually true on a row. Callers that
+       must serialize a user mutation may request `for_update=True`; the
+       scoped lookup itself then becomes the row-locking read."""
+    query = db.query(models.User).filter(models.User.username == username)
+    if for_update:
+        query = query.with_for_update()
+    user = query.first()
     if user is None:
         raise HTTPException(404, "کاربر پیدا نشد")
     owner_admin_id = resolve_claimed_owner(db, principal, claimed_owner_admin_id, endpoint="_get_user_or_403")

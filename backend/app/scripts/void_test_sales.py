@@ -40,7 +40,7 @@ import sys
 
 from .. import models
 from ..database import SessionLocal
-from ..services import backup, payment_cards, user_ops
+from ..services import backup, payment_cards, user_ops, wallet_service
 
 LEDGER_KINDS = ("sale_new", "sale_renew", "wallet_topup")
 
@@ -140,7 +140,9 @@ def execute(db, user: models.User, plan: dict, delete_user: bool) -> int:
         card = db.get(models.PaymentCard, card_id)
         if card is not None:
             payment_cards.take_back(db, card, amount)
-    user.balance = max(0, int(user.balance or 0) - sum(int(r.amount or 0) for r in rows if r.kind == "wallet_topup"))
+    wallet_service.overwrite(
+        db, user, max(0, int(user.balance or 0) - sum(int(r.amount or 0) for r in rows if r.kind == "wallet_topup")),
+        source_kind=wallet_service.MANUAL_ADJUSTMENT)
     for row in rows:
         db.delete(row)
     db.commit()

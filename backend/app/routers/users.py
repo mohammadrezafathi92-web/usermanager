@@ -13,7 +13,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..services.jalali import fmt_jalali
 from ..deps import get_current_admin, require_confirm_password, require_permission, require_superadmin
-from ..services import user_ops, hierarchy, accounting, admin_billing, usage_stats
+from ..services import user_ops, hierarchy, accounting, admin_billing, usage_stats, wallet_service
 from ..services.node_gate import writer_gate
 
 router = APIRouter(prefix="/api/users", tags=["users"], dependencies=[Depends(get_current_admin)])
@@ -756,6 +756,13 @@ def update_user(
             user.purchases_blocked_reason = None
             data.pop("purchases_blocked_reason", None)
         user.purchases_blocked = now_blocked
+
+    # The wallet has one writer (services/wallet_service.py). The form posts
+    # the field back on every save; only a real change is a wallet write.
+    if "balance" in data:
+        new_balance = data.pop("balance")
+        if new_balance != user.balance:
+            wallet_service.overwrite(db, user, new_balance, source_kind=wallet_service.MANUAL_ADJUSTMENT)
 
     for k, v in data.items():
         setattr(user, k, v)

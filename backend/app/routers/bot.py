@@ -29,7 +29,7 @@ from ..services import reseller_refund
 from ..services import payment_card_events
 from ..services import receipt_approval_effects as approval_effects
 from ..services import receipt_approval_topup
-from ..services import wallet_service
+from ..services import wallet_service, wallet_policy
 from ..services import receipt_approval_registration as approval_registration
 from ..services.bot_auth import (
     BROADCAST,
@@ -189,48 +189,7 @@ def _charge_seller(
 # never touches models.User/models.AdminUser outside the accessor functions
 # (see that module's own docstring, and tests/test_bot_resource_accessor_ast.py).
 
-DEFAULT_PURCHASE_BLOCK_MESSAGE = (
-    "امکان خرید و تمدید برای این حساب فعلا غیرفعال است. "
-    "سرویس فعلی شما تا پایان اعتبارش کار می‌کند. برای اطلاعات بیشتر با پشتیبانی تماس بگیرید."
-)
-
-
-def _ensure_can_buy(user: models.User) -> None:
-    """The till is closed for this customer ("قفل خرید" - see
-    models.User.purchases_blocked).
-
-    Called at the four places money or service can newly enter the account
-    through the bot: a new service, a renewal, a wallet top-up, and signing
-    up a second account on the same Telegram id. Everything the customer
-    already has is untouched on purpose - this must never be able to cut
-    off a service that is already paid for, so it is not called from any
-    read, config-fetch, or auth path.
-
-    Raises 403 carrying the admin's own words, so the customer is told why
-    instead of meeting a button that silently fails.
-    """
-    if not getattr(user, "purchases_blocked", False):
-        return
-    raise HTTPException(403, (user.purchases_blocked_reason or "").strip() or DEFAULT_PURCHASE_BLOCK_MESSAGE)
-
-
-def _ensure_telegram_can_buy(db: Session, telegram_id: Optional[int]) -> None:
-    """Same lock, applied to a Telegram account rather than one User row.
-
-    A customer whose account is locked could otherwise just sign up again
-    from the same Telegram account and carry on buying - the lock would
-    look enforced while doing nothing. One User row locked locks that
-    person's ability to open new ones.
-    """
-    if not telegram_id:
-        return
-    blocked = (
-        db.query(models.User)
-        .filter(models.User.telegram_id == telegram_id, models.User.purchases_blocked.is_(True))
-        .first()
-    )
-    if blocked is not None:
-        _ensure_can_buy(blocked)
+DEFAULT_PURCHASE_BLOCK_MESSAGE = wallet_policy.DEFAULT_PURCHASE_BLOCK_MESSAGE
 
 
 def _ensure_one_time_package_not_reused(
@@ -858,7 +817,7 @@ def create_user(
     # A locked customer must not be able to start a fresh account from the
     # same Telegram id and keep buying - that would leave the lock looking
     # enforced while doing nothing at all.
-    _ensure_telegram_can_buy(db, payload.telegram_id)
+    wallet_policy.can_purchase_telegram(db, payload.telegram_id)
     owner_admin_id = resolve_claimed_owner(db, principal, payload.owner_admin_id, endpoint="create_user")
     if payload.package_id:
         _new_package = bot_resources._get_package_or_403(db, principal, payload.package_id)
@@ -979,7 +938,7 @@ def purchase_package(
     (see telegram_bot/handlers/customer.py's pick_node/pick_protocol)."""
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
-    _ensure_can_buy(user)
+    wallet_policy.can_purchase(db, user)
     package = bot_resources._get_package_or_403(db, principal, payload.package_id)
     _ensure_one_time_package_not_reused(db, package, user=user, telegram_id=user.telegram_id)
     trial.ensure_allowed(db, package, user=user, telegram_id=user.telegram_id)
@@ -1395,7 +1354,7 @@ def renew_service(
     the panel owner's definition (2026-08-09)."""
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
-    _ensure_can_buy(user)
+    wallet_policy.can_purchase(db, user)
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
@@ -1442,7 +1401,7 @@ def renew(
 ):
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
-    _ensure_can_buy(user)
+    wallet_policy.can_purchase(db, user)
     # Post-migration (services/purchase_migration.py) the user-level pool
     # governs nothing for a fully-converted customer - a renewal landing
     # here (old bot build, or a flow that didn't pick a service) would
@@ -1552,7 +1511,7 @@ def add_balance(
         # deliberately remain outside it.
         user = receipt_approval_topup.apply(
             db, principal, username, payload.amount, payload.payment_card_id,
-            payload.approval_uuid, _ensure_can_buy)
+            payload.approval_uuid, lambda customer: wallet_policy.can_topup(db, customer))
     return _user_response(user)
 
 

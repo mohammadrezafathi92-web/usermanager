@@ -459,7 +459,6 @@ def create_user(
         user = wallet_accounts.create_user_with_wallet(db, **data)
         db.add(user)
         db.commit()
-        db.refresh(user)
     except Exception:
         # charge_for_package commits its debit before User construction.
         # A failed account transaction must not leave that charge behind.
@@ -467,6 +466,7 @@ def create_user(
         if package:
             admin_billing.refund_for_package(db, admin, package, units=1)
         raise
+    db.refresh(user)
 
     if package:
         # Mirrors bulk_create_users' own try/except below: an outright crash

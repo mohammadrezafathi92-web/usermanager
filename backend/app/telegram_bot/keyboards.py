@@ -73,12 +73,10 @@ CUSTOMER_MENU_ITEMS = [
 CUSTOMER_MENU_STYLES = {
     "cust_renew": BUTTON_STYLES["primary"],
     "cust_buy": BUTTON_STYLES["primary"],
-    "cust_topup": BUTTON_STYLES["success"],
-    "cust_account": BUTTON_STYLES["success"],
-    "cust_support": BUTTON_STYLES["primary"],
-    "cust_tutorials": BUTTON_STYLES["primary"],
-    "cust_referral": BUTTON_STYLES["primary"],
-    "cust_agent": BUTTON_STYLES["success"],
+    "cust_topup": BUTTON_STYLES["primary"],
+    # Information, account-management and support destinations stay neutral;
+    # reserve color for actions so the shop menu has a clear visual hierarchy.
+    "cust_agent": BUTTON_STYLES["primary"],
 }
 
 # Same idea as CUSTOMER_MENU_ITEMS, one list per admin tier so main_menu_kb
@@ -100,10 +98,8 @@ ADMIN_MENU_ITEMS_FULL = [
 ]
 
 ADMIN_MENU_STYLES = {
-    "admin_create": BUTTON_STYLES["success"],
-    "admin_list": BUTTON_STYLES["primary"],
+    "admin_create": BUTTON_STYLES["primary"],
     "admin_pending": BUTTON_STYLES["primary"],
-    "admin_broadcast": BUTTON_STYLES["primary"],
 }
 
 ADMIN_MENU_ITEMS_SELLER = [
@@ -277,15 +273,19 @@ def admin_users_list_kb(items: list[dict], page: int, total: int, search: str | 
 def admin_user_detail_kb(username: str, enabled_status: bool, allow_reset: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     toggle_text = "⛔️ غیرفعال‌سازی" if enabled_status else "✅ فعال‌سازی"
-    kb.button(text=toggle_text, callback_data=AdminUserCB(action="toggle", username=username))
-    kb.button(text="♻️ تمدید سرویس", callback_data=AdminUserCB(action="renew", username=username))
-    kb.button(text="📦 افزودن پکیج", callback_data=AdminUserCB(action="addpkg", username=username))
-    kb.button(text="💰 اعتبار کیف پول", callback_data=AdminUserCB(action="balance", username=username))
+    kb.button(
+        text=toggle_text,
+        callback_data=AdminUserCB(action="toggle", username=username),
+        style=BUTTON_STYLES["danger"] if enabled_status else BUTTON_STYLES["success"],
+    )
+    kb.button(text="♻️ تمدید سرویس", callback_data=AdminUserCB(action="renew", username=username), style=BUTTON_STYLES["primary"])
+    kb.button(text="📦 افزودن پکیج", callback_data=AdminUserCB(action="addpkg", username=username), style=BUTTON_STYLES["primary"])
+    kb.button(text="💰 اعتبار کیف پول", callback_data=AdminUserCB(action="balance", username=username), style=BUTTON_STYLES["primary"])
     kb.button(text="📤 ارسال مجدد کانفیگ", callback_data=AdminUserCB(action="sendcfg", username=username))
     # Superadmin only - see handlers/admin_users.py's _show_user_detail.
     if allow_reset:
-        kb.button(text="🔄 ریست مصرف", callback_data=AdminUserCB(action="resetusage", username=username))
-    kb.button(text="🗑 حذف کاربر", callback_data=AdminUserCB(action="delete", username=username))
+        kb.button(text="🔄 ریست مصرف", callback_data=AdminUserCB(action="resetusage", username=username), style=BUTTON_STYLES["danger"])
+    kb.button(text="🗑 حذف کاربر", callback_data=AdminUserCB(action="delete", username=username), style=BUTTON_STYLES["danger"])
     kb.button(text="🔃 بروزرسانی", callback_data=AdminUserCB(action="view", username=username))
     kb.button(text="🏠 منوی اصلی", callback_data=MenuCB(action="home"))
     kb.adjust(2, 2, 1, 2, 1, 1) if allow_reset else kb.adjust(2, 2, 1, 1, 1, 1)
@@ -355,7 +355,7 @@ def admin_renew_packages_kb(packages: list[dict], username: str) -> InlineKeyboa
 
 def confirm_delete_kb(username: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="✅ بله، حذف کن", callback_data=AdminUserCB(action="delete_confirm", username=username))
+    kb.button(text="✅ بله، حذف کن", callback_data=AdminUserCB(action="delete_confirm", username=username), style=BUTTON_STYLES["danger"])
     kb.button(text="✖️ انصراف", callback_data=AdminUserCB(action="view", username=username))
     kb.adjust(2)
     return kb.as_markup()
@@ -463,7 +463,11 @@ def receipt_choice_kb(show_balance: bool, price: int) -> InlineKeyboardMarkup:
     balance" button that skips the receipt/admin-approval wait entirely."""
     kb = InlineKeyboardBuilder()
     if show_balance:
-        kb.button(text=f"💰 پرداخت فوری از اعتبار ({price:,} تومان)", callback_data=PayCB(method="balance"))
+        kb.button(
+            text=f"💰 پرداخت فوری از اعتبار ({price:,} تومان)",
+            callback_data=PayCB(method="balance"),
+            style=BUTTON_STYLES["success"],
+        )
     kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))
     kb.adjust(1)
     return kb.as_markup()
@@ -619,7 +623,7 @@ def purchases_kb(groups: list[dict]) -> InlineKeyboardMarkup:
         kb.button(text="✏️", callback_data=RenameCB(key=g["key"]))
         row = 2
         if g["deletable"]:
-            kb.button(text="🗑", callback_data=DeleteCB(key=g["key"]))
+            kb.button(text="🗑", callback_data=DeleteCB(key=g["key"]), style=BUTTON_STYLES["danger"])
             row = 3
         row_sizes.append(row)
     # One link per CUSTOMER (covers every Xray/VLESS service combined - see
@@ -641,7 +645,7 @@ def delete_confirm_kb(key: str) -> InlineKeyboardMarkup:
     actually removed - same "ask before an irreversible action" shape as
     the rest of this file's flows."""
     kb = InlineKeyboardBuilder()
-    kb.button(text="🗑 بله، حذف کن", callback_data=DeleteConfirmCB(key=key))
+    kb.button(text="🗑 بله، حذف کن", callback_data=DeleteConfirmCB(key=key), style=BUTTON_STYLES["danger"])
     kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cust_account"))
     kb.adjust(1)
     return kb.as_markup()
@@ -734,7 +738,7 @@ def account_picker_kb(users: list[dict]) -> InlineKeyboardMarkup:
 
 def approval_kb(request_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="✅ تایید و فعال‌سازی", callback_data=ApprovalCB(action="approve", request_id=request_id))
-    kb.button(text="❌ رد کردن", callback_data=ApprovalCB(action="reject", request_id=request_id))
+    kb.button(text="✅ تایید و فعال‌سازی", callback_data=ApprovalCB(action="approve", request_id=request_id), style=BUTTON_STYLES["success"])
+    kb.button(text="❌ رد کردن", callback_data=ApprovalCB(action="reject", request_id=request_id), style=BUTTON_STYLES["danger"])
     kb.adjust(2)
     return kb.as_markup()

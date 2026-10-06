@@ -486,14 +486,14 @@ def _seed_default_permission_groups() -> None:
     Gated on "no groups exist yet at all" (like _backfill_hierarchy_node_access's
     is-new check) so this only ever runs once and never re-creates/
     overwrites a group a superadmin has since renamed, edited, or deleted."""
-    from .permissions import PERMISSION_CHOICES, format_permissions
+    from .permissions import PERMISSION_CHOICES, OPT_IN_PERMISSIONS, format_permissions
 
     db = SessionLocal()
     try:
         if db.query(models.AdminPermissionGroup).first():
             return  # already seeded (or the superadmin made their own) - never touch it again
-        everything = format_permissions(set(PERMISSION_CHOICES))
-        limited = format_permissions(set(PERMISSION_CHOICES) - {"view_tutorials"})
+        everything = format_permissions(set(PERMISSION_CHOICES) - OPT_IN_PERMISSIONS)
+        limited = format_permissions(set(PERMISSION_CHOICES) - OPT_IN_PERMISSIONS - {"view_tutorials"})
         db.add(models.AdminPermissionGroup(name="فروشنده استاندارد", permissions=everything))
         db.add(models.AdminPermissionGroup(name="فروشنده محدود (بدون آموزش)", permissions=limited))
         db.commit()
@@ -526,13 +526,13 @@ def _repair_stale_default_permission_groups() -> None:
     hand), the string no longer matches and this becomes a permanent
     no-op for that group - a superadmin's own later edit, of any kind, is
     never overwritten."""
-    from .permissions import PERMISSION_CHOICES, format_permissions
+    from .permissions import PERMISSION_CHOICES, OPT_IN_PERMISSIONS, format_permissions
 
     STALE_VALUES = {
         "فروشنده استاندارد": "view_tutorials",
         "فروشنده محدود (بدون آموزش)": "",
     }
-    everything = set(PERMISSION_CHOICES)
+    everything = set(PERMISSION_CHOICES) - OPT_IN_PERMISSIONS
     FIXED_VALUES = {
         "فروشنده استاندارد": format_permissions(everything),
         "فروشنده محدود (بدون آموزش)": format_permissions(everything - {"view_tutorials"}),
@@ -664,7 +664,7 @@ def _grandfather_permissions() -> None:
 
     Only grants; never removes anything already stored.
     """
-    from .permissions import PERMISSION_CHOICES, format_permissions, parse_permissions
+    from .permissions import PERMISSION_CHOICES, OPT_IN_PERMISSIONS, format_permissions, parse_permissions
 
     db = SessionLocal()
     try:
@@ -685,7 +685,7 @@ def _grandfather_permissions() -> None:
         if not already and settings_row.permissions_grandfathered:
             already = set(_PERMISSIONS_GRANDFATHERED_BY_THE_OLD_ONE_SHOT_PASS)
 
-        new_keys = set(PERMISSION_CHOICES) - already
+        new_keys = set(PERMISSION_CHOICES) - OPT_IN_PERMISSIONS - already
         if not new_keys:
             return
 
@@ -1260,3 +1260,8 @@ def on_shutdown():
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+# Also fences non-customer HTTP mutations (node settings, HA, admin edits).
+from .services.reseller_refund_fence import wrap_routes as _wrap_refund_routes
+_wrap_refund_routes(app)

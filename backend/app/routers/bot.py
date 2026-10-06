@@ -25,6 +25,7 @@ from ..database import get_db
 from ..deps import get_bot_principal
 from ..services import user_ops, hierarchy, payment_cards, accounting, admin_billing, trial
 from ..services import bot_resources
+from ..services import reseller_refund
 from ..services import payment_card_events
 from ..services import receipt_approval_effects as approval_effects
 from ..services import receipt_approval_topup
@@ -144,7 +145,7 @@ def _user_response(user: models.User) -> schemas.BotUserResponse:
 
 def _charge_seller(
     db: Session, user: models.User, package: Optional[models.Package], add_gb: float = 0,
-) -> None:
+) -> Optional[models.LedgerEntry]:
     """Charges the reseller who owns this customer. Always on - see
     2026-09-05 decision below.
 
@@ -177,7 +178,7 @@ def _charge_seller(
         return
     # charge_for_renewal covers both shapes and already exempts superadmins
     # and volume-billed accounts.
-    admin_billing.charge_for_renewal(db, admin, package, add_gb)
+    return admin_billing.charge_for_renewal(db, admin, package, add_gb)
 
 
 # Phase C (docs/api-key-scope-audit-2026-09-27.md): the old _visibility_filter
@@ -936,8 +937,11 @@ def create_user(
     # already paid. Refusing at this point would take their money and give
     # them nothing. The reseller goes into debt instead - which their
     # overdraft is for, and which the superadmin can see.
-    _charge_seller(db, user, package)
+    reseller_debit = _charge_seller(db, user, package)
     sale_entry = _record_bot_sale(db, principal, "sale_new", payload, user, package)
+    db.flush()
+    if new_purchase is not None and package is not None:
+        reseller_refund.bind_sale(db, new_purchase, reseller_debit, package, sale_entry=sale_entry, purchase_count_delta=1)
     if recorder.active:
         db.flush()
         recorder.effect("purchase_created", "purchase", new_purchase,
@@ -993,8 +997,10 @@ def purchase_package(
     purchase = user_ops.apply_package_as_purchase(
         db, user, package, connections_override=override, comment=payload.comment, principal=principal,
     )
-    _charge_seller(db, user, package)
+    reseller_debit = _charge_seller(db, user, package)
     sale_entry = _record_bot_sale(db, principal, "sale_new", payload, user, package, purchase_id=purchase.id)
+    db.flush()
+    reseller_refund.bind_sale(db, purchase, reseller_debit, package, sale_entry=sale_entry, purchase_count_delta=1)
     recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)      # no-op without an approval
     if recorder.active:
         db.flush()
@@ -1559,3 +1565,7 @@ def delete_user(
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     user_ops.delete_user_cascade(db, user)
     return {"ok": True}
+
+
+from ..services.reseller_refund_fence import wrap_routes as _wrap_refund_routes
+_wrap_refund_routes(router, globals())

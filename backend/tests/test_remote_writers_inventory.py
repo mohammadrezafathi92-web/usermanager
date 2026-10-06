@@ -180,11 +180,11 @@ check("writer calls inside client modules are the known internal ones only",
           "app.services.threexui_client": ["add_client"],
           "app.services.xray_client": ["add_client", "remove_client", "restart_service", "write_config"],
       })
-check("every adapter module listed exists, and no existing module imports an adapter yet",
+check("every adapter exists; only the fenced cancellation worker integrates one",
       (sorted(rw.ADAPTER_MODULES - {dotted for dotted, _ in app_modules()}),
        sorted(dotted for dotted, path in app_modules()
               if dotted not in rw.ADAPTER_MODULES and imports_adapter(path))),
-      ([], []))
+      ([], ["app.services.reseller_refund_worker"]))
 called_anywhere = set().union(*in_code.values()) | set().union(*client_internal.values())
 check("the three MikroTik writer methods without any caller are exactly the declared ones",
       sorted(rw.WRITER_METHODS - called_anywhere), sorted(rw.UNCALLED_WRITER_METHODS))
@@ -257,10 +257,11 @@ for dotted, path in app_modules():
             used |= {alias.name.split(".")[-1] for alias in node.names if alias.name.split(".")[-1] in NEW_MODULES}
     if used:
         importers[dotted] = sorted(used)
-check("exactly the four writer modules use the gate, and only writer_gate from it",
+check("four legacy writers use the gate; the cancellation fence reuses only lock primitives",
       importers,
       {"app.routers.nodes": ["node_gate.writer_gate"], "app.routers.users": ["node_gate.writer_gate"],
-       "app.services.quota_manager": ["node_gate.writer_gate"], "app.services.user_ops": ["node_gate.writer_gate"]})
+       "app.services.quota_manager": ["node_gate.writer_gate"], "app.services.user_ops": ["node_gate.writer_gate"],
+       "app.services.reseller_refund_fence": ["gate_locks.FileLock", "gate_locks.lock_base_dir"]})
 check("the runner has no real action registered - it cannot reach a node",
       sorted(a.value for a in ACTIONS if not a.value.startswith("selftest_")), [])
 

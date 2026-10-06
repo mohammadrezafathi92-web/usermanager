@@ -43,7 +43,8 @@ NEW_KEYS = {
 }
 
 print("--- the set itself ---")
-check("every agreed capability is grantable", set(permissions.PERMISSION_CHOICES), NEW_KEYS)
+check("legacy and explicitly opt-in capabilities are grantable", set(permissions.PERMISSION_CHOICES),
+      NEW_KEYS | {"cancel_unpaid_services"})
 check("every key belongs to exactly one group",
       sum(len(g["perms"]) for g in permissions.PERMISSION_GROUPS.values()),
       len(permissions.PERMISSION_CHOICES))

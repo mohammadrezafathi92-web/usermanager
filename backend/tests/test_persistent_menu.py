@@ -94,8 +94,8 @@ async def run():
     styles = {button.text: button.style for row in kb.keyboard for button in row}
     check("renewal and purchase get Telegram's blue primary style",
           [styles["♻️ تمدید سرویس"], styles["🎁 خرید اشتراک"]], ["primary", "primary"])
-    check("shop actions use blue while account browsing stays neutral",
-          [styles["💵 کیف پول + شارژ"], styles["👤 سرویس‌های من"]], ["primary", None])
+    check("wallet funding is green while account browsing stays neutral",
+          [styles["💵 کیف پول + شارژ"], styles["👤 سرویس‌های من"]], ["success", None])
     check("native color styles are included in the Telegram API payload",
           kb.model_dump(exclude_none=True, by_alias=True)["keyboard"][0][0].get("style"), "primary")
     check("secondary actions keep the app-default style",
@@ -103,14 +103,27 @@ async def run():
     check("informational destinations remain neutral",
           [styles["🎧 پشتیبانی"], styles["📚 آموزش"], styles["👥 دعوت دوستان"], styles["📊 مصرف سرویس‌ها"]],
           [None, None, None, None])
-    check("agent request is highlighted as a primary action",
+    check("wallet funding uses the positive semantic color",
+          styles["💵 کیف پول + شارژ"], "success")
+    check("agent request remains a highlighted primary action",
           styles["🤝 درخواست نمایندگی"], "primary")
-    check("tariffs and agent request occupy the last full-width rows",
-          [len(row) for row in kb.keyboard[-2:]], [1, 1])
+    labels_by_row = [[button.text for button in row] for row in kb.keyboard]
+    check("customer actions are grouped by purchase, account, and support intent",
+          labels_by_row,
+          [
+              ["🎁 خرید اشتراک", "♻️ تمدید سرویس"],
+              ["💵 کیف پول + شارژ", "👤 سرویس‌های من"],
+              ["📊 مصرف سرویس‌ها", "🔗 وصل کردن حساب قبلی"],
+              ["👥 دعوت دوستان", "🤝 درخواست نمایندگی"],
+              ["🎧 پشتیبانی", "📚 آموزش"],
+              ["🆔 آیدی عددی من", "📋 تعرفه سرویس‌ها"],
+          ])
     inline = await _isolated(keyboards.main_menu_kb(None))
     inline_styles = {button.text: button.style for row in inline.inline_keyboard for button in row}
     check("inline menu uses the same blue purchase style", inline_styles["🎁 خرید اشتراک"], "primary")
-    check("inline menu uses the same blue wallet-action style", inline_styles["💵 کیف پول + شارژ"], "primary")
+    check("inline menu uses the same green wallet-action style", inline_styles["💵 کیف پول + شارژ"], "success")
+    check("inline and persistent menus share the same row grouping",
+          [[button.text for button in row] for row in inline.inline_keyboard], labels_by_row)
     check("inline menu exposes the tariff screen", "📋 تعرفه سرویس‌ها" in inline_styles, True)
     check("two per row", all(len(r) <= 2 for r in kb.keyboard), True)
     check("it resizes instead of taking half the screen", kb.resize_keyboard, True)
@@ -148,6 +161,9 @@ async def run():
     confirm_user = keyboards.confirm_delete_kb("sample")
     confirm_styles = {button.text: getattr(button, "style", None) for row in confirm_user.inline_keyboard for button in row}
     check("delete confirmation is red", confirm_styles["✅ بله، حذف کن"], "danger")
+    cancel = keyboards.cancel_kb()
+    check("explicit cancel is red", cancel.inline_keyboard[0][0].style, "danger")
+    check("navigation home stays neutral", getattr(keyboards.home_kb().inline_keyboard[0][0], "style", None), None)
 
     panel_bridge.api.get_customer_menu_disabled_items = AsyncMock(
         return_value=["cust_topup", "cust_myid", "cust_link"])

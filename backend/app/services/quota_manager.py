@@ -620,6 +620,12 @@ def _set_connection_enabled(db: Session, connection: models.Connection, enabled:
     Anything that didn't apply is picked up again by
     _reconcile_connection_enabled_state on the next poll cycle instead of
     being silently forgotten forever."""
+    from .reseller_refund_fence import enabled as _refund_enabled
+    if _refund_enabled() and connection.purchase_id:
+        from ..models_reseller_refund import ResellerRefundOperation
+        if db.query(ResellerRefundOperation.id).filter_by(
+                purchase_id=connection.purchase_id, state="pending").first():
+            return  # the refund worker owns stop/delete; never resurrect or guess identity
     if connection.enabled == enabled:
         return
     node: models.Node = connection.node
@@ -946,6 +952,10 @@ def poll_softether_node(db: Session, node: models.Node):
         logger.warning("softether node %s error: %s", node.id, exc)
 
 
+from .reseller_refund_fence import guarded as _refund_guarded
+
+
+@_refund_guarded
 def poll_all():
     db = SessionLocal()
     try:

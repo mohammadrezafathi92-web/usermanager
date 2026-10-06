@@ -8,6 +8,7 @@ import MoneyInput from "../components/MoneyInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import ResetUsageDialog from "../components/ResetUsageDialog.jsx";
+import UnpaidRefundDialog from "../components/UnpaidRefundDialog.jsx";
 import QuotaBar from "../components/QuotaBar.jsx";
 import { useConfirm } from "../components/ConfirmDialog.jsx";
 import {
@@ -108,7 +109,7 @@ function groupConnectionsByPurchase(connections) {
 
 export default function UserDetail() {
   const { id } = useParams();
-  const { isSuperadmin } = useAuth();
+  const { isSuperadmin, can } = useAuth();
   const { t, language } = useLanguage();
   const TYPE_META = buildTypeMeta(t);
   const confirm = useConfirm();
@@ -284,6 +285,7 @@ export default function UserDetail() {
   // finishes loading, and every customer's page went white. Reported
   // 2026-09-13, and the same shape as the StatCard white page before it.
   const [resetTarget, setResetTarget] = useState(null); // the Purchase awaiting a reset
+  const [refundTarget, setRefundTarget] = useState(null);
   // Upload/download split for this user's last 24h, same bucket source the
   // dashboard chart's 24h tab reads - summed client-side since this badge
   // only needs the totals, not the per-hour shape.
@@ -1061,7 +1063,10 @@ export default function UserDetail() {
                     </button>
                   )}
                 </div>
-                <div className="flex gap-2 mt-3">
+                <div className="flex flex-wrap gap-2 mt-3">
+                  {can("cancel_unpaid_services") && <button type="button" className="btn-secondary text-amber-700 dark:text-amber-400" onClick={() => setRefundTarget(purchase)}>
+                    {t("refund.action")}
+                  </button>}
                   <button
                     className="btn-secondary flex-1"
                     disabled={resettingPurchaseId === purchase.id}
@@ -1947,6 +1952,7 @@ export default function UserDetail() {
           </div>
         )}
       </Modal>
+      <UnpaidRefundDialog userId={id} purchase={refundTarget} onClose={() => setRefundTarget(null)} onDone={load} />
     </Layout>
   );
 }

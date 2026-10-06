@@ -90,7 +90,7 @@ def minimum_cooperation_price(admin: models.AdminUser, quota_gb: float) -> Optio
     return round(gb * rate)
 
 
-def charge_for_package(db: Session, admin: models.AdminUser, package: models.Package, units: int = 1) -> None:
+def charge_for_package(db: Session, admin: models.AdminUser, package: models.Package, units: int = 1) -> Optional[models.LedgerEntry]:
     """Atomically deducts `units` times the package's wholesale price (its
     cooperation_price, or the regular customer price if no cooperation
     price is configured) from a non-superadmin admin's own credit balance -
@@ -109,7 +109,7 @@ def charge_for_package(db: Session, admin: models.AdminUser, package: models.Pac
         # کسر می‌شود، نه یکجا در لحظه ساخت کاربر.
         return
     cost = unit_price(admin, package) * units
-    debit_admin(
+    return debit_admin(
         db, admin, cost, package=package,
         note=f"{units} × {package.name}" if units > 1 else None,
     )
@@ -119,7 +119,7 @@ def debit_admin(
     db: Session, admin: models.AdminUser, cost: int, *,
     package: Optional[models.Package] = None, note: Optional[str] = None,
     what: str = "این پکیج",
-) -> None:
+) -> Optional[models.LedgerEntry]:
     """Takes `cost` from the admin's credit, or refuses and takes nothing.
 
     Extracted so buying and renewing debit through the same code. They were
@@ -151,12 +151,13 @@ def debit_admin(
         raise HTTPException(400, msg)
     # Accounting: the reseller's cost of goods (see services/accounting.py) -
     # committed together with the deduction itself.
-    accounting.record(
+    debit_entry = accounting.record(
         db, "admin_credit_spend", cost,
         admin_id=admin.id, actor_admin_id=admin.id, package=package,
         payment_method="admin_credit", note=note,
     )
     db.commit()
+    return debit_entry
 
 
 def ensure_volume_available(admin: models.AdminUser) -> None:
@@ -246,7 +247,7 @@ def require_package_to_grant(admin: models.AdminUser, package: Optional[models.P
 
 def charge_for_renewal(
     db: Session, admin: models.AdminUser, package: Optional[models.Package], add_gb: float,
-) -> None:
+) -> Optional[models.LedgerEntry]:
     """A renewal costs the admin too. It never used to.
 
     Renewals were completely free from the credit system's point of view -
@@ -267,13 +268,12 @@ def charge_for_renewal(
     if admin.is_superadmin or admin.billing_mode == "usage":
         return
     if package is not None:
-        charge_for_package(db, admin, package, units=1)
-        return
+        return charge_for_package(db, admin, package, units=1)
 
     rate = int(getattr(admin, "wholesale_price_per_gb", 0) or 0)
     if rate <= 0 or add_gb <= 0:
         return
-    debit_admin(
+    return debit_admin(
         db, admin, round(add_gb * rate),
         note=f"تمدید {add_gb:g} گیگابایت", what="این تمدید",
     )

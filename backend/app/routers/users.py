@@ -15,6 +15,10 @@ from ..services.jalali import fmt_jalali
 from ..deps import get_current_admin, require_confirm_password, require_permission, require_superadmin
 from ..services import user_ops, hierarchy, accounting, admin_billing, usage_stats, wallet_service
 from ..services.node_gate import writer_gate
+from ..services import reseller_refund
+from ..services import reseller_refund_worker
+from ..services.reseller_refund_fence import executor as _refund_executor
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/users", tags=["users"], dependencies=[Depends(get_current_admin)])
 
@@ -440,7 +444,7 @@ def create_user(
         # admin_billing.ensure_volume_available. charge_for_package below is
         # a no-op for them, which is exactly why this has to be its own call.
         admin_billing.ensure_volume_available(admin)
-        admin_billing.charge_for_package(db, admin, package, units=1)
+        reseller_debit = admin_billing.charge_for_package(db, admin, package, units=1)
         # the package's own quota/duration/concurrent-session cap win over
         # whatever was in the manual fields above
         data["total_quota_bytes"] = int(package.quota_gb * 1024 ** 3) if package.quota_gb else 0
@@ -490,11 +494,15 @@ def create_user(
         # 2026-08-28. absorb_legacy_pool_into_purchase carries the
         # user-level quota/usage/expiry it just got above onto the Purchase
         # 1:1, so nothing is double-counted.
+        new_purchase = None
         if result["created"]:
-            user_ops.absorb_legacy_pool_into_purchase(db, user)
+            new_purchase = user_ops.absorb_legacy_pool_into_purchase(db, user)
         # Revenue side - see accounting.record_panel_sale for why this used
         # to be missing entirely on every panel-made sale.
-        accounting.record_panel_sale(db, "sale_new", user, package, actor_admin_id=admin.id)
+        sale_entry = accounting.record_panel_sale(db, "sale_new", user, package, actor_admin_id=admin.id)
+        db.flush()
+        if new_purchase is not None:
+            reseller_refund.bind_sale(db, new_purchase, reseller_debit, package, sale_entry=sale_entry)
         db.commit()
         db.refresh(user)
 
@@ -1010,19 +1018,21 @@ def apply_package(
     package = _get_scoped_package(db, admin, payload.package_id)
 
     admin_billing.ensure_volume_available(admin)
-    admin_billing.charge_for_package(db, admin, package, units=1)
+    reseller_debit = admin_billing.charge_for_package(db, admin, package, units=1)
     # Same refund-on-failure guarantee as create_user's package path above -
     # without it, a provisioning failure here (node unreachable, VPN API
     # error, ...) left the admin permanently charged for a package the user
     # never actually received any service from.
     try:
-        user_ops.apply_package_as_purchase(db, user, package)
+        new_purchase = user_ops.apply_package_as_purchase(db, user, package)
     except Exception:
         admin_billing.refund_for_package(db, admin, package, units=1)
         raise
     # Revenue side - see accounting.record_panel_sale for why this used to
     # be missing entirely on every panel-made sale.
-    accounting.record_panel_sale(db, "sale_new", user, package, actor_admin_id=admin.id)
+    sale_entry = accounting.record_panel_sale(db, "sale_new", user, package, actor_admin_id=admin.id)
+    db.flush()
+    reseller_refund.bind_sale(db, new_purchase, reseller_debit, package, sale_entry=sale_entry, purchase_count_delta=1)
     db.commit()
     db.refresh(user)
     return user
@@ -1104,6 +1114,45 @@ def renew_purchase_endpoint(
         )
         db.commit()
     return out
+
+
+@router.get("/{user_id}/purchases/{purchase_id}/unpaid-refund-preview")
+def unpaid_refund_preview(
+    user_id: int, purchase_id: int,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+    _perm=Depends(require_permission("cancel_unpaid_services")),
+):
+    user = _get_owned_user(db, admin, user_id)
+    purchase = db.get(models.Purchase, purchase_id)
+    if purchase is None or purchase.user_id != user.id:
+        raise HTTPException(404, "سرویس پیدا نشد")
+    result = reseller_refund.preview(db, purchase)
+    reason = reseller_refund_worker.availability(db, purchase)
+    return {**result, "execution_available": reason is None, "unavailable_reason": reason}
+
+
+class UnpaidCancellationRequest(BaseModel):
+    confirm_unpaid: bool
+
+
+@router.post("/{user_id}/purchases/{purchase_id}/cancel-unpaid")
+@_refund_executor
+def cancel_unpaid_purchase(
+    user_id: int, purchase_id: int, payload: UnpaidCancellationRequest,
+    db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin),
+    _confirm=Depends(require_confirm_password),
+    _perm=Depends(require_permission("cancel_unpaid_services")),
+):
+    user = _get_owned_user(db, admin, user_id)
+    if not payload.confirm_unpaid:
+        raise HTTPException(422, "confirm_unpaid_required")
+    from ..models_reseller_refund import ResellerRefundOperation
+    purchase = db.get(models.Purchase, purchase_id)
+    existing = db.query(ResellerRefundOperation).filter_by(purchase_id=purchase_id, user_id=user.id).first()
+    if (purchase is None and existing is None) or (purchase is not None and purchase.user_id != user.id):
+        raise HTTPException(404, "service_not_found")
+    return reseller_refund_worker.execute(db, purchase_id=purchase_id, actor=admin)
 
 
 @router.delete("/{user_id}/purchases/{purchase_id}")
@@ -1395,6 +1444,10 @@ def get_subscription_link(
     return schemas.SubscriptionLinkOut(
         token=token, web_path=f"/s/{token}", app_path=f"/api/subscribe/{token}",
     )
+
+
+from ..services.reseller_refund_fence import wrap_routes as _wrap_refund_routes
+_wrap_refund_routes(router, globals())
 
 
 @router.post("/{user_id}/subscription-link/regenerate", response_model=schemas.SubscriptionLinkOut)

@@ -1024,6 +1024,7 @@ def apply_referral(
     logic lives in services/user_ops.py's apply_referral_code (both the
     referrer and the new user get a gift, per the confirmed design - not
     just the referrer)."""
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
     user = bot_resources._get_user_or_403(db, principal, payload.username, None)
     # Receipt-approval effects of the rewards that are really applied, written
     # INSIDE apply_referral_code's own transaction, just before its commit

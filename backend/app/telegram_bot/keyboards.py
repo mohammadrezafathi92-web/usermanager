@@ -55,27 +55,41 @@ BUTTON_STYLES = {"primary": "primary", "success": "success", "danger": "danger"}
 # routers/telegram_bot_settings.py's BotSettings.customer_menu_disabled_items)
 # and used here to filter which buttons actually get built.
 CUSTOMER_MENU_ITEMS = [
-    # Core shop actions first, following the reference bot's row hierarchy.
-    ("cust_renew", "♻️ تمدید سرویس"),
+    # Keep the customer menu grouped by intent; CUSTOMER_MENU_LAYOUT below
+    # is the single source for visual rows in both Telegram keyboard types.
     ("cust_buy", "🎁 خرید اشتراک"),
+    ("cust_renew", "♻️ تمدید سرویس"),
     ("cust_topup", "💵 کیف پول + شارژ"),
     ("cust_account", "👤 سرویس‌های من"),
-    ("cust_support", "🎧 پشتیبانی"),
-    ("cust_tutorials", "📚 آموزش"),
-    ("cust_referral", "👥 دعوت دوستان"),
     ("cust_usage", "📊 مصرف سرویس‌ها"),
     ("cust_link", "🔗 وصل کردن حساب قبلی"),
-    ("cust_myid", "🆔 آیدی عددی من"),
+    ("cust_referral", "👥 دعوت دوستان"),
     ("cust_agent", "🤝 درخواست نمایندگی"),
+    ("cust_support", "🎧 پشتیبانی"),
+    ("cust_tutorials", "📚 آموزش"),
+    ("cust_myid", "🆔 آیدی عددی من"),
     ("cust_prices", "📋 تعرفه سرویس‌ها"),
 ]
 
+# Purchase and renewal are adjacent; wallet and account tools form the next
+# row; then usage/linking, referral/agency, and help/pricing. Fixed groups
+# make the menu scannable instead of shifting every action when one setting
+# is disabled. Empty slots are simply removed from that row.
+CUSTOMER_MENU_LAYOUT = (
+    ("cust_buy", "cust_renew"),
+    ("cust_topup", "cust_account"),
+    ("cust_usage", "cust_link"),
+    ("cust_referral", "cust_agent"),
+    ("cust_support", "cust_tutorials"),
+    ("cust_myid", "cust_prices"),
+)
+
 CUSTOMER_MENU_STYLES = {
-    "cust_renew": BUTTON_STYLES["primary"],
     "cust_buy": BUTTON_STYLES["primary"],
-    "cust_topup": BUTTON_STYLES["primary"],
-    # Information, account-management and support destinations stay neutral;
-    # reserve color for actions so the shop menu has a clear visual hierarchy.
+    "cust_renew": BUTTON_STYLES["primary"],
+    # Green marks a positive wallet action; account, information and support
+    # destinations stay neutral so semantic color remains meaningful.
+    "cust_topup": BUTTON_STYLES["success"],
     "cust_agent": BUTTON_STYLES["primary"],
 }
 
@@ -141,25 +155,15 @@ async def main_menu_kb(scope: dict | None) -> InlineKeyboardMarkup:
         from .panel_bridge import get_customer_menu_disabled_items_cached
 
         disabled = set(await get_customer_menu_disabled_items_cached())
-        shown = 0
-        for action, label in CUSTOMER_MENU_ITEMS:
-            if action not in disabled:
-                kb.button(text=label, callback_data=MenuCB(action=action), style=CUSTOMER_MENU_STYLES.get(action))
-                shown += 1
-        # Two per row - the list is long enough (up to 10 items) that one
-        # button per row pushed the bottom half off-screen on a phone. An
-        # odd count leaves the LAST button full-width on its own row rather
-        # than half-width next to empty space.
-        # Keep the two information/engagement destinations visible as
-        # full-width rows at the bottom, like the reference shop bot.
-        rows = [2] * max(0, (shown - 2) // 2)
-        if shown > 2 and (shown - 2) % 2:
-            rows.append(1)
-        if shown >= 2:
-            rows.extend([1, 1])
-        elif shown:
-            rows.append(1)
-        kb.adjust(*(rows or [1]))
+        by_action = dict(CUSTOMER_MENU_ITEMS)
+        row_sizes = []
+        for group in CUSTOMER_MENU_LAYOUT:
+            visible = [action for action in group if action not in disabled]
+            for action in visible:
+                kb.button(text=by_action[action], callback_data=MenuCB(action=action), style=CUSTOMER_MENU_STYLES.get(action))
+            if visible:
+                row_sizes.append(len(visible))
+        kb.adjust(*(row_sizes or [1]))
     return kb.as_markup()
 
 
@@ -200,23 +204,21 @@ async def persistent_menu_kb(scope: dict | None = None) -> ReplyKeyboardMarkup |
     labels = [label for _, label in items]
     if not labels:
         return None
-    engagement_actions = {"cust_agent", "cust_prices"}
-    regular_items = [item for item in items if item[0] not in engagement_actions]
-    engagement_items = [item for item in items if item[0] in engagement_actions]
-    rows = [
-        [
-            KeyboardButton(
-                text=label,
-                style=(ADMIN_MENU_STYLES | CUSTOMER_MENU_STYLES).get(action),
-            )
-            for action, label in regular_items[i:i + 2]
-        ]
-        for i in range(0, len(regular_items), 2)
-    ]
-    rows.extend([
-        [KeyboardButton(text=label, style=CUSTOMER_MENU_STYLES.get(action))]
-        for action, label in engagement_items
-    ])
+    rows = []
+    if admin_items:
+        rows.extend([
+            [KeyboardButton(text=label, style=ADMIN_MENU_STYLES.get(action))
+             for action, label in admin_items[i:i + 2]]
+            for i in range(0, len(admin_items), 2)
+        ])
+    customer_labels = dict(CUSTOMER_MENU_ITEMS)
+    for group in CUSTOMER_MENU_LAYOUT:
+        visible = [action for action in group if action not in disabled]
+        if visible:
+            rows.append([
+                KeyboardButton(text=customer_labels[action], style=CUSTOMER_MENU_STYLES.get(action))
+                for action in visible
+            ])
     return ReplyKeyboardMarkup(
         keyboard=rows,
         resize_keyboard=True,   # without this Telegram gives it half the screen
@@ -227,7 +229,7 @@ async def persistent_menu_kb(scope: dict | None = None) -> ReplyKeyboardMarkup |
 
 def cancel_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))
+    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"), style=BUTTON_STYLES["danger"])
     return kb.as_markup()
 
 
@@ -308,7 +310,7 @@ def admin_services_kb(username: str, purchases: list[dict], action: str) -> Inli
             text=f"{name} · {detail}",
             callback_data=AdminServiceCB(action=action, username=username, purchase_id=p["id"]),
         )
-    kb.button(text="✖️ انصراف", callback_data=AdminUserCB(action="view", username=username))
+    kb.button(text="✖️ انصراف", callback_data=AdminUserCB(action="view", username=username), style=BUTTON_STYLES["danger"])
     kb.adjust(1)
     return kb.as_markup()
 
@@ -323,7 +325,7 @@ def admin_packages_kb(username: str, packages: list[dict]) -> InlineKeyboardMark
             text=package_button_label(p),
             callback_data=AdminPkgPickCB(username=username, package_id=p["id"]),
         )
-    kb.button(text="✖️ انصراف", callback_data=AdminUserCB(action="view", username=username))
+    kb.button(text="✖️ انصراف", callback_data=AdminUserCB(action="view", username=username), style=BUTTON_STYLES["danger"])
     kb.adjust(1)
     return kb.as_markup()
 
@@ -337,7 +339,7 @@ def admin_create_packages_kb(packages: list[dict]) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for p in packages:
         kb.button(text=package_button_label(p), callback_data=AdminCreatePkgCB(package_id=p["id"]))
-    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))
+    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"), style=BUTTON_STYLES["danger"])
     kb.adjust(1)
     return kb.as_markup()
 
@@ -348,7 +350,7 @@ def admin_renew_packages_kb(packages: list[dict], username: str) -> InlineKeyboa
     kb = InlineKeyboardBuilder()
     for p in packages:
         kb.button(text=package_button_label(p), callback_data=AdminRenewPkgCB(package_id=p["id"]))
-    kb.button(text="✖️ انصراف", callback_data=AdminUserCB(action="view", username=username))
+    kb.button(text="✖️ انصراف", callback_data=AdminUserCB(action="view", username=username), style=BUTTON_STYLES["danger"])
     kb.adjust(1)
     return kb.as_markup()
 
@@ -356,7 +358,7 @@ def admin_renew_packages_kb(packages: list[dict], username: str) -> InlineKeyboa
 def confirm_delete_kb(username: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ بله، حذف کن", callback_data=AdminUserCB(action="delete_confirm", username=username), style=BUTTON_STYLES["danger"])
-    kb.button(text="✖️ انصراف", callback_data=AdminUserCB(action="view", username=username))
+    kb.button(text="✖️ انصراف", callback_data=AdminUserCB(action="view", username=username), style=BUTTON_STYLES["danger"])
     kb.adjust(2)
     return kb.as_markup()
 
@@ -366,7 +368,7 @@ def nodes_kb(nodes: list[dict]) -> InlineKeyboardMarkup:
     for n in nodes:
         icon = "🌐" if n["type"] == "mikrotik" else "🔷" if n["type"] == "softether" else "⚡"
         kb.button(text=f"{icon} {n['name']}", callback_data=NodeCB(node_id=n["id"]))
-    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))
+    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"), style=BUTTON_STYLES["danger"])
     kb.adjust(1)
     return kb.as_markup()
 
@@ -392,7 +394,7 @@ def protocols_kb(node_type: str) -> InlineKeyboardMarkup:
     )
     for p in protocols:
         kb.button(text=PROTOCOL_LABELS.get(p, p), callback_data=ProtocolCB(protocol=p))
-    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))
+    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"), style=BUTTON_STYLES["danger"])
     kb.adjust(1)
     return kb.as_markup()
 
@@ -417,7 +419,7 @@ def session_count_kb(counts: list[int], kind: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for c in counts:
         kb.button(text=session_count_label(c), callback_data=SessionCountCB(kind=kind, count=c))
-    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))
+    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"), style=BUTTON_STYLES["danger"])
     kb.adjust(1)
     return kb.as_markup()
 
@@ -452,7 +454,7 @@ def packages_kb(packages: list[dict], kind: str) -> InlineKeyboardMarkup:
             text=f"{_fa_digits(i)}. {package_button_label(p)}",
             callback_data=PackageCB(kind=kind, package_id=p["id"]),
         )
-    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))
+    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"), style=BUTTON_STYLES["danger"])
     kb.adjust(1)
     return kb.as_markup()
 
@@ -468,7 +470,7 @@ def receipt_choice_kb(show_balance: bool, price: int) -> InlineKeyboardMarkup:
             callback_data=PayCB(method="balance"),
             style=BUTTON_STYLES["success"],
         )
-    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))
+    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"), style=BUTTON_STYLES["danger"])
     kb.adjust(1)
     return kb.as_markup()
 
@@ -646,7 +648,7 @@ def delete_confirm_kb(key: str) -> InlineKeyboardMarkup:
     the rest of this file's flows."""
     kb = InlineKeyboardBuilder()
     kb.button(text="🗑 بله، حذف کن", callback_data=DeleteConfirmCB(key=key), style=BUTTON_STYLES["danger"])
-    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cust_account"))
+    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cust_account"), style=BUTTON_STYLES["danger"])
     kb.adjust(1)
     return kb.as_markup()
 
@@ -731,7 +733,7 @@ def account_picker_kb(users: list[dict]) -> InlineKeyboardMarkup:
             text=f"👤 {label} ({u['username']}) — {balance:,} تومان",
             callback_data=SwitchAccountCB(username=u["username"]),
         )
-    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"))
+    kb.button(text="✖️ انصراف", callback_data=MenuCB(action="cancel"), style=BUTTON_STYLES["danger"])
     kb.adjust(1)
     return kb.as_markup()
 

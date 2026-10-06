@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from . import hierarchy
+from . import wallet_service
 from .bot_auth import (
     BotPrincipal,
     NodeAuthorizationScope,
@@ -94,7 +95,7 @@ def _maybe_grant_loyalty_reward(db: Session, user: models.User) -> None:
     credit = (settings_row.loyalty_reward_credit or 0) * rewards_to_grant
     gb = (settings_row.loyalty_reward_gb or 0) * rewards_to_grant
     if credit:
-        user.balance = (user.balance or 0) + credit
+        wallet_service.adjust_in_session(db, user, credit, source_kind=wallet_service.LOYALTY_REWARD)
     if gb:
         user.total_quota_bytes = (user.total_quota_bytes or 0) + gb_to_bytes(gb)
     user.loyalty_rewards_given = due
@@ -191,11 +192,11 @@ def apply_referral_code(db: Session, user: models.User, referral_code: str,
         before = {"ref_balance": int(referrer.balance or 0), "ref_quota": int(referrer.total_quota_bytes or 0),
                   "new_balance": int(user.balance or 0), "new_quota": int(user.total_quota_bytes or 0)}
         if ref_credit:
-            referrer.balance = (referrer.balance or 0) + ref_credit
+            wallet_service.adjust_in_session(db, referrer, ref_credit, source_kind=wallet_service.REFERRAL_REWARD)
         if ref_gb:
             referrer.total_quota_bytes = (referrer.total_quota_bytes or 0) + gb_to_bytes(ref_gb)
         if new_credit:
-            user.balance = (user.balance or 0) + new_credit
+            wallet_service.adjust_in_session(db, user, new_credit, source_kind=wallet_service.REFERRAL_REWARD)
         if new_gb:
             user.total_quota_bytes = (user.total_quota_bytes or 0) + gb_to_bytes(new_gb)
         _referral_evidence(evidence_sink, referrer, user, before)

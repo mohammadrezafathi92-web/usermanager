@@ -29,6 +29,7 @@ from ..services import reseller_refund
 from ..services import payment_card_events
 from ..services import receipt_approval_effects as approval_effects
 from ..services import receipt_approval_topup
+from ..services import wallet_service
 from ..services import receipt_approval_registration as approval_registration
 from ..services.bot_auth import (
     BROADCAST,
@@ -1530,18 +1531,17 @@ def add_balance(
         db.refresh(user)
         return _user_response(user)
     if payload.amount < 0:
+        # A wallet-only transaction (design 9.2): become the writer and read
+        # the wallet phase before anything else.
+        wallet_service.begin_writer(db)
         user = bot_resources._get_user_or_403(db, principal, username, None)
         # Only a TOP-UP is blocked. A negative amount is the wallet being
         # spent on a purchase, and that purchase is already refused upstream
         # - but if one ever reaches here, refusing the debit too would be
         # the wrong way round: it would take the money and give nothing.
-        result = db.execute(
-            models.User.__table__.update()
-            .where(models.User.id == user.id, (models.User.balance + payload.amount) >= 0)
-            .values(balance=models.User.balance + payload.amount)
-        )
+        taken = wallet_service.debit_atomic(db, user.id, -payload.amount, source_kind=wallet_service.UNSPECIFIED)
         db.commit()
-        if result.rowcount == 0:
+        if not taken:
             raise HTTPException(400, "موجودی کیف پول کافی نیست")
         db.refresh(user)
     else:

@@ -14,12 +14,13 @@ import time
 from typing import Callable, Optional
 
 from fastapi import HTTPException
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from .. import models
 from . import accounting, bot_resources, receipt_approval_effects, receipt_approval_registration as registration
+from . import wallet_service
 from . import receipt_void_schema
 
 log = logging.getLogger(__name__)
@@ -41,13 +42,7 @@ def _start(db: Session) -> bool:
 
 
 def _lock_wallet_phase(db: Session, sqlite: bool) -> None:
-    wallet_state, _approval_state, _approvals = _tables()
-    query = select(wallet_state.c.phase).where(wallet_state.c.id == 1)
-    if not sqlite:
-        query = query.with_for_update(read=True)
-    phase = db.execute(query).scalar()
-    if phase != "normal":
-        raise HTTPException(status_code=503, detail="wallet_legacy_writer_unavailable")
+    wallet_service.require_legacy_phase(db)
 
 
 def _lock_approval_mode(db: Session):
@@ -127,13 +122,11 @@ def _credit(db: Session, user: models.User, amount: int, payment_card_id: Option
         # Record the state transition before the financial mutation, but in
         # the same transaction. Shadow effect failures remain best-effort.
         receipt_approval_effects.ShadowRecorder(db, approval_uuid).begin()
-    result = db.execute(models.User.__table__.update().where(
-        models.User.id == user.id).values(
-            balance=func.coalesce(models.User.balance, 0) + amount))
-    if result.rowcount != 1:
+    balance_after = wallet_service.credit_atomic(
+        db, user.id, amount, phase_checked=True,
+        source_kind=wallet_service.RECEIPT_TOPUP if matched_approval else wallet_service.UNSPECIFIED)
+    if balance_after is None:
         raise HTTPException(status_code=404, detail="کاربر پیدا نشد")
-    balance_after = int(db.execute(select(models.User.balance).where(
-        models.User.id == user.id).with_for_update()).scalar() or 0)
     entry = accounting.record(db, "wallet_topup", amount, user=user,
                               admin_id=user.owner_admin_id, payment_card_id=payment_card_id,
                               payment_method="card")
@@ -155,10 +148,11 @@ def _run_once(db: Session, principal, username: str, amount: int, payment_card_i
     # must keep working before the wallet runtime schema is available. SQLite
     # is still serialized by BEGIN IMMEDIATE; the UPDATE itself is atomic on
     # MariaDB. A receipt-correlated top-up must take the full L1/L2 chain.
-    if approval_uuid:
-        if not receipt_void_schema.is_ready():
-            raise HTTPException(status_code=503, detail="receipt_void_schema_not_ready")
-        _lock_wallet_phase(db, sqlite)                     # L1
+    if approval_uuid and not receipt_void_schema.is_ready():
+        raise HTTPException(status_code=503, detail="receipt_void_schema_not_ready")
+    # L1 - every wallet credit, with or without an approval. A no-op while
+    # the Receipt Void schema is not ready (there is no phase row then).
+    _lock_wallet_phase(db, sqlite)
     approval_state = None
     effective_mode = "off"
     if approval_uuid:

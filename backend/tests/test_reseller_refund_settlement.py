@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fastapi import HTTPException
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app import models
 from app.database import Base
@@ -99,7 +99,9 @@ def run(engine):
             try:
                 db.execute(stmt)
                 db.commit()
-            except IntegrityError:
+            except (IntegrityError, OperationalError) as exc:
+                if isinstance(exc, OperationalError):
+                    assert engine.dialect.name in ("mysql", "mariadb") and exc.orig.args[0] == 4025, exc
                 db.rollback()
             else:
                 raise AssertionError("database accepted an incomplete result")

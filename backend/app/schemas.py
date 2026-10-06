@@ -1313,6 +1313,9 @@ class BotSettingsOut(BaseModel):
     remote_deployed_at: Optional[dt.datetime] = None
     customer_bot_enabled: bool = True
     customer_menu_disabled_items: Optional[str] = ""
+    required_channel_id: Optional[str] = ""
+    required_channel_url: Optional[str] = ""
+    customer_terms_text: Optional[str] = ""
     # See models.BotSettings.telegram_api_proxy_url's docstring - base URL
     # of a self-hosted reverse proxy to Telegram, applied to EVERY bot
     # instance (this shared one + every Admin/Seller's own bot), for a main
@@ -1340,6 +1343,9 @@ class BotSettingsUpdate(BaseModel):
     enabled: Optional[bool] = None
     customer_bot_enabled: Optional[bool] = None
     customer_menu_disabled_items: Optional[str] = None
+    required_channel_id: Optional[str] = None
+    required_channel_url: Optional[str] = None
+    customer_terms_text: Optional[str] = None
     telegram_api_proxy_url: Optional[str] = None
     # Transport proxy (socks5:// or http://) - a different mechanism from the
     # reverse proxy above; see models.BotSettings.telegram_proxy_url.

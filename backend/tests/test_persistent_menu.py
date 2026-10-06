@@ -90,7 +90,25 @@ async def run():
     panel_bridge.api.get_customer_menu_disabled_items = AsyncMock(return_value=[])
     kb = await _isolated(keyboards.persistent_menu_kb())
     labels = [b.text for row in kb.keyboard for b in row]
-    check("all ten items when nothing is disabled", len(labels), len(keyboards.CUSTOMER_MENU_ITEMS))
+    check("all customer items when nothing is disabled", len(labels), len(keyboards.CUSTOMER_MENU_ITEMS))
+    styles = {button.text: button.style for row in kb.keyboard for button in row}
+    check("renewal and purchase get Telegram's blue primary style",
+          [styles["♻️ تمدید سرویس"], styles["🎁 خرید اشتراک"]], ["primary", "primary"])
+    check("wallet and services get the green success style",
+          [styles["💵 کیف پول + شارژ"], styles["👤 سرویس‌های من"]], ["success", "success"])
+    check("native color styles are included in the Telegram API payload",
+          kb.model_dump(exclude_none=True, by_alias=True)["keyboard"][0][0].get("style"), "primary")
+    check("secondary actions keep the app-default style",
+          [styles["🔗 وصل کردن حساب قبلی"], styles["🆔 آیدی عددی من"], styles["📋 تعرفه سرویس‌ها"]], [None, None, None])
+    check("agent request is highlighted green",
+          styles["🤝 درخواست نمایندگی"], "success")
+    check("tariffs and agent request occupy the last full-width rows",
+          [len(row) for row in kb.keyboard[-2:]], [1, 1])
+    inline = await _isolated(keyboards.main_menu_kb(None))
+    inline_styles = {button.text: button.style for row in inline.inline_keyboard for button in row}
+    check("inline menu uses the same blue purchase style", inline_styles["🎁 خرید اشتراک"], "primary")
+    check("inline menu uses the same green wallet style", inline_styles["💵 کیف پول + شارژ"], "success")
+    check("inline menu exposes the tariff screen", "📋 تعرفه سرویس‌ها" in inline_styles, True)
     check("two per row", all(len(r) <= 2 for r in kb.keyboard), True)
     check("it resizes instead of taking half the screen", kb.resize_keyboard, True)
     check("and stays open", kb.is_persistent, True)
@@ -117,7 +135,7 @@ async def run():
         called["buy"] = call
 
     persistent_menu._ACTIONS["cust_buy"] = (fake_buy, ("state",))
-    msg = FakeMessage("🟧 خرید اکانت جدید")
+    msg = FakeMessage("🎁 خرید اشتراک")
     state = AsyncMock()
     await _isolated(persistent_menu.on_menu_tap(msg, state=state, bot=object()))
     check("the matching handler ran", "buy" in called, True)
@@ -146,13 +164,13 @@ async def run():
     # vanished with no reply. The bar is pinned to a CHAT, not a role, so
     # whoever has it must get an answer from it.
     called.clear()
-    await _isolated(persistent_menu.on_menu_tap(FakeMessage("🟧 خرید اکانت جدید"), state=AsyncMock(), bot=object()))
+    await _isolated(persistent_menu.on_menu_tap(FakeMessage("🎁 خرید اشتراک"), state=AsyncMock(), bot=object()))
     check("an admin gets the same handler, not nothing", "buy" in called, True)
 
     print("\n--- a disabled item cannot be reached by typing its label ---")
     panel_bridge.api.get_customer_menu_disabled_items = AsyncMock(return_value=["cust_buy"])
     called.clear()
-    await _isolated(persistent_menu.on_menu_tap(FakeMessage("🟧 خرید اکانت جدید"), state=AsyncMock(), bot=object()))
+    await _isolated(persistent_menu.on_menu_tap(FakeMessage("🎁 خرید اشتراک"), state=AsyncMock(), bot=object()))
     check("switched off means off, however it is reached", called, {})
     panel_bridge.api.get_customer_menu_disabled_items = AsyncMock(return_value=[])
 
@@ -172,12 +190,12 @@ async def run():
 
     persistent_menu._ACTIONS["admin_create"] = (fake_admin_create, ("state", "acting_scope"))
     called.clear()
-    await persistent_menu.on_menu_tap(FakeMessage("🟩 ساخت کاربر"), state=AsyncMock(), bot=object())
+    await persistent_menu.on_menu_tap(FakeMessage("➕ ساخت کاربر"), state=AsyncMock(), bot=object())
     check("the handler got the freshly-resolved scope", called.get("admin_create"), seller_scope)
 
     print("\n--- a full-admin-only item refuses a seller, not silently ---")
     called.clear()
-    msg = FakeMessage("🟪 پیام همگانی")
+    msg = FakeMessage("📣 پیام همگانی")
     await persistent_menu.on_menu_tap(msg, state=AsyncMock(), bot=object())
     check("the broadcast handler did not run", "admin_broadcast" in called, False)
     check("...and the seller was told why, not left with silence",
@@ -186,7 +204,7 @@ async def run():
     print("\n--- a non-admin typing an admin label also gets a refusal ---")
     persistent_menu.resolve_admin_scope = AsyncMock(return_value=None)  # not an admin at all
     called.clear()
-    msg = FakeMessage("🟩 ساخت کاربر")
+    msg = FakeMessage("➕ ساخت کاربر")
     await persistent_menu.on_menu_tap(msg, state=AsyncMock(), bot=object())
     check("admin_create did not run for a plain customer", "admin_create" in called, False)
     check("...they were told it's admin-only, not left with silence",
@@ -205,8 +223,8 @@ check("persistent_menu comes first", names.index("persistent_menu") < names.inde
 print("\n--- /start puts the bar in place for a customer ---")
 from app.telegram_bot.handlers import start as start_handlers  # noqa: E402
 
-src = inspect.getsource(start_handlers.cmd_start)
-check("/start sends it", "send_menu_bar" in src, True)
+src = inspect.getsource(start_handlers.send_start_screen)
+check("/start and onboarding share the menu-screen sender", "send_menu_bar" in src, True)
 # Deliberately NOT gated on role any more: the bar belongs to a chat, so
 # restricting who receives it only creates chats where it is present and
 # does nothing.

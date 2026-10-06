@@ -118,6 +118,8 @@ _ACTIONS = {
     "cust_support": (customer.cb_support, ()),
     "cust_link": (customer.cb_link_start, ("state",)),
     "cust_myid": (customer.cb_myid, ()),
+    "cust_agent": (customer.cb_agent_request, ("state",)),
+    "cust_prices": (customer.cb_prices, ("state",)),
     # Admin/seller entries. "acting_scope" is a third `needs` kwarg (on top
     # of the "state"/"bot" the customer entries already use) because these
     # handlers normally get it from admin_users.router's own filter-based DI

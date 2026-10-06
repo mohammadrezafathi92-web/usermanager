@@ -37,6 +37,14 @@ immutable, bounded-value table. An exact current locking read validates
 the identity and its Telegram value; a newly inserted row's owner snapshot
 must match too. Missing/mismatched data refuses the operation. No 1020,
 deadlock or other database exception is caught and treated as success.
-CI forces a stale read snapshot before another session commits the identity
-and checks that both User creations survive. The earlier duplicate-update
-1020 handling was rejected by this test and removed before merge.
+MariaDB 11.6.2+ defaults to snapshot isolation, where a locking read of a
+row outside the snapshot can roll back the entire transaction with 1020.
+See [MariaDB's snapshot-isolation contract](https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-system-variables).
+Transient MariaDB creation conflicts return 503
+`wallet_creation_retry_required`; the factory does not commit, roll back,
+or retry just part of its caller's unit of work. The caller/request must
+roll back and replay the whole transaction. CI forces a stale snapshot and
+checks that a fresh whole-request retry preserves both creations with one
+identity. The panel refunds its already-committed reseller debit when
+construction fails. This batch does not add automatic creation retries to
+legacy callers. The earlier unsafe statement-only retry was removed.

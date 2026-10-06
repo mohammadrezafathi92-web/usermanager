@@ -455,10 +455,18 @@ def create_user(
         data["max_concurrent_sessions"] = package.max_concurrent_sessions
         data["package_id"] = package.id
 
-    user = wallet_accounts.create_user_with_wallet(db, **data)
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+    try:
+        user = wallet_accounts.create_user_with_wallet(db, **data)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    except Exception:
+        # charge_for_package commits its debit before User construction.
+        # A failed account transaction must not leave that charge behind.
+        db.rollback()
+        if package:
+            admin_billing.refund_for_package(db, admin, package, units=1)
+        raise
 
     if package:
         # Mirrors bulk_create_users' own try/except below: an outright crash

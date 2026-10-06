@@ -21,6 +21,8 @@ from sqlalchemy import create_engine, event, select, func
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from app import models, models_receipt_void as rv
+from app import schemas
+from app.routers import users as users_router
 from app.services import receipt_void_schema, user_ops, wallet_accounts
 
 failures = []
@@ -149,6 +151,24 @@ def scenario(engine, name):
             check(name + " refused delete keeps live account " + phase, account(old_id)["id"], fresh["id"])
         db.execute(rv.wallet_runtime_state.update().values(phase="normal"))
         db.commit()
+        admin.balance = 1000
+        package = models.Package(name="creation_refund", price=100, cooperation_price=100,
+                                 quota_gb=1, duration_days=1, owner_admin_id=admin.id)
+        db.add(package)
+        db.commit()
+        before_balance = admin.balance
+        with patch.object(users_router, "_get_scoped_package", return_value=package), \
+                patch.object(wallet_accounts, "create_user_with_wallet",
+                             side_effect=HTTPException(503, "wallet_creation_retry_required")):
+            try:
+                users_router.create_user(schemas.UserCreate(username="failed_creation", package_id=package.id),
+                                         db=db, admin=admin, _perm=None)
+                check(name + " panel conflict fails", False)
+            except HTTPException as exc:
+                check(name + " panel conflict is retryable", exc.status_code, 503)
+        db.refresh(admin)
+        check(name + " panel failed creation refunds committed debit", admin.balance, before_balance)
+        check(name + " panel conflict creates no user", db.query(models.User).filter_by(username="failed_creation").count(), 0)
         check(name + " no financial operations", count(rv.wallet_operations), 0)
         check(name + " no financial lots", count(rv.wallet_lots), 0)
         owner_id = admin.id
@@ -159,9 +179,16 @@ def scenario(engine, name):
             own = Session()
             try:
                 barrier.wait(timeout=10)
-                customer = wallet_accounts.create_user_with_wallet(
-                    own, username=f"race_{index}", telegram_id=999, owner_admin_id=owner_id)
-                own.commit()
+                for attempt in range(3):
+                    try:
+                        customer = wallet_accounts.create_user_with_wallet(
+                            own, username=f"race_{index}", telegram_id=999, owner_admin_id=owner_id)
+                        own.commit()
+                        break
+                    except HTTPException as exc:
+                        if exc.detail != "wallet_creation_retry_required" or attempt == 2:
+                            raise
+                        own.rollback()  # replay the whole request, not the identity statement
                 return own.execute(select(rv.wallet_accounts.c.customer_identity_id).where(
                     rv.wallet_accounts.c.user_id == customer.id)).scalar_one()
             finally:
@@ -193,6 +220,17 @@ def scenario(engine, name):
 
             try:
                 with patch.object(wallet_accounts, "_identity", side_effect=winner_after_snapshot):
+                    try:
+                        wallet_accounts.create_user_with_wallet(
+                            loser, username="snapshot_loser", telegram_id=998, owner_admin_id=owner_id)
+                        loser.commit()
+                    except HTTPException as exc:
+                        check(name + " snapshot conflict requests whole transaction retry",
+                              (exc.status_code, exc.detail), (503, "wallet_creation_retry_required"))
+                        loser.rollback()
+                # A new request starts a fresh transaction; replay all writes.
+                if not loser.query(models.User).filter_by(username="snapshot_loser").first():
+                    loser.rollback()
                     wallet_accounts.create_user_with_wallet(
                         loser, username="snapshot_loser", telegram_id=998, owner_admin_id=owner_id)
                     loser.commit()
@@ -233,6 +271,21 @@ for dialect, code in (("mysql", 1020), ("mariadb", 1020),
         check(f"{dialect} {code} propagated", exc is error)
     check(f"{dialect} {code} never rolls back caller", fake.rollback.call_count, 0)
     check(f"{dialect} {code} never commits caller", fake.commit.call_count, 0)
+
+for dialect, code in (("mysql", 1020), ("mariadb", 1020), ("mariadb", 1213), ("mariadb", 1205)):
+    fake = Mock()
+    fake.get_bind.return_value = SimpleNamespace(dialect=SimpleNamespace(name=dialect))
+    error = OperationalError("create", {}, Exception(code, "injected"))
+    with patch.object(wallet_accounts, "_create_user_with_wallet", side_effect=error):
+        try:
+            wallet_accounts.create_user_with_wallet(fake, username="retry")
+            check(f"{dialect} {code} creation must refuse", False)
+        except HTTPException as exc:
+            check(f"{dialect} {code} creation requests full retry", (exc.status_code, exc.detail),
+                  (503, "wallet_creation_retry_required"))
+            check(f"{dialect} {code} keeps original cause", exc.__cause__ is error)
+    check(f"{dialect} {code} creation never discards caller writes", fake.rollback.call_count, 0)
+    check(f"{dialect} {code} creation never commits", fake.commit.call_count, 0)
 
 for dialect, row, allowed in (
         ("mysql", {"id": 77, "telegram_id": 900, "owner_admin_id_snapshot": None}, True),

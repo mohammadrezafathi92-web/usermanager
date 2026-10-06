@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.exc import OperationalError
 
 from .. import models, models_receipt_void as rv
 from . import hierarchy, receipt_void_schema, wallet_service
@@ -62,6 +63,19 @@ def _identity(db, *, lineage, telegram_id, owner_admin_id):
 
 def create_user_with_wallet(db, **attributes):
     """The single User constructor; never commits or contacts a node."""
+    try:
+        return _create_user_with_wallet(db, **attributes)
+    except OperationalError as exc:
+        code = getattr(exc.orig, "args", (None,))[0]
+        if db.get_bind().dialect.name in ("mysql", "mariadb") and code in (1020, 1205, 1213):
+            # MariaDB snapshot conflicts may roll back the ENTIRE transaction.
+            # Never retry just the identity statement or discard caller writes
+            # ourselves. The caller must roll back and retry the whole unit.
+            raise HTTPException(503, "wallet_creation_retry_required") from exc
+        raise
+
+
+def _create_user_with_wallet(db, **attributes):
     ready = receipt_void_schema.is_ready()
     if ready:
         wallet_service.require_legacy_phase(db)

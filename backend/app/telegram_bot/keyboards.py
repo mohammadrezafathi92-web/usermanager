@@ -45,43 +45,41 @@ PROTOCOL_LABELS = {
 }
 
 
+# Telegram Bot API 9.4 added native semantic button styles. These are actual
+# button backgrounds (blue/green/red), unlike colored emoji in the label.
+BUTTON_STYLES = {"primary": "primary", "success": "success", "danger": "danger"}
+
 # Every toggleable customer main-menu button, in display order - keyed by
 # the same MenuCB action string used below. Shown to the admin in Settings >
 # ربات > منوی مشتری as a matching set of checkboxes (see
 # routers/telegram_bot_settings.py's BotSettings.customer_menu_disabled_items)
 # and used here to filter which buttons actually get built.
 CUSTOMER_MENU_ITEMS = [
-    # A colored SQUARE prefix on each item - requested 2026-09-23, through
-    # several rounds of feedback landing on this:
-    #  1) "رنگی‌تر باشه، تو چشم‌تر" (more colorful, more eye-catching) -
-    #     first try was a circle prefix next to the old icon.
-    #  2) "یه دایره ابی اومده کنارش اون نباشه خود گزینه رنگی بشه" (a blue
-    #     circle showed up NEXT TO it - don't want that) - the circle
-    #     replaced the old icon instead of sitting beside it.
-    #  3) "خوده دکمه باید رنگی بشه" (the button itself should look
-    #     colored) - upgraded circle to a bigger/more solid square, AND
-    #     (misreading this instruction) dropped the text entirely on 4
-    #     "important" buttons, leaving just a colored glyph.
-    #  4) "جای اسم‌ها چهارتا ایکون رنگی اومده" (four colored icons showed
-    #     up INSTEAD OF THE NAMES) - that #3 tradeoff was wrong: the Bot
-    #     API (both InlineKeyboardButton and KeyboardButton) has no color
-    #     field at all - text/emoji is the entire button, there is no way
-    #     to tint a button's background regardless of what's typed into
-    #     its label. A label with no text is just an unreadable button,
-    #     not "a colored option". Reverted - every item keeps its square
-    #     AND its name; the square is as close to "a colored button" as
-    #     this API allows, full stop.
-    ("cust_account", "🟦 اکانت من"),
-    ("cust_usage", "🟪 مصرف سرویس‌ها"),
-    ("cust_renew", "🟩 تمدید سرویس"),
-    ("cust_buy", "🟧 خرید اکانت جدید"),
-    ("cust_topup", "🟨 افزایش اعتبار"),
-    ("cust_tutorials", "🟫 آموزش"),
-    ("cust_referral", "🟥 دعوت دوستان"),
-    ("cust_support", "⬜ پشتیبانی"),
-    ("cust_link", "⬛ وصل کردن حساب قبلی"),
-    ("cust_myid", "🟦 آیدی عددی من"),
+    # Core shop actions first, following the reference bot's row hierarchy.
+    ("cust_renew", "♻️ تمدید سرویس"),
+    ("cust_buy", "🎁 خرید اشتراک"),
+    ("cust_topup", "💵 کیف پول + شارژ"),
+    ("cust_account", "👤 سرویس‌های من"),
+    ("cust_support", "🎧 پشتیبانی"),
+    ("cust_tutorials", "📚 آموزش"),
+    ("cust_referral", "👥 دعوت دوستان"),
+    ("cust_usage", "📊 مصرف سرویس‌ها"),
+    ("cust_link", "🔗 وصل کردن حساب قبلی"),
+    ("cust_myid", "🆔 آیدی عددی من"),
+    ("cust_agent", "🤝 درخواست نمایندگی"),
+    ("cust_prices", "📋 تعرفه سرویس‌ها"),
 ]
+
+CUSTOMER_MENU_STYLES = {
+    "cust_renew": BUTTON_STYLES["primary"],
+    "cust_buy": BUTTON_STYLES["primary"],
+    "cust_topup": BUTTON_STYLES["success"],
+    "cust_account": BUTTON_STYLES["success"],
+    "cust_support": BUTTON_STYLES["primary"],
+    "cust_tutorials": BUTTON_STYLES["primary"],
+    "cust_referral": BUTTON_STYLES["primary"],
+    "cust_agent": BUTTON_STYLES["success"],
+}
 
 # Same idea as CUSTOMER_MENU_ITEMS, one list per admin tier so main_menu_kb
 # below and handlers/persistent_menu.py's admin bar always show the exact
@@ -91,26 +89,27 @@ CUSTOMER_MENU_ITEMS = [
 # some hidden" - "📋 لیست کاربران" vs "📋 لیست کاربران من" is a different
 # label for what's still the same admin_list action.
 ADMIN_MENU_ITEMS_FULL = [
-    # Same colored-square prefix idea as CUSTOMER_MENU_ITEMS above - kept
-    # the same color per action across both tiers below (admin_create is
-    # 🟩 in both lists, etc.) so a seller promoted to admin sees a familiar
-    # bar rather than everything reshuffling. Every button keeps its text,
-    # same as the customer list now does - see CUSTOMER_MENU_ITEMS's own
-    # comment for why an icon-only button was reverted.
-    ("admin_create", "🟩 ساخت کاربر"),
-    ("admin_list", "🟦 لیست کاربران"),
-    ("admin_pending", "🟧 درخواست‌های در انتظار"),
-    ("admin_broadcast", "🟪 پیام همگانی"),
-    ("admin_dm", "🟨 پیام به یک کاربر"),
-    ("admin_search", "⬜ جستجوی کاربر"),
-    ("admin_stats", "🟫 گزارش فروش"),
-    ("admin_history", "⬛ تاریخچه درخواست‌ها"),
+    ("admin_create", "➕ ساخت کاربر"),
+    ("admin_list", "👥 لیست کاربران"),
+    ("admin_pending", "📥 درخواست‌های در انتظار"),
+    ("admin_broadcast", "📣 پیام همگانی"),
+    ("admin_dm", "✉️ پیام به یک کاربر"),
+    ("admin_search", "🔎 جستجوی کاربر"),
+    ("admin_stats", "📊 گزارش فروش"),
+    ("admin_history", "🕘 تاریخچه درخواست‌ها"),
 ]
 
+ADMIN_MENU_STYLES = {
+    "admin_create": BUTTON_STYLES["success"],
+    "admin_list": BUTTON_STYLES["primary"],
+    "admin_pending": BUTTON_STYLES["primary"],
+    "admin_broadcast": BUTTON_STYLES["primary"],
+}
+
 ADMIN_MENU_ITEMS_SELLER = [
-    ("admin_create", "🟩 ساخت کاربر"),
-    ("admin_list", "🟦 لیست کاربران من"),
-    ("admin_search", "⬜ جستجوی کاربر"),
+    ("admin_create", "➕ ساخت کاربر"),
+    ("admin_list", "👥 لیست کاربران من"),
+    ("admin_search", "🔎 جستجوی کاربر"),
 ]
 
 
@@ -134,11 +133,11 @@ async def main_menu_kb(scope: dict | None) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if scope and scope.get("is_full_admin"):
         for action, label in ADMIN_MENU_ITEMS_FULL:
-            kb.button(text=label, callback_data=MenuCB(action=action))
+            kb.button(text=label, callback_data=MenuCB(action=action), style=ADMIN_MENU_STYLES.get(action))
         kb.adjust(2, 2, 2, 2)
     elif scope:
         for action, label in ADMIN_MENU_ITEMS_SELLER:
-            kb.button(text=label, callback_data=MenuCB(action=action))
+            kb.button(text=label, callback_data=MenuCB(action=action), style=ADMIN_MENU_STYLES.get(action))
         kb.adjust(1)
     else:
         # local import - avoids a circular import at module load (panel_bridge
@@ -149,14 +148,20 @@ async def main_menu_kb(scope: dict | None) -> InlineKeyboardMarkup:
         shown = 0
         for action, label in CUSTOMER_MENU_ITEMS:
             if action not in disabled:
-                kb.button(text=label, callback_data=MenuCB(action=action))
+                kb.button(text=label, callback_data=MenuCB(action=action), style=CUSTOMER_MENU_STYLES.get(action))
                 shown += 1
         # Two per row - the list is long enough (up to 10 items) that one
         # button per row pushed the bottom half off-screen on a phone. An
         # odd count leaves the LAST button full-width on its own row rather
         # than half-width next to empty space.
-        rows = [2] * (shown // 2)
-        if shown % 2:
+        # Keep the two information/engagement destinations visible as
+        # full-width rows at the bottom, like the reference shop bot.
+        rows = [2] * max(0, (shown - 2) // 2)
+        if shown > 2 and (shown - 2) % 2:
+            rows.append(1)
+        if shown >= 2:
+            rows.extend([1, 1])
+        elif shown:
             rows.append(1)
         kb.adjust(*(rows or [1]))
     return kb.as_markup()
@@ -193,15 +198,29 @@ async def persistent_menu_kb(scope: dict | None = None) -> ReplyKeyboardMarkup |
         admin_items = ADMIN_MENU_ITEMS_FULL
     elif scope:
         admin_items = ADMIN_MENU_ITEMS_SELLER
-    labels = [label for _, label in admin_items] + [
-        label for action, label in CUSTOMER_MENU_ITEMS if action not in disabled
+    items = list(admin_items) + [
+        (action, label) for action, label in CUSTOMER_MENU_ITEMS if action not in disabled
     ]
+    labels = [label for _, label in items]
     if not labels:
         return None
+    engagement_actions = {"cust_agent", "cust_prices"}
+    regular_items = [item for item in items if item[0] not in engagement_actions]
+    engagement_items = [item for item in items if item[0] in engagement_actions]
     rows = [
-        [KeyboardButton(text=label) for label in labels[i:i + 2]]
-        for i in range(0, len(labels), 2)
+        [
+            KeyboardButton(
+                text=label,
+                style=(ADMIN_MENU_STYLES | CUSTOMER_MENU_STYLES).get(action),
+            )
+            for action, label in regular_items[i:i + 2]
+        ]
+        for i in range(0, len(regular_items), 2)
     ]
+    rows.extend([
+        [KeyboardButton(text=label, style=CUSTOMER_MENU_STYLES.get(action))]
+        for action, label in engagement_items
+    ])
     return ReplyKeyboardMarkup(
         keyboard=rows,
         resize_keyboard=True,   # without this Telegram gives it half the screen

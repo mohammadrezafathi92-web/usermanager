@@ -90,6 +90,8 @@ const CUSTOMER_MENU_ITEM_KEYS = [
   "cust_support",
   "cust_link",
   "cust_myid",
+  "cust_agent",
+  "cust_prices",
 ];
 
 function UpdateCard({ t }) {
@@ -1285,6 +1287,31 @@ export default function Settings() {
               describes neither what it does nor where it goes. Set here
               rather than in @BotFather because it applies to EVERY bot this
               panel runs, and doing it by hand per reseller never ends. */}
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("settings.requiredChannelId")}</label>
+            <input
+              className="input" dir="ltr" placeholder="@my_channel or -1001234567890"
+              value={botForm.required_channel_id || ""}
+              onChange={(e) => setBotForm((f) => ({ ...f, required_channel_id: e.target.value }))}
+            />
+            <div className="hint">{t("settings.requiredChannelHint")}</div>
+            <label className="block text-sm text-gray-600 mb-1 mt-3">{t("settings.requiredChannelUrl")}</label>
+            <input
+              className="input" dir="ltr" placeholder="https://t.me/my_channel"
+              value={botForm.required_channel_url || ""}
+              onChange={(e) => setBotForm((f) => ({ ...f, required_channel_url: e.target.value }))}
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("settings.customerTerms")}</label>
+            <textarea
+              className="input min-h-40" maxLength={3500} rows={8}
+              value={botForm.customer_terms_text || ""}
+              onChange={(e) => setBotForm((f) => ({ ...f, customer_terms_text: e.target.value }))}
+              placeholder={t("settings.customerTermsPlaceholder")}
+            />
+            <div className="hint">{t("settings.customerTermsHint")}</div>
+          </div>
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("settings.miniappButtonLabel")}</label>
             <input

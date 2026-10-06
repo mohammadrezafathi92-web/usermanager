@@ -19,6 +19,7 @@ docstring."""
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import threading
@@ -110,6 +111,132 @@ class MaintenanceModeMiddleware(BaseMiddleware):
                 except Exception:
                     pass
                 return None
+        return await handler(event, data)
+
+
+class CustomerOnboardingMiddleware(BaseMiddleware):
+    """Enforce the configured channel membership and current terms version
+    before any customer handler runs. Empty settings are deliberately
+    disabled, preserving current behavior until an admin configures them."""
+
+    CHECK_CALLBACK = "onboarding:check"
+    ACCEPT_CALLBACK_PREFIX = "onboarding:accept:"
+    ACCEPT_DIGEST_HEX_LENGTH = 46  # 18-byte prefix + 46 = Telegram's 64-byte callback_data limit.
+    _member_cache: dict[tuple[str, int], tuple[float, bool]] = {}
+    _member_cache_seconds = 60
+
+    @classmethod
+    async def _is_member(cls, bot: Bot, channel_id: str, telegram_id: int, *, force: bool = False) -> bool | None:
+        now = asyncio.get_running_loop().time()
+        cache_key = (channel_id, telegram_id)
+        cached = cls._member_cache.get(cache_key)
+        if not force and cached and now - cached[0] < cls._member_cache_seconds:
+            return cached[1]
+        try:
+            member = await bot.get_chat_member(channel_id, telegram_id)
+        except Exception as exc:  # Telegram can reject the check if bot isn't in/admin of the channel.
+            logger.warning("اجبار عضویت: بررسی کانال انجام نشد (%s)", type(exc).__name__)
+            return None
+        status = getattr(member.status, "value", member.status)
+        result = status in {"member", "administrator", "creator"}
+        cls._member_cache[cache_key] = (now, result)
+        return result
+
+    @staticmethod
+    async def _send(event, text: str, markup=None) -> None:
+        target = event.message if isinstance(event, CallbackQuery) else event
+        await target.answer(text, reply_markup=markup, parse_mode=None)
+        if isinstance(event, CallbackQuery):
+            await event.answer()
+
+    async def __call__(self, handler, event, data):
+        from .admin_scope import resolve_admin_scope
+        from .panel_bridge import ApiError, api
+
+        user = data.get("event_from_user")
+        if not user or await resolve_admin_scope(user.id):
+            return await handler(event, data)
+
+        try:
+            onboarding = await api.get_customer_onboarding_config()
+        except ApiError:
+            await self._send(event, "تنظیمات ورود موقتاً در دسترس نیست. کمی بعد دوباره تلاش کنید.")
+            return None
+
+        channel_id = (onboarding.get("required_channel_id") or "").strip()
+        callback_data = event.data if isinstance(event, CallbackQuery) else ""
+        if channel_id:
+            member = await self._is_member(
+                data["bot"], channel_id, user.id,
+                force=callback_data == self.CHECK_CALLBACK or callback_data.startswith(self.ACCEPT_CALLBACK_PREFIX),
+            )
+            if member is None:
+                await self._send(
+                    event,
+                    "امکان بررسی عضویت نیست. مدیر ربات باید دسترسی بررسی کانال را تنظیم کند؛ لطفاً بعداً تلاش کنید.",
+                )
+                return None
+            if not member:
+                if callback_data == self.CHECK_CALLBACK:
+                    await event.answer("هنوز عضویت شما در کانال تأیید نشده است.", show_alert=True)
+                    return None
+                join_url = (onboarding.get("required_channel_url") or "").strip()
+                buttons = []
+                if join_url:
+                    buttons.append([InlineKeyboardButton(
+                        text="📢 عضویت در کانال", url=join_url, style="primary",
+                    )])
+                buttons.append([InlineKeyboardButton(
+                    text="✅ عضو شدم، بررسی کن", callback_data=self.CHECK_CALLBACK, style="success",
+                )])
+                await self._send(
+                    event,
+                    "برای استفاده از ربات، ابتدا عضو کانال شوید و بعد دکمهٔ بررسی عضویت را بزنید.",
+                    InlineKeyboardMarkup(inline_keyboard=buttons),
+                )
+                return None
+
+        terms = (onboarding.get("customer_terms_text") or "").strip()
+        if terms:
+            digest = hashlib.sha256(terms.encode("utf-8")).hexdigest()
+            accepted_callback = callback_data.startswith(self.ACCEPT_CALLBACK_PREFIX)
+            sent_digest = callback_data[len(self.ACCEPT_CALLBACK_PREFIX):] if accepted_callback else ""
+            if accepted_callback and sent_digest == digest[:self.ACCEPT_DIGEST_HEX_LENGTH]:
+                try:
+                    await api.accept_customer_terms(user.id, digest)
+                except ApiError:
+                    await self._send(event, "ثبت پذیرش قوانین انجام نشد؛ لطفاً دوباره تلاش کنید.")
+                    return None
+                await self._send(event, "✅ پذیرش قوانین ثبت شد.")
+                from .handlers.start import send_start_screen
+
+                await send_start_screen(event.message, user)
+                return None
+            try:
+                accepted = await api.customer_terms_accepted(user.id, digest)
+            except ApiError:
+                await self._send(event, "وضعیت پذیرش قوانین بررسی نشد؛ لطفاً کمی بعد تلاش کنید.")
+                return None
+            if not accepted:
+                await self._send(
+                    event,
+                    "📜 قوانین و شرایط استفاده\n\n" + terms,
+                    InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(
+                            text="✅ قوانین را می‌پذیرم",
+                            callback_data=self.ACCEPT_CALLBACK_PREFIX + digest[:self.ACCEPT_DIGEST_HEX_LENGTH],
+                            style="success",
+                        )
+                    ]]),
+                )
+                return None
+
+        if isinstance(event, CallbackQuery) and callback_data == self.CHECK_CALLBACK:
+            await event.answer("عضویت تأیید شد.")
+            from .handlers.start import send_start_screen
+
+            await send_start_screen(event.message, user)
+            return None
         return await handler(event, data)
 
 # Populates Telegram's native "Menu" button (the slash-command popup next
@@ -833,6 +960,9 @@ async def _main(
     maintenance_mw = MaintenanceModeMiddleware()
     dp.message.outer_middleware(maintenance_mw)
     dp.callback_query.outer_middleware(maintenance_mw)
+    onboarding_mw = CustomerOnboardingMiddleware()
+    dp.message.outer_middleware(onboarding_mw)
+    dp.callback_query.outer_middleware(onboarding_mw)
     dp.include_router(build_router())
 
     polling_task = asyncio.create_task(dp.start_polling(bot, handle_signals=False))

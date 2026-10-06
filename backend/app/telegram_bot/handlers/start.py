@@ -56,17 +56,25 @@ async def _welcome_text(tg_user: User, scope: dict | None = None) -> str:
         )
     return (
         f"👋 سلام {_display_name(tg_user, None)}! به ربات فروش اکانت خوش اومدید.\n\n"
-        "اگه قبلا از ما اکانت نداشتید، از «🛒 خرید اکانت جدید» شروع کنید.\n"
+        "اگه قبلا از ما اکانت نداشتید، از «🎁 خرید اشتراک» شروع کنید.\n"
         "اگه قبلا اکانت داشتید ولی این ربات شما رو نمی‌شناسه، از «🔗 وصل کردن حساب قبلی» استفاده کنید."
     )
+
+
+async def send_start_screen(message: Message, tg_user: User) -> None:
+    """Send the shared welcome/menu screen after /start or onboarding."""
+    scope = await resolve_admin_scope(tg_user.id)
+    text = await _welcome_text(tg_user, scope)
+    await message.answer(text, reply_markup=await main_menu_kb(scope))
+    from .persistent_menu import send_menu_bar
+
+    await send_menu_bar(message, scope)
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
-    scope = await resolve_admin_scope(message.from_user.id)
-    text = await _welcome_text(message.from_user, scope)
-    await message.answer(text, reply_markup=await main_menu_kb(scope))
+    await send_start_screen(message, message.from_user)
     # The shop bar goes under the text box for EVERYONE, admins included -
     # with their own quick-actions prepended (see keyboards.persistent_menu_kb).
     # It is pinned to a chat, not to a role, so restricting who receives it
@@ -77,9 +85,6 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     # what they need to test their own shop.
     # Sent as its own message because Telegram will not carry an inline
     # keyboard and a reply keyboard on the same one.
-    from .persistent_menu import send_menu_bar
-
-    await send_menu_bar(message, scope)
 
 
 @router.message(Command("help"))

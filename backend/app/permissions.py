@@ -103,6 +103,7 @@ PERMISSION_GROUPS: dict[str, dict] = {
             "create_users": "ساخت مشتری جدید",
             "edit_users": "ویرایش مشتری (سهمیه، تاریخ، وضعیت)",
             "delete_users": "حذف مشتری",
+            "cancel_unpaid_services": "لغو سرویس پرداخت‌نشده و برگشت ماندهٔ اعتبار",
             "bulk_actions": "عملیات گروهی (ساخت/تغییر/حذف دسته‌جمعی و پیام انبوه)",
             "export_users": "خروجی گرفتن از لیست مشتریان",
             "spend_credit": "تمدید و اعمال بسته (خرج کردن اعتبار)",
@@ -142,6 +143,10 @@ PERMISSION_CHOICES: dict[str, str] = {
     for group in PERMISSION_GROUPS.values()
     for key, label in group["perms"].items()
 }
+
+# New financial capabilities were never legacy rights. Require an explicit
+# grant; do not add them to every old seller or default preset on startup.
+OPT_IN_PERMISSIONS = frozenset({"cancel_unpaid_services"})
 
 # Old broad toggle / now-removed granular key -> equivalent SURVIVING
 # key(s), applied transparently whenever permissions are read (see

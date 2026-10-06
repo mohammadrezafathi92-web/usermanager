@@ -2511,3 +2511,8 @@ class AdPost(Base):
 # both is verified at startup by services/receipt_void_schema.py.
 Index("uq_api_keys_key_instance_uuid", ApiKey.key_instance_uuid, unique=True)
 Index("uq_ledger_entries_reversal_of_id", LedgerEntry.reversal_of_id, unique=True)
+
+# Register the additive reseller refund provenance table before create_all.
+from .models_reseller_refund import (  # noqa: E402,F401
+    ResellerSaleBasis, ResellerRefundOperation, ResellerRefundStep,
+)

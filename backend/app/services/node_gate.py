@@ -232,8 +232,11 @@ def node_gate(node_id: int, *, session_factory: Optional[Callable] = None) -> It
             mode_lock.release()
 
 
+from .reseller_refund_fence import barrier as _refund_barrier
+
+
 @contextlib.contextmanager
-def writer_gate(node) -> Iterator[Optional[ShadowGateContext]]:
+def _legacy_writer_gate(node) -> Iterator[Optional[ShadowGateContext]]:
     """What the existing ("legacy") remote writers use:
 
         with writer_gate(node), MikrotikClient.for_node(node) as mt:
@@ -279,3 +282,10 @@ def writer_gate(node) -> Iterator[Optional[ShadowGateContext]]:
             except Exception:  # noqa: BLE001
                 logger.exception("writer_gate: releasing the gate failed for node %s", node_id)
                 counters.add("gate_error")
+
+
+@contextlib.contextmanager
+def writer_gate(node) -> Iterator[Optional[ShadowGateContext]]:
+    with _refund_barrier():
+        with _legacy_writer_gate(node) as context:
+            yield context

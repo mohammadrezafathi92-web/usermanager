@@ -86,7 +86,7 @@ print("\n--- grandfathering grants only what is NEW since last time ---")
 all_keys = set(permissions.PERMISSION_CHOICES)
 already = {"delete_users", "bulk_actions", "export_users", "spend_credit",
            "view_accounting", "manage_discount_codes", "own_bot", "view_tutorials"}
-new_keys = all_keys - already
+new_keys = all_keys - permissions.OPT_IN_PERMISSIONS - already
 check("the newly added keys are exactly the ones to grant",
       sorted(new_keys),
       sorted(["create_users", "edit_users", "reset_usage", "manage_connections",
@@ -100,7 +100,7 @@ check("...and gains the new ones rather than losing them",
 
 # Second deploy with nothing new: must be a no-op.
 check("a deploy that adds no permission grants nothing",
-      all_keys - (already | new_keys), set())
+      all_keys - permissions.OPT_IN_PERMISSIONS - (already | new_keys), set())
 
 
 print("\n" + "=" * 60)

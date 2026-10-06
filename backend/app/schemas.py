@@ -2043,6 +2043,7 @@ class LedgerEntryOut(BaseModel):
     category: Optional[str] = None
     note: Optional[str] = None
     created_at: dt.datetime
+    voided_at: Optional[dt.datetime] = None
 
 
 class LedgerPage(BaseModel):

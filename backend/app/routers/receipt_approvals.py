@@ -138,6 +138,9 @@ def finalize_approval(db: Session, principal: bot_auth.BotPrincipal, approval_uu
     for attempt in range(1, registration.WRITE_ATTEMPTS + 1):
         try:
             registration.take_write_lock(db)
+            mode_state = registration.runtime.read_state(db, lock=True, shared_lock=True)
+            if registration.runtime.effective_registration_mode(mode_state) == registration.runtime.BLOCKED:
+                raise registration.RegistrationRejected(503, "receipt_approval_blocked")
             result = registration.finalize(db, principal, approval_uuid, reported_failure=failed)
             db.commit()
             return result

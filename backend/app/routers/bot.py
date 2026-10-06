@@ -27,6 +27,7 @@ from ..services import user_ops, hierarchy, payment_cards, accounting, admin_bil
 from ..services import bot_resources
 from ..services import payment_card_events
 from ..services import receipt_approval_effects as approval_effects
+from ..services import receipt_approval_topup
 from ..services import receipt_approval_registration as approval_registration
 from ..services.bot_auth import (
     BROADCAST,
@@ -575,6 +576,7 @@ def record_payment_card_use(
     services/payment_cards.py's advance_after_payment for what this does
     ("threshold" mode's auto-switch-to-next-card bookkeeping; a harmless
     no-op for a pool in "manual"/"rotate" mode)."""
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
     bot_resources._get_payment_card_or_403(db, principal, card_id)  # authorization only - advance_after_payment re-fetches
     # With a registered approval the pool event carries its uuid and becomes
     # the approval's card_payment effect; a repeat for the same approval
@@ -850,6 +852,7 @@ def create_user(
     payload: schemas.BotCreateUserRequest, db: Session = Depends(get_db),
     principal: BotPrincipal = Depends(get_bot_principal),
 ):
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
     # A locked customer must not be able to start a fresh account from the
     # same Telegram id and keep buying - that would leave the lock looking
     # enforced while doing nothing at all.
@@ -969,6 +972,7 @@ def purchase_package(
     a "plain" package with no admin-defined bundle, where the customer
     picked exactly one node/protocol by hand in the bot's purchase flow
     (see telegram_bot/handlers/customer.py's pick_node/pick_protocol)."""
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     _ensure_can_buy(user)
     package = bot_resources._get_package_or_403(db, principal, payload.package_id)
@@ -1020,6 +1024,7 @@ def apply_referral(
     logic lives in services/user_ops.py's apply_referral_code (both the
     referrer and the new user get a gift, per the confirmed design - not
     just the referrer)."""
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
     user = bot_resources._get_user_or_403(db, principal, payload.username, None)
     # Receipt-approval effects of the rewards that are really applied, written
     # INSIDE apply_referral_code's own transaction, just before its commit
@@ -1073,6 +1078,7 @@ def redeem_discount(
     atomically consumes the code (bumps used_count, records a
     DiscountCodeRedemption row). See services/user_ops.py's
     redeem_discount_code."""
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
     owner_admin_id = resolve_claimed_owner(db, principal, payload.owner_admin_id, endpoint="redeem_discount")
     discount_evidence: list = []
     ok, reason, amount = user_ops.redeem_discount_code(
@@ -1380,6 +1386,7 @@ def renew_service(
     service is already exhausted (see user_ops.renew_purchase). Never
     creates anything new - renewal means CONTINUING the same service, per
     the panel owner's definition (2026-08-09)."""
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     _ensure_can_buy(user)
     purchase = db.get(models.Purchase, purchase_id)
@@ -1426,6 +1433,7 @@ def renew(
     username: str, payload: schemas.BotRenewRequest, db: Session = Depends(get_db),
     owner_admin_id: Optional[int] = None, principal: BotPrincipal = Depends(get_bot_principal),
 ):
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     _ensure_can_buy(user)
     # Post-migration (services/purchase_migration.py) the user-level pool
@@ -1508,14 +1516,19 @@ def add_balance(
     button) can't both succeed and drive the balance negative - the second
     one gets a clean "insufficient balance" error instead of silently
     overdrawing the wallet."""
-    user = bot_resources._get_user_or_403(db, principal, username, None)
-    # Only a TOP-UP is blocked. A negative amount is the wallet being spent
-    # on a purchase, and that purchase is already refused upstream - but if
-    # one ever reaches here, refusing the debit too would be the wrong way
-    # round: it would take the money and give nothing.
-    if payload.amount > 0:
-        _ensure_can_buy(user)
+    if payload.amount <= 0:
+        approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
+    if payload.amount == 0:
+        user = bot_resources._get_user_or_403(db, principal, username, None)
+        db.commit()
+        db.refresh(user)
+        return _user_response(user)
     if payload.amount < 0:
+        user = bot_resources._get_user_or_403(db, principal, username, None)
+        # Only a TOP-UP is blocked. A negative amount is the wallet being
+        # spent on a purchase, and that purchase is already refused upstream
+        # - but if one ever reaches here, refusing the debit too would be
+        # the wrong way round: it would take the money and give nothing.
         result = db.execute(
             models.User.__table__.update()
             .where(models.User.id == user.id, (models.User.balance + payload.amount) >= 0)
@@ -1526,38 +1539,14 @@ def add_balance(
             raise HTTPException(400, "موجودی کیف پول کافی نیست")
         db.refresh(user)
     else:
-        balance_before = int(user.balance or 0)
-        topup_entry = None
-        user.balance = (user.balance or 0) + payload.amount
-        # Accounting: a positive credit is an approved wallet top-up - cash
-        # that actually arrived on a card (see services/accounting.py's
-        # LedgerEntry kind docs for why the negative/debit branch above is
-        # deliberately NOT recorded - the sale row already covers it).
-        if payload.amount > 0:
-            # Same payment_card_id-ownership gap as _record_bot_sale's own
-            # fix above, found while auditing every OTHER accounting.record
-            # call site for the same pattern (not just the one Product's
-            # review pointed at) - a top-up's card needs the same check a
-            # sale's card gets, or this call site alone would still corrupt
-            # ledger attribution once enforcement is on.
-            if payload.payment_card_id is not None:
-                bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
-            topup_entry = accounting.record(
-                db, "wallet_topup", payload.amount,
-                user=user,
-                admin_id=user.owner_admin_id,
-                payment_card_id=payload.payment_card_id,
-                payment_method="card",
-            )
-        recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)      # no-op without an approval
-        if recorder.active and topup_entry is not None:
-            db.flush()
-            recorder.effect("wallet_credit_source_created", "credit:receipt_topup", user,
-                            approval_effects.WalletCreditEvidence(balance_before, int(user.balance or 0)))
-            recorder.effect("ledger_topup", "topup", topup_entry)
-            recorder.tag_ledger(topup_entry)
-        db.commit()
-        db.refresh(user)
+        # Customer positive credits use the narrow A2 transaction: wallet
+        # phase lock -> approval runtime lock -> approval lock -> user lock;
+        # atomic balance increment and its ledger row commit together.
+        # Reseller credit, payment-card pool writes and the debit path above
+        # deliberately remain outside it.
+        user = receipt_approval_topup.apply(
+            db, principal, username, payload.amount, payload.payment_card_id,
+            payload.approval_uuid, _ensure_can_buy)
     return _user_response(user)
 
 

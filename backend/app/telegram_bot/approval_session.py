@@ -6,11 +6,10 @@ Only the panel decides what that means. While its mode is 'off' the answer
 is "carry on as always" and nothing is stored; in 'shadow' the approval is
 registered for later comparison and still nothing is gated.
 
-In this phase begin() NEVER stops an approval: a panel that does not have
-the endpoint yet, a network error or any bug here all mean "proceed the
-legacy way". That is safe only because a mode that could gate ('required')
-cannot be switched on yet; when it can, an error must stop the approval
-instead (design 5.6).
+Transient registration failures in off/shadow still use the legacy path.
+Explicit fail-closed backend decisions (blocked/required) are different:
+they propagate to the caller and must stop the approval, never run legacy
+work (design 5.5/5.6).
 """
 from __future__ import annotations
 
@@ -20,6 +19,12 @@ from typing import Optional
 from . import storage
 
 logger = logging.getLogger(__name__)
+
+FAIL_CLOSED_CODES = ("receipt_approval_blocked", "required_mode_not_available", "execution_token_not_supported")
+
+
+class ApprovalBlocked(RuntimeError):
+    """A backend fail-closed decision must never fall back to legacy work."""
 
 LEGACY = {"mode": "off", "approval_uuid": None, "proceed_legacy": True}
 REGISTERED_KINDS = ("new", "renew", "topup")       # 'link' is not a payment
@@ -52,8 +57,8 @@ def intent_of(pending: dict) -> Optional[dict]:
 
 async def begin(pending: dict, *, approved_by_telegram_id: Optional[int] = None, auto: bool = False,
                 local_decision: Optional[str] = None) -> dict:
-    """Registers the approval. Returns the panel's answer, or LEGACY when
-    there is nothing to register or anything at all went wrong."""
+    """Registers the approval. Returns LEGACY for unregistered kinds and
+    recoverable off/shadow failures; fail-closed mode decisions raise."""
     try:
         intent = intent_of(pending)
         if intent is None or (not auto and not approved_by_telegram_id):
@@ -71,6 +76,10 @@ async def begin(pending: dict, *, approved_by_telegram_id: Optional[int] = None,
             logger.info("pending request %s: approval not registered (%s)", pending.get("id"), answer["shadow_error"])
         return answer
     except Exception as exc:
+        detail = str(getattr(exc, "detail", "") or exc)
+        code = next((candidate for candidate in FAIL_CLOSED_CODES if candidate in detail), None)
+        if code:
+            raise ApprovalBlocked(code) from exc
         logger.warning("pending request %s: approval registration unavailable (%s) - proceeding as before",
                        pending.get("id"), exc)
         return dict(LEGACY)

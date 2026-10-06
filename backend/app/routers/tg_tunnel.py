@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..database import get_db
 from ..deps import require_superadmin
-from ..services import user_ops, wg_tunnel
+from ..services import user_ops, wg_tunnel, wallet_accounts
 from ..services.mikrotik_client import MikrotikClient, MikrotikError
 
 logger = logging.getLogger("tg_tunnel")
@@ -152,7 +152,7 @@ def setup(payload: SetupIn, db: Session = Depends(get_db)):
 
     tunnel_user = db.query(models.User).filter(models.User.username == TUNNEL_USERNAME).first()
     if tunnel_user is None:
-        tunnel_user = models.User(
+        tunnel_user = wallet_accounts.create_user_with_wallet(db,
             username=TUNNEL_USERNAME,
             full_name="اتصال داخلی پنل برای دسترسی ربات به تلگرام",
         )

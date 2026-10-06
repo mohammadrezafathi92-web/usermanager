@@ -39,6 +39,17 @@ def _account(db, user):
         rv.wallet_accounts.c.tombstoned_at.is_(None))).mappings().first()
     if account is None:
         raise HTTPException(503, "wallet_account_not_ready")
+    # P5 account creation precedes the full audited rebind implementation.
+    # Never use stale identity data if someone enables the later generation
+    # without completing that prerequisite.
+    from .wallet_accounts import tenant_scope
+    identity = db.execute(select(rv.customer_identities).where(
+        rv.customer_identities.c.id == account["customer_identity_id"])).mappings().first()
+    expected_key = (f"tg:{user.telegram_id}" if user.telegram_id is not None
+                    else f"private:{account['lineage_key']}")
+    if (identity is None or identity["identity_key"] != expected_key
+            or identity["tenant_scope_key"] != tenant_scope(db, user.owner_admin_id)):
+        raise HTTPException(503, "wallet_identity_rebind_required")
     return account
 
 

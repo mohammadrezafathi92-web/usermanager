@@ -187,9 +187,15 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
     (services/auto_approve.py) says WHO approved; that is registered with
     the panel first (approval_session.begin). A caller that passes neither
     - the free-trial path, which has no receipt - registers nothing."""
-    # Never blocks and never raises in this phase - see approval_session.
-    session = await approval_session.begin(pending, approved_by_telegram_id=approved_by_telegram_id, auto=auto,
-                                           local_decision="allowed" if auto else None)
+    # Transient registration failures still fall back only while the panel
+    # is in a mode that permits legacy behavior. An explicit fail-closed
+    # response (blocked/required) must release the claimed receipt and stop.
+    try:
+        session = await approval_session.begin(pending, approved_by_telegram_id=approved_by_telegram_id, auto=auto,
+                                               local_decision="allowed" if auto else None)
+    except approval_session.ApprovalBlocked as exc:
+        storage.release_pending(pending["id"])
+        return False, f"تأیید متوقف شد؛ وضعیت سامانه نیاز به بررسی دارد ({exc})."
     # approve
     pkg = None
     if pending["kind"] in ("new", "renew"):

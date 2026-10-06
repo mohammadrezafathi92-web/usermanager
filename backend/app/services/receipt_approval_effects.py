@@ -348,6 +348,16 @@ class ShadowRecorder:
         self._begin()
         return record_effect_shadow(self.db, self.approval_uuid, effect_type, effect_key, resource, evidence)
 
+    def begin(self) -> None:
+        """Mark an approval mutating in the caller's transaction.
+
+        Exposed for mutations whose effect projection is written only after
+        the atomic balance/ledger update; shadow bookkeeping remains
+        best-effort and never commits independently.
+        """
+        if self.active:
+            self._begin()
+
     def _begin(self) -> None:
         """registered -> mutating, once, before this approval's first effect."""
         if self._begun:

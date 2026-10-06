@@ -8,8 +8,8 @@ durable singleton row on every request - never from process memory:
     off                      -> off
     shadow,   keys ready     -> shadow
     shadow,   keys NOT ready -> shadow, every registration is a shadow error
-    required, keys ready     -> required
-    required, keys NOT ready -> blocked (never silently relaxed)
+    required, all prerequisites ready -> required
+    required, any prerequisite missing -> blocked (never silently relaxed)
 
 In this phase only off <-> shadow can be requested; 'required' exists only
 through the joint activation of phase P9a.
@@ -20,9 +20,12 @@ import datetime as dt
 import hashlib
 import json
 import logging
+import time
 from typing import Optional
 
+from fastapi import HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from . import receipt_void_schema
@@ -31,6 +34,13 @@ log = logging.getLogger(__name__)
 
 OFF, SHADOW, REQUIRED, BLOCKED, ENFORCED = "off", "shadow", "required", "blocked", "enforced"
 SHADOW_ERROR_KEY_IDENTITY = "key_identity_not_ready"
+
+# Receipt Void requires every production call carrying an approval UUID to
+# present and validate the current execution token.  A2 does not add that
+# request contract yet, so `required` must remain fail-closed even if an
+# operator or an old database row requests it.  Flip this only in the batch
+# that wires token validation through every approval-carrying endpoint.
+REQUIRED_PREREQUISITES = {"execution_token_validation": False}
 
 
 class ModeChangeRejected(Exception):
@@ -52,7 +62,7 @@ def _events():
     return rv.receipt_approval_shadow_events
 
 
-def read_state(db: Session, *, lock: bool = False) -> Optional[dict]:
+def read_state(db: Session, *, lock: bool = False, shared_lock: bool = False) -> Optional[dict]:
     """The singleton row (None if the schema is not ready or the row cannot
     be read - callers treat that as 'off' for a request that asked for
     nothing, and as blocked wherever 'required' could apply)."""
@@ -61,7 +71,7 @@ def read_state(db: Session, *, lock: bool = False) -> Optional[dict]:
     table = _table()
     query = select(table).where(table.c.id == receipt_void_schema.SINGLETON_ID)
     if lock:
-        query = query.with_for_update()
+        query = query.with_for_update(read=shared_lock)
     row = db.execute(query).mappings().first()
     return dict(row) if row else None
 
@@ -70,9 +80,64 @@ def effective_registration_mode(state: Optional[dict]) -> str:
     if state is None:
         return OFF
     requested = state["registration_mode"]
-    if requested == REQUIRED and not state["key_identity_ready"]:
+    if requested == REQUIRED and (
+        not state["key_identity_ready"]
+        or not all(REQUIRED_PREREQUISITES.values())
+    ):
         return BLOCKED
     return requested
+
+
+def guard_approval_mutation(db: Session, approval_uuid: Optional[str]) -> None:
+    """Fail closed before any endpoint lookup/mutation when a correlated
+    operation reaches a blocked or not-yet-supported required mode.
+
+    Wallet top-ups use their stronger L1 -> L2 -> L3 -> L4 transaction in
+    receipt_approval_topup. Other approval-carrying mutations need only L2
+    here: rollback dependency reads first, then the durable runtime read.
+    No approval, user, card, or ledger row is queried before the blocked
+    decision.
+
+    MariaDB keeps the shared row lock until the endpoint's first commit; it
+    blocks nothing but a mode change. SQLite has one writer for the whole
+    database, and these endpoints may talk to a router before they commit
+    (a renewal re-enabling an expired customer's connections), so there the
+    decision is a plain read of committed state and the transaction is
+    ended before returning - holding the writer would stall RADIUS
+    accounting and the quota poller behind a router call.
+    """
+    if not approval_uuid:
+        return
+    if not receipt_void_schema.is_ready():
+        raise HTTPException(status_code=503, detail="receipt_void_schema_not_ready")
+    for attempt in range(1, 4):
+        db.rollback()
+        try:
+            sqlite = db.get_bind().dialect.name == "sqlite"
+            state = read_state(db, lock=not sqlite, shared_lock=not sqlite)
+            if state is None:
+                db.rollback()
+                raise HTTPException(status_code=503, detail="receipt_approval_runtime_unavailable")
+            mode = effective_registration_mode(state)
+            if mode == BLOCKED:
+                db.rollback()
+                raise HTTPException(status_code=503, detail="receipt_approval_blocked")
+            if mode == REQUIRED:
+                db.rollback()
+                raise HTTPException(status_code=503, detail="execution_token_not_supported")
+            if sqlite:
+                db.rollback()
+            return
+        except HTTPException:
+            raise
+        except OperationalError as exc:
+            db.rollback()
+            if attempt == 3:
+                raise HTTPException(status_code=503, detail="database_busy") from exc
+            time.sleep(0.2 * attempt)
+        except Exception:
+            db.rollback()
+            raise
 
 
 def shadow_error(state: Optional[dict]) -> Optional[str]:

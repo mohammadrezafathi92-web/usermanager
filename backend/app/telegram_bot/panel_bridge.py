@@ -27,6 +27,7 @@ from fastapi import HTTPException
 from ..database import SessionLocal
 from .. import models, schemas
 from ..routers import bot as bot_router
+from ..routers import bot_onboarding as onboarding_router
 from ..services import bot_resources
 from ..services.bot_auth import BotPrincipal, build_internal_principal_for_owner
 from .config import config
@@ -100,6 +101,25 @@ def _dump(obj):
 
 
 class PanelBridge:
+    async def get_customer_onboarding_config(self) -> dict:
+        return await _call(onboarding_router.get_customer_onboarding_config) or {}
+
+    async def customer_terms_accepted(self, telegram_id: int, terms_digest: str) -> bool:
+        result = await _call(
+            onboarding_router.has_customer_accepted_terms,
+            telegram_id=telegram_id,
+            terms_digest=terms_digest,
+        )
+        return bool((result or {}).get("accepted"))
+
+    async def accept_customer_terms(self, telegram_id: int, terms_digest: str) -> None:
+        await _call(
+            onboarding_router.accept_customer_terms,
+            payload=onboarding_router.TermsAcceptanceIn(
+                telegram_id=telegram_id, terms_digest=terms_digest,
+            ),
+        )
+
     # ---------------------------------------------------------------- nodes
     async def list_nodes(self) -> list[dict]:
         nodes = await _call(bot_router.list_nodes)
@@ -567,12 +587,12 @@ class PanelBridge:
         await _call(bot_router.delete_user, username, owner_admin_id=_scope(owner_admin_id))
 
     # ------------------------------------------------ referral & discount
-    async def apply_referral(self, username: str, referral_code: str) -> dict:
+    async def apply_referral(self, username: str, referral_code: str, approval_uuid: Optional[str] = None) -> dict:
         """Called once, right after create_user, for a brand-new customer
         who entered someone else's invite code - see
         handlers/admin_pending.py (the receipt-approval handler is the one
         choke point new accounts are created through)."""
-        payload = schemas.ReferralApplyRequest(username=username, referral_code=referral_code)
+        payload = schemas.ReferralApplyRequest(username=username, referral_code=referral_code, approval_uuid=approval_uuid)
         return _dump(await _call(bot_router.apply_referral, payload))
 
     async def validate_discount(self, code: str, package_price: int = 0, username: Optional[str] = None, owner_admin_id: Optional[int] = None) -> dict:

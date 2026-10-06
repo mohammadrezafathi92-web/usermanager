@@ -2208,6 +2208,13 @@ class BotSettings(Base):
     # item, to avoid a wide migration every time a menu item is added later.
     customer_menu_disabled_items = Column(Text, nullable=True, default="")
 
+    # Optional customer onboarding gates. Empty channel ID / terms text keeps
+    # existing deployments unchanged until the owner deliberately configures
+    # them in Settings > Telegram bot.
+    required_channel_id = Column(String(255), nullable=True, default="")
+    required_channel_url = Column(String(500), nullable=True, default="")
+    customer_terms_text = Column(Text, nullable=True, default="")
+
     # What the button next to the text box says, for every bot this panel
     # runs. Tapping it opens the Mini App directly (MenuButtonWebApp - see
     # telegram_bot/runner.py's _set_menu_button), so calling it "Menu" - the
@@ -2387,6 +2394,20 @@ class TutorialSoftware(Base):
 # ---------------------------------------------------------------------------
 # Channel advertising (بخش تبلیغات)
 # ---------------------------------------------------------------------------
+class BotTermsAcceptance(Base):
+    """Append-only proof that a Telegram account accepted one exact terms
+    version. The digest changes whenever the owner edits the text, requiring
+    a fresh acceptance without rewriting the old audit record."""
+
+    __tablename__ = "bot_terms_acceptances"
+    __table_args__ = (UniqueConstraint("telegram_id", "terms_digest", name="uq_bot_terms_user_version"),)
+
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(BigInteger, nullable=False, index=True)
+    terms_digest = Column(String(64), nullable=False)
+    accepted_at = Column(DateTime, nullable=False, default=now)
+
+
 class AdChannel(Base):
     """One advertising channel per admin - the superadmin's, and one for each
     level-2 Admin who runs their own bot and their own customer channel.

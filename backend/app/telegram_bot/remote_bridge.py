@@ -51,6 +51,20 @@ class RemoteBridge:
     async def _call(self, method: str, path: str, **kwargs):
         return await asyncio.to_thread(self._request, method, path, **kwargs)
 
+    async def get_customer_onboarding_config(self) -> dict:
+        return await self._call("GET", "/customer-onboarding-config") or {}
+
+    async def customer_terms_accepted(self, telegram_id: int, terms_digest: str) -> bool:
+        result = await self._call("GET", "/customer-terms-acceptance", params={
+            "telegram_id": telegram_id, "terms_digest": terms_digest,
+        })
+        return bool((result or {}).get("accepted"))
+
+    async def accept_customer_terms(self, telegram_id: int, terms_digest: str) -> None:
+        await self._call("POST", "/customer-terms-acceptance", json={
+            "telegram_id": telegram_id, "terms_digest": terms_digest,
+        })
+
     # ---------------------------------------------------------------- nodes
     async def list_nodes(self) -> list[dict]:
         return await self._call("GET", "/nodes")
@@ -359,8 +373,8 @@ class RemoteBridge:
         await self._call("DELETE", f"/users/{username}", params=params)
 
     # ------------------------------------------------ referral & discount
-    async def apply_referral(self, username: str, referral_code: str) -> dict:
-        payload = {"username": username, "referral_code": referral_code}
+    async def apply_referral(self, username: str, referral_code: str, approval_uuid: Optional[str] = None) -> dict:
+        payload = {"username": username, "referral_code": referral_code, "approval_uuid": approval_uuid}
         return await self._call("POST", "/referral/apply", json=payload)
 
     async def validate_discount(

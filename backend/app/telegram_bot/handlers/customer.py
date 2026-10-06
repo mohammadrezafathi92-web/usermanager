@@ -119,12 +119,20 @@ from .customer_topup import (  # noqa: F401
     topup_custom_amount,
     router as _topup_router,
 )
+from .customer_engagement import (
+    cb_agent_request,
+    cb_prices,
+    receive_agent_request,
+    reject_non_text_agent_request,
+    router as _engagement_router,
+)
 
 router = Router(name="customer")
 router.include_router(_account_router)
 router.include_router(_link_router)
 router.include_router(_purchase_router)
 router.include_router(_topup_router)
+router.include_router(_engagement_router)
 
 
 # --------------------------------------------------------- slash commands

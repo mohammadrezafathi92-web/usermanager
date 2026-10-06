@@ -65,6 +65,10 @@ class CustomerTopupStates(StatesGroup):
     waiting_receipt = State()      # a photo message expected
 
 
+class CustomerAgentRequestStates(StatesGroup):
+    waiting_message = State()
+
+
 class AdminBroadcastStates(StatesGroup):
     waiting_text = State()   # the message to send to every telegram-linked user
     waiting_confirm = State()  # a "بله/انصراف" confirmation before actually sending

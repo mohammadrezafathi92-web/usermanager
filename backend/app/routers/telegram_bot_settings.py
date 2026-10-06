@@ -143,6 +143,9 @@ def _response(row: models.BotSettings, db: Session | None = None) -> schemas.Bot
         remote_deployed_at=row.remote_deployed_at,
         customer_bot_enabled=row.customer_bot_enabled if row.customer_bot_enabled is not None else True,
         customer_menu_disabled_items=row.customer_menu_disabled_items or "",
+        required_channel_id=row.required_channel_id or "",
+        required_channel_url=row.required_channel_url or "",
+        customer_terms_text=row.customer_terms_text or "",
         telegram_api_proxy_url=row.telegram_api_proxy_url or "",
         telegram_proxy_url=row.telegram_proxy_url or "",
         auto_approve_enabled=bool(row.auto_approve_enabled),
@@ -197,6 +200,30 @@ def update_settings(payload: schemas.BotSettingsUpdate, db: Session = Depends(ge
         # Telegram caps the label; a longer one is rejected at set time with
         # an error nobody would connect to this field.
         data["miniapp_button_text"] = (data["miniapp_button_text"] or "").strip()[:32]
+    if "required_channel_id" in data:
+        data["required_channel_id"] = (data["required_channel_id"] or "").strip()[:255]
+    if "required_channel_url" in data:
+        data["required_channel_url"] = (data["required_channel_url"] or "").strip()[:500]
+    candidate_channel = data.get("required_channel_id", (row.required_channel_id or "")).strip()
+    candidate_channel_url = data.get("required_channel_url", (row.required_channel_url or "")).strip()
+    if candidate_channel and not (
+        (
+            candidate_channel.startswith("@")
+            and 5 <= len(candidate_channel[1:]) <= 32
+            and candidate_channel[1:].replace("_", "a").isalnum()
+        )
+        or (candidate_channel.startswith("-100") and candidate_channel[1:].isdigit())
+    ):
+        raise HTTPException(400, "شناسه‌ی کانال باید به شکل @channel یا -100... باشد")
+    if candidate_channel and not candidate_channel_url:
+        raise HTTPException(400, "برای عضویت اجباری، لینک دعوت کانال را هم وارد کنید")
+    if candidate_channel_url and not candidate_channel_url.lower().startswith("https://t.me/"):
+        raise HTTPException(400, "لینک کانال باید با https://t.me/ شروع شود")
+    if "customer_terms_text" in data:
+        terms = (data["customer_terms_text"] or "").strip()
+        if len(terms) > 3500:
+            raise HTTPException(400, "متن قوانین نباید بیشتر از ۳۵۰۰ نویسه باشد")
+        data["customer_terms_text"] = terms
     label_changed = (
         "miniapp_button_text" in data
         and (data["miniapp_button_text"] or "") != (row.miniapp_button_text or "")

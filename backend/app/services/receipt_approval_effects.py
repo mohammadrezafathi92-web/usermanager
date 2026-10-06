@@ -16,8 +16,9 @@ connection credential is ever passed in.
 record_effect_shadow() is the shadow-mode wrapper: any rejection is logged
 as a shadow event and the mutation it describes is left untouched.
 
-Not covered yet (their manifest rows do not exist yet either): referral,
-quota-reward and loyalty effects.
+Referral credit and referral quota rewards are covered. Loyalty effects are
+not: the frozen design has no loyalty row before the joint activation of
+phase P9a (section 14.2), so there is nothing to record them against.
 """
 from __future__ import annotations
 
@@ -88,6 +89,16 @@ class DiscountEvidence:
 class WalletCreditEvidence:
     balance_before: int
     balance_after: int
+    rewards_count: int = 1
+
+
+@dataclass(frozen=True)
+class QuotaRewardEvidence:
+    target_type: str                 # 'User' | 'Purchase' - the resource the reward was really written to
+    target_id: int
+    quota_before: int
+    quota_after: int
+    before_was_unlimited: bool
     rewards_count: int = 1
 
 
@@ -226,6 +237,31 @@ def _project(effect_type: str, effect_key: str, resource, evidence) -> tuple[str
             raise EffectRejected(EVIDENCE_INVALID, "balance must grow, by one credit")
         amount = evidence.balance_after - evidence.balance_before
         return "User", resource.id, {"user_id": resource.id, "amount": amount}, amount
+    if effect_type == "wallet_credit_source_created" and effect_key.startswith("credit:referral_reward:"):
+        # Same as above: before the wallet cutover the resource is the credited User.
+        _need(evidence, WalletCreditEvidence)
+        if evidence.balance_after <= evidence.balance_before or evidence.rewards_count != 1:
+            raise EffectRejected(EVIDENCE_INVALID, "balance must grow, by one reward")
+        amount = evidence.balance_after - evidence.balance_before
+        if effect_key == "credit:referral_reward:referrer":
+            return "User", resource.id, {"referrer_user_id": resource.id, "referrer_username": resource.username,
+                                         "amount": amount}, amount
+        if effect_key == "credit:referral_reward:new_user":
+            return "User", resource.id, {"user": _user_binding(resource.id), "amount": amount}, amount
+    if effect_type == "quota_reward_granted" and effect_key in ("quota:referral:referrer", "quota:referral:new_user"):
+        _need(evidence, QuotaRewardEvidence)
+        resource_type = "Purchase" if isinstance(resource, models.Purchase) else "User"
+        if (evidence.target_type, evidence.target_id) != (resource_type, resource.id):
+            raise EffectRejected(EVIDENCE_INVALID, "the evidence names another resource than the one given")
+        if evidence.quota_after <= evidence.quota_before:
+            raise EffectRejected(EVIDENCE_INVALID, "quota must grow")
+        if evidence.before_was_unlimited != (evidence.quota_before == 0):
+            raise EffectRejected(EVIDENCE_INVALID, "before_was_unlimited must be exactly (quota_before == 0)")
+        granted = evidence.quota_after - evidence.quota_before
+        if evidence.rewards_count < 1 or granted % evidence.rewards_count:
+            raise EffectRejected(EVIDENCE_INVALID, "the granted bytes are not a whole number of rewards")
+        return resource_type, resource.id, {"target": {"type": resource_type, "id": resource.id},
+                                            "bytes": granted}, granted
     raise EffectRejected(NOT_IN_MANIFEST, f"{effect_type}:{effect_key} is not a supported effect yet")
 
 
@@ -236,6 +272,8 @@ def _snapshot(resource_type: str, resource_id: int, actual: dict, evidence) -> d
             snapshot[key] = actual[key]
     if evidence is not None:
         for key, value in asdict(evidence).items():
+            if key in ("target_type", "target_id"):
+                continue                # they are the effect's own resource_type / resource_id columns
             if key in ("used_count_before", "used_count_after"):
                 key = key.replace("used_count", "counter")
             snapshot[key] = value.isoformat() if isinstance(value, dt.datetime) else value

@@ -1021,7 +1021,22 @@ def apply_referral(
     referrer and the new user get a gift, per the confirmed design - not
     just the referrer)."""
     user = bot_resources._get_user_or_403(db, principal, payload.username, None)
-    ok, reason = user_ops.apply_referral_code(db, user, payload.referral_code)
+    # Receipt-approval effects of the rewards that are really applied, written
+    # INSIDE apply_referral_code's own transaction, just before its commit
+    # (design 5.3: mutation and record_effect are one transaction). A no-op
+    # without an approval; never changes the outcome. A reward the manifest
+    # did not expect - or expected on another resource - is refused in its
+    # own savepoint and logged as a shadow event; the reward still commits.
+    referral_evidence: list = []
+    recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)
+
+    def _record_effects() -> None:
+        for effect_type, effect_key, resource, evidence in referral_evidence:
+            recorder.effect(effect_type, effect_key, resource, evidence)
+
+    ok, reason = user_ops.apply_referral_code(
+        db, user, payload.referral_code, evidence_sink=referral_evidence if recorder.active else None,
+        before_commit=_record_effects if recorder.active else None)
     return {"ok": ok, "reason": reason}
 
 

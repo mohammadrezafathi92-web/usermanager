@@ -83,6 +83,10 @@ def _create_user_with_wallet(db, **attributes):
     db.add(user)
     db.flush()
     if ready:
+        if db.get_bind().dialect.name == "sqlite":
+            # The first read did not hold SQLite's writer lock. Revalidate
+            # after the User INSERT acquired it, before account creation.
+            wallet_service.require_legacy_phase(db)
         lineage = str(uuid.uuid4())
         identity = _identity(db, lineage=lineage, telegram_id=user.telegram_id,
                              owner_admin_id=user.owner_admin_id)

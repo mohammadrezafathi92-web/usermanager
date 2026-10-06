@@ -151,6 +151,28 @@ def scenario(engine, name):
             check(name + " refused delete keeps live account " + phase, account(old_id)["id"], fresh["id"])
         db.execute(rv.wallet_runtime_state.update().values(phase="normal"))
         db.commit()
+        if engine.dialect.name == "sqlite":
+            phase_reads = []
+            real_phase = wallet_accounts.wallet_service.require_legacy_phase
+
+            def fence_after_initial_read(session):
+                real_phase(session)
+                phase_reads.append(1)
+                if len(phase_reads) == 1:
+                    with Session() as other_session:
+                        other_session.execute(rv.wallet_runtime_state.update().values(phase="fencing"))
+                        other_session.commit()
+
+            with patch.object(wallet_accounts.wallet_service, "require_legacy_phase", side_effect=fence_after_initial_read):
+                try:
+                    create("phase_race")
+                    check(name + " creation rechecks phase under writer lock", False)
+                except HTTPException as exc:
+                    check(name + " creation rechecks phase under writer lock", exc.status_code, 503)
+            db.rollback()
+            check(name + " phase race leaves no user", db.query(models.User).filter_by(username="phase_race").count(), 0)
+            db.execute(rv.wallet_runtime_state.update().values(phase="normal"))
+            db.commit()
         admin.balance = 1000
         package = models.Package(name="creation_refund", price=100, cooperation_price=100,
                                  quota_gb=1, duration_days=1, owner_admin_id=admin.id)

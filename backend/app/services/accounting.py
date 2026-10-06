@@ -363,7 +363,8 @@ def summary(db: Session, admin: models.AdminUser, date_from=None, date_to=None) 
     """Role-appropriate headline numbers + breakdowns, all computed off the
     same scoped/filtered base query so every number agrees with the
     transactions tab."""
-    base = apply_filters(scoped_query(db, admin), date_from=date_from, date_to=date_to)
+    base = apply_filters(scoped_query(db, admin), date_from=date_from, date_to=date_to).filter(
+        sa.or_(~models.LedgerEntry.kind.in_(SALE_KINDS), models.LedgerEntry.voided_at.is_(None)))
 
     totals = {
         kind: int(total or 0)
@@ -507,7 +508,8 @@ def series(db: Session, admin: models.AdminUser, granularity: str = "day", date_
         # which is after the requested end.
         anchor = date_to or dt.datetime.utcnow()
         date_from = anchor - dt.timedelta(days=30 if granularity == "day" else 365)
-    base = apply_filters(scoped_query(db, admin), date_from=date_from, date_to=date_to)
+    base = apply_filters(scoped_query(db, admin), date_from=date_from, date_to=date_to).filter(
+        sa.or_(~models.LedgerEntry.kind.in_(SALE_KINDS), models.LedgerEntry.voided_at.is_(None)))
     # Bucket by the LOCAL calendar day, not the UTC one. created_at is
     # stored in UTC; at +03:30 everything sold after 20:30 UTC belongs to
     # the next day in Tehran, so grouping on the raw timestamp put the
@@ -617,6 +619,7 @@ def subtree_rollup(db: Session, admin: models.AdminUser, date_from=None, date_to
         db.query(models.LedgerEntry).filter(
             owner_column().in_(all_ids),
             models.LedgerEntry.kind.in_(SALE_KINDS),
+            models.LedgerEntry.voided_at.is_(None),
         ),
         date_from=date_from, date_to=date_to,
     )

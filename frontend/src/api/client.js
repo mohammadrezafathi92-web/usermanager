@@ -593,3 +593,7 @@ export const miniAppCheckoutReceipt = (initData, { packageId, account, comment, 
     headers: { "X-Telegram-InitData": initData },
   });
 };
+export const fetchUnpaidRefundPreview = (userId, purchaseId) =>
+  client.get(`/users/${userId}/purchases/${purchaseId}/unpaid-refund-preview`);
+export const cancelUnpaidPurchase = (userId, purchaseId) =>
+  client.post(`/users/${userId}/purchases/${purchaseId}/cancel-unpaid`, { confirm_unpaid: true }, { _pwForce: true });

@@ -58,6 +58,10 @@ def read(mt, identity: WireguardIdentity) -> ReadResult:
         peers = mt.list_peers(identity.interface)
     except Exception:  # noqa: BLE001 - any failure to read is "unreadable", never "absent"
         return ReadResult(ReadState.UNREADABLE)
+    return _classify_peers(peers, identity)
+
+
+def _classify_peers(peers, identity):
 
     by_key = [p for p in peers if p.get("public-key") == identity.public_key]
     by_name = [p for p in peers if p.get("comment") == identity.peer_name]
@@ -74,6 +78,83 @@ def read(mt, identity: WireguardIdentity) -> ReadResult:
     if _addresses(peer.get("allowed-address")) != _addresses(identity.client_address):
         return ReadResult(ReadState.PRESENT_CONFLICT, "conflict_address_mismatch")
     return ReadResult(ReadState.PRESENT_MATCH, handle=peer.get(".id"))
+
+
+@dataclass(frozen=True)
+class StoppedUsage:
+    """RouterOS tx is customer download; rx is customer upload."""
+    download_bytes: int
+    upload_bytes: int
+
+    def __post_init__(self):
+        if any(type(v) is not int or v < 0 for v in (self.download_bytes, self.upload_bytes)):
+            raise ValueError("invalid stopped usage")
+
+
+def _counter(value):
+    # Missing/negative/malformed counters are not zero usage. Never let a
+    # failed measurement turn into a larger monetary refund.
+    if type(value) is int and value >= 0:
+        return value
+    if isinstance(value, str) and value.isascii() and value.isdecimal():
+        return int(value)
+    raise AdapterError("wg_refund_counters_unreadable")
+
+
+def _stopped_usage(mt, identity):
+    try:
+        peers = mt.list_peers(identity.interface)
+    except Exception:
+        raise AdapterError("wg_refund_unreadable") from None
+    found = _classify_peers(peers, identity)
+    if (found.state is not ReadState.PRESENT_MATCH
+            or not isinstance(found.handle, str) or not found.handle):
+        raise AdapterError("wg_refund_identity_unverified")
+    peer = next(p for p in peers if p.get(".id") == found.handle)
+    if peer.get("disabled") not in (True, "true", "yes"):
+        raise AdapterError("wg_refund_stop_unconfirmed")
+    return StoppedUsage(_counter(peer.get("tx")), _counter(peer.get("rx")))
+
+
+def stop_capture_remove(mt, identity: WireguardIdentity, *, persist_usage,
+                        previously_captured: StoppedUsage | None = None) -> StoppedUsage:
+    """Refund worker primitive, NOT a live legacy deletion replacement.
+
+    Caller must fence ALL writers from before this call through settlement.
+    persist_usage must commit the counters and return the exact same value
+    before this function may delete. An absent peer with no durable sample
+    is irrecoverably unmeasured, NOT free. The interface is never changed.
+    """
+    if previously_captured is not None and not isinstance(previously_captured, StoppedUsage):
+        raise AdapterError("wg_refund_usage_missing")
+    found = read(mt, identity)
+    if found.state is ReadState.PRESENT_CONFLICT:
+        raise AdapterConflict(found.conflict_code or "wg_refund_identity_conflict")
+    if found.state is ReadState.UNREADABLE:
+        raise AdapterError("wg_refund_unreadable")
+    if found.state is ReadState.ABSENT:
+        if previously_captured is None:
+            raise AdapterError("wg_refund_usage_missing")
+        measured = previously_captured
+    else:
+        if not isinstance(found.handle, str) or not found.handle:
+            raise AdapterError("wg_refund_identity_unverified")
+        try:
+            mt.set_peer_disabled(found.handle, disabled=True)
+        except Exception:
+            raise AdapterError("wg_refund_stop_failed") from None
+        measured = _stopped_usage(mt, identity)
+        if _stopped_usage(mt, identity) != measured:
+            raise AdapterError("wg_refund_counters_not_stable")
+        if previously_captured is not None and previously_captured != measured:
+            raise AdapterError("wg_refund_counters_changed")
+        if persist_usage(measured) != measured:
+            raise AdapterError("wg_refund_usage_not_persisted")
+    # Includes a second exact-identity read, post-delete absence check and
+    # removal of the peer's own speed queue. Failure leaves settlement blocked.
+    if ensure_absent(mt, identity) is not AbsentOutcome.VERIFIED_ABSENT:
+        raise AdapterError("wg_refund_delete_unconfirmed")
+    return measured
 
 
 def ensure_interface_address_exact_or_wider(mt, interface: str, desired_subnet: str) -> str:
@@ -173,6 +254,8 @@ def ensure_absent(mt, identity: WireguardIdentity) -> AbsentOutcome:
     if found.state in (ReadState.PRESENT_CONFLICT, ReadState.UNREADABLE):
         return AbsentOutcome.UNVERIFIED
     if found.state is ReadState.PRESENT_MATCH:
+        if not isinstance(found.handle, str) or not found.handle:
+            return AbsentOutcome.UNVERIFIED
         try:
             mt.remove_peer(found.handle)
         except Exception:  # noqa: BLE001

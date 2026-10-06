@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     environment variables or a .env file placed next to this package."""
 
     app_name: str = "User Manager"
+    # Opt-in only after restarting EVERY local backend process. The refund
+    # fence is local-host POSIX locking; HA/multi-host and MariaDB execution
+    # are deliberately not enabled by this rollout.
+    reseller_cancellation_enabled: bool = False
 
     # Security
     #

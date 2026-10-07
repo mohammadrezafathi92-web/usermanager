@@ -24,8 +24,13 @@ identity externally and retain that file lock through commit/rollback.
 It also requires `{lock_dir}/installation.id` to match the runtime/proof UUID;
 missing, malformed, symlinked or group/world-writable files are refused.
 The read-only `provisioning_installation.require_match` uses a fresh database
-connection and never repairs either identity. Setup/restore/rotate/fork-reset
-and startup wiring are not implemented here. Existing off-mode live writers
+connection and never repairs either identity. The private `initialize_off`
+can publish a missing file only with mode EX, the exact known schema, gate
+off, vacant ownership, all types legacy and no nonterminal operation. It
+fsyncs a private temporary file and atomically links it without replacing
+an existing file. A retry verifies the published file and fsyncs its
+directory; error cleanup only removes this attempt's temporary file. Restore
+recovery, rotate/fork-reset and startup wiring are not implemented. Existing off-mode live writers
 are unchanged; this guard currently protects only the private ownership and
 schema-upgrade cores.
 

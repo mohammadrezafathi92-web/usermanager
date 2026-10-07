@@ -133,6 +133,8 @@ def scenario(engine):
     op = operation(None, operation_type="create_user", username_claim="new-user")
     claims.reserve(db, op.id, package2.id, telegram_id=555)
     db.commit()
+    refused("one_time_claim_request_changed", lambda: claims.reserve(db, op.id, package2.id, telegram_id=556))
+    db.rollback()
     transitions.mark_remote_complete(db, op.id)
     new_user = models.User(username="new-user", telegram_id=555)
     db.add(new_user)
@@ -143,6 +145,14 @@ def scenario(engine):
     claims.bind_purchase(db, op.id, purchase.id)
     db.commit()
     print("PASS", engine.dialect.name, "new-user claim binds only frozen username and Telegram identity")
+
+    op = operation()
+    transitions.mark_remote_complete(db, op.id)
+    purchase = models.Purchase(user_id=uid, package_id=pid, quota_bytes=100)
+    db.add(purchase)
+    db.flush()
+    refused("one_time_claim_missing", lambda: claims.bind_purchase(db, op.id, purchase.id))
+    db.rollback()
 
     # The same Telegram user in a different reseller tree is not blocked
     # by another tenant's historical Purchase.

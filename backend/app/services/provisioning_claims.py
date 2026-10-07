@@ -69,6 +69,12 @@ def reserve(db, operation_id, package_id, *, telegram_id=None):
     for value in values:
         value["claim_key"] = claim_key(value["claim_kind"], user_id=value["claim_user_id"],
             tenant_scope_key=value["claim_tenant_scope_key"], telegram_id=value["claim_telegram_id"])
+    owned = db.execute(select(mp.OneTimePackageClaim).where(
+        mp.OneTimePackageClaim.operation_id == operation_id, mp.OneTimePackageClaim.release_seq == 0)
+        .with_for_update().execution_options(populate_existing=True)).scalars().all()
+    expected_keys = {value["claim_key"] for value in values}
+    if any(row.package_id != package_id or row.claim_key not in expected_keys for row in owned):
+        raise HTTPException(409, "one_time_claim_request_changed")
     # Keep the historical Purchase check until durable activation has
     # explicitly backfilled old purchases. Do not silently backfill here.
     owners = []
@@ -115,6 +121,16 @@ def bind_purchase(db, operation_id, purchase_id):
         raise HTTPException(409, "one_time_claim_purchase_mismatch")
     rows = db.execute(select(mp.OneTimePackageClaim).where(mp.OneTimePackageClaim.operation_id == operation_id)
         .order_by(mp.OneTimePackageClaim.id).with_for_update().execution_options(populate_existing=True)).scalars().all()
+    if not rows:
+        package = db.get(models.Package, purchase.package_id)
+        if package is None or package.one_time_per_user:
+            raise HTTPException(409, "one_time_claim_missing")
+        return []
+    expected_kinds = {"user"} if operation.target_user_id is not None else set()
+    if user.telegram_id is not None:
+        expected_kinds.add("telegram")
+    if len(rows) != len(expected_kinds) or {row.claim_kind for row in rows} != expected_kinds:
+        raise HTTPException(409, "one_time_claim_missing")
     for row in rows:
         if not valid(row) or row.release_seq != 0 or row.package_id != purchase.package_id or row.purchase_id not in (None, purchase_id):
             raise HTTPException(409, "one_time_claim_purchase_mismatch")

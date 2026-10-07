@@ -4,9 +4,11 @@ Caller owns the complete T1 lease set and its expected installation/owner
 epoch. Every tick renews live leases in a short transaction. A child call is
 outside ALL parent DB sessions. This coordinator does not acquire/reclaim
 ownership, enable modes, scan arbitrary jobs, or run a background scheduler.
-Approval integration and crash-reacquisition of lease sets remain separate.
+Approval integration remains separate. Recovery can reacquire expired lease
+sets, but never steals live leases or releases a child-held node gate.
 """
 import datetime as dt
+import secrets
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -45,7 +47,7 @@ def _public(operation, status, step=None):
         status=status, step=step, result_user_id=operation.result_user_id, result_purchase_id=operation.result_purchase_id)
 
 
-def _scope(db, operation, steps, tokens):
+def _required_keys(db, operation, steps):
     required = {f"provisioning_op:{operation.id}"}
     required.update(f"node:{step.node_id}:wg_pool" for step in steps if step.backend == "mikrotik_wg")
     intent = final._intent(operation)
@@ -62,8 +64,54 @@ def _scope(db, operation, steps, tokens):
             rv.customer_identities.c.identity_key == f"tg:{intent.user.telegram_id}"))
         if customer is not None:
             required.add(f"customer_identity:{customer}")
-    if not required.issubset({token.resource_key for token in tokens}):
+    return required
+
+
+def _scope(db, operation, steps, tokens):
+    if not _required_keys(db, operation, steps).issubset({token.resource_key for token in tokens}):
         raise HTTPException(409, "provisioning_lease_scope_invalid")
+
+
+def reacquire(session_factory, operation_id, identity, *, installation_uuid, ownership_epoch):
+    """Recover a committed operation's lease set in ONE short transaction.
+
+    Returns no leases for a terminal operation. Busy acquisition rolls back
+    the entire set. A new owner nonce and every resource's incremented fencing
+    epoch invalidate stale executors; this is NOT proof a remote call ended.
+    The next tick therefore retains remote_calling recovery / cleanup policy.
+    No T1 rerun, secret generation, payment mutation, remote I/O or activation.
+    """
+    if type(operation_id) is not int or operation_id < 1 or not isinstance(identity, HostIdentity) or (
+            type(ownership_epoch) is not int or ownership_epoch < 1 or not isinstance(installation_uuid, str)):
+        raise HTTPException(422, "provisioning_worker_invalid")
+    expected = (installation_uuid, ownership_epoch)
+    with session_factory() as db:
+        leases.begin_business(db)
+        _control(db, operation_id, identity, expected)  # L1.
+        operation = db.get(mp.ProvisioningOperation, operation_id)
+        if operation is None or operation.approval_uuid is not None:
+            raise HTTPException(409, "provisioning_worker_operation_unavailable")
+        if operation.state in transitions.TERMINAL:
+            return ()
+        steps = db.execute(select(mp.ProvisioningStep).where(
+            mp.ProvisioningStep.operation_id == operation_id)).scalars().all()
+        keys = _required_keys(db, operation, steps)
+        # Snapshot only; L4 locking follows acquisition of ALL L2 resources.
+        version = operation.version
+        shape = sorted((step.id, step.version, step.node_id, step.backend) for step in steps)
+        owner = f"op:{operation_id}:{secrets.randbits(64) + 1}"
+        tokens = tuple(leases.acquire(db, key, owner, ttl=300) for key in sorted(keys))
+        operation = transitions._operation(db, operation_id)  # L4, fresh current read.
+        steps = db.execute(select(mp.ProvisioningStep).where(
+            mp.ProvisioningStep.operation_id == operation_id).with_for_update()
+            .execution_options(populate_existing=True)).scalars().all()
+        if operation.version != version or shape != sorted(
+                (step.id, step.version, step.node_id, step.backend) for step in steps) or (
+                keys != _required_keys(db, operation, steps)):
+            raise HTTPException(409, "provisioning_operation_changed")
+        leases.revalidate(db, tokens)
+        db.commit()
+        return tokens
 
 
 def tick(session_factory, operation_id, identity, tokens, *, installation_uuid, ownership_epoch):

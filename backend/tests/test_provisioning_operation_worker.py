@@ -14,7 +14,7 @@ _no_network.install([os.environ.get("MARIADB_TEST_URL", "")])
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from fastapi import HTTPException
-from app import models, models_provisioning as mp
+from app import models, models_provisioning as mp, models_receipt_void as rv
 from app.services import provisioning_schema, receipt_void_schema, provisioning_contracts as contracts
 from app.services import provisioning_preparation as prep, provisioning_finalization as final
 from app.services import provisioning_operation_worker as worker, provisioning_parent_execute as execute
@@ -89,6 +89,54 @@ def scenario(engine):
 
     with patch.dict(os.environ, {"DATABASE_URL": engine.url.render_as_string(hide_password=False)}), (
             patch.object(execute.remote_runner, "run_action", side_effect=remote)) as launch:
+        # Crash after committed T1: acquire-all is atomic, never steals a
+        # live node lease, and resumes the SAME operation / hold / identity.
+        oid, old_tokens = prepared()
+        with Factory() as db:
+            staged = db.query(mp.ProvisioningStep).filter_by(operation_id=oid).one()
+            saved_identity = (staged.id, staged.wg_public_key, staged.staged_wg_private_key)
+            hold_id = db.query(mp.PaymentReservation).filter_by(operation_id=oid).one().id
+            for token in old_tokens:
+                if not token.resource_key.startswith("node:"):
+                    resource_leases.release(db, token)
+            db.commit()
+        try:
+            worker.reacquire(Factory, oid, host, **expected)
+            raise AssertionError("live lease stolen")
+        except resource_leases.LeaseBusy:
+            pass
+        with Factory() as db:
+            for token in old_tokens:
+                row = db.execute(rv.resource_locks.select().where(
+                    rv.resource_locks.c.resource_key == token.resource_key)).mappings().one()
+                if token.resource_key.startswith("node:"):
+                    assert row["lease_owner"] == token.owner
+                else:
+                    assert row["lease_owner"] is None, "partial recovery acquisition committed"
+            db.execute(rv.resource_locks.update().where(rv.resource_locks.c.resource_key.in_(
+                [token.resource_key for token in old_tokens])).values(leased_until=dt.datetime(2000, 1, 1)))
+            db.commit()
+        recovered = worker.reacquire(Factory, oid, host, **expected)
+        assert {token.resource_key for token in recovered} == {token.resource_key for token in old_tokens}
+        assert all(new.epoch > old.epoch and new.owner != old.owner
+            for new, old in zip(sorted(recovered, key=lambda t: t.resource_key),
+                                sorted(old_tokens, key=lambda t: t.resource_key)))
+        with Factory() as db:
+            resource_leases.begin_business(db)
+            try:
+                resource_leases.revalidate(db, old_tokens)
+                raise AssertionError("stale executor accepted")
+            except resource_leases.LeaseLost:
+                db.rollback()
+            assert all(not resource_leases.release(db, token) for token in old_tokens)
+            db.commit()
+            staged = db.query(mp.ProvisioningStep).filter_by(operation_id=oid).one()
+            assert (staged.id, staged.wg_public_key, staged.staged_wg_private_key) == saved_identity
+            assert db.query(mp.PaymentReservation).filter_by(operation_id=oid).one().id == hold_id
+        assert tick(oid, recovered)["step"]["state"] == "remote_created"
+        assert tick(oid, recovered)["state"] == "completed"
+        assert worker.reacquire(Factory, oid, host, **expected) == ()
+        release(recovered)
         for kind in worker.KINDS:
             oid, tokens = prepared(kind)
             try:
@@ -136,7 +184,13 @@ def scenario(engine):
         with Factory() as db:
             operation = db.get(mp.ProvisioningOperation, oid)
             operation.forward_deadline = dt.datetime(2000, 1, 1)
+            db.execute(rv.resource_locks.update().where(rv.resource_locks.c.resource_key.in_(
+                [token.resource_key for token in tokens])).values(leased_until=dt.datetime(2000, 1, 1)))
             db.commit()
+        tokens = worker.reacquire(Factory, oid, host, **expected)
+        with Factory() as db:
+            assert db.query(mp.ProvisioningStep).filter_by(operation_id=oid).one().state == "remote_calling"
+            assert db.query(mp.PaymentReservation).filter_by(operation_id=oid).one().state == "reserved"
         assert tick(oid, tokens)["status"] == "compensation_started"
         assert tick(oid, tokens)["status"] == "waiting"
         with Factory() as db:

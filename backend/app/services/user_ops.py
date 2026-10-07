@@ -1524,6 +1524,11 @@ def rename_purchase(db: Session, purchase: models.Purchase, comment: str) -> mod
 
 
 def absorb_legacy_pool_into_purchase(db: Session, user: models.User, comment: Optional[str] = None) -> Optional[models.Purchase]:
+    # Historical wrapper never committed; preserve that contract exactly.
+    return absorb_legacy_pool_core(db, user, comment)
+
+
+def absorb_legacy_pool_core(db: Session, user: models.User, comment: Optional[str] = None) -> Optional[models.Purchase]:
     """Moves a customer's leftover shared-pool connections into a Purchase
     of their own, carrying the user-level quota/usage/expiry across 1:1.
 
@@ -1585,6 +1590,33 @@ def absorb_legacy_pool_into_purchase(db: Session, user: models.User, comment: Op
     return purchase
 
 
+def build_purchase_core(db: Session, user: models.User, package: models.Package,
+                        comment: Optional[str] = None, *, count_purchase: bool = True,
+                        grant_loyalty: bool = True) -> models.Purchase:
+    """Only DB mutations; caller adds final connections before committing.
+
+The legacy wrapper defers benefits until its remote provisioning finishes.
+Durable T_final uses this core in its one transaction and never calls remote.
+"""
+    absorb_legacy_pool_core(db, user)
+    purchase = models.Purchase(
+        user_id=user.id, package_id=package.id, package_name_snapshot=package.name,
+        quota_bytes=gb_to_bytes(package.quota_gb) if package.quota_gb else 0,
+        expire_at=(dt.datetime.utcnow() + dt.timedelta(days=package.duration_days)
+                   if package.duration_days else None),
+        max_concurrent_sessions=package.max_concurrent_sessions,
+        status=models.UserStatus.active,
+        comment=(comment or "").strip() or _auto_service_label(db, user.id),
+    )
+    db.add(purchase)
+    db.flush()
+    if count_purchase:
+        user.purchase_count = (user.purchase_count or 0) + 1
+    if grant_loyalty:
+        _maybe_grant_loyalty_reward(db, user)
+    return purchase
+
+
 def apply_package_as_purchase(
     db: Session, user: models.User, package: models.Package,
     connections_override: Optional[list[dict]] = None,
@@ -1633,28 +1665,8 @@ def apply_package_as_purchase(
     # still on the shared pool get their own Purchase first, so adding this
     # new one can't strand them under a frozen expiry (see
     # absorb_legacy_pool_into_purchase).
-    absorb_legacy_pool_into_purchase(db, user)
-
-    purchase = models.Purchase(
-        user_id=user.id,
-        package_id=package.id,
-        package_name_snapshot=package.name,
-        quota_bytes=gb_to_bytes(package.quota_gb) if package.quota_gb else 0,
-        expire_at=(
-            dt.datetime.utcnow() + dt.timedelta(days=package.duration_days) if package.duration_days else None
-        ),
-        max_concurrent_sessions=package.max_concurrent_sessions,
-        status=models.UserStatus.active,
-        # Customer-written label from the bot's purchase flow, falling back
-        # to a sequential "اکانت N" when they skipped it - see
-        # _auto_service_label's docstring. absorb_legacy_pool_into_purchase
-        # just above may itself have created an earlier Purchase for this
-        # same user (their pre-existing legacy pool) - it always flushes
-        # before returning, so that row is already counted here too.
-        comment=(comment or "").strip() or _auto_service_label(db, user.id),
-    )
-    db.add(purchase)
-    db.flush()  # assigns purchase.id inside this same transaction
+    purchase = build_purchase_core(db, user, package, comment,
+                                   count_purchase=False, grant_loyalty=False)
 
     # Keeps the existing purchase_batch string grouping too (still what the
     # bot's "اکانت من" screen and UserDetail.jsx's display grouping key off

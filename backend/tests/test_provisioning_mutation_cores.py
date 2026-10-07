@@ -20,7 +20,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from app import models, models_receipt_void as rv, schemas
 from app.routers import bot as bot_router
-from app.services import receipt_void_schema, user_ops
+from app.services import accounting, receipt_void_schema, user_ops
 from app.services import bot_auth, receipt_approval_registration as registration
 from app.services import receipt_approval_runtime as runtime, receipt_approval_intent as intent
 
@@ -59,6 +59,52 @@ def scenario(engine, label):
     check(label + " creation assigns an ID", user_id is not None)
     db.rollback()
     check(label + " creation rollback removes User", db.query(models.User).filter_by(username="rolled_back").count(), 0)
+
+    core_user = user_ops.create_user_record(db, "purchase_core", quota_gb=1, expire_days=3)
+    node = models.Node(name="core-node", type=models.NodeType.mikrotik)
+    package = models.Package(name="core-package", quota_gb=3, duration_days=7, price=100)
+    db.add_all([node, package])
+    db.flush()
+    legacy = models.Connection(user_id=core_user.id, node_id=node.id, type=models.ConnectionType.pptp,
+                               ppp_username="core", ppp_password="secret")
+    db.add(legacy)
+    core_user.reserved_quota_bytes = GB
+    core_user.reserved_duration_days = 2
+    core_user.reserved_created_at = dt.datetime.utcnow()
+    settings.loyalty_purchase_threshold = 2
+    settings.loyalty_reward_credit = 7
+    db.commit()
+    core_uid, legacy_id, package_id = core_user.id, legacy.id, package.id
+    commits.clear()
+    built = user_ops.build_purchase_core(db, core_user, package, "  service label  ")
+    db.flush()
+    check(label + " purchase core does not commit", commits, [])
+    ledger = accounting.record_core(db, "sale_new", 100, user=core_user, package=package, purchase_id=built.id)
+    db.flush()
+    check(label + " accounting core is the existing no-commit writer", (ledger.id is not None, commits), (True, []))
+    check(label + " pure purchase core snapshots package and counts/rewards once",
+          (built.quota_bytes, built.comment, core_user.purchase_count, core_user.balance),
+          (3 * GB, "service label", 2, 7))
+    check(label + " absorption carries legacy reservation once",
+          (db.get(models.Connection, legacy_id).purchase_id is not None,
+           core_user.reserved_quota_bytes, db.query(models.Purchase).filter_by(user_id=core_uid).count()),
+          (True, None, 2))
+    db.rollback()
+    db.expire_all()
+    core_user = db.get(models.User, core_uid)
+    check(label + " purchase sale ledger rolls back with purchase", db.query(models.LedgerEntry).count(), 0)
+    check(label + " rollback restores purchase, reward, count and legacy reservation",
+          (core_user.purchase_count, core_user.balance, core_user.reserved_quota_bytes,
+           db.get(models.Connection, legacy_id).purchase_id,
+           db.query(models.Purchase).filter_by(user_id=core_uid).count()), (1, 0, GB, None, 0))
+    built = user_ops.apply_package_as_purchase(db, core_user, db.get(models.Package, package_id),
+                                              connections_override=[])
+    check(label + " legacy purchase wrapper commits once and gives benefits once",
+          (len(commits), core_user.purchase_count, core_user.balance, built.quota_bytes), (1, 2, 7, 3 * GB))
+    settings = db.get(models.PanelSettings, 1)
+    settings.loyalty_purchase_threshold = 0
+    db.commit()
+    commits.clear()
 
     user = user_ops.create_user_record(db, "buyer", quota_gb=2, telegram_id=222)
     check(label + " legacy creation commits once", len(commits), 1)
@@ -261,7 +307,8 @@ def scenario(engine, label):
 
 
 for core in (user_ops.create_user_record_core, user_ops.apply_referral_code_core,
-             user_ops.redeem_discount_code_core, user_ops.renew_user_core, user_ops.renew_purchase_core):
+             user_ops.redeem_discount_code_core, user_ops.renew_user_core, user_ops.renew_purchase_core,
+             user_ops.absorb_legacy_pool_core, user_ops.build_purchase_core, accounting.record_core):
     calls = [n.func.attr if isinstance(n.func, ast.Attribute) else n.func.id
              for n in ast.walk(ast.parse(inspect.getsource(core)))
              if isinstance(n, ast.Call) and isinstance(n.func, (ast.Attribute, ast.Name))]

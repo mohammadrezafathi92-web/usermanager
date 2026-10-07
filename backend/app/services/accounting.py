@@ -97,6 +97,11 @@ def record(
     return entry
 
 
+# record() already has the caller-owned transaction contract. Expose the
+# canonical L2 name without adding a new commit or changing legacy callers.
+record_core = record
+
+
 def record_panel_sale(
     db: Session,
     kind: str,

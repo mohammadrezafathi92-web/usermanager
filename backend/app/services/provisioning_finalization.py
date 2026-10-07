@@ -130,7 +130,7 @@ def _locked(db, model, ident):
         .execution_options(populate_existing=True)).scalar_one_or_none()
 
 
-def finish(db, operation_id, version, leases):
+def finish(db, operation_id, version, leases, *, require_contracts=False):
     """Atomically build/capture/complete; replay never repeats a mutation."""
     receipt_void_schema.assert_ready()
     wallet_service.require_legacy_phase(db)
@@ -229,6 +229,11 @@ def finish(db, operation_id, version, leases):
             node = _locked(db, models.Node, int(node_id))
             if node is None or provisioning_contracts.config_fingerprint(node) != fingerprint:
                 raise HTTPException(409, "provisioning_node_config_changed")
+            if require_contracts:
+                for backend in sorted({step.backend for step in steps if step.node_id == node.id}):
+                    provisioning_contracts.require_ready(db, node, backend)
+    elif require_contracts and steps:
+        raise HTTPException(409, "provisioning_node_config_changed")
     for step in steps:
         provisioning_records.build_connection_core(db, step.id, step.version, user_id=user.id,
             purchase_id=purchase.id if purchase else None, purchase_batch=intent.purchase_batch)

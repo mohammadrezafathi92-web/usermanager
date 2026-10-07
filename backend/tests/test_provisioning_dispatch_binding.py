@@ -25,6 +25,7 @@ from app.services import provisioning_child_database as child_db
 from app.services.provisioning_child_guard import ChildGuard, ChildGuardUnavailable
 from app.services import provisioning_child_authority as authority
 from app.services import provisioning_parent_dispatch as parent_dispatch
+from app.services import provisioning_parent_execute as parent_execute, remote_action
 from unittest.mock import patch
 from sqlalchemy import text
 from fastapi import HTTPException
@@ -179,6 +180,65 @@ def scenario(engine, directory):
                 db.rollback()
                 assert db.get(mp.ProvisioningStep, request.step_id).state == "staged"
                 assert db.get(mp.ProvisioningStep, request.step_id).version == request.step_version
+                db.rollback()
+                with patch.dict(os.environ, {"DATABASE_URL": "sqlite:///untrusted-other.db"}), patch.object(
+                        parent_execute.remote_runner, "run_action") as launch:
+                    try:
+                        parent_execute.execute_one(Factory, request.step_id, request.step_version, identity,
+                            [lease], recovery_read=False)
+                        raise AssertionError("mismatched child source accepted")
+                    except HTTPException as error:
+                        assert error.detail == "provisioning_runner_configuration_mismatch"
+                    launch.assert_not_called()
+                with patch.dict(os.environ, {"DATABASE_URL": engine.url.render_as_string(hide_password=False)}):
+                    def launched(descriptor):
+                        assert engine.pool.checkedout() == 0, "parent session/connection survived across runner I/O"
+                        with Factory() as observed:
+                            committed = observed.get(mp.ProvisioningStep, request.step_id)
+                            assert committed.state == "remote_calling" and committed.version == request.step_version + 1
+                            assert observed.query(models.Connection).count() == 0
+                        return remote_action.RemoteActionResult(descriptor.action_id, remote_action.Outcome.SUCCEEDED,
+                            write_attempted=True)
+                    with patch.object(parent_execute.remote_runner, "run_action", side_effect=launched):
+                        public = parent_execute.execute_one(Factory, request.step_id, request.step_version, identity,
+                            [lease], recovery_read=False)
+                    assert public["state"] == "remote_created" and public["version"] == request.step_version + 2
+                    assert "staged_password" not in public and "private-never-selected" not in str(public)
+                    def fixture_state(state):
+                        staged = db.get(mp.ProvisioningStep, request.step_id, populate_existing=True)
+                        operation = db.get(mp.ProvisioningOperation, request.operation_id, populate_existing=True)
+                        staged.state, staged.version = state, request.step_version
+                        operation.version = request.operation_version
+                        db.commit()
+                    fixture_state("staged")
+                    with patch.object(parent_execute.remote_runner, "run_action", side_effect=RuntimeError("management-secret-not-selected")):
+                        failed = parent_execute.execute_one(Factory, request.step_id, request.step_version, identity,
+                            [lease], recovery_read=False)
+                    assert failed["state"] == "remote_calling" and failed["error_code"] == "remote_result_unknown"
+                    assert failed["next_retry_at"] is not None and "management-secret-not-selected" not in str(failed)
+                    fixture_state("staged")
+                    def wrong_result(descriptor):
+                        return remote_action.RemoteActionResult(str(uuid.uuid4()), remote_action.Outcome.SUCCEEDED, write_attempted=True)
+                    with patch.object(parent_execute.remote_runner, "run_action", side_effect=wrong_result):
+                        try:
+                            parent_execute.execute_one(Factory, request.step_id, request.step_version, identity,
+                                [lease], recovery_read=False)
+                            raise AssertionError("another action's result accepted")
+                        except HTTPException as error:
+                            assert error.detail == "provisioning_runner_result_mismatch"
+                    assert db.get(mp.ProvisioningStep, request.step_id, populate_existing=True).state == "remote_calling"
+                    assert db.get(mp.ProvisioningStep, request.step_id).version == request.step_version + 1
+                    fixture_state("remote_calling")
+                    with patch.object(parent_execute.remote_runner, "run_action", side_effect=lambda descriptor:
+                            remote_action.RemoteActionResult.killed_unknown(descriptor.action_id, "hard_deadline_exceeded")):
+                        timed_out = parent_execute.execute_one(Factory, request.step_id, request.step_version, identity,
+                            [lease], recovery_read=True)
+                    assert timed_out["state"] == "remote_calling" and timed_out["error_code"] == "remote_result_unknown"
+                    assert timed_out["next_retry_at"] is not None
+                # Restore only the disposable matrix fixture, not real state.
+                step = db.get(mp.ProvisioningStep, request.step_id)
+                op = db.get(mp.ProvisioningOperation, request.operation_id)
+                step.version, op.version = request.step_version, request.operation_version
                 step.state = "remote_calling"
                 db.commit()
                 with ChildGuard(reader, request, identity, mode_hold, node_hold, base_dir=directory) as pinned:

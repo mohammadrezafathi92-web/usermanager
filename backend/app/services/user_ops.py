@@ -14,6 +14,7 @@ import uuid
 from typing import Optional
 
 from fastapi import HTTPException
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import models
@@ -106,7 +107,7 @@ def _maybe_grant_loyalty_reward(db: Session, user: models.User) -> None:
 
 
 # --------------------------------------------------------------------- users
-def create_user_record(
+def create_user_record_core(
     db: Session,
     username: str,
     full_name: Optional[str] = None,
@@ -154,6 +155,20 @@ def create_user_record(
     db.flush()  # assigns user.id, still inside this same transaction
     if not defer_loyalty:
         _maybe_grant_loyalty_reward(db, user)
+    return user
+
+
+def create_user_record(
+    db: Session, username: str, full_name: Optional[str] = None,
+    quota_gb: float = 0, expire_days: Optional[int] = None,
+    notes: Optional[str] = None, telegram_id: Optional[int] = None,
+    owner_admin_id: Optional[int] = None, package_id: Optional[int] = None,
+    *, defer_loyalty: bool = False,
+) -> models.User:
+    """Legacy commit boundary; durable T_final uses the DB-only core."""
+    user = create_user_record_core(
+        db, username, full_name, quota_gb, expire_days, notes, telegram_id,
+        owner_admin_id, package_id, defer_loyalty=defer_loyalty)
     db.commit()
     db.refresh(user)
     return user
@@ -161,6 +176,17 @@ def create_user_record(
 
 def apply_referral_code(db: Session, user: models.User, referral_code: str,
                         evidence_sink: Optional[list] = None, before_commit=None) -> tuple[bool, str]:
+    """Legacy wrapper: reward, optional effect hook and commit stay atomic."""
+    result = apply_referral_code_core(db, user, referral_code, evidence_sink)
+    if result[0]:
+        if before_commit is not None:
+            before_commit()
+        db.commit()
+    return result
+
+
+def apply_referral_code_core(db: Session, user: models.User, referral_code: str,
+                             evidence_sink: Optional[list] = None) -> tuple[bool, str]:
     """Called once, right after a brand-new customer's account is created
     (routers/bot.py's apply_referral, itself called from
     telegram_bot/handlers/admin_pending.py right after create_user
@@ -206,14 +232,6 @@ def apply_referral_code(db: Session, user: models.User, referral_code: str,
             wallet_service.adjust_in_session(db, user, new_credit, source_kind=wallet_service.REFERRAL_REWARD)
         quota_rewards.grant(new_target, gb_to_bytes(new_gb))
         _referral_evidence(evidence_sink, referrer, user, before, ref_target, new_target)
-    if before_commit is not None:
-        # The caller's chance to write, into THIS transaction, the record of
-        # what was just applied (receipt-approval effects). Reward and record
-        # then commit together or not at all: a crash can no longer leave a
-        # reward that is granted, can never be granted again (the two flags
-        # above), and has no effect row - an approval stuck for ever.
-        before_commit()
-    db.commit()
     return True, ""
 
 
@@ -301,6 +319,20 @@ def validate_discount_code(
 def redeem_discount_code(
     db: Session, code: str, username: str, package_price: int = 0,
     owner_admin_id: Optional[int] = None, evidence_sink: Optional[list] = None,
+    before_commit=None,
+) -> tuple[bool, str, int]:
+    """Legacy wrapper. Durable finalization uses the core without a commit."""
+    result = redeem_discount_code_core(db, code, username, package_price, owner_admin_id, evidence_sink)
+    if result[0]:
+        if before_commit is not None:
+            before_commit()
+        db.commit()
+    return result
+
+
+def redeem_discount_code_core(
+    db: Session, code: str, username: str, package_price: int = 0,
+    owner_admin_id: Optional[int] = None, evidence_sink: Optional[list] = None,
 ) -> tuple[bool, str, int]:
     """Re-validates (a code can hit its cap/expire between the customer
     typing it and confirming payment) then, if still valid, atomically
@@ -323,8 +355,23 @@ def redeem_discount_code(
         )
         .first()
     )
-    used_before = row.used_count or 0
-    row.used_count = used_before + 1
+    # The mutation itself rechecks both capacity and per-customer use. A
+    # successful validation is not permission to spend a slot later.
+    counter = func.coalesce(models.DiscountCode.used_count, 0)
+    prior_use = select(models.DiscountCodeRedemption.id).where(
+        models.DiscountCodeRedemption.code_id == row.id,
+        models.DiscountCodeRedemption.username == username).exists()
+    result = db.execute(models.DiscountCode.__table__.update().where(
+        models.DiscountCode.id == row.id, models.DiscountCode.enabled.is_(True),
+        or_(models.DiscountCode.max_uses.is_(None), counter < models.DiscountCode.max_uses),
+        or_(models.DiscountCode.expires_at.is_(None), models.DiscountCode.expires_at >= dt.datetime.utcnow()),
+        ~prior_use,
+    ).values(used_count=counter + 1))
+    if result.rowcount != 1:
+        return False, "ظرفیت کد تخفیف تمام شده یا قبلاً استفاده شده است", 0
+    db.expire(row, ["used_count"])
+    used_after = row.used_count
+    used_before = used_after - 1
     user = db.query(models.User).filter(models.User.username == username).first()
     redemption = models.DiscountCodeRedemption(
         code_id=row.id,
@@ -334,7 +381,7 @@ def redeem_discount_code(
         discount_amount=amount,
     )
     db.add(redemption)
-    db.commit()
+    db.flush()
     if evidence_sink is not None:
         # receipt-approval evidence (services/receipt_approval_effects.py)
         from .receipt_approval_effects import DiscountEvidence
@@ -400,6 +447,25 @@ def _renewal_evidence(sink: Optional[list], mode: str, now: dt.datetime, add_gb:
 
 
 def renew_user(
+    db: Session, user: models.User, add_gb: float = 0, add_days: int = 0,
+    reset_usage: bool = False, package_id: Optional[int] = None,
+    evidence_sink: Optional[list] = None,
+) -> models.User:
+    """Legacy boundary: reconcile before commit, then grant legacy loyalty."""
+    reconcile = []
+    count_before = user.purchase_count or 0
+    renew_user_core(db, user, add_gb, add_days, reset_usage, package_id,
+                    evidence_sink, grant_loyalty=False, reconciliation_sink=reconcile)
+    for target in reconcile:
+        reconcile_user_connections(db, target)
+    if (user.purchase_count or 0) != count_before:
+        _maybe_grant_loyalty_reward(db, user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def renew_user_core(
     db: Session,
     user: models.User,
     add_gb: float = 0,
@@ -407,6 +473,7 @@ def renew_user(
     reset_usage: bool = False,
     package_id: Optional[int] = None,
     evidence_sink: Optional[list] = None,
+    *, grant_loyalty: bool = True, reconciliation_sink: Optional[list] = None,
 ) -> models.User:
     """Renews a user - but NOT always immediately. If the user's CURRENT
     quota and expiry both still have room left (they haven't actually used
@@ -437,8 +504,6 @@ def renew_user(
             if user.reserved_created_at is None:
                 user.reserved_created_at = now
             _renewal_evidence(evidence_sink, "reserved", now, add_gb, add_days, package_id, before, _renewal_state(user))
-            db.commit()
-            db.refresh(user)
             return user
         # Current quota or expiry is already exhausted (or this user never
         # had limits set before) - apply as a clean restart right now.
@@ -464,7 +529,8 @@ def renew_user(
         # user.status = active above, it would see no transition on the
         # next poll and never notice the connections are still
         # disabled/deleted from before. See reconcile_user_connections.
-        reconcile_user_connections(db, user)
+        if reconciliation_sink is not None:
+            reconciliation_sink.append(user)
     # Same package_id gap as create_user_record above - a bot renewal from a
     # package purchase (or an admin re-tagging an existing user with a
     # package via routers/bot.py) should keep package_id in sync too, not
@@ -479,9 +545,8 @@ def renew_user(
         # loyalty progress - a bare package re-tag or a reset-usage-only
         # call shouldn't silently advance it. See _maybe_grant_loyalty_reward.
         user.purchase_count = (user.purchase_count or 0) + 1
-        _maybe_grant_loyalty_reward(db, user)
-    db.commit()
-    db.refresh(user)
+        if grant_loyalty:
+            _maybe_grant_loyalty_reward(db, user)
     return user
 
 
@@ -1650,6 +1715,22 @@ def apply_package_as_purchase(
 
 
 def renew_purchase(
+    db: Session, purchase: models.Purchase, add_gb: float = 0, add_days: int = 0,
+    reset_usage: bool = False, package_id: Optional[int] = None,
+    evidence_sink: Optional[list] = None,
+) -> models.Purchase:
+    """Legacy boundary; durable T_final reconciles after its own commit."""
+    reconcile = []
+    renew_purchase_core(db, purchase, add_gb, add_days, reset_usage, package_id,
+                        evidence_sink, reconciliation_sink=reconcile)
+    for target in reconcile:
+        reconcile_purchase_connections(db, target)
+    db.commit()
+    db.refresh(purchase)
+    return purchase
+
+
+def renew_purchase_core(
     db: Session,
     purchase: models.Purchase,
     add_gb: float = 0,
@@ -1657,6 +1738,7 @@ def renew_purchase(
     reset_usage: bool = False,
     package_id: Optional[int] = None,
     evidence_sink: Optional[list] = None,
+    *, reconciliation_sink: Optional[list] = None,
 ) -> models.Purchase:
     """Same reservation-queue renewal behavior as renew_user above (see its
     docstring), but scoped to just ONE independent Purchase instead of the
@@ -1678,8 +1760,6 @@ def renew_purchase(
             if purchase.reserved_created_at is None:
                 purchase.reserved_created_at = now
             _renewal_evidence(evidence_sink, "reserved", now, add_gb, add_days, package_id, before, _renewal_state(purchase))
-            db.commit()
-            db.refresh(purchase)
             return purchase
         purchase.used_bytes = 0
         if add_gb:
@@ -1699,13 +1779,12 @@ def renew_purchase(
         # transition on the next poll (since purchase.status is already
         # "active" by the time it looks) and never re-enable this purchase's
         # connections.
-        reconcile_purchase_connections(db, purchase)
+        if reconciliation_sink is not None:
+            reconciliation_sink.append(purchase)
     if package_id is not None:
         purchase.package_id = package_id
     if is_real_renewal:
         _renewal_evidence(evidence_sink, "immediate_reset", now, add_gb, add_days, package_id, before, _renewal_state(purchase))
-    db.commit()
-    db.refresh(purchase)
     return purchase
 
 

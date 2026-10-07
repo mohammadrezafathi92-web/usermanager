@@ -37,11 +37,15 @@ def get_customer_onboarding_config(
 ):
     _require_interactive_bot(principal)
     row = db.get(models.BotSettings, 1)
-    return {
-        "required_channel_id": (row.required_channel_id or "").strip() if row else "",
-        "required_channel_url": (row.required_channel_url or "").strip() if row else "",
-        "customer_terms_text": (row.customer_terms_text or "").strip() if row else "",
-    }
+    owner = db.get(models.AdminUser, principal.owner_admin_id) if principal.owner_admin_id else None
+    if principal.owner_admin_id and owner is None:
+        raise HTTPException(403, "مالک ربات پیدا نشد")
+    result = {}
+    for field in ("required_channel_id", "required_channel_url", "customer_terms_text"):
+        own_value = getattr(owner, "own_" + field) if owner else None
+        value = own_value if own_value is not None else getattr(row, field, "")
+        result[field] = (value or "").strip()
+    return result
 
 
 @router.get("/customer-terms-acceptance")

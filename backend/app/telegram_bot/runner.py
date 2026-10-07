@@ -122,13 +122,13 @@ class CustomerOnboardingMiddleware(BaseMiddleware):
     CHECK_CALLBACK = "onboarding:check"
     ACCEPT_CALLBACK_PREFIX = "onboarding:accept:"
     ACCEPT_DIGEST_HEX_LENGTH = 46  # 18-byte prefix + 46 = Telegram's 64-byte callback_data limit.
-    _member_cache: dict[tuple[str, int], tuple[float, bool]] = {}
+    _member_cache: dict[tuple[int, str, int], tuple[float, bool]] = {}
     _member_cache_seconds = 60
 
     @classmethod
     async def _is_member(cls, bot: Bot, channel_id: str, telegram_id: int, *, force: bool = False) -> bool | None:
         now = asyncio.get_running_loop().time()
-        cache_key = (channel_id, telegram_id)
+        cache_key = (bot.id, channel_id, telegram_id)
         cached = cls._member_cache.get(cache_key)
         if not force and cached and now - cached[0] < cls._member_cache_seconds:
             return cached[1]

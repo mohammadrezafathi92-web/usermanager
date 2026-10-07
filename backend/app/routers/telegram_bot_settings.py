@@ -283,6 +283,9 @@ def _own_bot_response(admin: models.AdminUser) -> schemas.OwnBotSettingsOut:
         last_error=status.get("last_error"),
         bot_username=status.get("bot_username"),
         telegram_id_linked=admin.telegram_id is not None,
+        required_channel_id=admin.own_required_channel_id,
+        required_channel_url=admin.own_required_channel_url,
+        customer_terms_text=admin.own_customer_terms_text,
     )
 
 
@@ -304,6 +307,32 @@ def update_my_bot(
     global bot above; nothing here ever touches the BotSettings row."""
     _require_admin_tier(admin)
     data = payload.model_dump(exclude_unset=True)
+    onboarding_fields = ("required_channel_id", "required_channel_url", "customer_terms_text")
+    candidate = {
+        field: data.get(field, getattr(admin, "own_" + field))
+        for field in onboarding_fields
+    }
+    if any(field in data for field in onboarding_fields):
+        # Treat the override as one unit: no accidental mix of another bot's
+        # channel id and an inherited invitation URL.
+        if any(value is None for value in candidate.values()) and not all(
+            value is None for value in candidate.values()
+        ):
+            raise HTTPException(400, "تنظیمات ورود را کامل وارد کنید یا همگی را به حالت مشترک برگردانید")
+        candidate = {field: value.strip() if value is not None else None for field, value in candidate.items()}
+        channel = candidate["required_channel_id"] or ""
+        url = candidate["required_channel_url"] or ""
+        if channel and not (
+            (channel.startswith("@") and 5 <= len(channel[1:]) <= 32
+             and channel[1:].replace("_", "a").isascii()
+             and channel[1:].replace("_", "a").isalnum())
+            or (channel.startswith("-100") and channel[1:].isdigit())
+        ):
+            raise HTTPException(400, "شناسه‌ی کانال باید به شکل @channel یا -100... باشد")
+        if channel and not url:
+            raise HTTPException(400, "برای عضویت اجباری، لینک دعوت کانال را هم وارد کنید")
+        if url and not url.lower().startswith("https://t.me/"):
+            raise HTTPException(400, "لینک کانال باید با https://t.me/ شروع شود")
     if "bot_token" in data:
         token = (data["bot_token"] or "").strip()
         # Telegram permits exactly ONE getUpdates poller per token. Saving a
@@ -333,6 +362,9 @@ def update_my_bot(
         admin.own_bot_token = token or None
     if "enabled" in data:
         admin.own_bot_enabled = bool(data["enabled"])
+    if any(field in data for field in onboarding_fields):
+        for field, value in candidate.items():
+            setattr(admin, "own_" + field, value)
     db.commit()
     db.refresh(admin)
 

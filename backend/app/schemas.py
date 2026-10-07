@@ -1365,6 +1365,9 @@ class BotSettingsUpdate(BaseModel):
 
 # ---------- Per-admin dedicated bot (3-tier hierarchy - see AdminUser.own_bot_token) ----------
 class OwnBotSettingsOut(BaseModel):
+    required_channel_id: Optional[str] = None
+    required_channel_url: Optional[str] = None
+    customer_terms_text: Optional[str] = None
     bot_token: Optional[str] = ""
     enabled: bool = True
     running: bool = False
@@ -1377,6 +1380,9 @@ class OwnBotSettingsOut(BaseModel):
 
 
 class OwnBotSettingsUpdate(BaseModel):
+    required_channel_id: Optional[str] = Field(default=None, max_length=255)
+    required_channel_url: Optional[str] = Field(default=None, max_length=500)
+    customer_terms_text: Optional[str] = Field(default=None, max_length=3500)
     bot_token: Optional[str] = None
     enabled: Optional[bool] = None
 

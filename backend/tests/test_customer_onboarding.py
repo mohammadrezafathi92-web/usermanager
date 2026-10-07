@@ -5,15 +5,15 @@ import asyncio
 import hashlib
 import os
 import sys
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 from fastapi import HTTPException
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATABASE_URL", "sqlite://")
 
-from app import models
+from app import models, schemas
 from app.database import Base
-from app.routers import bot_onboarding
+from app.routers import bot_onboarding, telegram_bot_settings
 from app.telegram_bot import admin_scope, panel_bridge, runner
 from aiogram.types import CallbackQuery
 from sqlalchemy import create_engine
@@ -67,6 +67,59 @@ async def run():
         digest_one = hashlib.sha256(b"terms one").hexdigest()
         digest_two = hashlib.sha256(b"terms two").hexdigest()
         check("onboarding API returns admin configuration", config["required_channel_id"], "@sample")
+        owner = models.AdminUser(username="own-onboarding", hashed_password="unused", is_superadmin=False,
+                                 role="seller", permissions="own_bot")
+        other = models.AdminUser(username="other-onboarding", hashed_password="unused", is_superadmin=False)
+        db.add_all([owner, other])
+        db.commit()
+        own_principal = BotPrincipal.internal(owner.id)
+        with patch.object(telegram_bot_settings.runner, "restart_admin_bot"), patch.object(
+            telegram_bot_settings.runner, "get_admin_bot_status", return_value={}
+        ):
+            check("dedicated bot defaults to existing shared settings",
+                  bot_onboarding.get_customer_onboarding_config(db, principal=own_principal), config)
+            result = telegram_bot_settings.update_my_bot(schemas.OwnBotSettingsUpdate(
+                required_channel_id="@own_channel", required_channel_url="https://t.me/own_channel",
+                customer_terms_text="own terms",
+            ), db=db, admin=owner)
+            check("dedicated form returns its own terms", result.customer_terms_text, "own terms")
+            own_config = bot_onboarding.get_customer_onboarding_config(db, principal=own_principal)
+            check("dedicated channel isolated", own_config["required_channel_id"], "@own_channel")
+            check("other bot stays shared", bot_onboarding.get_customer_onboarding_config(
+                db, principal=BotPrincipal.internal(other.id)), config)
+            check("global unchanged", bot_onboarding.get_customer_onboarding_config(db, principal=principal), config)
+            for payload in (
+                {"required_channel_id": "invalid"},
+                {"required_channel_url": "http://evil.test/"},
+                {"required_channel_url": ""},
+                {"customer_terms_text": None},
+            ):
+                try:
+                    telegram_bot_settings.update_my_bot(schemas.OwnBotSettingsUpdate(**payload), db=db, admin=owner)
+                    denied = False
+                except HTTPException as exc:
+                    denied = exc.status_code == 400
+                check("invalid dedicated onboarding refused " + str(payload), denied, True)
+                check("invalid save preserves dedicated config", bot_onboarding.get_customer_onboarding_config(
+                    db, principal=own_principal), own_config)
+            telegram_bot_settings.update_my_bot(schemas.OwnBotSettingsUpdate(
+                required_channel_id="", required_channel_url="", customer_terms_text="",
+            ), db=db, admin=owner)
+            check("explicit blank disables shared gate for this bot", bot_onboarding.get_customer_onboarding_config(
+                db, principal=own_principal), dict.fromkeys(config, ""))
+            telegram_bot_settings.update_my_bot(schemas.OwnBotSettingsUpdate(
+                required_channel_id=None, required_channel_url=None, customer_terms_text=None,
+            ), db=db, admin=owner)
+            check("reset restores shared gate", bot_onboarding.get_customer_onboarding_config(db, principal=own_principal), config)
+            owner.permissions = ""
+            try:
+                telegram_bot_settings.update_my_bot(schemas.OwnBotSettingsUpdate(
+                    required_channel_id="", required_channel_url="", customer_terms_text="",
+                ), db=db, admin=owner)
+                denied = False
+            except HTTPException as exc:
+                denied = exc.status_code == 403
+            check("seller without own_bot permission cannot edit onboarding", denied, True)
         check("acceptance starts absent", bot_onboarding.has_customer_accepted_terms(
             123, digest_one, db=db, principal=principal),
               {"accepted": False})
@@ -106,7 +159,12 @@ async def run():
         gate = runner.CustomerOnboardingMiddleware()
         gate._member_cache.clear()
         handler = AsyncMock(return_value="passed")
-        bot = type("Bot", (), {"get_chat_member": AsyncMock(return_value=type("Member", (), {"status": "left"})())})()
+        bot = type("Bot", (), {"id": 10, "get_chat_member": AsyncMock(return_value=type("Member", (), {"status": "left"})())})()
+        other_bot = type("Bot", (), {"id": 20, "get_chat_member": AsyncMock(return_value=type("Member", (), {"status": "member"})())})()
+        await gate._is_member(other_bot, "@sample", 123)
+        check("another bot's membership cache cannot bypass this bot", await gate._is_member(bot, "@sample", 123), False)
+        gate._member_cache.clear()
+        bot.get_chat_member.reset_mock()
 
         print("--- required channel membership ---")
         msg = FakeMessage()

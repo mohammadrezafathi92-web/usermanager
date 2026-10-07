@@ -6,6 +6,7 @@ as IDs and happens only AFTER commit. Approval operations remain fail-closed.
 """
 import datetime as dt
 import json
+import re
 
 from fastapi import HTTPException
 from pydantic import BaseModel, StrictBool, StrictInt, StrictStr, ValidationError, validator
@@ -13,6 +14,7 @@ from sqlalchemy import select
 
 from .. import models, models_provisioning as mp, models_receipt_void as rv
 from . import accounting, payment_reservations, provisioning_claims, provisioning_records
+from . import provisioning_contracts
 from . import provisioning_transitions as transitions, receipt_void_schema, resource_leases
 from . import user_ops, wallet_accounts, wallet_policy, wallet_service
 
@@ -88,6 +90,14 @@ class FinalIntent(_Snapshot):
     quota_bytes: StrictInt = 0
     duration_days: StrictInt = 0
     reset_usage: StrictBool = False
+    node_fingerprints: dict[str, StrictStr] | None = None
+
+    @validator("node_fingerprints")
+    def fingerprints(cls, value):
+        if value is not None and any(not re.fullmatch(r"[1-9][0-9]*", key) or
+                not re.fullmatch(r"[0-9a-f]{64}", digest) for key, digest in value.items()):
+            raise ValueError("invalid node fingerprint")
+        return value
 
     @validator("purchase_batch")
     def batch_length(cls, value):
@@ -164,7 +174,7 @@ def finish(db, operation_id, version, leases):
         max_concurrent_sessions=intent.package.max_concurrent_sessions) if intent.package else None)
     if operation.operation_type == "purchase" and package is None:
         raise HTTPException(409, "provisioning_intent_invalid")
-    if package is not None and _locked(db, models.Package, package.id) is None:
+    if package is not None and db.get(models.Package, package.id) is None:
         raise HTTPException(409, "provisioning_package_missing")
     if operation.operation_type == "create_user":
         if operation.target_user_id is not None or operation.username_claim != intent.user.username or (
@@ -192,6 +202,8 @@ def finish(db, operation_id, version, leases):
             raise HTTPException(409, "provisioning_lease_scope_invalid")
         if operation.operation_type != "add_connection":
             wallet_policy.can_purchase(db, user)
+    if package is not None and _locked(db, models.Package, package.id) is None:
+        raise HTTPException(409, "provisioning_package_missing")
     purchase = None
     reconcile = []
     if operation.operation_type in ("create_user", "purchase") and package:
@@ -210,6 +222,13 @@ def finish(db, operation_id, version, leases):
         core(db, purchase if purchase is not None else user, add_gb=intent.quota_bytes / 1024 ** 3,
             add_days=intent.duration_days, reset_usage=intent.reset_usage,
             package_id=package.id if package else None, reconciliation_sink=reconcile)
+    if intent.node_fingerprints is not None:
+        if set(intent.node_fingerprints) != {str(step.node_id) for step in steps}:
+            raise HTTPException(409, "provisioning_node_config_changed")
+        for node_id, fingerprint in sorted(intent.node_fingerprints.items(), key=lambda item: int(item[0])):
+            node = _locked(db, models.Node, int(node_id))
+            if node is None or provisioning_contracts.config_fingerprint(node) != fingerprint:
+                raise HTTPException(409, "provisioning_node_config_changed")
     for step in steps:
         provisioning_records.build_connection_core(db, step.id, step.version, user_id=user.id,
             purchase_id=purchase.id if purchase else None, purchase_batch=intent.purchase_batch)

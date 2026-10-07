@@ -72,11 +72,13 @@ def _resolve_commit(git_dir: Path) -> str | None:
         return head  # detached HEAD
     ref = head.split(" ", 1)[1].strip()
 
-    sha = _read_first(git_dir / ref)
+    common = _read_first(git_dir / "commondir")
+    common_dir = (git_dir / common).resolve() if common else git_dir
+    sha = _read_first(git_dir / ref, common_dir / ref)
     if sha:
         return sha
 
-    packed = _read_first(git_dir / "packed-refs")
+    packed = _read_first(git_dir / "packed-refs", common_dir / "packed-refs")
     if packed:
         for line in packed.splitlines():
             if line.startswith("#") or not line.strip():
@@ -85,6 +87,20 @@ def _resolve_commit(git_dir: Path) -> str | None:
             if len(parts) == 2 and parts[1].strip() == ref:
                 return parts[0].strip()
     return None
+
+
+def _git_directory(root: Path) -> Path | None:
+    """A checkout may use a .git directory OR a worktree gitdir pointer."""
+    marker = root / ".git"
+    if marker.is_dir():
+        return marker
+    pointer = _read_first(marker)
+    if not pointer or not pointer.startswith("gitdir: "):
+        return None
+    directory = Path(pointer[len("gitdir: "):].strip())
+    if not directory.is_absolute():
+        directory = root / directory
+    return directory.resolve() if directory.is_dir() else None
 
 
 def _resolve_commit_count(root: Path) -> int | None:
@@ -144,8 +160,8 @@ def get_build_info() -> dict:
         try:
             if base_version is None:
                 base_version = _read_first(root / "VERSION")
-            git_dir = root / ".git"
-            if git_dir.is_dir():
+            git_dir = _git_directory(root)
+            if git_dir is not None:
                 if commit is None:
                     commit = _resolve_commit(git_dir)
                 if commit_count is None:

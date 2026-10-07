@@ -12,7 +12,7 @@ from sqlalchemy import CheckConstraint, MetaData, inspect, select, text
 from sqlalchemy.schema import CreateTable
 
 from .. import models, models_provisioning as mp
-from . import provisioning_schema as schema, provisioning_runtime_contract as contract
+from . import provisioning_schema as schema, provisioning_runtime_contract as contract, provisioning_installation
 from .provisioning_lock_verification import require_exclusive
 from .provisioning_transitions import TERMINAL
 
@@ -70,6 +70,11 @@ def _preflight(connection, installation_uuid, actor_admin_id, expected_version):
 
 def upgrade(engine, installation_uuid, mode_hold, *, actor_admin_id, expected_version, base_dir=None):
     require_exclusive(mode_hold, installation_uuid, base_dir)
+    try:
+        if provisioning_installation.read_file(base_dir) != installation_uuid:
+            raise UpgradeRefused("installation_mismatch")
+    except provisioning_installation.InstallationUnavailable as exc:
+        raise UpgradeRefused(str(exc)) from None
     with engine.connect() as connection:
         dialect = connection.dialect
         if dialect.name == "sqlite":

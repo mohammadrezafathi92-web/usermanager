@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from dataclasses import replace
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATABASE_URL", "sqlite://")
@@ -64,6 +65,19 @@ def scenario(engine, base_dir):
                 "flock" if engine.dialect.name == "sqlite" else "flock+get_lock", dt.datetime.utcnow())
             print("SKIP real Linux lock verification locally; CAS uses an explicit unit fixture")
         arguments = dict(actor_admin_id=root_id, base_dir=base_dir)
+        namespace = Path(base_dir) / "installation.id"
+        resource_leases.begin_business(db)
+        refused("installation_file_missing", lambda: owner.claim(db, proof, 0, hold, **arguments))
+        db.rollback()
+        namespace.write_text(str(uuid.uuid4()))
+        namespace.chmod(0o600)
+        resource_leases.begin_business(db)
+        refused("installation_mismatch", lambda: owner.claim(db, proof, 0, hold, **arguments))
+        db.rollback()
+        assert db.get(mp.ProvisioningRuntimeState, 1).owner_state == "none"
+        assert db.query(mp.ProvisioningOwnershipEvent).count() == 0
+        db.rollback()
+        namespace.write_text(installation)
         commits = []
         event.listen(db, "after_commit", lambda session: commits.append(True))
         resource_leases.begin_business(db)

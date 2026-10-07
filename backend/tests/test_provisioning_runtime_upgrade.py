@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import uuid
+from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -40,8 +41,18 @@ def scenario(engine, lock_dir):
         before = dict(connection.execute(select(mp.ProvisioningRuntimeState.__table__)).mappings().one())
         assert not contract.supports_release(connection)
     hold = gate_locks.FileLock(gate_locks.mode_lock_path(installation, lock_dir)).acquire(shared=False, timeout=0)
+    namespace = Path(lock_dir) / "installation.id"
+    namespace.write_text(installation)
+    namespace.chmod(0o600)
     arguments = dict(actor_admin_id=aid, expected_version=0, base_dir=lock_dir)
     try:
+        namespace.write_text(str(uuid.uuid4()))
+        try:
+            migration.upgrade(engine, installation, hold, **arguments)
+            raise AssertionError("mismatched file accepted for a schema upgrade")
+        except migration.UpgradeRefused as exc:
+            assert str(exc) == "installation_mismatch"
+        namespace.write_text(installation)
         # Unknown restrictive CHECKs must not become accepted by compatibility.
         # Test an unrelated extra index: no artifact is silently discarded.
         with engine.begin() as connection:

@@ -19,7 +19,7 @@ the actual CHECK and refuses old-schema enforced handoff, never silently
 downgrading the mode.
 
 The upgrade helper requires a held exclusive installation mode lock, matching
-installation/version, superadmin ID, verified known schema, gate off, vacant
+installation/version and `installation.id`, superadmin ID, verified known schema, gate off, vacant
 ownership, all type modes legacy and no nonterminal operation. The future
 controller must authenticate the password and run it during single-host
 maintenance, before claiming/activating durable ownership. Unknown runtime

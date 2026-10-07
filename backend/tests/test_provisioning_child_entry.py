@@ -13,6 +13,7 @@ _no_network.install([])
 from app.services import provisioning_child_entry as entry, provisioning_child_authority as authority
 from app.services import provisioning_child_database as database, provisioning_child_guard as guards
 from app.services import provisioning_host as host, provisioning_child_recovery as recovery, provisioning_child_present as present
+from app.services import provisioning_child_absent as absent
 from app.services import gate_locks, remote_action as action
 from app.services.provisioning_dispatch_binding import DispatchBinding
 
@@ -65,6 +66,15 @@ with patch.object(authority, "_protected_parent", return_value=True), authority.
                         write.assert_called_once_with(forward, guard)
                         read.assert_not_called()
                     assert constructor.return_value.dispose.call_count == 2
+                    cleanup = replace(dto, action_type=action.ActionType.XRAY_ENSURE_ABSENT,
+                        fencing={"binding": asdict(replace(binding, phase="compensation"))}, params={"recovery_read": False})
+                    with patch.object(absent, "ensure_absent", return_value=expected) as remove, (
+                            patch.object(recovery, "read_present")) as read, patch.object(present, "ensure_present") as write:
+                        assert entry.compensate(cleanup) is expected
+                        remove.assert_called_once_with(cleanup, guard)
+                        read.assert_not_called()
+                        write.assert_not_called()
+                    assert constructor.return_value.dispose.call_count == 3
                     constructor.return_value.dispose.side_effect = RuntimeError("SECRET")
                     with patch.object(recovery, "read_present", return_value=expected):
                         refused(lambda: entry.forward(dto))

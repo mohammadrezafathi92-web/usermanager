@@ -34,6 +34,15 @@ def locked_context(mode_hold, node_hold):
 
 
 def forward(dto):
+    return _run(dto, compensation=False)
+
+
+def compensate(dto):
+    """Private, unregistered entry for the exact stored cleanup identity."""
+    return _run(dto, compensation=True)
+
+
+def _run(dto, *, compensation):
     authority._role()  # Linux kernel protection before DB access or client imports.
     holds = _holds.get()
     if holds is None or holds[:2] != (os.getpid(), threading.get_ident()):
@@ -52,6 +61,9 @@ def forward(dto):
         identity = read_identity()
         database = ChildDatabase(trusted_url)
         with ChildGuard(database, binding, identity, holds[2], holds[3]) as guard:
+            if compensation:
+                from . import provisioning_child_absent as absent
+                return absent.ensure_absent(dto, guard)
             if dto.params.get("recovery_read") is True:
                 return recovery.read_present(dto, guard)
             return present.ensure_present(dto, guard)

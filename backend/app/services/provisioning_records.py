@@ -9,10 +9,7 @@ from sqlalchemy import select
 
 from .. import models
 from . import provisioning_transitions as transitions
-
-PPP = frozenset(("openvpn", "l2tp", "ikev2", "sstp", "pptp"))
-XRAY_MODES = {"xray_ssh": "ssh", "threexui": "3xui", "marzban": "marzban",
-              "hiddify": "hiddify", "marzneshin": "marzneshin", "sui": "sui"}
+from .provisioning_identity import PPP, XRAY_MODES
 
 
 def _locked(db, model, ident):

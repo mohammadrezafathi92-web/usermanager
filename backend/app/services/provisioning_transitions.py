@@ -13,6 +13,7 @@ from sqlalchemy import select
 from .. import models, models_provisioning as mp
 from . import provisioning_schema
 from .adapter_base import AbsentOutcome, ReadResult, ReadState, PresentResult
+from .provisioning_identity import removal_matches
 
 TERMINAL = ("completed", "compensated")
 PERMANENT_ERRORS = frozenset((
@@ -174,6 +175,10 @@ def begin_remove(db, step_id, version):
         raise HTTPException(409, "provisioning_connection_mismatch")
     if connection.enabled:
         raise HTTPException(409, "provisioning_deletion_not_disabled")
+    node = db.execute(select(models.Node).where(models.Node.id == row.node_id)
+        .with_for_update().execution_options(populate_existing=True)).scalar_one_or_none()
+    if node is None or not removal_matches(row, connection, node):
+        raise HTTPException(409, "provisioning_connection_mismatch")
     _write_operation(db, operation, "provisioning")
     if row.backend == "radius_ppp":
         return _write_step(db, row, "removed", remote_outcome=None, error_code=None, next_retry_at=None)

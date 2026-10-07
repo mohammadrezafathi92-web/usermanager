@@ -32,7 +32,7 @@ def scenario(engine):
     Factory = sessionmaker(bind=engine, autoflush=False)
     assert provisioning_schema.bootstrap(engine, Factory)["ready"]
     db = Factory()
-    node = models.Node(name="node", type=models.NodeType.mikrotik)
+    node = models.Node(name="node", type=models.NodeType.mikrotik, mt_wireguard_interface="wg1")
     user = models.User(username="u")
     db.add_all([node, user])
     db.commit()
@@ -205,16 +205,25 @@ def scenario(engine):
         operation.operation_type = "delete_connection"
         conn = models.Connection(user_id=uid, node_id=nid,
             type=models.ConnectionType.pptp if backend == "radius_ppp" else models.ConnectionType.wireguard,
-            enabled=True)
+            enabled=True, ppp_username="account", wg_peer_name="peer", wg_public_key="public",
+            wg_client_address="10.0.0.2/32")
         db.add(conn)
         db.flush()
         row = db.get(mp.ProvisioningStep, sid)
         row.connection_id = conn.id
+        row.account_username = conn.ppp_username
+        row.wg_interface, row.wg_peer_name, row.wg_public_key, row.wg_client_address = (
+            "wg1", conn.wg_peer_name, conn.wg_public_key, conn.wg_client_address)
         db.commit()
         refusal("provisioning_deletion_not_disabled", lambda: transitions.begin_remove(db, sid, row.version))
         db.rollback()
         conn.enabled = False
         db.commit()
+        if backend == "mikrotik_wg":
+            row.wg_public_key = "another-peer"
+            db.flush()
+            refusal("provisioning_connection_mismatch", lambda: transitions.begin_remove(db, sid, row.version))
+            db.rollback()
         transitions.begin_remove(db, sid, row.version)
         db.commit()
         refusal("provisioning_delete_irreversible", lambda: transitions.begin_compensation(db, oid, "node_unavailable"))

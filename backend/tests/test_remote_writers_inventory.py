@@ -271,6 +271,7 @@ check("legacy writers are gated; private guarded infrastructure has no live dura
     "app.services.provisioning_parent_dispatch": ["remote_action"],
     "app.services.provisioning_child_recovery": ["remote_action"],
     "app.services.provisioning_child_present": ["remote_action"],
+    "app.services.provisioning_child_absent": ["remote_action"],
     "app.services.provisioning_child_entry": ["gate_locks"],
     "app.services.provisioning_parent_execute": ["remote_action", "remote_runner"],
        "app.routers.provisioning": ["remote_action.ActionType", "remote_runner_registry.ACTIONS"]})

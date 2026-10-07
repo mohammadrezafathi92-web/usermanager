@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import select, text
 
 from .. import models, models_provisioning as mp
-from . import gate_locks, provisioning_runtime_contract, provisioning_schema, provisioning_transitions
+from . import gate_locks, provisioning_installation, provisioning_runtime_contract, provisioning_schema, provisioning_transitions
 from .provisioning_lock_verification import VerifiedLocks, require_exclusive
 
 RECLAIM_CONFIRMATION = "process قبلی این نصب دیگر در حال اجرا نیست"
@@ -37,6 +37,12 @@ def _ready(db, proof, mode_hold, actor_admin_id, version, base_dir):
     if not 0 <= age <= 60 or proof.backend != expected_backend:
         raise HTTPException(409, "ownership_lock_not_ready")
     require_exclusive(mode_hold, proof.installation_uuid, base_dir)
+    try:
+        file_identity = provisioning_installation.read_file(base_dir)
+    except provisioning_installation.InstallationUnavailable as exc:
+        raise HTTPException(503, str(exc)) from None
+    if file_identity != proof.installation_uuid:
+        raise HTTPException(409, "installation_mismatch")
     row = db.execute(select(mp.ProvisioningRuntimeState).where(mp.ProvisioningRuntimeState.id == 1)
         .with_for_update().execution_options(populate_existing=True)).scalar_one_or_none()
     if row is None or row.installation_uuid != proof.installation_uuid or row.version != version or row.ownership_epoch < 0:

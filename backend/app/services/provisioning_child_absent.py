@@ -1,4 +1,4 @@
-"""Private compensation helper; not registered or called by live code.
+"""Guarded compensation helper; no live scheduler/API caller.
 
 Only the stored compensation identity may be removed. An adapter's verified
 absence is accepted only after fresh authority and successful client close.

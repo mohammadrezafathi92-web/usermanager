@@ -1,6 +1,7 @@
 """action_type -> implementation, as 'module:function'. Pure data, shared by
 the parent (which refuses to spawn for an unregistered action) and the
 child (which imports the implementation). Three stored forward actions
+and their three stored-identity compensation actions
 require the child entry's Linux/runtime/identity/lease/contract guards.
 No live worker invokes them and other actions remain unregistered. Entries are added here, in code, by the
 batch that converts each writer - never supplied by a caller."""
@@ -18,4 +19,7 @@ ACTIONS: dict[ActionType, str] = {
     ActionType.WG_ENSURE_PRESENT: "app.services.provisioning_child_entry:forward",
     ActionType.XRAY_ENSURE_PRESENT: "app.services.provisioning_child_entry:forward",
     ActionType.SOFTETHER_ENSURE_PRESENT: "app.services.provisioning_child_entry:forward",
+    ActionType.WG_ENSURE_ABSENT: "app.services.provisioning_child_entry:compensate",
+    ActionType.XRAY_ENSURE_ABSENT: "app.services.provisioning_child_entry:compensate",
+    ActionType.SOFTETHER_ENSURE_ABSENT: "app.services.provisioning_child_entry:compensate",
 }

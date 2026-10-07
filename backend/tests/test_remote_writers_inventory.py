@@ -15,7 +15,7 @@ Design v7.1, sections 10.2, 10.6, 10.9. Run:
      `with writer_gate(...)` block - a writer added later without one fails
      here. Nothing else of the new machinery is used by existing code: the
      runner, the DTO and the inventory are still imported by nobody, and
-     only three guarded forward actions exist, with no live worker caller.
+     six guarded forward/compensation actions exist, with no live worker caller.
 
   C. CHARACTERIZATION (LP-133, LP-168). The remote call sequence of the
      existing writers, recorded with fake clients BEFORE they were routed
@@ -275,9 +275,10 @@ check("legacy writers are gated; private guarded infrastructure has no live dura
     "app.services.provisioning_child_entry": ["gate_locks"],
     "app.services.provisioning_parent_execute": ["remote_action", "remote_runner"],
        "app.routers.provisioning": ["remote_action.ActionType", "remote_runner_registry.ACTIONS"]})
-check("only three runtime-guarded forward actions are registered; all other actions remain unavailable",
+check("only six runtime-guarded forward/compensation actions are registered; all other actions remain unavailable",
       sorted(a.value for a in ACTIONS if not a.value.startswith("selftest_")),
-      ["softether_ensure_present", "wg_ensure_present", "xray_ensure_present"])
+      ["softether_ensure_absent", "softether_ensure_present", "wg_ensure_absent", "wg_ensure_present",
+       "xray_ensure_absent", "xray_ensure_present"])
 
 # ===========================================================================
 print("--- C. characterization of the existing writers (baseline for later batches) ---")

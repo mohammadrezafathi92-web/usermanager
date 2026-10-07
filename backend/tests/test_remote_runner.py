@@ -195,10 +195,11 @@ check("...and once the lock is free the same action does run and write its marke
       (Outcome.SUCCEEDED, True))
 
 print("--- only registered actions, by name ---")
-check("four self-tests and three guarded stored forward actions are registered",
+check("four self-tests and six guarded stored forward/compensation actions are registered",
       sorted(a.value for a in ACTIONS),
       ["selftest_crash", "selftest_echo", "selftest_environment", "selftest_sleep",
-       "softether_ensure_present", "wg_ensure_present", "xray_ensure_present"])
+       "softether_ensure_absent", "softether_ensure_present", "wg_ensure_absent", "wg_ensure_present",
+       "xray_ensure_absent", "xray_ensure_present"])
 spawned = []
 real_popen = subprocess.Popen
 
@@ -221,6 +222,9 @@ check("every registered implementation is a 'module:function' string, not a call
       all(isinstance(v, str) and v.count(":") == 1 for v in ACTIONS.values()))
 check("registered forward action without bound lock context is refused by the actual child",
     rr.run_action(dto(ActionType.WG_ENSURE_PRESENT)).outcome, Outcome.TRANSPORT_ERROR)
+for cleanup_action in (ActionType.WG_ENSURE_ABSENT, ActionType.XRAY_ENSURE_ABSENT, ActionType.SOFTETHER_ENSURE_ABSENT):
+    check(f"registered {cleanup_action.value} without bound lock context is refused by the actual child",
+        rr.run_action(dto(cleanup_action)).outcome, Outcome.TRANSPORT_ERROR)
 
 print("--- the child, driven directly: protocol violations exit before any action ---")
 HEADER = struct.Struct(">Q")

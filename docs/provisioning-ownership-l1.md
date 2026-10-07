@@ -101,3 +101,14 @@ breaks that hold: no automatic reconnect, GET_LOCK retry, or resuming an old
 action. The future transport guard must call it before every writer, including
 nested adapter calls. This hold itself performs no remote call and grants no
 transport token.
+
+ChildGuard additionally reads the current `(node_id, backend)` contract via
+one fixed, non-secret query. It requires ready state, the current adapter code
+version, the current node endpoint fingerprint and valid typed not-exist
+matchers using exactly the same rules as parent T1. It pins the contract's
+version, server/config/code fingerprints and canonical payload for its hold:
+changing any of them mid-action breaks the hold rather than applying a new
+matcher silently. Returned contract data is detached, not mutable guard state.
+The shared rule module is included in the adapter code fingerprint, so this
+code update conservatively requires fresh attestation of any older contract.
+No contract is marked ready automatically, and no probe runs on real nodes.

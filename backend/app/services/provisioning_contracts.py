@@ -1,28 +1,18 @@
 """Read-only node contract guards; no probe, ready writer or activation."""
 import hashlib
 import json
-from pathlib import Path
 
 from fastapi import HTTPException
 from sqlalchemy import select
 
 from .. import models, models_provisioning as mp
-from .adapter_base import InvalidMatcher, validate_matchers
+from .adapter_base import InvalidMatcher
+from . import provisioning_contract_rules as contract_rules
 from .provisioning_identity import PPP, XRAY_MODES
 
-_FILES = ("adapter_base.py", "adapter_mikrotik_wg.py", "adapter_radius_ppp.py",
-          "adapter_softether.py", "adapter_xray.py", "adapter_xray_panels.py", "provisioning_contracts.py")
-_FIELDS = ("type", "xr_panel_mode", "mt_host", "mt_port", "mt_use_ssl", "mt_api_ssl_port",
-           "mt_wireguard_interface", "xr_ssh_host", "xr_ssh_port", "xr_panel_base_url",
-           "se_host", "se_port", "se_hub_name", "xr_inbound_tag", "xr_panel_inbound_id",
-           "xr_config_path", "xr_service_name")
-
-
-def adapter_version():
-    # Includes adapter helpers as well as the entry functions. Changing any
-    # adapter conservatively invalidates the previous version for all nodes.
-    return hashlib.sha1(b"".join((Path(__file__).parent / name).read_bytes() for name in _FILES)).hexdigest()
-
+adapter_version = contract_rules.adapter_version
+validate_contract = contract_rules.validate_contract
+_FIELDS = contract_rules.ENDPOINT_FIELDS
 
 def config_fingerprint(node):
     values = {name: getattr(node, name, None) for name in _FIELDS}
@@ -55,18 +45,7 @@ def require_ready(db, node, backend):
             row.config_fingerprint != config_fingerprint(node)):
         raise HTTPException(409, "node_contract_not_ready")
     try:
-        contract = json.loads(row.contract)
-        if not isinstance(contract, dict) or "not_exist" not in contract:
-            raise ValueError()
-        matchers = validate_matchers(contract["not_exist"])
-        for matcher in matchers:
-            if matcher["kind"] == "http" and (backend not in (
-                    "threexui", "marzban", "hiddify", "marzneshin", "sui") or matcher["json_path"] not in (
-                    "detail", "message", "msg", "error", "error.message", "error.code") or
-                    type(matcher["equals"]) not in (str, int) or not 100 <= matcher["status"] <= 599):
-                raise ValueError()
-            if matcher["kind"] == "jsonrpc" and backend != "softether":
-                raise ValueError()
+        contract = validate_contract(row.contract, backend)
     except (ValueError, TypeError, InvalidMatcher):
         raise HTTPException(409, "node_contract_not_ready") from None
     return contract

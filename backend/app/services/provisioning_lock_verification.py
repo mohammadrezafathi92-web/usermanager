@@ -8,6 +8,7 @@ list, not a proof that every filesystem is safe. No heartbeat takeover.
 import datetime as dt
 import hashlib
 import os
+import re
 from pathlib import Path
 import select
 import subprocess
@@ -53,13 +54,19 @@ def _local_filesystem(directory):
     try:
         for line in Path("/proc/self/mountinfo").read_text().splitlines():
             left, right = line.split(" - ", 1)
-            mount = left.split()[4].replace("\\040", " ").replace("\\134", "\\")
+            mount = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), left.split()[4])
+            if "\\" in re.sub(r"\\([0-7]{3})", "", left.split()[4]):
+                raise VerificationFailed("lock_filesystem_unverified")
             if target == mount or target.startswith(mount.rstrip("/") + "/"):
                 mounts.append((len(mount), right.split()[0]))
     except (OSError, ValueError, IndexError):
         raise VerificationFailed("lock_filesystem_unverified") from None
-    if not mounts or max(mounts)[1] in ("nfs", "nfs4", "cifs", "smb", "smb3", "9p") or (
-            max(mounts)[1].startswith("fuse")):
+    # Stacked mounts can have the same path. A lexical filesystem-name
+    # tie-break is not proof of which mount backs the lock descriptors.
+    longest = max((length for length, _ in mounts), default=-1)
+    candidates = [kind for length, kind in mounts if length == longest]
+    if len(candidates) != 1 or candidates[0] in ("nfs", "nfs4", "cifs", "smb", "smb3", "9p") or (
+            candidates[0].startswith("fuse")):
         raise VerificationFailed("lock_filesystem_unverified")
 
 

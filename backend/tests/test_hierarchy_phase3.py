@@ -127,7 +127,7 @@ from app import schemas
 
 def reparent(db, target, *, parent_id=None, role=None):
     payload = schemas.AdminReparentRequest(parent_admin_id=parent_id, role=role)
-    return admins_router.reparent_admin(target.id, payload, db=db, _s=None)
+    return admins_router.reparent_admin(target.id, payload, db=db, _s=sa)
 
 
 def reparent_error(db, target, *, parent_id=None, role=None) -> str | None:

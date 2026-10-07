@@ -30,3 +30,9 @@ batch does not claim a fenced financial implementation. Hierarchy changes
 scan only live accounts owned by the affected subtree after flushing
 hierarchy edits. Unrelated tenants are neither scanned nor repaired.
 Authorization remains in existing endpoints, not in the helper.
+
+Unchanged identity fields posted by forms do not acquire a wallet writer
+lock. If a profile edit changes both identity and status, its DB-only
+identity unit commits before the existing legacy node reconciliation.
+Remote reconciliation is not made atomic by this batch; durable P6 remains
+required. No SQLite wallet writer lock is held across that node call.

@@ -55,12 +55,26 @@ def _change(db, user, *, telegram_id, owner_admin_id, actor_kind, actor_id, toke
     if not ready:
         user.telegram_id, user.owner_admin_id = new_tg, new_owner
         return None  # legacy schema-unready behavior; no partial wallet writes
-    _begin(db)
+    # Forms post identity fields even when they did not change. Avoid
+    # taking a writer lock for these reads (a status edit may call nodes).
+    # Hierarchy changes still proceed if the stored tenant binding differs.
+    if token is None and (old_tg, old_owner) == (new_tg, new_owner):
+        existing = db.execute(select(rv.wallet_accounts.c.lineage_key,
+            rv.customer_identities.c.identity_key, rv.customer_identities.c.tenant_scope_key).select_from(
+                rv.wallet_accounts.join(rv.customer_identities)).where(
+                    rv.wallet_accounts.c.user_id == user.id)).mappings().one_or_none()
+        if existing is None:
+            return None
+        expected_key = f"tg:{new_tg}" if new_tg is not None else f"private:{existing['lineage_key']}"
+        if existing["identity_key"] == expected_key and existing["tenant_scope_key"] == wallet_accounts.tenant_scope(db, new_owner):
+            return None
     account = db.execute(select(rv.wallet_accounts).where(
         rv.wallet_accounts.c.user_id == user.id)).mappings().one_or_none()
     if account is None:
+        wallet_service.require_legacy_phase(db)
         user.telegram_id, user.owner_admin_id = new_tg, new_owner
         return None  # old users require the separate P9 backfill
+    _begin(db)
     scope = wallet_accounts.tenant_scope(db, new_owner)
     key = f"tg:{new_tg}" if new_tg is not None else f"private:{account['lineage_key']}"
     payload = json.dumps(dict(user_id=user.id, telegram_id=new_tg, owner_admin_id=new_owner,

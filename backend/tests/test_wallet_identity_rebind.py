@@ -17,11 +17,12 @@ import _no_network
 _no_network.install([os.environ.get("MARIADB_TEST_URL", "").strip()])
 
 from fastapi import HTTPException
-from sqlalchemy import create_engine, event, select, func
+from sqlalchemy import create_engine, event, select, func, text
 from sqlalchemy.orm import sessionmaker
 from app import models, models_receipt_void as rv, schemas
 from app.services import wallet_accounts, wallet_identity, receipt_void_schema
 from app.routers import admins as admin_router
+from app.routers import users as user_router
 
 failures = []
 
@@ -196,6 +197,32 @@ def scenario(engine, name):
         check(name + " one concurrent identity change wins", outcomes.count(200), 1)
         check(name + " stale concurrent request refuses", all(status in (200, 409, 503) for status in outcomes))
         check(name + " concurrent loser leaves no audit", count(rv.wallet_account_identity_rebinds), initial_events + 1)
+        if engine.dialect.name == "sqlite":
+            db.execute(text("CREATE TABLE identity_lock_probe (id INTEGER PRIMARY KEY, value INTEGER NOT NULL)"))
+            db.execute(text("INSERT INTO identity_lock_probe VALUES (1, 0)"))
+            db.commit()
+            db.refresh(racer)
+
+            def remote_probe(session, customer):
+                with engine.begin() as another_writer:
+                    another_writer.execute(text("UPDATE identity_lock_probe SET value = value + 1 WHERE id = 1"))
+                check(name + " remote status call holds no wallet writer", True)
+
+            with patch.object(user_router, "_get_owned_user", return_value=racer), \
+                    patch.object(user_router.user_ops, "reconcile_user_connections", side_effect=remote_probe):
+                user_router.update_user(racer_id, schemas.UserUpdate(telegram_id=racer.telegram_id, status="disabled"),
+                                        db=db, admin=root, _perm=None)
+                user_router.update_user(racer_id, schemas.UserUpdate(telegram_id=990, status="active"),
+                                        db=db, admin=root, _perm=None)
+            with patch.object(receipt_void_schema, "is_ready", return_value=False):
+                old_customer = wallet_accounts.create_user_with_wallet(db, username="pre_p5", owner_admin_id=root.id)
+            db.commit()
+            with patch.object(user_router, "_get_owned_user", return_value=old_customer), \
+                    patch.object(user_router.user_ops, "reconcile_user_connections", side_effect=remote_probe):
+                user_router.update_user(old_customer.id, schemas.UserUpdate(telegram_id=999, status="disabled"),
+                                        db=db, admin=root, _perm=None)
+            check(name + " both remote probes acquired SQLite writer", db.execute(text(
+                "SELECT value FROM identity_lock_probe WHERE id = 1")).scalar_one(), 3)
         check(name + " no outgoing network", _no_network.attempts, [])
 
 

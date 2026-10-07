@@ -782,12 +782,17 @@ def update_user(
             wallet_service.overwrite(db, user, new_balance, source_kind=wallet_service.MANUAL_ADJUSTMENT)
 
     identity_fields = {key: data.pop(key) for key in ("telegram_id", "owner_admin_id") if key in data}
+    identity_operation = None
     if identity_fields:
-        wallet_identity.change(db, user, **identity_fields, actor_kind="admin", actor_id=admin.id)
+        identity_operation = wallet_identity.change(db, user, **identity_fields, actor_kind="admin", actor_id=admin.id)
     for k, v in data.items():
         setattr(user, k, v)
 
     if status_changed:
+        if identity_operation is not None:
+            # Complete the atomic DB-only identity unit before node calls.
+            # Never keep SQLite's wallet writer lock over remote I/O.
+            db.commit()
         # An admin directly flipping status from the edit-user form (e.g.
         # "غیرفعال" -> "فعال") needs the same push-to-connections step as
         # every other status-changing path, or a previously

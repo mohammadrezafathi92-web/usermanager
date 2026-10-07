@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from . import bot_auth, bot_resources, hierarchy, payment_card_events, user_ops
 from .receipt_approval_runtime import sha256_hex
+from .quota_rewards import resolve_quota_reward_target
 
 KINDS = ("new", "renew", "topup")
 REQUIRED, OPTIONAL = "required", "optional"
@@ -109,24 +110,6 @@ def tenant_scope_key(db: Session, owner_admin_id: Optional[int]) -> str:
     admin = db.get(models.AdminUser, owner_admin_id)
     root = hierarchy.parent_admin_scope_id(admin) if admin else None
     return f"admin:{root or owner_admin_id}"
-
-
-def resolve_quota_reward_target(purchases_after: list, user_quota_after: int):
-    """Design 14.1, verbatim. Input is the topology AFTER the approval, not
-    the state at registration. Returns ("User", None), ("Purchase", purchase)
-    or None. None means: no quota row in the manifest and no quota reward -
-    it is never written to some other resource instead.
-
-        no purchase:        the User if its quota is finite (> 0), else None (unlimited)
-        exactly one:        that Purchase if its quota is finite, else None (unlimited)
-        more than one:      None (ambiguous)
-    """
-    if not purchases_after:
-        return ("User", None) if int(user_quota_after or 0) > 0 else None
-    if len(purchases_after) == 1:
-        only = purchases_after[0]
-        return ("Purchase", only) if int(only.quota_bytes or 0) > 0 else None
-    return None
 
 
 def _referral_rows(db: Session, intent: ApprovalIntent, target: Target, package: models.Package,

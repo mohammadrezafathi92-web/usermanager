@@ -7,9 +7,9 @@ Run:  python3 backend/tests/test_receipt_approval_referral_rewards.py
 Runs on SQLite always and, through tests/_mariadb_scratch.py, on a real
 MariaDB when MARIADB_TEST_URL is set (mandatory in CI).
 
-What this batch must NOT do is as much the subject as what it does: the
-referral rewards themselves are applied exactly as before (still onto the
-User row, still best-effort, still once), with or without an approval.
+P5 now applies quota rewards to the manifest destination: one finite User
+or Purchase, never an unlimited or ambiguous resource. Credits and legacy
+counting timing remain independent of that quota destination.
 """
 from __future__ import annotations
 
@@ -277,29 +277,36 @@ def scenario(label: str, engine) -> None:
           (again["ok"], (user("ref_user_level").balance, user("ref_user_level").total_quota_bytes, user("buyer_a").balance,
                          len(effects(uuid_a))) == state_before, shadow_codes(uuid_a)), (False, True, []))
 
-    print(f"--- {label}: where today's behaviour and the manifest differ, it is logged - never 'fixed' silently ---")
+    print(f"--- {label}: actual rewards and manifest have the same destination ---")
     user_ops.provision_connection = fake_provision
     try:
         uuid_b, _result, final_b = sell("buyer_b", ids.bundle, "RONE", 602, spec)
     finally:
         user_ops.provision_connection = real_provision
-    check(L + "the manifest expected both quota rewards on a Purchase; the panel wrote them on the User rows (as it always "
-              "has): both are refused as mismatches, the two credits are recorded",
+    check(L + "both quota rewards target the actual Purchases and all four effects are recorded",
           ([k for k in effects(uuid_b) if "referral" in k], shadow_codes(uuid_b).count("effect_manifest_mismatch")),
-          ([ALL_FOUR[2], ALL_FOUR[3]], 2))
-    check(L + "...and the approval is NOT reported complete: the two quota rows are named as missing",
-          (final_b["state"], final_b["missing_effects"]), ("mutating", [ALL_FOUR[0], ALL_FOUR[1]]))
-    check(L + "...while the sale and the rewards went through exactly as before",
+          (ALL_FOUR, 0))
+    check(L + "the approval completes with no missing quota effect",
+          (final_b["state"], final_b["missing_effects"]), ("completed", []))
+    check(L + "referrer's User quota remains unlimited; its actual Purchase receives the reward",
           (user("buyer_b").referred_by_id, user("ref_one_purchase").total_quota_bytes,
-           db.get(models.Purchase, ids.one_purchase).quota_bytes), (ids.r_one, 2 * GB, 4 * GB))
+           db.get(models.Purchase, ids.one_purchase).quota_bytes), (ids.r_one, 0, 6 * GB))
+    buyer_purchase = db.query(models.Purchase).filter_by(user_id=user("buyer_b").id).one()
+    quota_effect = db.execute(select(F).where(F.c.approval_uuid == uuid_b,
+                                            F.c.effect_key == "quota:referral:new_user")).mappings().one()
+    check(L + "new buyer reward is bound to the created Purchase with exact before/after evidence",
+          (buyer_purchase.quota_bytes, quota_effect["resource_type"], quota_effect["resource_id"],
+           json.loads(quota_effect["resource_snapshot"])["quota_before"],
+           json.loads(quota_effect["resource_snapshot"])["quota_after"]),
+          (11 * GB, "Purchase", buyer_purchase.id, 10 * GB, 11 * GB))
     uuid_c, _result, final_c = sell("buyer_c", ids.plain, "RTWO", 603)
-    check(L + "ambiguous referrer: the manifest has no quota row for them; the reward the panel still gave is refused as "
-              "not-in-manifest and logged, the other three are recorded, the approval completes",
+    check(L + "ambiguous referrer gets credit, not a guessed quota reward; no mismatch is logged",
           ([k for k in effects(uuid_c) if "referral" in k], shadow_codes(uuid_c), final_c["state"]),
-          ([k for k in ALL_FOUR if k != ALL_FOUR[1]], ["effect_not_in_manifest"], "completed"))
+          ([k for k in ALL_FOUR if k != ALL_FOUR[1]], [], "completed"))
+    check(L + "ambiguous referrer's dormant User quota is untouched", user("ref_two_purchases").total_quota_bytes, 7 * GB)
     uuid_d, _result, _final = sell("buyer_d", ids.plain, "RUNL", 604)
-    check(L + "unlimited referrer: same - no quota row, and the reward that turned 'unlimited' into a limit is only logged",
-          (shadow_codes(uuid_d), user("ref_unlimited").total_quota_bytes), (["effect_not_in_manifest"], 2 * GB))
+    check(L + "unlimited stays unlimited and no unwanted effect is attempted",
+          (shadow_codes(uuid_d), user("ref_unlimited").total_quota_bytes), ([], 0))
     uuid_e, result_e, final_e = sell("buyer_e", ids.plain, "NOPE", 605)
     check(L + "an invalid code: the sale completes without any referral, as it always did",
           (result_e["ok"], [k for k in effects(uuid_e) if "referral" in k], shadow_codes(uuid_e), final_e["state"],
@@ -348,10 +355,39 @@ def scenario(label: str, engine) -> None:
           (True, 1000 + 500, 10 * GB + GB + GB, 1))
     check(L + "no loyalty effect is recorded - there is nothing in the manifest to record it against",
           [k for k in effects(uuid_f) if "loyalty" in k], [])
-    check(L + "...and because that reward changed the new user's quota outside the manifest, the approval is NOT reported "
-              "complete: the difference is logged (this is why 'required' cannot be switched on with legacy loyalty)",
+    check(L + "sale evidence is captured before the separate legacy loyalty grant; shadow can complete",
           (final_f["state"], "effect_manifest_mismatch" in shadow_codes(uuid_f), "user_created:user" in final_f["missing_effects"]),
-          ("mutating", True, True))
+          ("completed", False, False))
+    user_ops.provision_connection = fake_provision
+    try:
+        uuid_g, _, final_g = sell("buyer_loyal_purchase", ids.bundle, "NOPE", 608, spec)
+    finally:
+        user_ops.provision_connection = real_provision
+    buyer = user("buyer_loyal_purchase")
+    purchase = db.query(models.Purchase).filter_by(user_id=buyer.id).one()
+    check(L + "loyalty is applied after absorption to the actual Purchase, once",
+          (purchase.quota_bytes, buyer.balance, buyer.loyalty_rewards_given, final_g["state"], shadow_codes(uuid_g)),
+          (11 * GB, 500, 1, "completed", []))
+    user_ops._maybe_grant_loyalty_reward(db, buyer)
+    db.commit()
+    check(L + "retry does not duplicate the loyalty reward", (purchase.quota_bytes, buyer.balance), (11 * GB, 500))
+    uuid_u, _, _ = sell("buyer_loyal_unlimited", ids.unlimited, "NOPE", 609)
+    buyer = user("buyer_loyal_unlimited")
+    check(L + "unlimited loyalty destination stays unlimited while credit and progress apply",
+          (buyer.total_quota_bytes, buyer.balance, buyer.loyalty_rewards_given), (0, 500, 1))
+    # The multi-purchase referrer still gets credit when its loyalty count
+    # crosses a threshold, but neither Purchase nor its dormant User is
+    # guessed as a quota destination.
+    ambiguous = user("ref_two_purchases")
+    ambiguous.purchase_count = 1
+    before_credit = ambiguous.balance
+    before_quotas = sorted(p.quota_bytes for p in db.query(models.Purchase).filter_by(user_id=ambiguous.id))
+    user_ops._maybe_grant_loyalty_reward(db, ambiguous)
+    db.commit()
+    check(L + "ambiguous loyalty retains all quota resources and only grants credit",
+          (ambiguous.total_quota_bytes, ambiguous.balance - before_credit,
+           sorted(p.quota_bytes for p in db.query(models.Purchase).filter_by(user_id=ambiguous.id))),
+          (7 * GB, 500, before_quotas))
     db.get(models.PanelSettings, 1).loyalty_purchase_threshold = 100
     db.commit()
     db.close()

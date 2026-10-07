@@ -1947,6 +1947,13 @@ def deprovision_connection(connection: models.Connection):
 
 def delete_connection(db: Session, connection: models.Connection):
     deprovision_connection(connection)
+    finalize_connection_deletion_after_deprovision(db, connection)
+    db.commit()
+
+
+def finalize_connection_deletion_after_deprovision(db: Session, connection: models.Connection):
+    """DB-only removal; caller proves remote absence and owns the commit."""
+    wallet_accounts.require_legacy_lifecycle(db)
     # Same NOT-NULL/no-ondelete situation as delete_user_cascade, scoped to
     # just this one connection - kick_connection (below) already clears
     # radius_active_sessions for a kick; a full delete never did, and
@@ -1962,7 +1969,6 @@ def delete_connection(db: Session, connection: models.Connection):
         models.RadiusLimitEventLog.connection_id == connection.id
     ).update({"connection_id": None}, synchronize_session=False)
     db.delete(connection)
-    db.commit()
 
 
 # ------------------------------------------------------------- manual kick

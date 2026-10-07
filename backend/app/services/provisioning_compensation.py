@@ -18,6 +18,8 @@ def finish(db, operation_id, version):
     operation = payment_reservations._operation(db, operation_id)
     if operation.approval_uuid is not None:
         raise HTTPException(503, "provisioning_approval_integration_unavailable")
+    if operation.operation_type.startswith("delete_"):
+        raise HTTPException(409, "provisioning_delete_irreversible")
     if operation.state == "compensated":
         return operation
     if operation.version != version:

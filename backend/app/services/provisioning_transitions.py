@@ -77,7 +77,7 @@ def _write_operation(db, operation, state, **values):
 
 def begin_remote(db, step_id, version):
     operation, row = _step(db, step_id, version)
-    if operation.state not in ("prepared", "provisioning") or row.state != "staged" or (
+    if operation.operation_type.startswith("delete_") or operation.state not in ("prepared", "provisioning") or row.state != "staged" or (
         row.direction != "create" or row.backend == "radius_ppp"):
         raise HTTPException(409, "provisioning_step_transition_invalid")
     if operation.forward_deadline <= dt.datetime.utcnow():
@@ -92,7 +92,8 @@ def confirm_present(db, step_id, version, result):
     if not isinstance(result, PresentResult) and not (
         isinstance(result, ReadResult) and result.state == ReadState.PRESENT_MATCH):
         raise HTTPException(422, "provisioning_presence_unverified")
-    if operation.state not in ("prepared", "provisioning") or row.state != "remote_calling":
+    if operation.operation_type.startswith("delete_") or row.direction != "create" or (
+            operation.state not in ("prepared", "provisioning") or row.state != "remote_calling"):
         raise HTTPException(409, "provisioning_step_transition_invalid")
     return _write_step(db, row, "remote_created", error_code=None, next_retry_at=None)
 
@@ -101,7 +102,8 @@ def recover_read(db, step_id, version, result):
     if not isinstance(result, ReadResult):
         raise HTTPException(422, "provisioning_read_result_invalid")
     operation, row = _step(db, step_id, version)
-    if operation.state not in ("prepared", "provisioning") or row.state != "remote_calling":
+    if operation.operation_type.startswith("delete_") or row.direction != "create" or (
+            operation.state not in ("prepared", "provisioning") or row.state != "remote_calling"):
         raise HTTPException(409, "provisioning_step_transition_invalid")
     if result.state == ReadState.PRESENT_MATCH:
         return _write_step(db, row, "remote_created", error_code=None, next_retry_at=None)
@@ -121,8 +123,15 @@ def mark_remote_complete(db, operation_id):
         raise HTTPException(409, "provisioning_operation_transition_invalid")
     steps = db.execute(select(mp.ProvisioningStep).where(mp.ProvisioningStep.operation_id == operation_id)
                        .with_for_update().execution_options(populate_existing=True)).scalars().all()
-    if any(step.direction != "create" or step.state != (
-            "staged" if step.backend == "radius_ppp" else "remote_created") for step in steps):
+    deleting = operation.operation_type.startswith("delete_")
+    if deleting:
+        incomplete = any(step.direction != "remove" or step.state != "removed" or (
+            step.remote_attempted and step.remote_outcome not in (
+                "verified_absent", "delete_idempotently_absent", "abandoned")) for step in steps)
+    else:
+        incomplete = any(step.direction != "create" or step.state != (
+            "staged" if step.backend == "radius_ppp" else "remote_created") for step in steps)
+    if incomplete:
         raise HTTPException(409, "provisioning_steps_incomplete")
     _write_operation(db, operation, "remote_complete")
     return operation
@@ -132,6 +141,8 @@ def begin_compensation(db, operation_id, error_code):
     if error_code not in PERMANENT_ERRORS:
         raise HTTPException(422, "provisioning_error_code_invalid")
     operation = _operation(db, operation_id)
+    if operation.operation_type.startswith("delete_"):
+        raise HTTPException(409, "provisioning_delete_irreversible")
     if operation.state not in ("prepared", "provisioning", "remote_complete", "cleanup_required", "compensating"):
         raise HTTPException(409, "provisioning_operation_transition_invalid")
     _write_operation(db, operation, "compensating", error_code=error_code)
@@ -148,6 +159,60 @@ def begin_compensation(db, operation_id, error_code):
         else:
             _write_step(db, row, "compensating", remote_outcome=None)
     return operation
+
+
+def begin_remove(db, step_id, version):
+    operation, row = _step(db, step_id, version)
+    if not operation.operation_type.startswith("delete_") or operation.state not in (
+            "prepared", "provisioning", "cleanup_required") or row.direction != "remove" or row.state not in (
+            "staged", "cleanup_required"):
+        raise HTTPException(409, "provisioning_step_transition_invalid")
+    connection = db.execute(select(models.Connection).where(models.Connection.id == row.connection_id)
+                            .with_for_update().execution_options(populate_existing=True)).scalar_one_or_none()
+    if connection is None or (connection.user_id, connection.node_id, connection.type.value) != (
+            operation.target_user_id, row.node_id, row.protocol):
+        raise HTTPException(409, "provisioning_connection_mismatch")
+    if connection.enabled:
+        raise HTTPException(409, "provisioning_deletion_not_disabled")
+    _write_operation(db, operation, "provisioning")
+    if row.backend == "radius_ppp":
+        return _write_step(db, row, "removed", remote_outcome=None, error_code=None, next_retry_at=None)
+    return _write_step(db, row, "remote_calling", remote_attempted=True,
+                       attempts=row.attempts + 1, remote_outcome=None, error_code=None, next_retry_at=None)
+
+
+def confirm_removed(db, step_id, version, result):
+    operation, row = _step(db, step_id, version)
+    if not isinstance(result, AbsentOutcome):
+        raise HTTPException(422, "provisioning_absence_result_invalid")
+    if not operation.operation_type.startswith("delete_") or operation.state != "provisioning" or (
+            row.state != "remote_calling" or row.direction != "remove"):
+        raise HTTPException(409, "provisioning_step_transition_invalid")
+    if result == AbsentOutcome.UNVERIFIED:
+        _write_operation(db, operation, "cleanup_required", error_code="remote_absence_unverified")
+        return _write_step(db, row, "cleanup_required", remote_outcome="unverified",
+                           error_code="remote_absence_unverified", next_retry_at=None)
+    return _write_step(db, row, "removed", remote_outcome=result.value, error_code=None, next_retry_at=None)
+
+
+def recover_remove(db, step_id, version, result):
+    if not isinstance(result, ReadResult):
+        raise HTTPException(422, "provisioning_read_result_invalid")
+    operation, row = _step(db, step_id, version)
+    if not operation.operation_type.startswith("delete_") or operation.state != "provisioning" or (
+            row.direction != "remove" or row.state != "remote_calling"):
+        raise HTTPException(409, "provisioning_step_transition_invalid")
+    if result.state == ReadState.ABSENT:
+        return _write_step(db, row, "removed", remote_outcome="verified_absent", error_code=None, next_retry_at=None)
+    if result.state == ReadState.PRESENT_CONFLICT:
+        _write_operation(db, operation, "cleanup_required", error_code="remote_identity_conflict")
+        return _write_step(db, row, "cleanup_required", remote_outcome="unverified",
+                           error_code="remote_identity_conflict", next_retry_at=None)
+    if result.state == ReadState.PRESENT_MATCH:
+        # Still needs ensure_absent. Never classify it as a created resource.
+        return _write_step(db, row, "remote_calling", error_code=None, next_retry_at=None)
+    return _write_step(db, row, "remote_calling", error_code="remote_unreadable",
+                       next_retry_at=dt.datetime.utcnow() + dt.timedelta(seconds=30))
 
 
 def confirm_absent(db, step_id, version, result):

@@ -25,7 +25,9 @@ class RecoveryUnavailable(RuntimeError):
     pass
 
 
-def _validate(dto, guard, *, recovery_read=True):
+def _validate(dto, guard, *, recovery_read=True, phase="forward"):
+    if type(phase) is not str or phase not in ("forward", "compensation"):
+        raise RecoveryUnavailable("child_recovery_binding_invalid")
     if type(dto) is not remote_action.RemoteActionDTO or type(guard) is not ChildGuard:
         raise RecoveryUnavailable("child_recovery_invalid")
     binding = guard.check()
@@ -37,7 +39,11 @@ def _validate(dto, guard, *, recovery_read=True):
     expected_action = (remote_action.ActionType.WG_ENSURE_PRESENT if binding.backend == "mikrotik_wg" else
         remote_action.ActionType.SOFTETHER_ENSURE_PRESENT if binding.backend == "softether" else
         remote_action.ActionType.XRAY_ENSURE_PRESENT)
-    if binding.phase != "forward" or dto.action_type != expected_action or (
+    if phase == "compensation":
+        expected_action = (remote_action.ActionType.WG_ENSURE_ABSENT if binding.backend == "mikrotik_wg" else
+            remote_action.ActionType.SOFTETHER_ENSURE_ABSENT if binding.backend == "softether" else
+            remote_action.ActionType.XRAY_ENSURE_ABSENT)
+    if binding.phase != phase or dto.action_type != expected_action or (
             dto.node_id, dto.backend) != (binding.node_id, binding.backend) or (
             set(dto.fencing) != {"installation_uuid", "binding", "host_id", "boot_id", "expected_parent_pid"}) or (
             supplied != binding or dto.fencing["binding"] != asdict(binding) or dto.fencing["installation_uuid"] != binding.installation_uuid) or (

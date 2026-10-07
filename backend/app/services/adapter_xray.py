@@ -112,8 +112,18 @@ def ensure_present_ssh(xc, identity: XrayIdentity, *, confirm_restart=False) -> 
     return result
 
 
-def ensure_absent_ssh(xc, identity: XrayIdentity) -> AbsentOutcome:
-    return _ensure_absent(xc, identity, read_ssh)
+def ensure_absent_ssh(xc, identity: XrayIdentity, *, confirm_restart=False) -> AbsentOutcome:
+    if type(confirm_restart) is not bool:
+        raise AdapterError("xray_ssh_restart_policy_invalid")
+    result = _ensure_absent(xc, identity, read_ssh)
+    if confirm_restart and result is AbsentOutcome.VERIFIED_ABSENT:
+        # A prior removal can have committed its config but lost the restart.
+        # Config absence alone cannot prove the running service stopped it.
+        try:
+            xc.restart_service()
+        except Exception:
+            return AbsentOutcome.UNVERIFIED
+    return result
 
 
 def ensure_present_threexui(xc, identity: XrayIdentity) -> PresentResult:

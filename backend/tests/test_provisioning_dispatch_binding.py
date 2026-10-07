@@ -385,6 +385,35 @@ def scenario(engine, directory):
                 db.execute(rv.wallet_runtime_state.update().where(rv.wallet_runtime_state.c.id == 1)
                     .values(epoch=rv.wallet_runtime_state.c.epoch - 1))
                 db.commit()
+                old_uuid = step.staged_xr_uuid
+                db.rollback()
+                with patch.dict(os.environ, {"DATABASE_URL": engine.url.render_as_string(hide_password=False)}):
+                    with patch.object(parent_execute.remote_runner, "run_action", side_effect=lambda descriptor:
+                            remote_action.RemoteActionResult.killed_unknown(descriptor.action_id, "hard_deadline_exceeded")):
+                        unknown = parent_execute.execute_compensation(Factory, cleanup.step_id, cleanup.step_version, identity, [lease])
+                    assert unknown["state"] == "compensating" and unknown["remote_outcome"] is None
+                    assert unknown["error_code"] == "remote_result_unknown" and unknown["next_retry_at"] is not None
+                    uncertain = db.get(mp.ProvisioningStep, cleanup.step_id, populate_existing=True)
+                    assert uncertain.staged_xr_uuid == old_uuid
+                    uncertain.version, uncertain.next_retry_at, uncertain.error_code = cleanup.step_version, None, None
+                    db.commit()
+                    def cleaned(descriptor):
+                        assert engine.pool.checkedout() == 0
+                        assert descriptor.fencing["binding"]["phase"] == "compensation"
+                        with Factory() as observed:
+                            assert observed.get(mp.ProvisioningStep, cleanup.step_id).state == "compensating"
+                        return remote_action.RemoteActionResult(descriptor.action_id, remote_action.Outcome.ABSENT_VERIFIED,
+                            write_attempted=True, remote_outcome="verified_absent")
+                    with patch.object(parent_execute.remote_runner, "run_action", side_effect=cleaned):
+                        result = parent_execute.execute_compensation(Factory, cleanup.step_id, cleanup.step_version, identity, [lease])
+                    assert result["state"] == "removed" and result["remote_outcome"] == "verified_absent"
+                    assert result["version"] == cleanup.step_version + 1
+                    assert db.get(mp.ProvisioningOperation, cleanup.operation_id, populate_existing=True).state == "compensating"
+                    row = db.get(mp.ProvisioningStep, cleanup.step_id, populate_existing=True)
+                    assert row.staged_xr_uuid is None and row.staged_password is None
+                    # Reset ONLY this owned scratch fixture for the terminal-state fence test below.
+                    row.state, row.version, row.remote_outcome, row.staged_xr_uuid = "compensating", cleanup.step_version, None, old_uuid
+                    db.commit()
                 node_hold.release()
                 step.state, step.remote_outcome, step.version = "removed", "verified_absent", step.version + 1
                 step.staged_wg_private_key = step.staged_password = step.staged_xr_uuid = None

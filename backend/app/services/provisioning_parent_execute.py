@@ -25,12 +25,28 @@ def _configured_source(expected_url):
 
 
 def execute_one(session_factory, step_id, version, identity, leases, *, recovery_read):
+    return _execute(session_factory, step_id, version, identity, leases,
+        recovery_read=recovery_read, compensation=False)
+
+
+def execute_compensation(session_factory, step_id, version, identity, leases):
+    """Private cycle; absence actions are still unregistered, no live caller.
+
+    This records only a cleanup step result, never a reservation release,
+    operation finalization or refund. Caller owns and retains its leases.
+    """
+    return _execute(session_factory, step_id, version, identity, leases,
+        recovery_read=False, compensation=True)
+
+
+def _execute(session_factory, step_id, version, identity, leases, *, recovery_read, compensation):
     tokens = tuple(leases)
     with session_factory() as db:
         expected_url = db.get_bind().url
         _configured_source(expected_url)
         resource_leases.begin_business(db)
-        dto = dispatch.snapshot(db, step_id, version, identity, tokens, recovery_read=recovery_read)
+        dto = (dispatch.compensation_snapshot(db, step_id, version, identity, tokens) if compensation else
+            dispatch.snapshot(db, step_id, version, identity, tokens, recovery_read=recovery_read))
         db.commit()
     # No application DB session/transaction survives into the remote call.
     _configured_source(expected_url)

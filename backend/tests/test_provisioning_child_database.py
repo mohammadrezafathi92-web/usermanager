@@ -10,7 +10,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite://")
 import _mariadb_scratch as scratch
 import _no_network
 _no_network.install([os.environ.get("MARIADB_TEST_URL", "")])
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, event
 from sqlalchemy.orm import sessionmaker
 from app import models
 from app.services import provisioning_schema as schema, provisioning_child_database as child
@@ -96,6 +96,29 @@ def scenario(engine):
             reader.dispose()
 
 
+def failed_constructor_cleanup(engine):
+    """Initialization failure must not retain a parent metadata-lock session."""
+    checked_out = set()
+    def checkout(connection, record, proxy):
+        checked_out.add(id(connection))
+    def checkin(connection, record):
+        checked_out.discard(id(connection))
+    def fail(url):
+        raise child.ChildDatabaseUnavailable("injected_initialization_failure")
+    original = child.ChildDatabase
+    event.listen(engine, "checkout", checkout)
+    event.listen(engine, "checkin", checkin)
+    child.ChildDatabase = fail
+    try:
+        refuses(lambda: scenario(engine))
+        assert not checked_out, "failed constructor leaked a checked-out parent session"
+        print("PASS", engine.dialect.name, "constructor failure closes parent session before database cleanup")
+    finally:
+        child.ChildDatabase = original
+        event.remove(engine, "checkout", checkout)
+        event.remove(engine, "checkin", checkin)
+
+
 with tempfile.TemporaryDirectory(prefix="um-child-readonly-") as directory:
     path = Path(directory) / "readonly ? # test.db"
     engine = create_engine("sqlite:///" + str(path))
@@ -103,6 +126,11 @@ with tempfile.TemporaryDirectory(prefix="um-child-readonly-") as directory:
         scenario(engine)
     finally:
         engine.dispose()
+    failed = create_engine("sqlite:///" + str(Path(directory) / "failed.db"))
+    try:
+        failed_constructor_cleanup(failed)
+    finally:
+        failed.dispose()
     missing = Path(directory) / "missing.db"
     refuses(lambda: child.ChildDatabase("sqlite:///" + str(missing)))
     assert not missing.exists()
@@ -116,6 +144,11 @@ with tempfile.TemporaryDirectory(prefix="um-child-readonly-") as directory:
             scenario(engine)
         finally:
             scratch.release(engine)
+        failed = scratch.claim(maria)
+        try:
+            failed_constructor_cleanup(failed)
+        finally:
+            scratch.release(failed)
     elif os.environ.get("CI", "").lower() == "true":
         raise AssertionError("CI requires real MariaDB")
     else:

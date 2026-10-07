@@ -265,6 +265,7 @@ check("legacy writers are gated; private ownership self-tests use lock primitive
        "app.services.provisioning_lock_verification": ["gate_locks"],
        "app.services.provisioning_ownership": ["gate_locks"],
        "app.services.provisioning_installation": ["gate_locks"],
+       "app.services.provisioning_dispatch_binding": ["gate_locks"],
        "app.routers.provisioning": ["remote_action.ActionType", "remote_runner_registry.ACTIONS"]})
 check("the runner has no real action registered - it cannot reach a node",
       sorted(a.value for a in ACTIONS if not a.value.startswith("selftest_")), [])

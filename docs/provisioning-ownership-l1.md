@@ -60,9 +60,20 @@ before startup validation can accept non-inert runtime state.
 
 Private drain/cancel cores also preserve the ownership epoch and record their
 audit atomically. Release requires no nonterminal operations, held exclusive
-mode lock and held exclusive locks for the exact current node set. **Enforced
-release is explicitly refused:** the current frozen CHECK only permits an
-enforced gate with active/draining owner, so released ownership would violate
-it. No automatic gate downgrade is performed. A controlled constraint upgrade
-needs approval before enforced handoff can be completed. No constraint or
-existing schema is changed in this batch.
+mode lock and held exclusive locks for the exact current node set. Enforced
+release is refused with the original constraint, and supported only after the
+explicit, data-preserving v2 constraint upgrade described above. No automatic
+gate downgrade or startup constraint upgrade is performed.
+
+The private `provisioning_dispatch_binding.revalidate` core checks a fresh
+committed operation/step/version and DB-clock lease after actual mode-SH and
+node-EX locks have been acquired. A parent paused before spawning a child
+cannot dispatch its old request after compensation, lease expiry or takeover.
+Forward calls also require the original wallet epoch, a live forward deadline,
+unchanged customer binding and unchanged node endpoint fingerprint. Disabled
+nodes can still be cleaned up with a fresh compensation binding. A draining
+owner can finish already committed work, but cannot admit new work through T1.
+This query does not select management or customer secrets and closes its DB
+connection before returning. It is not a transport authorization token and is
+not yet wired to a live runner: action schemas, current node contracts, the
+read-only child connection and adapter authorization remain separate requirements.

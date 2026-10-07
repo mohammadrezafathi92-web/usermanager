@@ -67,6 +67,10 @@ with authority._runner_context(os.getppid()):
                     thread_errors.append("cross-thread authority accepted")
                 except authority.WriteAuthorityUnavailable:
                     pass
+                def fresh_role_old_token():
+                    with authority._runner_context(os.getppid()):
+                        refused(lambda: authority._require_guard(guard))
+                copied.run(fresh_role_old_token)
             thread = threading.Thread(target=copied_thread)
             thread.start()
             thread.join(timeout=3)
@@ -92,6 +96,16 @@ with authority._runner_context(os.getppid()):
         except RuntimeError:
             pass
         assert authority._registry == {} and authority._current.get() is None
+        with authority._scope(guard, allow_writes=False) as read_token:
+            authority._require_guard(guard)  # Snapshot-bound factory is allowed, writes are not.
+            refused(lambda: authority.require_write(1, "xray_ssh"))
+            refused(lambda: authority._scope(guard, allow_writes=True).__enter__())
+            with authority._scope(guard, allow_writes=False) as nested:
+                assert nested is read_token
+            with patch.object(guard, "check", return_value=replace(binding, ownership_epoch=2)):
+                refused(lambda: authority._require_guard(guard))
+        refused(lambda: authority._scope(guard, allow_writes=1).__enter__())
+        assert authority._registry == {}
 assert authority._runner.get() is None
 if sys.platform.startswith("linux"):
     assert arm_parent_death_signal()

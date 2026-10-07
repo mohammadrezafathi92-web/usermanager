@@ -839,6 +839,7 @@ def create_user(
         db, payload.username, payload.full_name, payload.quota_gb, payload.expire_days,
         telegram_id=payload.telegram_id, owner_admin_id=owner_admin_id,
         package_id=payload.package_id,
+        defer_loyalty=True,
     )
     # Marks where this customer came from, so the panel can show «ربات»
     # instead of «بدون ادمین» for a bot signup that legitimately has no
@@ -909,6 +910,9 @@ def create_user(
             recorder.connection(connection)
         recorder.effect("ledger_sale", "sale", sale_entry)
         recorder.tag_ledger(sale_entry)
+    # Capture the sale's own quota first; loyalty is a separate grant, not
+    # part of purchase_created. Timing remains legacy until P9a.
+    user_ops._maybe_grant_loyalty_reward(db, user)
     db.commit()
     db.refresh(user)
     return _user_response(user)

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from . import hierarchy
 from . import wallet_service, wallet_accounts
+from . import quota_rewards
 from .bot_auth import (
     BotPrincipal,
     NodeAuthorizationScope,
@@ -97,7 +98,8 @@ def _maybe_grant_loyalty_reward(db: Session, user: models.User) -> None:
     if credit:
         wallet_service.adjust_in_session(db, user, credit, source_kind=wallet_service.LOYALTY_REWARD)
     if gb:
-        user.total_quota_bytes = (user.total_quota_bytes or 0) + gb_to_bytes(gb)
+        applied = quota_rewards.grant(quota_rewards.destination(db, user), gb_to_bytes(gb))
+        gb = applied / 1024 ** 3
     user.loyalty_rewards_given = due
     if credit or gb:
         user._loyalty_reward_just_granted = (credit, gb)
@@ -114,6 +116,7 @@ def create_user_record(
     telegram_id: Optional[int] = None,
     owner_admin_id: Optional[int] = None,
     package_id: Optional[int] = None,
+    *, defer_loyalty: bool = False,
 ) -> models.User:
     if db.query(models.User).filter(models.User.username == username).first():
         raise HTTPException(400, "این نام کاربری قبلا ثبت شده است")
@@ -149,7 +152,8 @@ def create_user_record(
     )
     db.add(user)
     db.flush()  # assigns user.id, still inside this same transaction
-    _maybe_grant_loyalty_reward(db, user)
+    if not defer_loyalty:
+        _maybe_grant_loyalty_reward(db, user)
     db.commit()
     db.refresh(user)
     return user
@@ -189,17 +193,19 @@ def apply_referral_code(db: Session, user: models.User, referral_code: str,
         ref_gb = settings_row.referral_referrer_reward_gb or 0
         new_credit = settings_row.referral_new_user_reward_credit or 0
         new_gb = settings_row.referral_new_user_reward_gb or 0
-        before = {"ref_balance": int(referrer.balance or 0), "ref_quota": int(referrer.total_quota_bytes or 0),
-                  "new_balance": int(user.balance or 0), "new_quota": int(user.total_quota_bytes or 0)}
+        ref_target = quota_rewards.destination(db, referrer) if ref_gb else None
+        new_target = quota_rewards.destination(db, user) if new_gb else None
+        before = {"ref_balance": int(referrer.balance or 0),
+                  "ref_quota": quota_rewards.quota(ref_target) if ref_target is not None else 0,
+                  "new_balance": int(user.balance or 0),
+                  "new_quota": quota_rewards.quota(new_target) if new_target is not None else 0}
         if ref_credit:
             wallet_service.adjust_in_session(db, referrer, ref_credit, source_kind=wallet_service.REFERRAL_REWARD)
-        if ref_gb:
-            referrer.total_quota_bytes = (referrer.total_quota_bytes or 0) + gb_to_bytes(ref_gb)
+        quota_rewards.grant(ref_target, gb_to_bytes(ref_gb))
         if new_credit:
             wallet_service.adjust_in_session(db, user, new_credit, source_kind=wallet_service.REFERRAL_REWARD)
-        if new_gb:
-            user.total_quota_bytes = (user.total_quota_bytes or 0) + gb_to_bytes(new_gb)
-        _referral_evidence(evidence_sink, referrer, user, before)
+        quota_rewards.grant(new_target, gb_to_bytes(new_gb))
+        _referral_evidence(evidence_sink, referrer, user, before, ref_target, new_target)
     if before_commit is not None:
         # The caller's chance to write, into THIS transaction, the record of
         # what was just applied (receipt-approval effects). Reward and record
@@ -211,25 +217,29 @@ def apply_referral_code(db: Session, user: models.User, referral_code: str,
     return True, ""
 
 
-def _referral_evidence(sink: Optional[list], referrer: models.User, user: models.User, before: dict) -> None:
+def _referral_evidence(sink: Optional[list], referrer: models.User, user: models.User, before: dict,
+                       ref_target, new_target) -> None:
     """Receipt-approval evidence of what apply_referral_code just did
     (services/receipt_approval_effects.py): one entry per reward that really
-    changed something, naming the resource it was written to - today always
-    the User row - with the value read before and after. Built only here,
+    changed something, naming the actual User or Purchase destination
+    with the value read before and after. Built only here,
     and only when a caller asked for it."""
     if sink is None:
         return
     from .receipt_approval_effects import QuotaRewardEvidence, WalletCreditEvidence
-    for key, target, balance_before, quota_before in (
-            ("referrer", referrer, before["ref_balance"], before["ref_quota"]),
-            ("new_user", user, before["new_balance"], before["new_quota"])):
-        balance_after, quota_after = int(target.balance or 0), int(target.total_quota_bytes or 0)
+    for key, target, quota_target, balance_before, quota_before in (
+            ("referrer", referrer, ref_target, before["ref_balance"], before["ref_quota"]),
+            ("new_user", user, new_target, before["new_balance"], before["new_quota"])):
+        balance_after = int(target.balance or 0)
         if balance_after != balance_before:
             sink.append(("wallet_credit_source_created", f"credit:referral_reward:{key}", target,
                          WalletCreditEvidence(balance_before, balance_after)))
-        if quota_after != quota_before:
-            sink.append(("quota_reward_granted", f"quota:referral:{key}", target,
-                         QuotaRewardEvidence("User", target.id, quota_before, quota_after, quota_before == 0)))
+        if quota_target is not None:
+            quota_after = quota_rewards.quota(quota_target)
+            if quota_after != quota_before:
+                kind = "Purchase" if isinstance(quota_target, models.Purchase) else "User"
+                sink.append(("quota_reward_granted", f"quota:referral:{key}", quota_target,
+                             QuotaRewardEvidence(kind, quota_target.id, quota_before, quota_after, False)))
 
 
 # ---------------------------------------------------- discount codes
@@ -850,7 +860,7 @@ def bulk_create_users(
         try:
             user = create_user_record(db, username, notes=notes, owner_admin_id=owner_admin_id,
                                       quota_gb=0 if package else quota_gb,
-                                      expire_days=None if package else expire_days)
+                                      expire_days=None if package else expire_days, defer_loyalty=bool(package))
         except HTTPException as exc:
             if exc.status_code != 503 or not str(exc.detail).startswith("wallet_"):
                 raise
@@ -899,6 +909,9 @@ def bulk_create_users(
                     )
                 except HTTPException as exc:
                     skipped.append({"name": f"{username} (اتصال)", "reason": str(exc.detail)})
+        if package:
+            _maybe_grant_loyalty_reward(db, user)
+            db.commit()
         created.append(username)
 
     return {

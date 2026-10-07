@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATABASE_URL", "sqlite://")
@@ -50,6 +52,28 @@ check("101 commits sorts after 100",
       int(b.split(".")[-1]) > int(a.split(".")[-1]), True)
 
 print("\n--- the real repo produces a sane version ---")
+with tempfile.TemporaryDirectory(prefix="um-version-worktree-") as directory:
+    root = Path(directory)
+    common = root / "repo" / ".git"
+    private = common / "worktrees" / "checkout"
+    checkout = root / "checkout"
+    private.mkdir(parents=True)
+    checkout.mkdir()
+    (checkout / ".git").write_text("gitdir: " + os.path.relpath(private, checkout), encoding="utf-8")
+    (private / "commondir").write_text("../..", encoding="utf-8")
+    (private / "HEAD").write_text("ref: refs/heads/codex/check", encoding="utf-8")
+    reference = common / "refs" / "heads" / "codex" / "check"
+    reference.parent.mkdir(parents=True)
+    reference.write_text("a" * 40, encoding="utf-8")
+    check("worktree relative gitdir pointer resolves", v._git_directory(checkout), private.resolve())
+    check("worktree HEAD follows common loose refs", v._resolve_commit(private), "a" * 40)
+    reference.unlink()
+    (common / "packed-refs").write_text("b" * 40 + " refs/heads/codex/check\n", encoding="utf-8")
+    check("worktree HEAD follows common packed refs", v._resolve_commit(private), "b" * 40)
+    (private / "HEAD").write_text("c" * 40, encoding="utf-8")
+    check("worktree detached HEAD stays private", v._resolve_commit(private), "c" * 40)
+    (checkout / ".git").write_text("not a git pointer", encoding="utf-8")
+    check("invalid worktree marker gracefully refused", v._git_directory(checkout), None)
 # In this checkout git IS available, so the version should be MAJOR.MINOR.N
 # with N > 0, and never the DEFAULT_VERSION fallback.
 os.environ["HOST_PROJECT_DIR"] = os.path.dirname(

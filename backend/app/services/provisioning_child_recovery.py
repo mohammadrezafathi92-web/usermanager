@@ -25,7 +25,7 @@ class RecoveryUnavailable(RuntimeError):
     pass
 
 
-def _validate(dto, guard):
+def _validate(dto, guard, *, recovery_read=True):
     if type(dto) is not remote_action.RemoteActionDTO or type(guard) is not ChildGuard:
         raise RecoveryUnavailable("child_recovery_invalid")
     binding = guard.check()
@@ -44,34 +44,45 @@ def _validate(dto, guard):
             type(dto.fencing["expected_parent_pid"]) is not int or dto.fencing["expected_parent_pid"] != os.getppid()) or (
             dto.fencing["host_id"], dto.fencing["boot_id"]) != (guard.identity.host_id, guard.identity.boot_id) or (
             set(dto.params) != {"recovery_read", "max_concurrent_sessions", "speed_limit_mbps"}) or (
-            dto.params["recovery_read"] is not True) or set(dto.identity) != IDENTITY_FIELDS or (
+            type(recovery_read) is not bool or dto.params["recovery_read"] is not recovery_read) or set(dto.identity) != IDENTITY_FIELDS or (
             set(dto.credential) != CREDENTIAL_FIELDS) or set(dto.node_secrets) != clients.SECRET_FIELDS or (
             dto.contract != guard.contract["contract"]):
         raise RecoveryUnavailable("child_recovery_binding_invalid")
     return binding
 
 
-def _read(client, dto):
+def _identity(dto):
     i, c, backend = dto.identity, dto.credential, dto.backend
     if backend == "mikrotik_wg":
         identity = wg.WireguardIdentity(i["wg_interface"], i["wg_peer_name"], i["wg_public_key"], i["wg_client_address"])
-        return wg.read(client, identity)
+        return identity
     if backend == "softether":
-        return se.read(client, se.SoftEtherIdentity(i["account_username"], c["password"]))
+        return se.SoftEtherIdentity(i["account_username"], c["password"])
     values = dict(email=i["xr_email"], uuid=c["uuid"], flow=i["flow"] or "",
                   inbound_tag=i["xr_inbound_tag"], inbound_id=i["xr_panel_inbound_id"])
     if backend in ("xray_ssh", "threexui"):
         identity = xr.XrayIdentity(**values)
-        return (xr.read_ssh if backend == "xray_ssh" else xr.read_threexui)(client, identity)
-    identity = panels.PanelIdentity(**values, username=i["account_username"])
+        return identity
+    return panels.PanelIdentity(**values, username=i["account_username"])
+
+
+def _read(client, dto):
+    identity = _identity(dto)
+    if dto.backend == "mikrotik_wg":
+        return wg.read(client, identity)
+    if dto.backend == "softether":
+        return se.read(client, identity)
+    if dto.backend in ("xray_ssh", "threexui"):
+        return (xr.read_ssh if dto.backend == "xray_ssh" else xr.read_threexui)(client, identity)
     reads = {"marzban": panels.read_marzban, "hiddify": panels.read_hiddify,
              "marzneshin": panels.read_marzneshin, "sui": panels.read_sui}
-    return reads[backend](client, identity, dto.contract["not_exist"])
+    return reads[dto.backend](client, identity, dto.contract["not_exist"])
 
 
 def read_present(dto, guard):
     _validate(dto, guard)  # Refuse wrong descriptors BEFORE constructing/authenticating a client.
     client = None
+    needs_convergence = False
     try:
         with authority._scope(guard, allow_writes=False):
             try:
@@ -95,6 +106,7 @@ def read_present(dto, guard):
                             record.get(field) is True)
                         unconfirmed = unconfirmed or not enabled
                     if unconfirmed:
+                        needs_convergence = True
                         found = ReadResult(ReadState.UNREADABLE)
             finally:
                 if client is not None:
@@ -105,7 +117,7 @@ def read_present(dto, guard):
             ReadState.UNREADABLE: remote_action.Outcome.UNREADABLE}
         return remote_action.RemoteActionResult(action_id=dto.action_id, outcome=outcomes[found.state],
             write_attempted=False, remote_outcome="verified_absent" if found.state is ReadState.ABSENT else None,
-            error_code="remote_unreadable" if found.state is ReadState.UNREADABLE else (
+            error_code="remote_convergence_required" if needs_convergence else "remote_unreadable" if found.state is ReadState.UNREADABLE else (
                 "remote_identity_conflict" if found.state is ReadState.PRESENT_CONFLICT else None))
     except Exception:
         # Connection/read/close failures never prove absence. Do not copy

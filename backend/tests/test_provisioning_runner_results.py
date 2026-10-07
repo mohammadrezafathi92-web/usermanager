@@ -118,6 +118,27 @@ def scenario(engine):
             db.commit()
 
         binding, token = prepare()
+        action_id = str(uuid.uuid4())
+        convergence = RemoteActionResult(action_id, Outcome.UNREADABLE, write_attempted=False,
+            error_code="remote_convergence_required")
+        resource_leases.begin_business(db)
+        row = results.record(db, binding, identity, [token], action_id, convergence, recovery_read=True)
+        assert row.state == "staged" and row.remote_attempted and row.staged_xr_uuid == "SECRET_SENTINEL"
+        assert row.version == binding.step_version + 1 and row.next_retry_at is None and commits == []
+        db.rollback()
+        assert db.get(mp.ProvisioningStep, binding.step_id).state == "remote_calling"
+        db.rollback()
+        for invalid in (convergence, replace(convergence, write_attempted=True), replace(convergence, outcome=Outcome.CONFLICT)):
+            resource_leases.begin_business(db)
+            try:
+                results.record(db, binding, identity, [token], action_id, invalid, recovery_read=invalid is not convergence)
+                raise AssertionError("unproven convergence accepted")
+            except HTTPException as exc:
+                assert exc.status_code == 422
+            finally:
+                db.rollback()
+
+        binding, token = prepare()
         for invalid, fenced in ((binding, False), (replace(binding, ownership_epoch=2), True),
                                 (replace(binding, operation_version=99), True),
                                 (replace(binding, lease_epoch=99), True)):

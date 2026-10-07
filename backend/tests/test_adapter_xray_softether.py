@@ -80,8 +80,26 @@ class FakeXray:
     def writes(self):
         return [e[0] for e in self.log if e[0] in ("add_client", "remove_client")]
 
+    def restart_service(self):
+        self._call("restart_service")
+        self.restarts += 1
+
 
 IDENT = ax.XrayIdentity(email="ali1a2b@usermanager.local", uuid=UUID_A, flow="xtls-rprx-vision", inbound_tag="vless-in")
+
+matching = FakeXray([{"id": UUID_A, "email": IDENT.email}])
+check("opt-in SSH convergence restarts only the matching identity",
+    (ax.ensure_present_ssh(matching, IDENT, confirm_restart=True).created, matching.restarts, matching.config_writes),
+    (False, 1, 0))
+conflicting = FakeXray([{"id": UUID_B, "email": IDENT.email}])
+check("SSH convergence refuses conflict before restart",
+    (raises_code(lambda: ax.ensure_present_ssh(conflicting, IDENT, confirm_restart=True), AdapterConflict), conflicting.restarts),
+    ("conflict_uuid_mismatch", 0))
+matching.fail["restart_service"] = XrayError("SECRET")
+check("failed convergence restart is sanitized and unconfirmed",
+    raises_code(lambda: ax.ensure_present_ssh(matching, IDENT, confirm_restart=True)), "xray_ssh_restart_unconfirmed")
+check("SSH convergence flag is a strict boolean",
+    raises_code(lambda: ax.ensure_present_ssh(matching, IDENT, confirm_restart=1)), "xray_ssh_restart_policy_invalid")
 
 for backend, read, present, absent in (
     ("xray_ssh", ax.read_ssh, ax.ensure_present_ssh, ax.ensure_absent_ssh),

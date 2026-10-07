@@ -558,11 +558,24 @@ def reconcile_user_connections(db: Session, user: models.User):
         _set_connection_enabled(db, conn, enabled=enabled)
 
 
-def delete_user_cascade(db: Session, user: models.User):
-    wallet_account_id = wallet_accounts.prepare_user_deletion(db, user)
+_DELETION_UNPREPARED = object()
+
+
+def finalize_user_deletion_after_deprovision(
+    db: Session, user: models.User, *, wallet_account_id=_DELETION_UNPREPARED,
+):
+    """DB-only finalizer. Caller proves remote absence and owns the commit.
+
+    This P5 implementation remains normal-generation only. It cannot
+    establish remote absence, release holds, or reverse money itself.
+    A legacy caller can pass its pre-remote account id to detect changes.
+    """
+    current_account_id = wallet_accounts.prepare_user_deletion(db, user)
+    if wallet_account_id is _DELETION_UNPREPARED:
+        wallet_account_id = current_account_id
+    elif current_account_id != wallet_account_id:
+        raise HTTPException(409, "wallet_account_changed")
     connection_ids = [c.id for c in user.connections]
-    for conn in list(user.connections):
-        deprovision_connection(conn)
 
     # radius_active_sessions.connection_id and usage_logs.user_id are both
     # NOT NULL with no ondelete configured at the DB level (see models.py) -
@@ -587,8 +600,52 @@ def delete_user_cascade(db: Session, user: models.User):
             models.RadiusLimitEventLog.connection_id.in_(connection_ids)
         ).update({"connection_id": None}, synchronize_session=False)
 
+    # Nullable references are audit records, not children to destroy.
+    db.query(models.DiscountCodeRedemption).filter(
+        models.DiscountCodeRedemption.user_id == user.id
+    ).update({"user_id": None}, synchronize_session=False)
+    db.query(models.User).filter(models.User.referred_by_id == user.id).update(
+        {"referred_by_id": None}, synchronize_session=False)
+    from . import receipt_void_schema
+    if receipt_void_schema.is_ready():
+        from .. import models_receipt_void as rv
+        for table in (rv.loyalty_purchase_events, rv.loyalty_reward_events, rv.loyalty_user_epoch_anchors):
+            db.execute(table.update().where(table.c.user_id == user.id).values(user_id=None))
     wallet_accounts.tombstone_user_account(db, user, account_id=wallet_account_id)
     db.delete(user)
+
+
+def finalize_purchase_deletion_after_deprovision(db: Session, purchase: models.Purchase):
+    """DB-only removal of exactly one service; no wallet credit or commit.
+
+    Usage points and permanent audit/ledger rows survive with live
+    connection/purchase links detached. Other services are untouched.
+    The caller must already have verified removal of every connection.
+    """
+    wallet_accounts.require_legacy_lifecycle(db)
+    connections = list(purchase.connections)
+    ids = [c.id for c in connections]
+    if ids:
+        db.query(models.RadiusActiveSession).filter(
+            models.RadiusActiveSession.connection_id.in_(ids)
+        ).delete(synchronize_session=False)
+        db.query(models.UsageLog).filter(models.UsageLog.connection_id.in_(ids)).update(
+            {"connection_id": None}, synchronize_session=False)
+        db.query(models.RadiusLimitEventLog).filter(
+            models.RadiusLimitEventLog.connection_id.in_(ids)
+        ).update({"connection_id": None}, synchronize_session=False)
+    db.query(models.LedgerEntry).filter(models.LedgerEntry.purchase_id == purchase.id).update(
+        {"purchase_id": None}, synchronize_session=False)
+    for connection in connections:
+        db.delete(connection)
+    db.delete(purchase)
+
+
+def delete_user_cascade(db: Session, user: models.User):
+    wallet_account_id = wallet_accounts.prepare_user_deletion(db, user)
+    for conn in list(user.connections):
+        deprovision_connection(conn)
+    finalize_user_deletion_after_deprovision(db, user, wallet_account_id=wallet_account_id)
     db.commit()
 
 

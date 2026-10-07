@@ -230,17 +230,10 @@ def settle(db: Session, *, operation_id: int) -> dict:
                        .values(purchase_count=models.User.purchase_count - basis.purchase_count_delta))
             if counted.rowcount != 1:
                 raise HTTPException(409, "reseller_purchase_count_unproven")
-        # Preserve usage/audit history without dangling foreign keys.
-        ids = [c.id for c in connections]
-        db.query(models.UsageLog).filter(models.UsageLog.connection_id.in_(ids)).update(
-            {models.UsageLog.connection_id: None}, synchronize_session=False)
-        db.query(models.RadiusLimitEventLog).filter(models.RadiusLimitEventLog.connection_id.in_(ids)).update(
-            {models.RadiusLimitEventLog.connection_id: None}, synchronize_session=False)
-        db.query(models.LedgerEntry).filter(models.LedgerEntry.purchase_id == purchase.id).update(
-            {models.LedgerEntry.purchase_id: None}, synchronize_session=False)
-        for connection in connections:
-            db.delete(connection)
-        db.delete(purchase)
+        # All connections were verified absent before this transaction.
+        # Use the same DB-only primitive as the future Receipt Void step.
+        from .user_ops import finalize_purchase_deletion_after_deprovision
+        finalize_purchase_deletion_after_deprovision(db, purchase)
         db.commit()
         return {"operation_id": op.id, "refund_amount": amount, "state": "completed"}
     except Exception:

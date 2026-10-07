@@ -69,8 +69,9 @@ def scenario(engine, directory):
     db.add_all([user, other_owner])
     db.commit()
     all_nodes = []
-    reader = ChildDatabase(engine.url)
+    reader = None
     try:
+        reader = ChildDatabase(engine.url)
         for index, backend in enumerate(("mikrotik_wg", "softether", *fence.XRAY_MODES)):
             node_type = models.NodeType.mikrotik if backend == "mikrotik_wg" else (
                 models.NodeType.softether if backend == "softether" else models.NodeType.xray)
@@ -256,9 +257,10 @@ def scenario(engine, directory):
                 node_hold.release()
             print("PASS", engine.dialect.name, backend, "fresh binding, DB-clock lease, drift, drain, old parent after compensation")
     finally:
-        reader.dispose()
         mode_hold.release()
         db.close()
+        if reader is not None:
+            reader.dispose()
 
 
 with tempfile.TemporaryDirectory(prefix="um-dispatch-binding-") as directory:

@@ -38,8 +38,9 @@ def scenario(engine):
     db.add(node)
     db.commit()
     node_id = node.id
-    reader = child.ChildDatabase(engine.url)
+    reader = None
     try:
+        reader = child.ChildDatabase(engine.url)
         with reader.connect() as connection:
             installation = connection.execute(text(child.READ_INSTALLATION)).scalar_one()
             assert connection.execute(text(child.READ_RUNTIME)).mappings().one()["gate_mode"] == "off"
@@ -90,8 +91,9 @@ def scenario(engine):
                 second.close()
         print("PASS", engine.dialect.name, "read-only database, closed SQL, fresh subnet, disposable advisory connection")
     finally:
-        reader.dispose()
         db.close()
+        if reader is not None:
+            reader.dispose()
 
 
 with tempfile.TemporaryDirectory(prefix="um-child-readonly-") as directory:

@@ -1,0 +1,83 @@
+"""Bound HTTP transport for future child actions, not live client wiring.
+
+Every send, including redirects and direct PreparedRequest sends, enforces
+the configured destination. Only GET and exact backend login/read POSTs are
+read-only. Other methods need fresh child authority before adapter.send().
+No real action or existing panel client uses this class yet.
+"""
+from urllib.parse import urlsplit
+
+import requests
+
+from . import provisioning_child_authority as authority
+
+READ_POSTS = {
+    "threexui": frozenset(("/login", "/panel/api/inbounds/onlines")),
+    "marzban": frozenset(("/api/admin/token",)),
+    "marzneshin": frozenset(("/api/admins/token",)),
+    "hiddify": frozenset(),
+    "sui": frozenset(),
+}
+
+
+class ChildHttpUnavailable(RuntimeError):
+    pass
+
+
+def _destination(url):
+    try:
+        if not isinstance(url, str) or any(ord(character) < 32 or ord(character) == 127 for character in url):
+            raise ValueError()
+        parsed = urlsplit(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+            raise ValueError()
+        # Exact, unambiguous paths make POST allowlists resistant to encoded
+        # slashes, dot-segments and proxy/server normalization differences.
+        path = parsed.path or "/"
+        if any(part in (".", "..") for part in path.split("/")) or any(c in path for c in ("%", "\\", ";")) or "//" in path:
+            raise ValueError()
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        return (parsed.scheme, parsed.hostname.lower(), port), path, parsed.query
+    except (TypeError, ValueError):
+        raise ChildHttpUnavailable("child_http_destination_invalid") from None
+
+
+class ChildHttpSession(requests.Session):
+    def __init__(self, base_url, node_id, backend, *, connect_timeout=10, read_timeout=15):
+        if backend not in READ_POSTS or (node_id is not None and (type(node_id) is not int or node_id < 1)):
+            raise ChildHttpUnavailable("child_http_binding_invalid")
+        if any(type(value) not in (int, float) or not 0 < value <= 120 for value in (connect_timeout, read_timeout)):
+            raise ChildHttpUnavailable("child_http_timeout_invalid")
+        origin, prefix, query = _destination(base_url)
+        if query:
+            raise ChildHttpUnavailable("child_http_base_invalid")
+        super().__init__()
+        self.trust_env = False
+        self._origin, self._prefix = origin, prefix.rstrip("/")
+        self._node_id, self._backend = node_id, backend
+        self._timeout = (connect_timeout, read_timeout)
+        self._write_attempted = False
+
+    @property
+    def write_attempted(self):
+        return self._write_attempted
+
+    def send(self, request, **kwargs):
+        if kwargs.get("proxies"):
+            raise ChildHttpUnavailable("child_http_proxy_not_allowed")
+        origin, path, query = _destination(request.url)
+        if origin != self._origin or not path.startswith(self._prefix + "/"):
+            raise ChildHttpUnavailable("child_http_destination_mismatch")
+        relative = path[len(self._prefix):]
+        method = request.method
+        read_only = method == "GET" or (method == "POST" and not query and relative in READ_POSTS[self._backend])
+        if not read_only:
+            authority.require_write(self._node_id, self._backend)
+        kwargs["timeout"] = self._timeout  # No caller can disable the per-call deadlines.
+        kwargs["proxies"] = {}  # Do not inherit proxy credentials/destinations from the environment.
+        # Evaluate adapter routing before marking an attempt. The attempted
+        # flag is conservative once send might have reached the network.
+        self.get_adapter(request.url)
+        if not read_only:
+            self._write_attempted = True
+        return super().send(request, **kwargs)

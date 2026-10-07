@@ -180,11 +180,11 @@ check("writer calls inside client modules are the known internal ones only",
           "app.services.threexui_client": ["add_client"],
           "app.services.xray_client": ["add_client", "remove_client", "restart_service", "write_config"],
       })
-check("every adapter exists; only the fenced cancellation worker integrates one",
+check("every adapter exists; only fenced cancellation and private readonly recovery integrate them",
       (sorted(rw.ADAPTER_MODULES - {dotted for dotted, _ in app_modules()}),
        sorted(dotted for dotted, path in app_modules()
               if dotted not in rw.ADAPTER_MODULES and imports_adapter(path))),
-      ([], ["app.services.reseller_refund_worker"]))
+      ([], ["app.services.provisioning_child_recovery", "app.services.reseller_refund_worker"]))
 called_anywhere = set().union(*in_code.values()) | set().union(*client_internal.values())
 check("the three MikroTik writer methods without any caller are exactly the declared ones",
       sorted(rw.WRITER_METHODS - called_anywhere), sorted(rw.UNCALLED_WRITER_METHODS))
@@ -269,6 +269,7 @@ check("legacy writers are gated; private ownership self-tests use lock primitive
     "app.services.provisioning_child_guard": ["gate_locks"],
     "app.services.provisioning_runner_results": ["remote_action"],
     "app.services.provisioning_parent_dispatch": ["remote_action"],
+    "app.services.provisioning_child_recovery": ["remote_action"],
        "app.routers.provisioning": ["remote_action.ActionType", "remote_runner_registry.ACTIONS"]})
 check("the runner has no real action registered - it cannot reach a node",
       sorted(a.value for a in ACTIONS if not a.value.startswith("selftest_")), [])

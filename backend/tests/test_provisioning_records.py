@@ -54,7 +54,8 @@ def scenario(engine):
             state="staged" if backend == "radius_ppp" else "remote_created",
             remote_attempted=backend != "radius_ppp", wg_interface="wg1", wg_peer_name="peer",
             wg_public_key="public", wg_client_address="10.0.0.2/32", account_username="account",
-            xr_email="email", staged_wg_private_key="private", staged_password="password",
+            xr_email="email", xr_inbound_tag=node.xr_inbound_tag, xr_panel_inbound_id=node.xr_panel_inbound_id,
+            staged_wg_private_key="private", staged_password="password",
             staged_xr_uuid=str(uuid.uuid4()), flow="", speed_limit_mbps=5, max_concurrent_sessions=2)
         db.add(step)
         db.commit()
@@ -72,6 +73,22 @@ def scenario(engine):
         db.flush()
         refusal("node_unavailable", lambda: records.build_connection_core(db, sid, 0, user_id=uid, purchase_id=pid))
         db.rollback()
+        # A successful remote step on the old inbound must not be published
+        # as a Connection on the node's newly configured inbound.
+        if protocol == "xray":
+            for field, changed in (("xr_inbound_tag", "different-inbound"), ("xr_panel_inbound_id", 987)):
+                setattr(node, field, changed)
+                db.flush()
+                refusal("provisioning_node_config_changed", lambda: records.build_connection_core(
+                    db, sid, 0, user_id=uid, purchase_id=pid))
+                assert db.query(models.Connection).count() == prior and step.state == "remote_created"
+                db.rollback()
+        elif protocol == "wireguard":
+            node.mt_wireguard_interface = "wg-changed"
+            db.flush()
+            refusal("provisioning_node_config_changed", lambda: records.build_connection_core(
+                db, sid, 0, user_id=uid, purchase_id=pid))
+            db.rollback()
         secret_field = "staged_wg_private_key" if protocol == "wireguard" else "staged_xr_uuid" if protocol == "xray" else "staged_password"
         setattr(step, secret_field, None)
         db.flush()

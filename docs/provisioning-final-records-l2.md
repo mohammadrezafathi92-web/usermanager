@@ -6,13 +6,13 @@ and clears staged credentials in the same caller-owned transaction. No remote
 client, commit, random credential regeneration or worker is involved.
 
 Owner and Purchase binding, active node, backend/protocol pairing, current Xray
-panel mode / WireGuard interface, required credentials and batch length are
+panel mode, inbound tag and panel inbound ID / WireGuard interface, required credentials and batch length are
 validated before creation. The transition layer verifies the copied credentials
 before clearing their staged copy. Approval-bearing operations remain refused
 until atomic approval integration exists.
 
 Tests cover all nine backends (DB record shape only, not real devices), wrong
-owner, disabled node, missing credential, overlong batch, rollback preserving the
+owner, disabled node, changed Xray inbound or WireGuard interface, missing credential, overlong batch, rollback preserving the
 staged credential, successful retry and stale-version refusal without a duplicate
 Connection. Real disposable MariaDB is mandatory in CI.
 

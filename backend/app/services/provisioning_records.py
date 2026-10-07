@@ -57,7 +57,9 @@ def build_connection_core(db, step_id, version, *, user_id, purchase_id=None, pu
         fields = dict(ppp_username=step.account_username, ppp_password=step.staged_password)
     elif step.backend in XRAY_MODES:
         valid = step.protocol == "xray" and node.type == models.NodeType.xray
-        if (node.xr_panel_mode or "ssh") != XRAY_MODES[step.backend]:
+        if (node.xr_panel_mode or "ssh") != XRAY_MODES[step.backend] or (
+                node.xr_inbound_tag, node.xr_panel_inbound_id) != (
+                step.xr_inbound_tag, step.xr_panel_inbound_id):
             raise HTTPException(409, "provisioning_node_config_changed")
         required = (step.xr_email, step.staged_xr_uuid)
         fields = dict(xr_email=step.xr_email, xr_uuid=step.staged_xr_uuid, xr_flow=step.flow)

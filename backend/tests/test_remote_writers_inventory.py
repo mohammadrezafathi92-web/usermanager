@@ -257,11 +257,12 @@ for dotted, path in app_modules():
             used |= {alias.name.split(".")[-1] for alias in node.names if alias.name.split(".")[-1] in NEW_MODULES}
     if used:
         importers[dotted] = sorted(used)
-check("four legacy writers use the gate; the cancellation fence reuses only lock primitives",
+check("four legacy writers use the gate; cancellation uses lock primitives; status only inspects action metadata",
       importers,
       {"app.routers.nodes": ["node_gate.writer_gate"], "app.routers.users": ["node_gate.writer_gate"],
        "app.services.quota_manager": ["node_gate.writer_gate"], "app.services.user_ops": ["node_gate.writer_gate"],
-       "app.services.reseller_refund_fence": ["gate_locks.FileLock", "gate_locks.lock_base_dir"]})
+       "app.services.reseller_refund_fence": ["gate_locks.FileLock", "gate_locks.lock_base_dir"],
+       "app.routers.provisioning": ["remote_action.ActionType", "remote_runner_registry.ACTIONS"]})
 check("the runner has no real action registered - it cannot reach a node",
       sorted(a.value for a in ACTIONS if not a.value.startswith("selftest_")), [])
 

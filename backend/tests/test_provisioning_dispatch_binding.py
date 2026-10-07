@@ -113,6 +113,38 @@ def scenario(engine, directory):
                 shared=False, timeout=0)
             verify = lambda request=request: fence.revalidate(reader, request, identity, mode_hold, node_hold, base_dir=directory)
             try:
+                def guarded_refusal():
+                    try:
+                        with ChildGuard(reader, request, identity, mode_hold, node_hold, base_dir=directory):
+                            raise AssertionError("unverified contract accepted")
+                    except ChildGuardUnavailable:
+                        pass
+                guarded_refusal()  # No current contract: no writer permission.
+                contract_row = mp.ProvisioningNodeContract(node_id=node.id, backend=backend, state="ready",
+                    adapter_version=contracts.adapter_version(), config_fingerprint=contracts.config_fingerprint(node),
+                    server_fingerprint="b" * 64, contract='{"not_exist":[]}',
+                    verified_by_admin_id=other_owner.id, verified_at=dt.datetime.utcnow())
+                db.add(contract_row)
+                db.commit()
+                for field, bad in (("adapter_version", "0" * 40), ("config_fingerprint", "0" * 64),
+                                   ("server_fingerprint", "z" * 64), ("contract", "[]")):
+                    previous = getattr(contract_row, field)
+                    setattr(contract_row, field, bad)
+                    db.commit()
+                    guarded_refusal()
+                    setattr(contract_row, field, previous)
+                    db.commit()
+                with ChildGuard(reader, request, identity, mode_hold, node_hold, base_dir=directory) as pinned:
+                    detached = pinned.contract
+                    detached["contract"]["not_exist"].append({"injected": True})
+                    assert pinned.contract["contract"]["not_exist"] == []
+                    contract_row.version += 1
+                    db.commit()
+                    try:
+                        pinned.check()
+                        raise AssertionError("mid-action contract replacement accepted")
+                    except ChildGuardUnavailable:
+                        pass
                 queries = []
                 def collect(connection, cursor, statement, parameters, context, executemany):
                     queries.append(statement)

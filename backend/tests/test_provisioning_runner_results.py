@@ -81,7 +81,9 @@ def scenario(engine):
                  (Outcome.UNREADABLE, False, None, False, "remote_calling"),
                  (Outcome.TRANSPORT_ERROR, True, None, False, "remote_calling"),
                  (Outcome.TIMEOUT_UNKNOWN, True, None, False, "remote_calling"),
-                 (Outcome.KILLED_UNKNOWN, True, None, False, "remote_calling")]
+                 (Outcome.KILLED_UNKNOWN, True, None, False, "remote_calling"),
+                 (Outcome.KILLED_UNKNOWN, True, None, True, "remote_calling"),
+                 (Outcome.TIMEOUT_UNKNOWN, True, None, True, "remote_calling")]
         for outcome, attempted, remote, recovery, expected in cases:
             binding, token = prepare()
             resource_leases.begin_business(db)

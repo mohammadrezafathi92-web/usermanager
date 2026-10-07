@@ -37,7 +37,10 @@ def record(db, binding, identity, leases, expected_action_id, result, *, recover
     convergence = result.error_code == "remote_convergence_required"
     if convergence and (not forward or not recovery_read or result.outcome != Outcome.UNREADABLE or result.write_attempted):
         raise HTTPException(422, "provisioning_runner_result_invalid")
-    if (recovery_read or result.outcome == Outcome.UNREADABLE) and result.write_attempted:
+    # Parent-generated kill/timeout flags are conservative, not observed
+    # writes. They can record an unknown read attempt, but can never certify
+    # success/absence/convergence or release anything.
+    if ((recovery_read and not result.is_unknown) or result.outcome == Outcome.UNREADABLE) and result.write_attempted:
         raise HTTPException(422, "provisioning_runner_result_invalid")
     if result.outcome in (Outcome.SUCCEEDED, Outcome.ALREADY_PRESENT_VERIFIED) and (
             not forward or result.remote_outcome is not None or

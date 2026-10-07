@@ -70,29 +70,18 @@ def _endpoint(row):
     return hashlib.sha256(json.dumps(values, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def revalidate(engine, binding, identity, mode_hold, node_hold, *, base_dir=None):
-    if not isinstance(binding, DispatchBinding) or not isinstance(identity, HostIdentity):
-        raise DispatchBindingUnavailable("durable_dispatch_invalid")
-    expected = ((mode_hold, True, gate_locks.mode_lock_path(binding.installation_uuid, base_dir)),
-        (node_hold, False, gate_locks.node_lock_path(binding.installation_uuid, binding.node_id, base_dir)))
-    if any(not isinstance(hold, gate_locks.FileLock) or not hold.held or hold.shared is not shared or hold.path != path
-           for hold, shared, path in expected):
-        raise DispatchBindingUnavailable("durable_dispatch_locks_missing")
-    try:
-        if provisioning_installation.read_file(base_dir) != binding.installation_uuid:
-            raise DispatchBindingUnavailable("durable_dispatch_namespace_mismatch")
-    except provisioning_installation.InstallationUnavailable:
-        raise DispatchBindingUnavailable("durable_dispatch_namespace_unavailable") from None
-    if engine.dialect.name == "sqlite":
+def dispatch_statement(dialect):
+    """The exact closed read used by the child's SQL allowlist."""
+    if dialect == "sqlite":
         clock = "strftime('%Y-%m-%d %H:%M:%f','now')"
-    elif engine.dialect.name in ("mysql", "mariadb"):
+    elif dialect in ("mysql", "mariadb"):
         clock = "NOW(6)"
     else:
         raise DispatchBindingUnavailable("durable_dispatch_database_unsupported")
     endpoints = ", ".join("n." + name + " AS n_" + name for name in ENDPOINT_FIELDS)
     # One fresh committed snapshot. Epoch/deadline is checked by the DB clock,
     # not the DTO's timestamp. Only constant identifiers enter the SQL text.
-    statement = text(f"""SELECT r.installation_uuid, r.owner_state, r.owner_host_id, r.owner_boot_id,
+    return text(f"""SELECT r.installation_uuid, r.owner_state, r.owner_host_id, r.owner_boot_id,
       r.ownership_epoch, r.gate_mode, r.gate_mode_epoch, r.lock_backend,
       o.operation_type, o.state AS operation_state, o.version AS operation_version, o.intent,
       o.approval_uuid, o.target_user_id, o.username_claim, o.wallet_epoch_at_start,
@@ -113,6 +102,22 @@ def revalidate(engine, binding, identity, mode_hold, node_hold, *, base_dir=None
       LEFT JOIN users u ON u.id=o.target_user_id OR (o.target_user_id IS NULL AND u.username=o.username_claim)
       LEFT JOIN panel_settings p ON p.id=1
       WHERE r.id=1""")
+
+
+def revalidate(engine, binding, identity, mode_hold, node_hold, *, base_dir=None):
+    if not isinstance(binding, DispatchBinding) or not isinstance(identity, HostIdentity):
+        raise DispatchBindingUnavailable("durable_dispatch_invalid")
+    expected = ((mode_hold, True, gate_locks.mode_lock_path(binding.installation_uuid, base_dir)),
+        (node_hold, False, gate_locks.node_lock_path(binding.installation_uuid, binding.node_id, base_dir)))
+    if any(not isinstance(hold, gate_locks.FileLock) or not hold.held or hold.shared is not shared or hold.path != path
+           for hold, shared, path in expected):
+        raise DispatchBindingUnavailable("durable_dispatch_locks_missing")
+    try:
+        if provisioning_installation.read_file(base_dir) != binding.installation_uuid:
+            raise DispatchBindingUnavailable("durable_dispatch_namespace_mismatch")
+    except provisioning_installation.InstallationUnavailable:
+        raise DispatchBindingUnavailable("durable_dispatch_namespace_unavailable") from None
+    statement = dispatch_statement(engine.dialect.name)
     try:
         with engine.connect() as connection:
             row = connection.execute(statement, dict(operation_id=binding.operation_id, step_id=binding.step_id,

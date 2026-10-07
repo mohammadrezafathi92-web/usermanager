@@ -77,3 +77,27 @@ This query does not select management or customer secrets and closes its DB
 connection before returning. It is not a transport authorization token and is
 not yet wired to a live runner: action schemas, current node contracts, the
 read-only child connection and adapter authorization remain separate requirements.
+
+`provisioning_child_database.ChildDatabase` now supplies that private read-only
+connection: existing SQLite files are opened with `mode=ro` (no file creation,
+no `immutable` shortcut), query-only plus an authorizer; MariaDB connections
+use session-default READ ONLY and verify the setting. See the official
+[SQLite URI](https://www.sqlite.org/uri.html) and
+[MariaDB transaction](https://mariadb.com/docs/server/reference/sql-statements/administrative-sql-statements/set-commands/set-transaction)
+contracts. A closed exact SQL allowlist additionally refuses DML, DDL, settings
+changes, arbitrary SELECTs, locking reads and multi-statements before execution.
+It allows the fixed ownership/installation reads, current WireGuard subnet,
+committed dispatch snapshot and the three advisory-lock statements only.
+Connections use NullPool: close really disconnects and releases their MariaDB
+locks instead of returning them to a pool. The facade exposes no ORM, commit
+or raw cursor API. This is protection from coding mistakes, not a sandbox for
+malicious Python accessing private internals. The runner still has no real
+action registered or live database caller; no mode or server activation occurs.
+
+The private `ChildGuard` combines this facade with actual held file gates and,
+on MariaDB, a dedicated GET_LOCK connection. Its check ends each read snapshot
+before returning to remote code. Losing the dedicated connection permanently
+breaks that hold: no automatic reconnect, GET_LOCK retry, or resuming an old
+action. The future transport guard must call it before every writer, including
+nested adapter calls. This hold itself performs no remote call and grants no
+transport token.

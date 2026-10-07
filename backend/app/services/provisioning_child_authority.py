@@ -65,8 +65,10 @@ def _role():
 
 
 @contextlib.contextmanager
-def _scope(guard):
+def _scope(guard, *, allow_writes=True):
     _role()
+    if type(allow_writes) is not bool:
+        raise WriteAuthorityUnavailable("runner_authority_permission_invalid")
     # Self-test runner import remains database-free. Real action authority
     # alone needs the closed read-only database/guard dependency.
     from .provisioning_child_guard import ChildGuard
@@ -75,16 +77,16 @@ def _scope(guard):
     binding = guard.check()
     current = _current.get()
     if current is not None:
-        require_write(binding.node_id, binding.backend)
+        _require_guard(guard)
         with _lock:
             existing = _registry.get(current.nonce)
-        if existing is None or existing[1] is not guard:
+        if existing is None or existing[1] is not guard or existing[3] != allow_writes:
             raise WriteAuthorityUnavailable("runner_nested_guard_invalid")
         yield current
         return
     token = _Token(secrets.token_hex(32), os.getpid(), threading.get_ident())
     with _lock:
-        _registry[token.nonce] = (token, guard, binding)
+        _registry[token.nonce] = (token, guard, binding, allow_writes)
     mark = _current.set(token)
     try:
         yield token
@@ -104,7 +106,7 @@ def require_write(node_id, backend):
             raise WriteAuthorityUnavailable("runner_token_missing")
         with _lock:
             grant = _registry.get(token.nonce)
-        if grant is None or grant[0] is not token or (grant[2].node_id, grant[2].backend) != (node_id, backend):
+        if grant is None or grant[0] is not token or not grant[3] or (grant[2].node_id, grant[2].backend) != (node_id, backend):
             raise WriteAuthorityUnavailable("runner_token_binding_invalid")
         # No cached check: loss of a file/advisory lock, owner epoch, lease,
         # contract or dispatch invalidates the next writer before network I/O.
@@ -120,10 +122,14 @@ def _require_guard(guard):
     """A factory cannot substitute another installation/operation's guard."""
     _role()  # Reject a fork before touching an inherited registry lock.
     token = _current.get()
-    if type(token) is not _Token:
+    if type(token) is not _Token or (token.pid, token.thread_id) != (os.getpid(), threading.get_ident()):
         raise WriteAuthorityUnavailable("runner_write_authority_unavailable")
     with _lock:
         grant = _registry.get(token.nonce)
     if grant is None or grant[0] is not token or grant[1] is not guard:
         raise WriteAuthorityUnavailable("runner_write_authority_unavailable")
-    require_write(grant[2].node_id, grant[2].backend)
+    try:
+        if guard.check() != grant[2]:
+            raise WriteAuthorityUnavailable("runner_guard_changed")
+    except Exception:
+        raise WriteAuthorityUnavailable("runner_write_authority_unavailable") from None

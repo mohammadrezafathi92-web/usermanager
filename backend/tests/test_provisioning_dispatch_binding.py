@@ -24,8 +24,10 @@ from app.services.provisioning_child_database import ChildDatabase
 from app.services import provisioning_child_database as child_db
 from app.services.provisioning_child_guard import ChildGuard, ChildGuardUnavailable
 from app.services import provisioning_child_authority as authority
+from app.services import provisioning_parent_dispatch as parent_dispatch
 from unittest.mock import patch
 from sqlalchemy import text
+from fastapi import HTTPException
 from app.services.provisioning_host import HostIdentity
 
 assert fence.ENDPOINT_FIELDS == contracts._FIELDS
@@ -35,6 +37,9 @@ assert not any(isinstance(node, ast.ImportFrom) and node.module and (
     "models" in node.module or node.module in ("database", "sqlalchemy.orm")) for node in ast.walk(tree))
 assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in (
     "commit", "rollback", "flush", "run_action", "connect_ex", "sendto") for node in ast.walk(tree))
+parent_tree = ast.parse(Path(parent_dispatch.__file__).read_text())
+assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in (
+    "commit", "run_action", "Popen", "connect_ex", "sendto") for node in ast.walk(parent_tree))
 
 
 def refused(callback):
@@ -136,6 +141,46 @@ def scenario(engine, directory):
                     guarded_refusal()
                     setattr(contract_row, field, previous)
                     db.commit()
+                db.rollback()
+                resource_leases.begin_business(db)
+                descriptor = parent_dispatch.snapshot(db, step.id, request.step_version, identity, [lease], recovery_read=True)
+                assert descriptor.params["recovery_read"] is True
+                assert descriptor.fencing["binding"]["step_version"] == request.step_version
+                assert descriptor.fencing["installation_uuid"] == installation_uuid
+                assert descriptor.node_config["type"] == node.type.value
+                assert "management-secret-not-selected" not in repr(descriptor)
+                assert "private-never-selected" not in repr(descriptor)
+                assert "password-never-selected" not in repr(descriptor)
+                db.rollback()
+                for supplied_version, read_only, supplied_leases, expected in (
+                        (request.step_version + 1, True, [lease], "provisioning_step_changed"),
+                        (request.step_version, False, [lease], "provisioning_dispatch_state_invalid"),
+                        (request.step_version, True, [], "provisioning_lease_scope_invalid")):
+                    resource_leases.begin_business(db)
+                    try:
+                        parent_dispatch.snapshot(db, request.step_id, supplied_version, identity,
+                            supplied_leases, recovery_read=read_only)
+                        raise AssertionError("invalid parent dispatch accepted")
+                    except HTTPException as error:
+                        assert error.detail == expected, error.detail
+                    finally:
+                        db.rollback()
+                assert db.get(mp.ProvisioningStep, request.step_id).version == request.step_version
+                step = db.get(mp.ProvisioningStep, request.step_id)
+                step.state = "staged"
+                db.commit()
+                db.rollback()
+                resource_leases.begin_business(db)
+                first_send = parent_dispatch.snapshot(db, request.step_id, request.step_version, identity,
+                    [lease], recovery_read=False)
+                assert first_send.params["recovery_read"] is False
+                assert first_send.fencing["binding"]["step_version"] == request.step_version + 1
+                assert first_send.fencing["binding"]["operation_version"] == request.operation_version + 1
+                db.rollback()
+                assert db.get(mp.ProvisioningStep, request.step_id).state == "staged"
+                assert db.get(mp.ProvisioningStep, request.step_id).version == request.step_version
+                step.state = "remote_calling"
+                db.commit()
                 with ChildGuard(reader, request, identity, mode_hold, node_hold, base_dir=directory) as pinned:
                     detached = pinned.contract
                     detached["contract"]["not_exist"].append({"injected": True})

@@ -45,6 +45,7 @@ for backend, login_reads in transport.READ_POSTS.items():
         adapter = RecordingAdapter()
         session.mount("https://", adapter)
         session.get("https://example.invalid/panel/api/users?offset=0")
+        session.get("https://example.invalid/panel/api/user/کاربر")
         for path in login_reads:
             session.post("https://example.invalid/panel" + path)
         assert not session.write_attempted
@@ -80,6 +81,15 @@ for backend, login_reads in transport.READ_POSTS.items():
             count = len(adapter.sent)
             refuses(lambda: session.post("https://example.invalid/panel" + path + "?unexpected=1"))
             assert len(adapter.sent) == count
+            encoded_alias = "https://example.invalid/panel" + path[:-1] + "%" + format(ord(path[-1]), "02x")
+            prepared = requests.Request("POST", "https://example.invalid/panel" + path).prepare()
+            prepared.url = encoded_alias  # Preserve encoding; Requests otherwise normalizes unreserved characters.
+            refuses(lambda: session.send(prepared))
+            assert len(adapter.sent) == count
+        for suffix in ("/%2e%2e/api/user", "/api%2fuser", "/%252e%252e/api/user", "/api/user%00"):
+            prepared = requests.Request("POST", "https://example.invalid/panel/api/user").prepare()
+            prepared.url = "https://example.invalid/panel" + suffix
+            refuses(lambda prepared=prepared: session.send(prepared))
     print("PASS", backend, "closed destination/read POSTs, unknown writers, direct sends, redirects, fresh proof and timeouts")
 with transport.ChildHttpSession("https://example.invalid", None, "sui") as unbound:
     unbound.mount("https://", RecordingAdapter())

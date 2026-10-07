@@ -109,8 +109,14 @@ def prepare_user_deletion(db, user):
     require_legacy_lifecycle(db)
     if not receipt_void_schema.is_ready():
         return None
-    return db.execute(select(rv.wallet_accounts.c.id).where(
+    account_id = db.execute(select(rv.wallet_accounts.c.id).where(
         rv.wallet_accounts.c.user_id == user.id)).scalar_one_or_none()
+    if account_id is not None and db.execute(select(rv.wallet_debit_events.c.id).where(
+        rv.wallet_debit_events.c.wallet_account_id == account_id,
+        rv.wallet_debit_events.c.state == "held",
+    ).limit(1)).scalar_one_or_none() is not None:
+        raise HTTPException(409, "wallet_account_has_hold")
+    return account_id
 
 
 def tombstone_user_account(db, user, *, account_id):

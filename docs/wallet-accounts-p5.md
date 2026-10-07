@@ -17,13 +17,12 @@ Legacy installations with an unavailable Receipt Void schema retain old
 behavior without attempting partial account writes. P9 must verify the
 schema and backfill before any activation.
 
-This is **not** the full identity-rebind batch: existing Telegram/owner
-changes retain legacy behavior in normal mode. Until audited rebind is
-implemented, their accounts may have stale identity bindings. The prepared
-enforced wallet policy now detects that mismatch and refuses rather than
-using the wrong identity. Rebind, hierarchy-root transfers, debt-aware new
-account creation, DB-only deletion finalizer, and backfill remain activation
-prerequisites. Do not activate enforced mode with this batch alone.
+Later normal-generation batches added audited identity rebind and DB-only
+deletion finalizers: see wallet-identity-p5.md and deletion-finalizers-p5.md.
+The prepared enforced wallet policy detects stale identity bindings and
+refuses rather than using the wrong identity. Debt-aware new account
+creation, backfill, durable provisioning and wallet cutover remain activation
+prerequisites. Do not activate enforced mode with these batches alone.
 
 Tests cover transactional rollback/commit failure, tenant isolation,
 private identity, tombstone retention, explicitly reused User ID, and

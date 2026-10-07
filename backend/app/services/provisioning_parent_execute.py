@@ -30,7 +30,7 @@ def execute_one(session_factory, step_id, version, identity, leases, *, recovery
 
 
 def execute_compensation(session_factory, step_id, version, identity, leases):
-    """Private cycle; absence actions are still unregistered, no live caller.
+    """Private cycle for guarded absence actions; no live caller.
 
     This records only a cleanup step result, never a reservation release,
     operation finalization or refund. Caller owns and retains its leases.

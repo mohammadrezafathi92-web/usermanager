@@ -38,7 +38,7 @@ def forward(dto):
 
 
 def compensate(dto):
-    """Private, unregistered entry for the exact stored cleanup identity."""
+    """Guarded runner entry for the exact stored cleanup identity."""
     return _run(dto, compensation=True)
 
 

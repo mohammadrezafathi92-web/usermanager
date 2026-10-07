@@ -195,9 +195,10 @@ check("...and once the lock is free the same action does run and write its marke
       (Outcome.SUCCEEDED, True))
 
 print("--- only registered actions, by name ---")
-check("only the four self-test actions are registered in this batch (no real remote mutation)",
+check("four self-tests and three guarded stored forward actions are registered",
       sorted(a.value for a in ACTIONS),
-      ["selftest_crash", "selftest_echo", "selftest_environment", "selftest_sleep"])
+      ["selftest_crash", "selftest_echo", "selftest_environment", "selftest_sleep",
+       "softether_ensure_present", "wg_ensure_present", "xray_ensure_present"])
 spawned = []
 real_popen = subprocess.Popen
 
@@ -210,7 +211,7 @@ def counting_popen(*a, **k):
 subprocess.Popen = counting_popen
 try:
     check("an unregistered (real) action is refused",
-          raises(rr.UnregisteredAction, lambda: rr.run_action(dto(ActionType.WG_ENSURE_PRESENT, node_id=1))))
+          raises(rr.UnregisteredAction, lambda: rr.run_action(dto(ActionType.MT_PUSH_RADIUS, node_id=1))))
     check("...before any process is spawned", spawned, [])
     check("something that is not a DTO is refused", raises(TypeError, lambda: rr.run_action({"action_type": "selftest_echo"})))
     check("...also before any spawn", spawned, [])
@@ -218,6 +219,8 @@ finally:
     subprocess.Popen = real_popen
 check("every registered implementation is a 'module:function' string, not a callable",
       all(isinstance(v, str) and v.count(":") == 1 for v in ACTIONS.values()))
+check("registered forward action without bound lock context is refused by the actual child",
+    rr.run_action(dto(ActionType.WG_ENSURE_PRESENT)).outcome, Outcome.TRANSPORT_ERROR)
 
 print("--- the child, driven directly: protocol violations exit before any action ---")
 HEADER = struct.Struct(">Q")
@@ -253,7 +256,7 @@ check("LP-162: another schema_version -> exit 5, action not run",
       (raw_child(me, framed(json.dumps({**wire, "schema_version": 999})))[0], os.path.exists(orphan_marker)), (5, False))
 check("an unknown action_type -> exit 5", raw_child(me, framed(json.dumps({**wire, "action_type": "os_system"})))[0], 5)
 check("a known but UNREGISTERED action_type -> exit 5",
-      raw_child(me, framed(json.dumps({**wire, "action_type": "wg_ensure_present", "node_id": 1})))[0], 5)
+      raw_child(me, framed(json.dumps({**wire, "action_type": "mt_push_radius", "node_id": 1})))[0], 5)
 check("an extra field -> exit 5", raw_child(me, framed(json.dumps({**wire, "target": "os:system"})))[0], 5)
 check("a DTO fenced for another parent pid -> exit 5",
       raw_child(me, framed(json.dumps({**wire, "fencing": {"expected_parent_pid": me + 1}})))[0], 5)

@@ -5,8 +5,8 @@ Started only by services/remote_runner.py as
 
 The DTO (with its secrets) arrives on stdin as one length-prefixed JSON
 message; argv and the environment never carry any of it. The result goes
-back on stdout the same way. This process imports no application model and
-opens no database connection in this batch.
+back on stdout the same way. Self-tests import no application model or DB.
+Real actions require trusted configuration and a closed read-only DB facade.
 
 Exit codes (the parent treats every non-zero one, and any missing or
 malformed result, as killed_unknown):
@@ -155,7 +155,12 @@ def main(argv: list[str]) -> int:
         module_name, function_name = target.split(":")
         try:
             with authority._runner_context(expected_parent):
-                result = getattr(importlib.import_module(module_name), function_name)(dto)
+                if dto.action_type.value.startswith("selftest_"):
+                    result = getattr(importlib.import_module(module_name), function_name)(dto)
+                else:
+                    from .provisioning_child_entry import locked_context
+                    with locked_context(mode_lock, node_lock):
+                        result = getattr(importlib.import_module(module_name), function_name)(dto)
             if not isinstance(result, RemoteActionResult) or result.action_id != dto.action_id:
                 raise RemoteActionError("action returned something that is not its own result")
         except Exception as exc:  # noqa: BLE001

@@ -20,6 +20,10 @@ from app import models, models_provisioning as mp, models_receipt_void as rv
 from app.services import gate_locks, provisioning_schema as schema, receipt_void_schema, resource_leases
 from app.services import provisioning_installation as installation, provisioning_contracts as contracts
 from app.services import provisioning_dispatch_binding as fence
+from app.services.provisioning_child_database import ChildDatabase
+from app.services import provisioning_child_database as child_db
+from app.services.provisioning_child_guard import ChildGuard, ChildGuardUnavailable
+from sqlalchemy import text
 from app.services.provisioning_host import HostIdentity
 
 assert fence.ENDPOINT_FIELDS == contracts._FIELDS
@@ -65,7 +69,9 @@ def scenario(engine, directory):
     db.add_all([user, other_owner])
     db.commit()
     all_nodes = []
+    reader = None
     try:
+        reader = ChildDatabase(engine.url)
         for index, backend in enumerate(("mikrotik_wg", "softether", *fence.XRAY_MODES)):
             node_type = models.NodeType.mikrotik if backend == "mikrotik_wg" else (
                 models.NodeType.softether if backend == "softether" else models.NodeType.xray)
@@ -105,19 +111,44 @@ def scenario(engine, directory):
                 node.id, backend, lease.owner, lease.epoch)
             node_hold = gate_locks.FileLock(gate_locks.node_lock_path(installation_uuid, node.id, directory)).acquire(
                 shared=False, timeout=0)
-            verify = lambda request=request: fence.revalidate(engine, request, identity, mode_hold, node_hold, base_dir=directory)
+            verify = lambda request=request: fence.revalidate(reader, request, identity, mode_hold, node_hold, base_dir=directory)
             try:
                 queries = []
                 def collect(connection, cursor, statement, parameters, context, executemany):
                     queries.append(statement)
-                event.listen(engine, "before_cursor_execute", collect)
+                event.listen(reader._engine, "before_cursor_execute", collect)
                 try:
                     assert verify() == request
                 finally:
-                    event.remove(engine, "before_cursor_execute", collect)
+                    event.remove(reader._engine, "before_cursor_execute", collect)
                 assert len(queries) == 1 and queries[0].lstrip().startswith("SELECT ")
                 assert all(secret not in queries[0] for secret in ("mt_password", "staged_password", "staged_xr_uuid",
                     "staged_wg_private_key"))
+                with ChildGuard(reader, request, identity, mode_hold, node_hold, base_dir=directory) as guard:
+                    assert guard.check() == request
+                    if engine.dialect.name != "sqlite":
+                        assert not guard._connection._connection.in_transaction()
+                        name = gate_locks.get_lock_name(installation_uuid, node.id)
+                        with reader.connect() as competitor:
+                            assert competitor.execute(text(child_db.ADVISORY_GET), dict(name=name, timeout=0)).scalar_one() == 0
+                            competitor.end_snapshot()
+                            guard._connection._connection.invalidate()  # Real connection loss releases GET_LOCK.
+                            assert competitor.execute(text(child_db.ADVISORY_GET), dict(name=name, timeout=0)).scalar_one() == 1
+                            competitor.end_snapshot()
+                            try:
+                                guard.check()
+                                raise AssertionError("lost advisory session allowed a writer")
+                            except ChildGuardUnavailable:
+                                pass
+                            assert competitor.execute(text(child_db.ADVISORY_CHECK), dict(name=name)).scalar_one() == 1
+                    else:
+                        node_hold.release()
+                        try:
+                            guard.check()
+                            raise AssertionError("released file lock allowed a writer")
+                        except ChildGuardUnavailable:
+                            pass
+                        node_hold.acquire(shared=False, timeout=0)
                 refused(lambda: verify(replace(request, step_version=request.step_version + 1)))
                 refused(lambda: verify(replace(request, operation_version=request.operation_version + 1)))
                 refused(lambda: verify(replace(request, lease_epoch=request.lease_epoch + 1)))
@@ -196,6 +227,8 @@ def scenario(engine, directory):
     finally:
         mode_hold.release()
         db.close()
+        if reader is not None:
+            reader.dispose()
 
 
 with tempfile.TemporaryDirectory(prefix="um-dispatch-binding-") as directory:

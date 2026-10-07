@@ -13,10 +13,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _no_network
 _no_network.install([])
 from app.services import provisioning_child_recovery as recovery
+from app.services import provisioning_child_present as present
 from app.services import provisioning_child_authority as authority
 from app.services.provisioning_dispatch_binding import DispatchBinding
 from app.services.provisioning_host import HostIdentity
-from app.services.adapter_base import ReadResult, ReadState
+from app.services.adapter_base import ReadResult, ReadState, PresentResult, AdapterConflict
+from contextlib import contextmanager
 from app.services import remote_action as action
 
 
@@ -24,11 +26,18 @@ class FakeClient:
     def __init__(self):
         self.closed = False
         self.connected = False
+        self._api = self._client = self.session = SimpleNamespace(write_attempted=False)
+    @property
+    def write_attempted(self):
+        return self.session.write_attempted
     def connect(self):
         self.connected = True
         return self
     def close(self):
         self.closed = True
+    def restart_service(self):
+        authority.require_write(7, backend)
+        self._client.write_attempted = True
 
 
 mapping = {"mikrotik_wg": (recovery.wg, "read"), "softether": (recovery.se, "read"),
@@ -43,6 +52,15 @@ for backend, (module, name) in mapping.items():
     guard = object.__new__(recovery.ChildGuard)  # Explicit unit fixture; not staging/host proof.
     guard.check = lambda: binding
     guard.identity = host
+    active_query = [False]
+    @contextmanager
+    def read_connection():
+        active_query[0] = True
+        try:
+            yield SimpleNamespace(execute=lambda statement, parameters: SimpleNamespace(scalar_one=lambda: "10.0.0.0/20"))
+        finally:
+            active_query[0] = False
+    guard.database = SimpleNamespace(connect=read_connection)
     guard._contract = json.dumps({"contract": {"not_exist": []}})
     identity = dict.fromkeys(recovery.IDENTITY_FIELDS)
     identity.update(wg_interface="wg0", wg_peer_name="peer", wg_public_key="public", wg_client_address="10.0.0.2/32",
@@ -112,6 +130,41 @@ for backend, (module, name) in mapping.items():
         with patch.object(recovery.clients, "build", return_value=client):
             result = recovery.read_present(dto, guard)
             assert result.outcome is action.Outcome.UNREADABLE and client.closed and "SECRET" not in result.to_wire()
+        forward = replace(dto, params={**dto.params, "recovery_read": False, "speed_limit_mbps": 10})
+        ensure_name = "ensure_present" if backend in ("mikrotik_wg", "softether") else "ensure_present_" + (
+            "ssh" if backend == "xray_ssh" else backend)
+        for created, write, expected_outcome in ((True, True, action.Outcome.SUCCEEDED),
+                (False, True, action.Outcome.SUCCEEDED), (False, False, action.Outcome.ALREADY_PRESENT_VERIFIED)):
+            client = FakeClient()
+            def ensure(*args, **kwargs):
+                assert not active_query[0], "database read held across remote writer"
+                if backend == "mikrotik_wg":
+                    assert args[2] == "10.0.0.0/20" and args[1].speed_limit_mbps == 10
+                if write:
+                    authority.require_write(7, backend)
+                    client.session.write_attempted = True
+                if backend == "xray_ssh" and not created:
+                    assert kwargs == {"confirm_restart": True}
+                    client.restart_service()
+                return PresentResult(created)
+            with patch.object(present.clients, "build", return_value=client), patch.object(module, ensure_name, side_effect=ensure):
+                result = present.ensure_present(forward, guard)
+                # Existing SSH configuration must be restarted to converge.
+                assert result.outcome is (action.Outcome.SUCCEEDED if backend == "xray_ssh" and not created else expected_outcome)
+                assert result.write_attempted is (write or backend == "xray_ssh")
+                assert client.connected and client.closed
+        for conflict in (True, False):
+            client = FakeClient()
+            def failure(*args, **kwargs):
+                if conflict:
+                    raise AdapterConflict("remote_identity_conflict")
+                authority.require_write(7, backend)
+                client.session.write_attempted = True
+                raise RuntimeError("SECRET")
+            with patch.object(present.clients, "build", return_value=client), patch.object(module, ensure_name, side_effect=failure):
+                result = present.ensure_present(forward, guard)
+                assert result.outcome is (action.Outcome.CONFLICT if conflict else action.Outcome.TRANSPORT_ERROR)
+                assert result.write_attempted is not conflict and "SECRET" not in result.to_wire() and client.closed
     print("PASS", backend, "closed binding, four read outcomes, readonly grant, sanitized failures and close")
 tree = ast.parse(Path(recovery.__file__).read_text())
 assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and (

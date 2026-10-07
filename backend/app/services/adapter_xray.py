@@ -98,8 +98,18 @@ def _ensure_absent(xc, identity, read) -> AbsentOutcome:
     return AbsentOutcome.VERIFIED_ABSENT if read(xc, identity).state is ReadState.ABSENT else AbsentOutcome.UNVERIFIED
 
 
-def ensure_present_ssh(xc, identity: XrayIdentity) -> PresentResult:
-    return _ensure_present(xc, identity, read_ssh, "xray_ssh")
+def ensure_present_ssh(xc, identity: XrayIdentity, *, confirm_restart=False) -> PresentResult:
+    if type(confirm_restart) is not bool:
+        raise AdapterError("xray_ssh_restart_policy_invalid")
+    result = _ensure_present(xc, identity, read_ssh, "xray_ssh")
+    if confirm_restart and not result.created:
+        # An ambiguous prior config write can precede an unfinished restart.
+        # Only converge after _ensure_present proves the full stored identity.
+        try:
+            xc.restart_service()
+        except Exception:
+            raise AdapterError("xray_ssh_restart_unconfirmed") from None
+    return result
 
 
 def ensure_absent_ssh(xc, identity: XrayIdentity) -> AbsentOutcome:

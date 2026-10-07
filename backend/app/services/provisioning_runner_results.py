@@ -34,6 +34,9 @@ def record(db, binding, identity, leases, expected_action_id, result, *, recover
     if result.action_id != expected_action_id or result.schema_version != SCHEMA_VERSION:
         raise HTTPException(409, "provisioning_runner_result_mismatch")
     forward = binding.phase == "forward"
+    convergence = result.error_code == "remote_convergence_required"
+    if convergence and (not forward or not recovery_read or result.outcome != Outcome.UNREADABLE or result.write_attempted):
+        raise HTTPException(422, "provisioning_runner_result_invalid")
     if (recovery_read or result.outcome == Outcome.UNREADABLE) and result.write_attempted:
         raise HTTPException(422, "provisioning_runner_result_invalid")
     if result.outcome in (Outcome.SUCCEEDED, Outcome.ALREADY_PRESENT_VERIFIED) and (
@@ -77,6 +80,12 @@ def record(db, binding, identity, leases, expected_action_id, result, *, recover
     if forward and result.outcome in (Outcome.SUCCEEDED, Outcome.ALREADY_PRESENT_VERIFIED):
         return transitions.confirm_present(db, step.id, step.version,
             PresentResult(result.outcome == Outcome.SUCCEEDED))
+    if convergence:
+        # A positively matching identity needs remaining side effects. Keep
+        # remote_attempted and credentials; the next CAS dispatch re-reads
+        # identity under fresh child authority before converging, not creating
+        # blindly. Old result/dispatch versions are no longer usable.
+        return transitions._write_step(db, step, "staged", error_code="remote_convergence_required", next_retry_at=None)
     if result.outcome == Outcome.ABSENT_VERIFIED:
         if forward:
             return transitions.recover_read(db, step.id, step.version, ReadResult(ReadState.ABSENT))

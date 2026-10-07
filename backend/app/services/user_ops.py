@@ -809,7 +809,6 @@ def bulk_create_users(
                 dt.datetime.utcnow() + dt.timedelta(days=package.duration_days) if package.duration_days else None
             )
             user.max_concurrent_sessions = package.max_concurrent_sessions
-            user.owner_admin_id = owner_admin_id
             user.package_id = package.id
             db.commit()
             db.refresh(user)
@@ -824,7 +823,6 @@ def bulk_create_users(
                 absorb_legacy_pool_into_purchase(db, user)
                 db.commit()
         else:
-            user.owner_admin_id = owner_admin_id
             db.commit()
             # Every service picked in this bulk-create form is one bundle
             # for this user, same idea as a package purchase - share one

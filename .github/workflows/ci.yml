@@ -67,6 +67,8 @@ jobs:
       # entire standalone suite. It remains in run_all.py as well.
       - name: Wallet account database preflight
         run: python -u tests/test_wallet_accounts.py
+      - name: Wallet identity database preflight
+        run: python -u tests/test_wallet_identity_rebind.py
       - name: Run isolated backend checks
         run: python tests/run_all.py
 

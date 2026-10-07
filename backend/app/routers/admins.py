@@ -17,7 +17,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..deps import require_admin_or_above, require_superadmin, require_confirm_password
 from ..security import hash_password
-from ..services import hierarchy, accounting, telegram_ids
+from ..services import hierarchy, accounting, telegram_ids, wallet_identity
 from ..permissions import PERMISSION_CHOICES, PERMISSION_GROUPS, parse_permissions, format_permissions, effective_permissions
 
 router = APIRouter(prefix="/api/admins", tags=["admins"], dependencies=[Depends(require_admin_or_above)])
@@ -306,6 +306,7 @@ def reparent_admin(
         raise HTTPException(400, "نقش ادمین اصلی قابل تغییر نیست")
 
     new_parent_id = payload.parent_admin_id
+    wallet_owner_ids = hierarchy.subtree_ids(db, admin)
     parent = None
     if new_parent_id is not None:
         if new_parent_id == admin.id:
@@ -377,6 +378,7 @@ def reparent_admin(
             if hierarchy.role(child) == hierarchy.ROLE_SELLER:
                 child.role = hierarchy.ROLE_ADMIN
             hierarchy.rebuild_path(db, child)
+    wallet_identity.synchronize_hierarchy(db, owner_ids=wallet_owner_ids, actor_id=_s.id)
     db.commit()
     db.refresh(admin)
     return _out(db, admin)
@@ -863,6 +865,7 @@ def delete_admin(
     #
     # Deleting a ROOT account is the one case with genuinely nowhere to put
     # things; NULL there keeps its old meaning of "the superadmin's pool".
+    wallet_owner_ids = hierarchy.subtree_ids(db, admin)
     heir_id = admin.parent_admin_id
     heir = db.get(models.AdminUser, heir_id) if heir_id else None
     # A superadmin parent owns packages/tutorials as NULL, never by id (see
@@ -883,9 +886,10 @@ def delete_admin(
 
     # Customers are never deleted, only handed over - nobody's VPN service
     # should stop working because the person who sold it was removed.
-    db.query(models.User).filter(models.User.owner_admin_id == admin.id).update(
-        {"owner_admin_id": heir_id}, synchronize_session=False
-    )
+    for customer in db.query(models.User).filter(models.User.owner_admin_id == admin.id).all():
+        wallet_identity.change(db, customer, owner_admin_id=heir_id,
+                               actor_kind="admin", actor_id=current.id)
+    wallet_identity.synchronize_hierarchy(db, owner_ids=wallet_owner_ids, actor_id=current.id)
     # Packages/Tutorials this admin owned need the SAME "don't destroy"
     # treatment as Users above - without this, they silently become
     # invisible to EVERYONE (not even the superadmin, unlike an orphaned

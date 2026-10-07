@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import select, text
 
 from .. import models, models_provisioning as mp
-from . import gate_locks, provisioning_schema, provisioning_transitions
+from . import gate_locks, provisioning_runtime_contract, provisioning_schema, provisioning_transitions
 from .provisioning_lock_verification import VerifiedLocks, require_exclusive
 
 RECLAIM_CONFIRMATION = "process قبلی این نصب دیگر در حال اجرا نیست"
@@ -132,7 +132,7 @@ def release(db, proof, version, mode_hold, node_holds, *, actor_admin_id, base_d
     """
     row = _ready(db, proof, mode_hold, actor_admin_id, version, base_dir)
     _same(row, proof, "draining")
-    if row.gate_mode == "enforced":
+    if row.gate_mode == "enforced" and not provisioning_runtime_contract.supports_release(db.connection()):
         # Frozen ck_provrt_enforced_needs_owner only permits active/draining.
         # Do not trigger a raw CHECK failure or silently relax the gate. A
         # controlled constraint upgrade is needed before enforced handoff.

@@ -103,8 +103,9 @@ class ChildDatabase:
                     raise ValueError()
                 self._engine = create_engine("sqlite+pysqlite://", poolclass=NullPool,
                     creator=lambda: _sqlite_connection(path), hide_parameters=True)
-            elif url.drivername in ("mysql+pymysql", "mariadb+pymysql") and url.database and not url.query:
-                self._engine = create_engine(url, poolclass=NullPool, hide_parameters=True,
+            elif url.drivername in ("mysql+pymysql", "mariadb+pymysql") and url.database and dict(url.query) in (
+                    {}, {"charset": "utf8mb4"}):
+                self._engine = create_engine(url.set(query={}), poolclass=NullPool, hide_parameters=True,
                     connect_args=dict(charset="utf8mb4", connect_timeout=10, read_timeout=15, write_timeout=15))
                 @event.listens_for(self._engine, "connect")
                 def read_only(connection, record):

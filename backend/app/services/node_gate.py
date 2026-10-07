@@ -139,23 +139,34 @@ def current_context() -> Optional[ShadowGateContext]:
 def read_runtime(session_factory: Optional[Callable] = None) -> Optional[GateRuntime]:
     """Reads the singleton. None when it cannot be trusted or read at all:
     the provisioning schema is not verified in this process, the row is
-    missing, or the database errored. Never raises."""
+    missing, or the database errored. An unverified schema with a readable
+    persisted non-off mode raises GateNotAvailable instead of granting off."""
     try:
         from .. import models_provisioning as mp
         from . import provisioning_schema
 
-        if not provisioning_schema.is_ready():
-            return None
         if session_factory is None:
             from ..database import SessionLocal as session_factory  # noqa: N813
         db = session_factory()
         try:
+            if not provisioning_schema.is_ready():
+                # A cold process has no cached mode. Failed schema validation
+                # must not turn an existing strict gate into an initial 'off'.
+                # This minimal read grants NOTHING: it only vetoes fail-open.
+                from sqlalchemy import select
+                mode = db.execute(select(mp.ProvisioningRuntimeState.gate_mode).where(
+                    mp.ProvisioningRuntimeState.id == provisioning_schema.RUNTIME_STATE_ID)).scalar_one_or_none()
+                if mode is not None and mode != MODE_OFF:
+                    raise GateNotAvailable("unverified schema with a persisted non-off gate")
+                return None
             row = db.get(mp.ProvisioningRuntimeState, provisioning_schema.RUNTIME_STATE_ID)
             if row is None:
                 return None
             return GateRuntime(row.installation_uuid, row.gate_mode, int(row.gate_mode_epoch))
         finally:
             db.close()
+    except GateNotAvailable:
+        raise
     except Exception:  # noqa: BLE001
         logger.exception("node_gate: could not read provisioning_runtime_state")
         return None

@@ -1,4 +1,4 @@
-"""Parent-owned forward dispatch snapshots; no spawn, commit or live caller.
+"""Parent-owned forward/compensation snapshots; no spawn, commit or live caller.
 
 Caller owns resource leases and a short fenced transaction. A first send
 marks remote_calling in that same transaction; retries of remote_calling
@@ -30,7 +30,23 @@ IDENTITY_FIELDS = ("wg_interface", "wg_peer_name", "wg_public_key", "wg_client_a
 
 
 def snapshot(db, step_id, version, identity, leases, *, recovery_read):
-    if not isinstance(identity, HostIdentity) or type(recovery_read) is not bool or type(step_id) is not int or (
+    return _snapshot(db, step_id, version, identity, leases, recovery_read=recovery_read, phase="forward")
+
+
+def compensation_snapshot(db, step_id, version, identity, leases):
+    """Stored cleanup descriptor; no dispatch, refund, release or commit.
+
+    Expired forward deadlines and disabled nodes cannot strand a known
+    compensation identity. Ownership, leases, endpoint and contract remain
+    mandatory. This private helper is not a real absence action registration.
+    """
+    return _snapshot(db, step_id, version, identity, leases, recovery_read=False, phase="compensation")
+
+
+def _snapshot(db, step_id, version, identity, leases, *, recovery_read, phase):
+    forward = phase == "forward"
+    if type(phase) is not str or phase not in ("forward", "compensation") or (
+            not isinstance(identity, HostIdentity)) or type(recovery_read) is not bool or type(step_id) is not int or (
             step_id < 1 or type(version) is not int or version < 0):
         raise HTTPException(422, "provisioning_dispatch_invalid")
     if db.get_transaction() is None or db.info.get("resource_lease_business_transaction") is not db.get_transaction():
@@ -57,8 +73,10 @@ def snapshot(db, step_id, version, identity, leases, *, recovery_read):
         raise HTTPException(409, "provisioning_lease_scope_invalid")
     resource_leases.revalidate(db, tokens)
     operation, step = transitions._step(db, step_id, version)
+    expected_state = ("remote_calling" if recovery_read else "staged") if forward else "compensating"
     if operation.operation_type != kind or kind not in ("create_user", "purchase", "add_connection") or step.direction != "create" or (
-            operation.state not in ("prepared", "provisioning") or step.state != ("remote_calling" if recovery_read else "staged")):
+            operation.state not in (("prepared", "provisioning") if forward else ("compensating",)) or
+            step.state != expected_state or (not forward and not step.remote_attempted)):
         raise HTTPException(409, "provisioning_dispatch_state_invalid")
     owner = {token.owner for token in tokens}
     operation_token = next((token for token in tokens if token.resource_key == f"provisioning_op:{operation.id}"), None)
@@ -71,10 +89,10 @@ def snapshot(db, step_id, version, identity, leases, *, recovery_read):
     now = db.scalar(select(clock))
     if isinstance(now, str):
         now = dt.datetime.fromisoformat(now)
-    if operation.forward_deadline <= now or wallet_epoch != operation.wallet_epoch_at_start:
+    if forward and (operation.forward_deadline <= now or wallet_epoch != operation.wallet_epoch_at_start):
         raise HTTPException(409, "provisioning_dispatch_window_changed")
     node = db.get(models.Node, step.node_id, populate_existing=True)
-    if node is None or not node.enabled or contracts.backend_for(node, step.protocol) != step.backend:
+    if node is None or (forward and not node.enabled) or contracts.backend_for(node, step.protocol) != step.backend:
         raise HTTPException(409, "node_unavailable")
     if node.xr_panel_base_url:
         try:
@@ -92,7 +110,7 @@ def snapshot(db, step_id, version, identity, leases, *, recovery_read):
         raise HTTPException(409, "provisioning_dispatch_endpoint_changed") from None
     if step.backend == "radius_ppp":
         raise HTTPException(409, "provisioning_dispatch_not_remote")
-    if not recovery_read:
+    if forward and not recovery_read:
         other_calling = db.scalar(select(mp.ProvisioningStep.id).where(
             mp.ProvisioningStep.operation_id == operation.id, mp.ProvisioningStep.id != step.id,
             mp.ProvisioningStep.state == "remote_calling").limit(1))
@@ -103,12 +121,16 @@ def snapshot(db, step_id, version, identity, leases, *, recovery_read):
     # never commits, and a failed caller transaction rolls this mark back.
     binding = DispatchBinding(runtime.installation_uuid, runtime.ownership_epoch, runtime.gate_mode_epoch,
         operation.id, operation.version, step.id, step.version, node.id, step.backend,
-        operation_token.owner, operation_token.epoch)
+        operation_token.owner, operation_token.epoch, phase)
     public = {field: getattr(node, field) for field in rules.ENDPOINT_FIELDS}
     public["type"] = node.type.value
     action = (remote_action.ActionType.WG_ENSURE_PRESENT if step.backend == "mikrotik_wg" else
               remote_action.ActionType.SOFTETHER_ENSURE_PRESENT if step.backend == "softether" else
               remote_action.ActionType.XRAY_ENSURE_PRESENT)
+    if not forward:
+        action = (remote_action.ActionType.WG_ENSURE_ABSENT if step.backend == "mikrotik_wg" else
+                  remote_action.ActionType.SOFTETHER_ENSURE_ABSENT if step.backend == "softether" else
+                  remote_action.ActionType.XRAY_ENSURE_ABSENT)
     return remote_action.RemoteActionDTO(action_type=action, node_id=node.id, backend=step.backend,
         node_config=public, node_secrets={field: getattr(node, field) for field in SECRET_FIELDS},
         identity={field: getattr(step, field) for field in IDENTITY_FIELDS},
@@ -116,7 +138,7 @@ def snapshot(db, step_id, version, identity, leases, *, recovery_read):
                     "uuid": step.staged_xr_uuid}, params={"recovery_read": recovery_read,
                     "max_concurrent_sessions": step.max_concurrent_sessions, "speed_limit_mbps": step.speed_limit_mbps},
         timeouts={"connect_timeout": 10, "read_timeout": 15,
-                  "hard_deadline": min(120, (operation.forward_deadline - now).total_seconds())},
+                  "hard_deadline": min(120, (operation.forward_deadline - now).total_seconds()) if forward else 120},
         contract=contract, fencing={"installation_uuid": runtime.installation_uuid,
                                    "binding": asdict(binding), "host_id": identity.host_id,
                                    "boot_id": identity.boot_id, "expected_parent_pid": os.getpid()})

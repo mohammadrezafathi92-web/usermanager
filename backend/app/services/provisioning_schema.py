@@ -569,6 +569,14 @@ def _inspect_checks(inspector, table, dialect, problems: list[str]) -> None:
     for check_name in sorted(set(expected) & set(live)):
         expected_tree = normalize_check(expected[check_name], dialect.name)
         live_tree = normalize_check(live[check_name], dialect.name)
+        # Narrow, explicit compatibility for the operator-approved ownership
+        # CHECK upgrade only. Every other CHECK and the exact name set remain
+        # strict. Cloned tables passed by the upgrader still compare exactly.
+        if table is mp.ProvisioningRuntimeState.__table__:
+            from . import provisioning_runtime_contract as runtime_contract
+            if check_name == runtime_contract.NAME and expected_tree == normalize_check(runtime_contract.LEGACY) and (
+                    live_tree == normalize_check(runtime_contract.RELEASED)):
+                continue
         if expected_tree is None or live_tree is None or expected_tree != live_tree:
             problems.append(
                 f"{name}: check {check_name} has a different expression: {live[check_name]!r}"

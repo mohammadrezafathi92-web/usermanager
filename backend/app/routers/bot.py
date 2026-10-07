@@ -1051,15 +1051,18 @@ def redeem_discount(
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
     owner_admin_id = resolve_claimed_owner(db, principal, payload.owner_admin_id, endpoint="redeem_discount")
     discount_evidence: list = []
+    recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)
+
+    def _record_discount() -> None:
+        if recorder.active and discount_evidence:
+            redemption, evidence = discount_evidence[0]
+            recorder.effect("discount_redeemed", f"discount:{redemption.code_id}", redemption, evidence)
+
     ok, reason, amount = user_ops.redeem_discount_code(
         db, payload.code, payload.username, payload.package_price,
         owner_admin_id=owner_admin_id, evidence_sink=discount_evidence,
+        before_commit=_record_discount,
     )
-    recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)      # no-op without an approval
-    if recorder.active and discount_evidence:
-        redemption, evidence = discount_evidence[0]
-        recorder.effect("discount_redeemed", f"discount:{redemption.code_id}", redemption, evidence)
-        db.commit()
     return schemas.DiscountValidateResult(
         valid=ok,
         reason=reason or None,

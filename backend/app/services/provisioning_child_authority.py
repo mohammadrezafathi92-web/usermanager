@@ -114,3 +114,16 @@ def require_write(node_id, backend):
     except Exception:
         # Driver errors and exception messages must not expose credentials.
         raise WriteAuthorityUnavailable("runner_write_authority_unavailable") from None
+
+
+def _require_guard(guard):
+    """A factory cannot substitute another installation/operation's guard."""
+    _role()  # Reject a fork before touching an inherited registry lock.
+    token = _current.get()
+    if type(token) is not _Token:
+        raise WriteAuthorityUnavailable("runner_write_authority_unavailable")
+    with _lock:
+        grant = _registry.get(token.nonce)
+    if grant is None or grant[0] is not token or grant[1] is not guard:
+        raise WriteAuthorityUnavailable("runner_write_authority_unavailable")
+    require_write(grant[2].node_id, grant[2].backend)

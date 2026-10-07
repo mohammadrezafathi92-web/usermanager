@@ -47,6 +47,8 @@ with authority._runner_context(os.getppid()):
             authority.require_write(1, "xray_ssh")
             authority.require_write(1, "xray_ssh")
             assert len(checks) == initial + 2  # Every writer, including nested writes, revalidates.
+            authority._require_guard(guard)
+            refused(lambda: authority._require_guard(object.__new__(ChildGuard)))
             for node, backend in ((None, "xray_ssh"), (True, "xray_ssh"), (2, "xray_ssh"), (1, "softether")):
                 refused(lambda node=node, backend=backend: authority.require_write(node, backend))
             with authority._scope(guard) as nested:
@@ -71,6 +73,7 @@ with authority._runner_context(os.getppid()):
             assert not thread.is_alive() and thread_errors == []
             with patch.object(authority.os, "getpid", return_value=token.pid + 1):
                 refused(lambda: authority.require_write(1, "xray_ssh"))
+                refused(lambda: authority._require_guard(guard))
             with patch.object(authority, "_protected_parent", return_value=False):
                 refused(lambda: authority.require_write(1, "xray_ssh"))
             with patch.object(guard, "check", return_value=replace(binding, ownership_epoch=2)):

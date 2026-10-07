@@ -198,6 +198,50 @@ def scenario(engine):
     refusal("provisioning_forward_deadline_exceeded", lambda: transitions.begin_remote(db, sid, 0))
     db.rollback()
     print("PASS", label, "unsupported approval integration and expired forward deadline fail closed")
+
+    for backend in ("mikrotik_wg", "radius_ppp"):
+        oid, sid = prepare(backend=backend, direction="remove")
+        operation = db.get(mp.ProvisioningOperation, oid)
+        operation.operation_type = "delete_connection"
+        conn = models.Connection(user_id=uid, node_id=nid,
+            type=models.ConnectionType.pptp if backend == "radius_ppp" else models.ConnectionType.wireguard,
+            enabled=True)
+        db.add(conn)
+        db.flush()
+        row = db.get(mp.ProvisioningStep, sid)
+        row.connection_id = conn.id
+        db.commit()
+        refusal("provisioning_deletion_not_disabled", lambda: transitions.begin_remove(db, sid, row.version))
+        db.rollback()
+        conn.enabled = False
+        db.commit()
+        transitions.begin_remove(db, sid, row.version)
+        db.commit()
+        refusal("provisioning_delete_irreversible", lambda: transitions.begin_compensation(db, oid, "node_unavailable"))
+        db.rollback()
+        if backend != "radius_ppp":
+            refusal("provisioning_step_transition_invalid", lambda: transitions.recover_read(
+                db, sid, row.version, ReadResult(ReadState.PRESENT_MATCH)))
+            db.rollback()
+            transitions.recover_remove(db, sid, row.version, ReadResult(ReadState.PRESENT_MATCH))
+            db.commit()
+            assert row.state == "remote_calling"
+            transitions.recover_remove(db, sid, row.version, ReadResult(ReadState.UNREADABLE))
+            db.commit()
+            assert row.state == "remote_calling" and row.next_retry_at is not None
+            transitions.confirm_removed(db, sid, row.version, AbsentOutcome.UNVERIFIED)
+            db.commit()
+            refusal("provisioning_operation_transition_invalid", lambda: transitions.mark_remote_complete(db, oid))
+            db.rollback()
+            transitions.begin_remove(db, sid, row.version)
+            db.commit()
+            assert row.remote_outcome is None and row.state == "remote_calling"
+            transitions.recover_remove(db, sid, row.version, ReadResult(ReadState.ABSENT))
+            db.commit()
+        transitions.mark_remote_complete(db, oid)
+        db.commit()
+        assert row.state == "removed" and db.get(models.Connection, conn.id) is not None and not conn.enabled
+    print("PASS", label, "delete requires disabled credentials, verified absence, explicit retry and never compensation")
     db.close()
 
 

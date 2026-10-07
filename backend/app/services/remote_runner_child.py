@@ -26,6 +26,7 @@ import sys
 import time
 
 from . import gate_locks
+from . import provisioning_child_authority as authority
 from .remote_action import Outcome, RemoteActionDTO, RemoteActionError, RemoteActionResult
 from .remote_runner_registry import ACTIONS
 
@@ -153,7 +154,8 @@ def main(argv: list[str]) -> int:
 
         module_name, function_name = target.split(":")
         try:
-            result = getattr(importlib.import_module(module_name), function_name)(dto)
+            with authority._runner_context(expected_parent):
+                result = getattr(importlib.import_module(module_name), function_name)(dto)
             if not isinstance(result, RemoteActionResult) or result.action_id != dto.action_id:
                 raise RemoteActionError("action returned something that is not its own result")
         except Exception as exc:  # noqa: BLE001

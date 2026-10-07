@@ -23,6 +23,8 @@ from app.services import provisioning_dispatch_binding as fence
 from app.services.provisioning_child_database import ChildDatabase
 from app.services import provisioning_child_database as child_db
 from app.services.provisioning_child_guard import ChildGuard, ChildGuardUnavailable
+from app.services import provisioning_child_authority as authority
+from unittest.mock import patch
 from sqlalchemy import text
 from app.services.provisioning_host import HostIdentity
 
@@ -158,6 +160,21 @@ def scenario(engine, directory):
                     "staged_wg_private_key"))
                 with ChildGuard(reader, request, identity, mode_hold, node_hold, base_dir=directory) as guard:
                     assert guard.check() == request
+                    # Real SQL/file/advisory guard, synthetic runner-role proof
+                    # only in this unit fixture; not an activation certificate.
+                    with authority._runner_context(os.getppid()), patch.object(authority, "_protected_parent", return_value=True):
+                        with authority._scope(guard):
+                            authority.require_write(node.id, backend)
+                            contract_row.version += 1
+                            db.commit()
+                            try:
+                                authority.require_write(node.id, backend)
+                                raise AssertionError("changed contract retained writer authority")
+                            except authority.WriteAuthorityUnavailable:
+                                pass
+                # A broken guard cannot be reused. Open a fresh one for the
+                # independent real advisory-loss/file-lock-loss checks below.
+                with ChildGuard(reader, request, identity, mode_hold, node_hold, base_dir=directory) as guard:
                     if engine.dialect.name != "sqlite":
                         assert not guard._connection._connection.in_transaction()
                         name = gate_locks.get_lock_name(installation_uuid, node.id)

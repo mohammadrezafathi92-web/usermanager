@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from dataclasses import replace
 
@@ -16,6 +17,7 @@ _no_network.install([os.environ.get("MARIADB_TEST_URL", "")])
 from fastapi import HTTPException
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import OperationalError
 from app import models, models_provisioning as mp
 from app.services import provisioning_schema, receipt_void_schema, provisioning_ownership as owner
 from app.services import provisioning_lock_verification as verification, gate_locks, resource_leases
@@ -186,16 +188,26 @@ def scenario(engine, base_dir):
             session = Factory()
             try:
                 barrier.wait(timeout=5)
-                resource_leases.begin_business(session)
-                try:
-                    row = owner.claim(session, candidate, version, hold, **arguments)
-                    host = row.owner_host_id
-                    session.commit()
-                    outcomes.append(("claimed", host))
-                except HTTPException as exc:
-                    session.rollback()
-                    assert exc.detail == "ownership_held"
-                    outcomes.append((exc.detail, candidate.identity.host_id))
+                for attempt in range(3):
+                    resource_leases.begin_business(session)
+                    try:
+                        row = owner.claim(session, candidate, version, hold, **arguments)
+                        host = row.owner_host_id
+                        session.commit()
+                        outcomes.append(("claimed", host))
+                        break
+                    except HTTPException as exc:
+                        session.rollback()
+                        assert exc.detail == "ownership_held"
+                        outcomes.append((exc.detail, candidate.identity.host_id))
+                        break
+                    except OperationalError as exc:
+                        session.rollback()
+                        if engine.dialect.name == "sqlite" or not exc.orig.args or exc.orig.args[0] not in (1020, 1205, 1213) or attempt == 2:
+                            raise
+                        # Retrying the entire writer transaction preserves the
+                        # original expected version: the loser then gets 409.
+                        time.sleep(0.02 * (attempt + 1))
             except Exception as exc:
                 errors.append(exc)
             finally:

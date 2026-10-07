@@ -358,6 +358,33 @@ def scenario(engine, directory):
                 refused(verify)
                 cleanup = replace(request, phase="compensation", operation_version=op.version, step_version=step.version)
                 assert verify(cleanup) == cleanup  # Disabled node still permits existing identity cleanup.
+                op.forward_deadline = dt.datetime(2000, 1, 1)
+                db.execute(rv.wallet_runtime_state.update().where(rv.wallet_runtime_state.c.id == 1)
+                    .values(epoch=rv.wallet_runtime_state.c.epoch + 1))
+                db.commit()
+                db.rollback()
+                resource_leases.begin_business(db)
+                cleanup_dto = parent_dispatch.compensation_snapshot(db, cleanup.step_id, cleanup.step_version, identity, [lease])
+                assert cleanup_dto.action_type in (remote_action.ActionType.WG_ENSURE_ABSENT,
+                    remote_action.ActionType.XRAY_ENSURE_ABSENT, remote_action.ActionType.SOFTETHER_ENSURE_ABSENT)
+                assert cleanup_dto.params["recovery_read"] is False and cleanup_dto.timeouts["hard_deadline"] == 120
+                assert cleanup_dto.fencing["binding"]["phase"] == "compensation"
+                assert cleanup_dto.fencing["binding"]["step_version"] == cleanup.step_version
+                assert cleanup_dto.credential["password"] is None and cleanup_dto.credential["wg_private_key"] is None
+                assert "private-never-selected" not in repr(cleanup_dto)
+                db.rollback()
+                assert verify(cleanup) == cleanup  # Cleanup is allowed beyond the forward window, never beyond its lease.
+                resource_leases.begin_business(db)
+                try:
+                    parent_dispatch.compensation_snapshot(db, cleanup.step_id, cleanup.step_version + 1, identity, [lease])
+                    raise AssertionError("stale compensation descriptor accepted")
+                except HTTPException as error:
+                    assert error.detail == "provisioning_step_changed"
+                finally:
+                    db.rollback()
+                db.execute(rv.wallet_runtime_state.update().where(rv.wallet_runtime_state.c.id == 1)
+                    .values(epoch=rv.wallet_runtime_state.c.epoch - 1))
+                db.commit()
                 node_hold.release()
                 step.state, step.remote_outcome, step.version = "removed", "verified_absent", step.version + 1
                 step.staged_wg_private_key = step.staged_password = step.staged_xr_uuid = None

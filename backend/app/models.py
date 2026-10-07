@@ -233,6 +233,10 @@ class AdminUser(Base):
     # thread-local RuntimeConfig for how that isolation actually works.
     own_bot_token = Column(String(255), nullable=True)
     own_bot_enabled = Column(Boolean, nullable=False, default=True)
+    # NULL preserves shared onboarding; empty strings explicitly disable it.
+    own_required_channel_id = Column(String(255), nullable=True)
+    own_required_channel_url = Column(String(500), nullable=True)
+    own_customer_terms_text = Column(Text, nullable=True)
 
     # Phase C (docs/api-key-scope-audit-2026-09-27.md) in-process enforcement
     # rollout switch for THIS admin's own dedicated bot thread - independent

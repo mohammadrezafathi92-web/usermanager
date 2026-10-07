@@ -1149,7 +1149,7 @@ export default function UserDetail() {
                       <div>{t("userDetail.thisConnUsage", { value: formatBytes(c.total_bytes) })}</div>
                       {c.type === "xray" && <div className="truncate">{t("userDetail.identifier", { value: c.xr_email })}</div>}
                       {c.type === "wireguard" && <div>{t("userDetail.internalAddress", { value: c.wg_client_address })}</div>}
-                      {(c.type === "openvpn" || c.type === "l2tp" || c.type === "ikev2" || c.type === "sstp") && (
+                      {(["openvpn", "l2tp", "ikev2", "sstp", "pptp"].includes(c.type)) && (
                         <>
                           <div>{t("userDetail.username", { value: c.ppp_username })}</div>
                           <div>
@@ -1181,7 +1181,7 @@ export default function UserDetail() {
                           <ShieldCheck size={14} />
                         </button>
                       )}
-                      {(c.type === "wireguard" || c.type === "openvpn" || c.type === "l2tp" || c.type === "ikev2" || c.type === "sstp") && (
+                      {(["wireguard", "openvpn", "l2tp", "ikev2", "sstp", "pptp"].includes(c.type)) && (
                         <button className="btn-secondary" title={t("userDetail.editConnTitle")} onClick={() => openEditConn(c)}>
                           <Pencil size={14} />
                         </button>

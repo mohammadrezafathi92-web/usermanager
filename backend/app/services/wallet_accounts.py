@@ -9,7 +9,7 @@ import datetime as dt
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import OperationalError
@@ -104,9 +104,28 @@ def require_legacy_lifecycle(db):
         wallet_service.require_legacy_phase(db)
 
 
+def require_no_provisioning_payment_hold(db, user_id=None, *, admin_id=None):
+    """Legacy holds also block deletion/rebind; do not orphan a payer.
+
+    Inspect live availability, not just startup readiness: an existing hold
+    must still protect its owner if some other provisioning CHECK is broken.
+    """
+    if not inspect(db.connection()).has_table("payment_reservations"):
+        return
+    from ..models_provisioning import PaymentReservation
+    if (user_id is None) == (admin_id is None):
+        raise ValueError("exactly one payer identity is required")
+    payer = PaymentReservation.user_id == user_id if user_id is not None else PaymentReservation.admin_id == admin_id
+    if db.execute(select(PaymentReservation.id).where(
+        payer, PaymentReservation.state == "reserved",
+    ).limit(1).with_for_update(read=True)).first() is not None:
+        raise HTTPException(409, "wallet_account_has_hold" if user_id is not None else "reseller_credit_has_hold")
+
+
 def prepare_user_deletion(db, user):
     """Capture the live account BEFORE node calls, without a writer lock."""
     require_legacy_lifecycle(db)
+    require_no_provisioning_payment_hold(db, user.id)
     if not receipt_void_schema.is_ready():
         return None
     account_id = db.execute(select(rv.wallet_accounts.c.id).where(

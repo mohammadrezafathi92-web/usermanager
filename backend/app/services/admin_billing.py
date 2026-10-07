@@ -115,6 +115,21 @@ def charge_for_package(db: Session, admin: models.AdminUser, package: models.Pac
     )
 
 
+def reserve_admin_balance_core(db: Session, admin: models.AdminUser, cost: int) -> bool:
+    """Conditional deduction only: no commit and no ledger (Lifecycle 8).
+
+    A durable reservation records the spend at capture, not while holding
+    funds. The caller owns rollback and must lock/revalidate payer policy.
+    """
+    if cost <= 0:
+        raise ValueError("reservation amount must be positive")
+    limit = int(getattr(admin, "credit_limit", 0) or 0)
+    result = db.execute(models.AdminUser.__table__.update().where(
+        models.AdminUser.id == admin.id, models.AdminUser.balance - cost >= -limit,
+    ).values(balance=models.AdminUser.balance - cost))
+    return result.rowcount == 1
+
+
 def debit_admin(
     db: Session, admin: models.AdminUser, cost: int, *,
     package: Optional[models.Package] = None, note: Optional[str] = None,
@@ -135,12 +150,7 @@ def debit_admin(
     # two concurrent sales from the same account cannot both pass a check
     # that only one of them could really afford.
     limit = int(getattr(admin, "credit_limit", 0) or 0)
-    result = db.execute(
-        models.AdminUser.__table__.update()
-        .where(models.AdminUser.id == admin.id, models.AdminUser.balance - cost >= -limit)
-        .values(balance=models.AdminUser.balance - cost)
-    )
-    if result.rowcount == 0:
+    if not reserve_admin_balance_core(db, admin, cost):
         db.commit()
         available = (admin.balance or 0) + limit
         msg = f"اعتبار شما کافی نیست - {what} {cost:,} تومان از اعتبار شما کم می‌کند"

@@ -34,9 +34,10 @@ WRITER = "services/wallet_service.py"
 # (file, function) pairs that write AdminUser.balance - reseller credit.
 RESELLER_WRITERS = {
     ("routers/admins.py", "_apply_balance_change"),
-    ("services/admin_billing.py", "debit_admin"),
+    ("services/admin_billing.py", "reserve_admin_balance_core"),
     ("services/admin_billing.py", "refund_for_package"),
     ("services/reseller_refund_settlement.py", "settle"),
+    ("services/payment_reservations.py", "release"),
 }
 
 failures: list[str] = []
@@ -151,6 +152,19 @@ check("the refund exception is exactly one explicitly AdminUser UPDATE, never a 
        all("models.AdminUser.__table__.update()" in statement and
            "balance=models.AdminUser.balance + amount" in statement for statement in refund_statements)),
       ([("settle", "values")], 1, True))
+for filename, function in (("services/admin_billing.py", "reserve_admin_balance_core"),
+                            ("services/payment_reservations.py", "release")):
+    source = (APP / filename).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    owner = _owner_function(tree)
+    writes = [ast.get_source_segment(source, node) for node in ast.walk(tree)
+              if isinstance(node, ast.Call) and owner.get(id(node)) == function
+              and getattr(node.func, "attr", "") == "values"
+              and any(keyword.arg == "balance" for keyword in node.keywords)]
+    check(f"{function}: exactly one explicit AdminUser UPDATE, never a customer wallet bypass",
+          (len(writes), all("models.AdminUser.__table__.update()" in statement for statement in writes),
+           [(where, kind) for where, _, kind in balance_writes(source) if where == function]),
+          (1, True, [(function, "values")]))
 unfiltered, _ = scan(set())
 check("control: with the reseller list empty the scan reports those writers, so it does see balance writes",
       len(unfiltered) >= len(RESELLER_WRITERS), True)

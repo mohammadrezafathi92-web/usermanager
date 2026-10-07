@@ -51,6 +51,8 @@ def _change(db, user, *, telegram_id, owner_admin_id, actor_kind, actor_id, toke
     old_tg, old_owner = user.telegram_id, user.owner_admin_id
     new_tg = old_tg if telegram_id is _UNSET else telegram_id
     new_owner = old_owner if owner_admin_id is _UNSET else owner_admin_id
+    if (old_tg, old_owner) != (new_tg, new_owner):
+        wallet_accounts.require_no_provisioning_payment_hold(db, user.id)
     ready = receipt_void_schema.is_ready()
     if not ready:
         user.telegram_id, user.owner_admin_id = new_tg, new_owner
@@ -113,6 +115,7 @@ def _change(db, user, *, telegram_id, owner_admin_id, actor_kind, actor_id, toke
         raise HTTPException(409, "wallet_identity_changed")
     if source == target and (old_tg, old_owner) == (new_tg, new_owner):
         return None
+    wallet_accounts.require_no_provisioning_payment_hold(db, user.id)
     debt = rv.wallet_debts
     if db.execute(select(debt.c.id).where(debt.c.customer_identity_id == source,
         debt.c.amount > debt.c.adjusted_amount + debt.c.settled_amount).limit(1).with_for_update()).first():

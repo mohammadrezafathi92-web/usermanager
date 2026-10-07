@@ -17,7 +17,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..deps import require_admin_or_above, require_superadmin, require_confirm_password
 from ..security import hash_password
-from ..services import hierarchy, accounting, telegram_ids, wallet_identity
+from ..services import hierarchy, accounting, telegram_ids, wallet_identity, wallet_accounts
 from ..permissions import PERMISSION_CHOICES, PERMISSION_GROUPS, parse_permissions, format_permissions, effective_permissions
 
 router = APIRouter(prefix="/api/admins", tags=["admins"], dependencies=[Depends(require_admin_or_above)])
@@ -851,6 +851,7 @@ def delete_admin(
     if admin.is_superadmin:
         raise HTTPException(400, "ادمین اصلی قابل حذف نیست")
     _scope_or_403(current, admin)
+    wallet_accounts.require_no_provisioning_payment_hold(db, admin_id=admin.id)
 
     # Everything this account held is INHERITED BY ITS PARENT rather than
     # cut loose.

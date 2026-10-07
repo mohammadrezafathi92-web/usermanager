@@ -29,7 +29,7 @@ from ..services import reseller_refund
 from ..services import payment_card_events
 from ..services import receipt_approval_effects as approval_effects
 from ..services import receipt_approval_topup
-from ..services import wallet_service, wallet_policy
+from ..services import wallet_service, wallet_policy, wallet_identity
 from ..services import receipt_approval_registration as approval_registration
 from ..services.bot_auth import (
     BROADCAST,
@@ -1158,7 +1158,8 @@ def link_telegram(
     # than one, the bot shows an account picker (see list_users_by_telegram
     # below + telegram_bot's _resolve_account).
     user = bot_resources._get_user_or_403(db, principal, username, None)
-    user.telegram_id = payload.telegram_id
+    wallet_identity.change(db, user, telegram_id=payload.telegram_id,
+                           actor_kind="bot", actor_id=principal.key_id)
     db.commit()
     db.refresh(user)
     return _user_response(user)

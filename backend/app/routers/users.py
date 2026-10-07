@@ -17,6 +17,7 @@ from ..services import user_ops, hierarchy, accounting, admin_billing, usage_sta
 from ..services.node_gate import writer_gate
 from ..services import reseller_refund
 from ..services import reseller_refund_worker
+from ..services import wallet_identity
 from ..services.reseller_refund_fence import executor as _refund_executor
 from pydantic import BaseModel
 
@@ -780,6 +781,9 @@ def update_user(
         if new_balance != user.balance:
             wallet_service.overwrite(db, user, new_balance, source_kind=wallet_service.MANUAL_ADJUSTMENT)
 
+    identity_fields = {key: data.pop(key) for key in ("telegram_id", "owner_admin_id") if key in data}
+    if identity_fields:
+        wallet_identity.change(db, user, **identity_fields, actor_kind="admin", actor_id=admin.id)
     for k, v in data.items():
         setattr(user, k, v)
 
@@ -825,7 +829,8 @@ def transfer_user(
         if not target:
             raise HTTPException(status_code=400, detail="ادمین مقصد پیدا نشد")
 
-    user.owner_admin_id = payload.target_admin_id
+    wallet_identity.change(db, user, owner_admin_id=payload.target_admin_id,
+                           actor_kind="admin", actor_id=admin.id)
     db.commit()
     db.refresh(user)
     return user

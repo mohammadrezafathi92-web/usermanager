@@ -138,6 +138,37 @@ def scenario(engine):
         assert tick(oid, recovered)["state"] == "completed"
         assert worker.reacquire(Factory, oid, host, **expected) == ()
         release(recovered)
+        # The bounded entry owns its lease lifecycle, without a live worker.
+        oid, initial = prepared()
+        count = launch.call_count
+        assert worker.resume_one(Factory, oid, host, **expected)["status"] == "lease_busy"
+        assert launch.call_count == count
+        release(initial)  # Simulated graceful loss of the original executor.
+        assert worker.resume_one(Factory, oid, host, **expected)["step"]["state"] == "remote_created"
+        with Factory() as db:
+            assert all(row["lease_owner"] is None for row in db.execute(rv.resource_locks.select().where(
+                rv.resource_locks.c.resource_key.in_([token.resource_key for token in initial]))).mappings())
+        def final_crash(db):
+            if db.get(mp.ProvisioningOperation, oid).state == "completed":
+                raise RuntimeError("resume final commit crash")
+        event.listen(Factory.class_, "before_commit", final_crash)
+        try:
+            try:
+                worker.resume_one(Factory, oid, host, **expected)
+                raise AssertionError("resume commit crash missed")
+            except RuntimeError:
+                pass
+        finally:
+            event.remove(Factory.class_, "before_commit", final_crash)
+        with Factory() as db:
+            assert db.get(mp.ProvisioningOperation, oid).state == "provisioning"
+            assert db.query(mp.PaymentReservation).filter_by(operation_id=oid).one().state == "reserved"
+            assert all(row["lease_owner"] is None for row in db.execute(rv.resource_locks.select().where(
+                rv.resource_locks.c.resource_key.in_([token.resource_key for token in initial]))).mappings())
+        assert worker.resume_one(Factory, oid, host, **expected)["state"] == "completed"
+        count = launch.call_count
+        assert worker.resume_one(Factory, oid, host, **expected)["status"] == "terminal"
+        assert launch.call_count == count
         for kind in worker.KINDS:
             oid, tokens = prepared(kind)
             try:

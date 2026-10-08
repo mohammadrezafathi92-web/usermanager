@@ -21,6 +21,7 @@ from app.services import provisioning_schema, receipt_void_schema, provisioning_
 from app.services import wallet_accounts, resource_leases as locks
 from app.services import provisioning_transitions as transitions
 from app.services.adapter_base import AbsentOutcome
+from app.services.marzneshin_client import sanitize_username
 from app.services.provisioning_host import HostIdentity
 
 
@@ -80,7 +81,8 @@ def scenario(engine):
                     if backend == "radius_ppp" else models.ConnectionType.softether if backend == "softether"
                     else models.ConnectionType.xray, enabled=True, wg_peer_name="peer", wg_public_key="PUBLIC",
                     wg_client_address="10.0.0.2/32", wg_private_key="PRIVATE-NEVER-STAGED", ppp_username="account",
-                    ppp_password="PASSWORD-NEVER-STAGED", xr_email="email", xr_uuid="XR-IDENTITY")
+                    ppp_password="PASSWORD-NEVER-STAGED", xr_email="Customer.Email@Example", xr_uuid="XR-IDENTITY",
+                    xr_flow="xtls-rprx-vision")
                 db.add(connection)
                 rows.append(connection)
                 nodes.append(node)
@@ -112,6 +114,20 @@ def scenario(engine):
             assert all(step.staged_wg_private_key is None and step.staged_password is None for step in steps)
             assert all(deletion.removal_matches(step, db.get(models.Connection, step.connection_id),
                 db.get(models.Node, step.node_id)) for step in steps)
+            for step in steps:
+                if step.backend in contracts.XRAY_MODES:
+                    assert step.flow == "xtls-rprx-vision"
+                    connection, node = db.get(models.Connection, step.connection_id), db.get(models.Node, step.node_id)
+                    saved_flow = step.flow
+                    step.flow = ""
+                    assert not deletion.removal_matches(step, connection, node)
+                    step.flow = saved_flow
+                    if step.backend == "marzneshin":
+                        assert step.account_username == sanitize_username(connection.xr_email)
+                        saved_username = step.account_username
+                        step.account_username = "different-panel-user"
+                        assert not deletion.removal_matches(step, connection, node)
+                        step.account_username = saved_username
             assert all(secret not in result.operation.intent for secret in ("PRIVATE", "PASSWORD", "XR-IDENTITY"))
             assert json.loads(result.operation.intent)["resource_kind"] == kind
             assert all(not row.enabled for row in selected) and other.enabled == (kind != "user")
@@ -182,6 +198,14 @@ def scenario(engine):
             complete = transitions.mark_remote_complete(db, oid)
             db.commit()
             final_version = complete.version
+            if kind != "connection":
+                begin()
+                xray = next(row for row in rows if row.type == models.ConnectionType.xray)
+                xray.xr_flow = "changed-after-removal-snapshot"
+                db.flush()
+                refused("provisioning_deletion_scope_changed", lambda: deletion.finish(db, oid, final_version, tokens))
+                db.rollback()
+                assert all(db.get(models.Connection, ident) is not None for ident in selected_ids)
             # A crash at final commit must restore every record and the
             # permanent financial row, not leave half a deleted service.
             def final_crash(_session):

@@ -21,7 +21,7 @@ from .provisioning_identity import removal_matches
 def _fingerprint(connection, node):
     values = [connection.id, connection.user_id, connection.purchase_id, connection.node_id,
               connection.type.value, connection.wg_peer_name, connection.wg_public_key,
-              connection.wg_client_address, connection.ppp_username, connection.xr_email, connection.xr_uuid,
+              connection.wg_client_address, connection.ppp_username, connection.xr_email, connection.xr_uuid, connection.xr_flow,
               node.type.value, node.mt_wireguard_interface, node.xr_panel_mode,
               node.xr_inbound_tag, node.xr_panel_inbound_id, node.mt_host, node.mt_port,
               node.mt_use_ssl, node.mt_api_ssl_port, node.xr_panel_base_url,

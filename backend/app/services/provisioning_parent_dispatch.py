@@ -134,7 +134,10 @@ def _snapshot(db, step_id, version, identity, leases, *, recovery_read, phase):
     return remote_action.RemoteActionDTO(action_type=action, node_id=node.id, backend=step.backend,
         node_config=public, node_secrets={field: getattr(node, field) for field in SECRET_FIELDS},
         identity={field: getattr(step, field) for field in IDENTITY_FIELDS},
-        credential={"wg_private_key": step.staged_wg_private_key, "password": step.staged_password,
+        # RouterOS needs the PUBLIC key only. The customer's private key stays
+        # staged in the parent DB for atomic final delivery; never send it to
+        # a child process / node, even for read recovery.
+        credential={"wg_private_key": None, "password": step.staged_password,
                     "uuid": step.staged_xr_uuid}, params={"recovery_read": recovery_read,
                     "max_concurrent_sessions": step.max_concurrent_sessions, "speed_limit_mbps": step.speed_limit_mbps},
         timeouts={"connect_timeout": 10, "read_timeout": 15,

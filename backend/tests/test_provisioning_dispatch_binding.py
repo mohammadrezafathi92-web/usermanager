@@ -149,6 +149,7 @@ def scenario(engine, directory):
                 assert descriptor.fencing["binding"]["step_version"] == request.step_version
                 assert descriptor.fencing["installation_uuid"] == installation_uuid
                 assert descriptor.node_config["type"] == node.type.value
+                assert descriptor.credential["wg_private_key"] is None
                 assert "management-secret-not-selected" not in repr(descriptor)
                 assert "private-never-selected" not in repr(descriptor)
                 assert "password-never-selected" not in repr(descriptor)
@@ -175,6 +176,7 @@ def scenario(engine, directory):
                 first_send = parent_dispatch.snapshot(db, request.step_id, request.step_version, identity,
                     [lease], recovery_read=False)
                 assert first_send.params["recovery_read"] is False
+                assert first_send.credential["wg_private_key"] is None
                 assert first_send.fencing["binding"]["step_version"] == request.step_version + 1
                 assert first_send.fencing["binding"]["operation_version"] == request.operation_version + 1
                 db.rollback()

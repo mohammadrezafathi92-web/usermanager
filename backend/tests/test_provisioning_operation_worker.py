@@ -275,9 +275,12 @@ def scenario(engine):
             oid, tokens = result.operation.id, result.leases
             db.commit()
         with Factory() as db:
-            # Owned scratch row only: simulate external disappearance after
-            # T1. Use an isolated ID so SQLite's later ID reuse does not alias
-            # this deliberately stranded account in unrelated scenarios.
+            # Owned scratch rows only: preserve the accounting snapshot while
+            # severing its live FK before the target disappears after T1.
+            # This models a tombstoned account on BOTH database dialects, not
+            # a deletion that only works when SQLite FK enforcement is off.
+            db.execute(rv.wallet_accounts.update().where(rv.wallet_accounts.c.user_id == gone_id).values(
+                user_id=None, tombstoned_at=dt.datetime.utcnow()))
             db.execute(models.User.__table__.delete().where(models.User.id == gone_id))
             db.commit()
         count = launch.call_count

@@ -131,7 +131,8 @@ class ChildDatabase:
                 self._engine.dispose()
             raise ChildDatabaseUnavailable("child_database_configuration_invalid") from None
         self._allowed = {READ_RUNTIME, READ_INSTALLATION, READ_SUBNET,
-            str(dispatch_statement(self.dialect.name)), str(contract_statement())}
+            str(dispatch_statement(self.dialect.name)), str(dispatch_statement(self.dialect.name, deletion=True)),
+            str(contract_statement())}
         if self.dialect.name in ("mysql", "mariadb"):
             self._allowed.update((ADVISORY_GET, ADVISORY_CHECK, ADVISORY_RELEASE))
         # Also deny through accidental private engine/exec_driver_sql use.

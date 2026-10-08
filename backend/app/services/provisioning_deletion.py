@@ -5,7 +5,6 @@ Caller owns runtime/host validation, the fenced transaction and one commit.
 No network, force, refund or hidden commit. Roll back every failure.
 """
 import datetime as dt
-import hashlib
 import json
 import re
 
@@ -16,17 +15,14 @@ from .. import models, models_provisioning as mp, models_receipt_void as rv
 from . import payment_reservations, provisioning_transitions as transitions
 from . import resource_leases, user_ops, wallet_service
 from .provisioning_identity import removal_matches
+from . import provisioning_deletion_digest as digest
 
 
 def _fingerprint(connection, node):
-    values = [connection.id, connection.user_id, connection.purchase_id, connection.node_id,
-              connection.type.value, connection.wg_peer_name, connection.wg_public_key,
-              connection.wg_client_address, connection.ppp_username, connection.xr_email, connection.xr_uuid, connection.xr_flow,
-              node.type.value, node.mt_wireguard_interface, node.xr_panel_mode,
-              node.xr_inbound_tag, node.xr_panel_inbound_id, node.mt_host, node.mt_port,
-              node.mt_use_ssl, node.mt_api_ssl_port, node.xr_panel_base_url,
-              node.xr_ssh_host, node.xr_ssh_port, node.se_host, node.se_port, node.se_hub_name]
-    return hashlib.sha256(json.dumps(values, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    connection_values = {name: getattr(connection, name) for name in digest.CONNECTION_FIELDS}
+    node_values = {name: getattr(node, name) for name in digest.NODE_FIELDS}
+    connection_values["type"], node_values["type"] = connection.type.value, node.type.value
+    return digest.fingerprint(connection_values, node_values)
 
 
 def snapshot(resource_kind, resource_id, connections, *, purchase_ids=None):

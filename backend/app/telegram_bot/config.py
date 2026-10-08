@@ -20,7 +20,23 @@ attribute, so runner.py's _main() calling config.configure(...) at the top
 of one bot's thread can never bleed into another bot's thread reading the
 same `config` name at the same time."""
 import os
+import contextvars
 import threading
+
+
+# ``asyncio.to_thread`` copies context variables into its worker, but it does
+# not copy ``threading.local`` attributes.  A dedicated bot's handlers run on
+# its private event-loop thread and PanelBridge deliberately moves blocking DB
+# work to a pool thread.  Keep the owner id in both forms so ordinary handler
+# reads stay isolated exactly as before while DB workers retain the caller's
+# tenant identity.
+_bot_owner_admin_id_ctx: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "telegram_bot_owner_admin_id", default=None,
+)
+
+
+def current_bot_owner_admin_id() -> int | None:
+    return _bot_owner_admin_id_ctx.get()
 
 
 class RuntimeConfig(threading.local):
@@ -53,6 +69,7 @@ class RuntimeConfig(threading.local):
         self.approval_chat_ids = set(approval_chat_ids or set())
         self.customer_bot_enabled = customer_bot_enabled
         self.bot_owner_admin_id = bot_owner_admin_id
+        _bot_owner_admin_id_ctx.set(bot_owner_admin_id)
 
     def is_admin(self, user_id: int) -> bool:
         return user_id in self.admin_ids

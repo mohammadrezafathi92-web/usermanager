@@ -30,7 +30,7 @@ from ..routers import bot as bot_router
 from ..routers import bot_onboarding as onboarding_router
 from ..services import bot_resources
 from ..services.bot_auth import BotPrincipal, build_internal_principal_for_owner
-from .config import config
+from .config import config, current_bot_owner_admin_id
 
 
 class ApiError(Exception):
@@ -44,7 +44,11 @@ def _build_principal(db) -> BotPrincipal:
     seller bot thread. See bot_auth.build_internal_principal_for_owner
     for how scope_enforced is resolved (that admin's own
     dedicated_bot_scope_enforced row, never a blanket default)."""
-    return build_internal_principal_for_owner(db, config.bot_owner_admin_id, label="in-process bot")
+    # DB work runs through asyncio.to_thread().  Reading the threading.local
+    # config from that worker used to return its default ``None`` and silently
+    # turn every dedicated reseller bot into the shared bot.  The ContextVar
+    # mirror is copied into the worker by asyncio and preserves the real owner.
+    return build_internal_principal_for_owner(db, current_bot_owner_admin_id(), label="in-process bot")
 
 
 def _scope(owner_admin_id: Optional[int]) -> Optional[int]:
@@ -60,6 +64,9 @@ def _scope(owner_admin_id: Optional[int]) -> Optional[int]:
     instead of touching the whole panel. For the shared/global bot,
     config.bot_owner_admin_id is None, so this is a complete no-op and
     every call behaves exactly as it always has."""
+    # This helper runs on the bot's own event-loop thread, before any
+    # asyncio.to_thread hop, so the thread-local value is the authoritative
+    # one here (and preserves compatibility with direct in-thread callers).
     return owner_admin_id if owner_admin_id is not None else config.bot_owner_admin_id
 
 

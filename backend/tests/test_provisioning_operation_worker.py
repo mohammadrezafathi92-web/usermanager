@@ -86,6 +86,22 @@ def scenario(engine):
                 resource_leases.release(db, token)
             db.commit()
 
+    def delayed_operation(oid, tokens):
+        with Factory() as db:
+            row = db.get(mp.ProvisioningOperation, oid)
+            saved = (row.state, row.version)
+            row.next_retry_at = dt.datetime.utcnow() + dt.timedelta(days=2)
+            db.commit()
+        calls = launch.call_count
+        assert tick(oid, tokens)["status"] == "waiting"
+        assert launch.call_count == calls, "operation backoff dispatched remote work"
+        with Factory() as db:
+            row = db.get(mp.ProvisioningOperation, oid)
+            assert (row.state, row.version) == saved, "backoff advanced the operation"
+            assert db.query(mp.PaymentReservation).filter_by(operation_id=oid).one().state == "reserved"
+            row.next_retry_at = None
+            db.commit()
+
     seen = []
     def remote(dto):
         assert engine.pool.checkedout() == 0, "worker kept a parent DB connection over remote I/O"
@@ -139,7 +155,9 @@ def scenario(engine):
             staged = db.query(mp.ProvisioningStep).filter_by(operation_id=oid).one()
             assert (staged.id, staged.wg_public_key, staged.staged_wg_private_key) == saved_identity
             assert db.query(mp.PaymentReservation).filter_by(operation_id=oid).one().id == hold_id
+        delayed_operation(oid, recovered)
         assert tick(oid, recovered)["step"]["state"] == "remote_created"
+        delayed_operation(oid, recovered)
         assert tick(oid, recovered)["state"] == "completed"
         assert worker.reacquire(Factory, oid, host, **expected) == ()
         release(recovered)
@@ -279,6 +297,7 @@ def scenario(engine):
             assert db.get(mp.ProvisioningOperation, oid).error_code == "node_unavailable"
             assert db.query(mp.ProvisioningStep).filter_by(operation_id=oid).one().state == "removed"
             assert db.query(mp.PaymentReservation).filter_by(operation_id=oid).one().state == "reserved"
+        delayed_operation(oid, tokens)
         assert tick(oid, tokens)["state"] == "compensated"
         assert launch.call_count == count
         with Factory() as db:
@@ -387,6 +406,7 @@ def scenario(engine):
         with Factory() as db:
             operation = db.get(mp.ProvisioningOperation, oid)
             operation.forward_deadline = dt.datetime(2000, 1, 1)
+            operation.next_retry_at = dt.datetime.utcnow() + dt.timedelta(days=2)
             db.execute(rv.resource_locks.update().where(rv.resource_locks.c.resource_key.in_(
                 [token.resource_key for token in tokens])).values(leased_until=dt.datetime(2000, 1, 1)))
             db.commit()
@@ -395,6 +415,9 @@ def scenario(engine):
             assert db.query(mp.ProvisioningStep).filter_by(operation_id=oid).one().state == "remote_calling"
             assert db.query(mp.PaymentReservation).filter_by(operation_id=oid).one().state == "reserved"
         assert tick(oid, tokens)["status"] == "compensation_started"
+        with Factory() as db:
+            db.get(mp.ProvisioningOperation, oid).next_retry_at = None
+            db.commit()
         assert tick(oid, tokens)["status"] == "waiting"
         with Factory() as db:
             # Advance ONLY the owned scratch retry fixture, never a live job.

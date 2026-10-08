@@ -229,6 +229,7 @@ def scenario(engine, directory):
                         staged = db.get(mp.ProvisioningStep, request.step_id, populate_existing=True)
                         operation = db.get(mp.ProvisioningOperation, request.operation_id, populate_existing=True)
                         staged.state, staged.version = state, request.step_version
+                        staged.next_retry_at = None  # New independent owned fixture case.
                         operation.version = request.operation_version
                         db.commit()
                     fixture_state("staged")
@@ -261,6 +262,7 @@ def scenario(engine, directory):
                 op = db.get(mp.ProvisioningOperation, request.operation_id)
                 step.version, op.version = request.step_version, request.operation_version
                 step.state = "remote_calling"
+                step.next_retry_at = None  # Do not carry prior timeout backoff into unrelated cases.
                 db.commit()
                 with ChildGuard(reader, request, identity, mode_hold, node_hold, base_dir=directory) as pinned:
                     detached = pinned.contract

@@ -196,6 +196,14 @@ def tick(session_factory, operation_id, identity, tokens, *, installation_uuid, 
             result = _public(operation, "manual_recovery_required")
             db.commit()
             return result
+        if operation.next_retry_at is not None and operation.next_retry_at > now:
+            # Selection is only a hint. A direct resume, or a retry time
+            # changed after selection, must respect the same DB-clock
+            # backoff before dispatch, capture or reservation release.
+            # Permanent forward preconditions above still start cleanup.
+            result = _public(operation, "waiting")
+            db.commit()
+            return result
         cleaning = operation.state == "compensating"
         if cleaning:
             pending = [step for step in steps if step.state != "removed"]

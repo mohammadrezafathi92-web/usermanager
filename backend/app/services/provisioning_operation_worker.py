@@ -136,16 +136,21 @@ def reacquire(session_factory, operation_id, identity, *, installation_uuid, own
         return tokens
 
 
-def tick(session_factory, operation_id, identity, tokens, *, installation_uuid, ownership_epoch):
+def tick(session_factory, operation_id, identity, tokens, *, installation_uuid, ownership_epoch,
+         release_shared_for_remote=False):
     """Advance one remote step OR one atomic final/compensation transaction.
 
     Unknown results wait for recovery; identity conflict requires explicit
     recovery policy. Neither is interpreted as absence or a reason to refund.
     Leases remain caller-owned even on terminal replay; caller releases them
     only after observing a committed terminal result.
+    The bounded entry opts into releasing shared customer/IP leases before
+    remote I/O; it reacquires a complete set on the next iteration. Manual
+    callers keep the original retention contract unless they opt in too.
     """
     if type(operation_id) is not int or operation_id < 1 or not isinstance(identity, HostIdentity) or (
-            type(ownership_epoch) is not int or ownership_epoch < 1 or not isinstance(installation_uuid, str)):
+            type(ownership_epoch) is not int or ownership_epoch < 1 or not isinstance(installation_uuid, str) or
+            type(release_shared_for_remote) is not bool):
         raise HTTPException(422, "provisioning_worker_invalid")
     tokens = tuple(tokens)
     expected = (installation_uuid, ownership_epoch)
@@ -212,6 +217,19 @@ def tick(session_factory, operation_id, identity, tokens, *, installation_uuid, 
             return result
         sid, version, recovery_read = step.id, step.version, step.state == "remote_calling"
         db.commit()
+    if release_shared_for_remote:
+        with session_factory() as db:
+            leases.begin_business(db)
+            _control(db, operation_id, identity, expected)
+            leases.revalidate(db, tokens)
+            for token in tokens:
+                if token.resource_key != f"provisioning_op:{operation_id}" and not leases.release(db, token):
+                    raise leases.LeaseLost("resource_lease_lost")
+            db.commit()
+        # Only the operation's DB fence is required for dispatch/result.
+        # Customer/IP changes are checked again with a new full lease set at
+        # finalization. Node serialization remains the child-held node gate.
+        tokens = tuple(token for token in tokens if token.resource_key == f"provisioning_op:{operation_id}")
     # execute owns its two short transactions; no session above survives.
     if cleaning:
         step_result = execute.execute_compensation(session_factory, sid, version, identity, tokens, expected_owner=expected)
@@ -246,7 +264,7 @@ def resume_one(session_factory, operation_id, identity, *, installation_uuid, ow
                 raise HTTPException(409, "provisioning_operation_changed")
             return _public(operation, "terminal")
     try:
-        return tick(session_factory, operation_id, identity, tokens, **expected)
+        return tick(session_factory, operation_id, identity, tokens, release_shared_for_remote=True, **expected)
     finally:
         # The tick's context managers close/roll back its business sessions
         # before reaching here, including launcher or final commit failures.

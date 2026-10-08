@@ -2071,7 +2071,6 @@ function OwnBotCard({ t }) {
   const [token, setToken] = useState("");
   const [showToken, setShowToken] = useState(false);
   const [enabled, setEnabled] = useState(true);
-  const [sharedOnboarding, setSharedOnboarding] = useState(true);
   const [onboarding, setOnboarding] = useState({ required_channel_id: "", required_channel_url: "", customer_terms_text: "" });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -2081,7 +2080,6 @@ function OwnBotCard({ t }) {
       setStatus(res.data);
       setToken(res.data.bot_token || "");
       setEnabled(res.data.enabled);
-      setSharedOnboarding(res.data.required_channel_id == null);
       setOnboarding({ required_channel_id: res.data.required_channel_id || "", required_channel_url: res.data.required_channel_url || "", customer_terms_text: res.data.customer_terms_text || "" });
     });
 
@@ -2093,9 +2091,7 @@ function OwnBotCard({ t }) {
     setSaving(true);
     setMsg(null);
     try {
-      const res = await updateMyBot({ bot_token: token, enabled, ...Object.fromEntries(
-        Object.entries(onboarding).map(([key, value]) => [key, sharedOnboarding ? null : value])
-      ) });
+      const res = await updateMyBot({ bot_token: token, enabled, ...onboarding });
       setStatus(res.data);
       setMsg({ type: "ok", text: t("settings.myBotSaved") });
     } catch (err) {
@@ -2150,12 +2146,8 @@ function OwnBotCard({ t }) {
           <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
           {t("settings.myBotEnabled")}
         </label>
-        <label className="flex items-center gap-2 text-sm text-gray-600">
-          <input type="checkbox" checked={sharedOnboarding} onChange={(e) => setSharedOnboarding(e.target.checked)} />
-          {t("settings.myBotSharedOnboarding")}
-        </label>
-        {!sharedOnboarding && (
-          <div className="space-y-3 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+        <div className="space-y-3 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+            <div className="hint">{t("settings.myBotOnboardingHint")}</div>
             <label className="block text-sm text-gray-600">
               {t("settings.requiredChannelId")}
               <input className="input mt-1" dir="ltr" maxLength={255} placeholder="@my_channel or -1001234567890" value={onboarding.required_channel_id} onChange={(e) => setOnboarding((v) => ({ ...v, required_channel_id: e.target.value }))} />
@@ -2170,8 +2162,7 @@ function OwnBotCard({ t }) {
               <textarea className="input mt-1 min-h-40" maxLength={3500} rows={8} value={onboarding.customer_terms_text} onChange={(e) => setOnboarding((v) => ({ ...v, customer_terms_text: e.target.value }))} placeholder={t("settings.customerTermsPlaceholder")} />
             </label>
             <div className="hint">{t("settings.customerTermsHint")}</div>
-          </div>
-        )}
+        </div>
         {msg && (
           <div className={`text-sm rounded-lg px-3 py-2 ${msg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
             {msg.text}

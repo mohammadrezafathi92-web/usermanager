@@ -31,9 +31,16 @@ def _control(db, operation_id, identity, expected):
         raise HTTPException(409, "provisioning_worker_operation_unavailable")
     mode = db.scalar(select(mp.ProvisioningTypeMode.mode).where(mp.ProvisioningTypeMode.operation_type == kind)
         .with_for_update(read=True))
+    if mode != "durable":
+        raise HTTPException(409, "provisioning_worker_owner_changed")
+    _runtime_control(db, identity, expected)
+
+
+def _runtime_control(db, identity, expected):
+    """Shared owner guard; caller has checked schema/wallet/type in L1 order."""
     runtime = db.execute(select(mp.ProvisioningRuntimeState).where(mp.ProvisioningRuntimeState.id == 1)
         .with_for_update(read=True).execution_options(populate_existing=True)).scalar_one_or_none()
-    if mode != "durable" or runtime is None or runtime.gate_mode != "enforced" or runtime.owner_state not in (
+    if runtime is None or runtime.gate_mode != "enforced" or runtime.owner_state not in (
             "active", "draining") or (runtime.installation_uuid, runtime.ownership_epoch) != expected or (
             runtime.owner_host_id, runtime.owner_boot_id) != (identity.host_id, identity.boot_id) or (
             runtime.lock_backend != ("flock" if db.get_bind().dialect.name == "sqlite" else "flock+get_lock")):

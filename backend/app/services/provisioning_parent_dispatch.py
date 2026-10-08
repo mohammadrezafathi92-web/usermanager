@@ -93,6 +93,11 @@ def _snapshot(db, step_id, version, identity, leases, *, recovery_read, phase):
         now = dt.datetime.fromisoformat(now)
     if forward and (operation.forward_deadline <= now or wallet_epoch != operation.wallet_epoch_at_start):
         raise HTTPException(409, "provisioning_dispatch_window_changed")
+    if any(retry is not None and retry > now for retry in (operation.next_retry_at, step.next_retry_at)):
+        # Recheck after the operation/step locks: a direct dispatch or a
+        # stale worker selection cannot bypass committed backoff or mark
+        # an attempt before it is due. No management secrets loaded yet.
+        raise HTTPException(409, "provisioning_retry_not_due")
     node = db.get(models.Node, step.node_id, populate_existing=True)
     if node is None or (forward and not node.enabled) or contracts.backend_for(node, step.protocol) != step.backend:
         raise HTTPException(409, "node_unavailable")

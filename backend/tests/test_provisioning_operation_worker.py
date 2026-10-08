@@ -148,7 +148,25 @@ def scenario(engine):
         assert worker.resume_one(Factory, oid, host, **expected)["status"] == "lease_busy"
         assert launch.call_count == count
         release(initial)  # Simulated graceful loss of the original executor.
-        assert worker.resume_one(Factory, oid, host, **expected)["step"]["state"] == "remote_created"
+        def remote_with_available_shared_leases(dto):
+            assert engine.pool.checkedout() == 0
+            with Factory() as other:
+                resource_leases.begin_business(other)
+                shared = [resource_leases.acquire(other, token.resource_key, "op:900000:1")
+                    for token in initial if not token.resource_key.startswith("provisioning_op:")]
+                assert shared, "fixture did not cover shared leases"
+                try:
+                    resource_leases.acquire(other, f"provisioning_op:{oid}", "op:900000:1")
+                    raise AssertionError("operation fence released during I/O")
+                except resource_leases.LeaseBusy:
+                    pass
+                other.commit()
+                for token in shared:
+                    assert resource_leases.release(other, token)
+                other.commit()
+            return remote(dto)
+        with patch.object(execute.remote_runner, "run_action", side_effect=remote_with_available_shared_leases):
+            assert worker.resume_one(Factory, oid, host, **expected)["step"]["state"] == "remote_created"
         with Factory() as db:
             assert all(row["lease_owner"] is None for row in db.execute(rv.resource_locks.select().where(
                 rv.resource_locks.c.resource_key.in_([token.resource_key for token in initial]))).mappings())

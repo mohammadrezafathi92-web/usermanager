@@ -15,6 +15,7 @@ from .provisioning_child_database import ChildDatabase
 from .provisioning_child_database import ADVISORY_GET, ADVISORY_CHECK, ADVISORY_RELEASE
 from .provisioning_dispatch_binding import revalidate
 from . import provisioning_contract_rules as contract_rules
+from .provisioning_removal_payload import RemovalPayload
 
 
 class ChildGuardUnavailable(RuntimeError):
@@ -30,6 +31,7 @@ class ChildGuard:
         self._connection = None
         self._entered = self._broken = False
         self._contract = None
+        self._removal_payload = None
 
     def __enter__(self):
         if self._entered or self._broken:
@@ -63,7 +65,7 @@ class ChildGuard:
                     raise ChildGuardUnavailable("child_guard_advisory_lost")
                 self._connection.end_snapshot()
             binding = revalidate(self.database, self.binding, self.identity, self.mode_hold, self.node_hold,
-                base_dir=self.base_dir)
+                base_dir=self.base_dir, removal_payload=self._removal_payload)
             with self.database.connect() as connection:
                 row = connection.execute(contract_rules.contract_statement(), dict(node_id=binding.node_id,
                     backend=binding.backend)).mappings().one_or_none()
@@ -83,6 +85,30 @@ class ChildGuard:
             self._broken = True
             self._close()
             raise ChildGuardUnavailable("child_guard_unavailable") from None
+
+    def seal_removal(self, identity, credential):
+        """Validate a detached immutable descriptor before a future client.
+
+        Every later check, including nested transport writers, compares
+        the SAME descriptor to a fresh committed step/Connection snapshot.
+        A mismatch permanently breaks this guard, never grants a retry.
+        """
+        try:
+            if not self._entered or self._broken or self.binding.phase != "deletion":
+                raise ChildGuardUnavailable("child_guard_removal_invalid")
+            supplied = RemovalPayload.from_fields(identity, credential)
+            if self._removal_payload is not None and supplied != self._removal_payload:
+                raise ChildGuardUnavailable("child_guard_removal_changed")
+            self._removal_payload = supplied
+            return self.check()
+        except Exception:
+            self._broken = True
+            self._close()
+            raise ChildGuardUnavailable("child_guard_removal_unavailable") from None
+
+    @property
+    def removal_sealed(self):
+        return self._entered and not self._broken and self.binding.phase == "deletion" and self._removal_payload is not None
 
     @property
     def contract(self):

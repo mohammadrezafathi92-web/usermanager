@@ -52,6 +52,8 @@ def build(guard, public, credentials):
             for value in credentials.values())):
         raise ChildClientUnavailable("child_client_snapshot_invalid")
     binding = guard.check()
+    if binding.phase == "deletion" and not guard.removal_sealed:
+        raise ChildClientUnavailable("child_client_removal_unsealed")
     authority._require_guard(guard)
     try:
         fingerprint = rules.endpoint_fingerprint({"n_" + key: value for key, value in public.items()})

@@ -22,6 +22,7 @@ from . import gate_locks, provisioning_installation
 from .provisioning_host import HostIdentity
 from . import provisioning_deletion_digest as deletion_digest
 from .marzneshin_client import sanitize_username
+from .provisioning_removal_payload import RemovalPayload
 
 ENDPOINT_FIELDS = ("type", "xr_panel_mode", "mt_host", "mt_port", "mt_use_ssl", "mt_api_ssl_port",
     "mt_wireguard_interface", "xr_ssh_host", "xr_ssh_port", "xr_panel_base_url", "se_host", "se_port",
@@ -118,8 +119,10 @@ def dispatch_statement(dialect, *, deletion=False):
       WHERE r.id=1""")
 
 
-def revalidate(engine, binding, identity, mode_hold, node_hold, *, base_dir=None):
+def revalidate(engine, binding, identity, mode_hold, node_hold, *, base_dir=None, removal_payload=None):
     if not isinstance(binding, DispatchBinding) or not isinstance(identity, HostIdentity):
+        raise DispatchBindingUnavailable("durable_dispatch_invalid")
+    if removal_payload is not None and (type(removal_payload) is not RemovalPayload or binding.phase != "deletion"):
         raise DispatchBindingUnavailable("durable_dispatch_invalid")
     expected = ((mode_hold, True, gate_locks.mode_lock_path(binding.installation_uuid, base_dir)),
         (node_hold, False, gate_locks.node_lock_path(binding.installation_uuid, binding.node_id, base_dir)))
@@ -164,6 +167,8 @@ def revalidate(engine, binding, identity, mode_hold, node_hold, *, base_dir=None
         saved = json.loads(row["intent"])
         if deleting:
             _removal(row, saved)
+            if removal_payload is not None and not removal_payload.matches(row):
+                raise ValueError()
         elif type(saved.get("schema_version")) is not int or saved["schema_version"] != 1 or (
                 saved["node_fingerprints"][str(binding.node_id)] != _endpoint(row)):
             raise ValueError()

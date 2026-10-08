@@ -40,13 +40,17 @@ def select_due(session_factory, identity, *, installation_uuid, ownership_epoch,
         now, _ = leases._clock(db)
         op, step, locks = mp.ProvisioningOperation, mp.ProvisioningStep, rv.resource_locks
         cleaning = op.state == "compensating"
-        pending = or_(and_(cleaning, step.state != "removed"), and_(op.state.in_(FORWARD),
-            step.backend != "radius_ppp", step.state != "remote_created"))
         # Same next-step ordering as tick: uncertain forward calls first;
         # cleanup in slot order. A later due slot cannot skip the first one.
-        retry = select(step.next_retry_at).where(step.operation_id == op.id, pending).order_by(
-            case((and_(op.state.in_(FORWARD), step.state == "remote_calling"), 0), else_=1),
+        # Keep the correlated outer reference in WHERE, never ORDER BY:
+        # SQLite 3.40 (Linux CI) cannot resolve outer columns there.
+        forward_retry = select(step.next_retry_at).where(step.operation_id == op.id,
+            step.backend != "radius_ppp", step.state != "remote_created").order_by(
+            case((step.state == "remote_calling", 0), else_=1),
             step.step_order, step.id).limit(1).correlate(op).scalar_subquery()
+        compensation_retry = select(step.next_retry_at).where(step.operation_id == op.id,
+            step.state != "removed").order_by(step.step_order, step.id).limit(1).correlate(op).scalar_subquery()
+        retry = case((cleaning, compensation_retry), else_=forward_retry)
         live_operation_lease = select(locks.c.resource_key).where(
             locks.c.resource_key == literal("provisioning_op:") + cast(op.id, String),
             locks.c.lease_owner.is_not(None),

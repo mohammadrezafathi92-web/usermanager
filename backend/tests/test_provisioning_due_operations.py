@@ -1,6 +1,7 @@
 """Bounded, read-only due selection on disposable SQLite / mandatory MariaDB."""
 import datetime as dt
 import os
+import re
 import sys
 import tempfile
 import uuid
@@ -107,6 +108,11 @@ def scenario(engine):
         assert selected == wanted, (engine.dialect.name, selected, wanted)
         assert engine.pool.checkedout() == 0, "selection retained DB session"
         assert all(sql.lstrip().upper().startswith("SELECT") for sql in statements), statements
+        # The local SQLite may be newer than Linux's. Structural regression
+        # check catches an outer-column ORDER BY even when it works locally.
+        candidate_sql = next(sql for sql in statements if sql.startswith("SELECT provisioning_operations.id"))
+        for ordering in re.findall(r"ORDER BY (.*?)\s+LIMIT", candidate_sql, re.DOTALL):
+            assert "provisioning_operations." not in ordering or ordering == "provisioning_operations.id", ordering
         assert "SECRET" not in repr(selected)
         assert due.select_due(Factory, host, limit=2, **expected) == wanted[:2]
         assert due.select_due(Factory, host, limit=2, after_id=wanted[1], **expected) == wanted[2:4]

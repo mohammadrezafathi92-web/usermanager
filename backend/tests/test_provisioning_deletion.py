@@ -19,6 +19,7 @@ from app.services import provisioning_schema, receipt_void_schema, wallet_accoun
 from app.services import provisioning_deletion as deletion, provisioning_transitions as transitions
 from app.services import resource_leases as locks
 from app.services.provisioning_identity import removal_matches, XRAY_MODES
+from app.services.marzneshin_client import sanitize_username
 
 # Typed identity gate covers every panel backend even though the deletion
 # transaction fixtures use WireGuard and no-remote PPP, not real nodes.
@@ -26,7 +27,8 @@ for backend, mode in XRAY_MODES.items():
     node = models.Node(id=1, type=models.NodeType.xray, xr_panel_mode=mode, xr_inbound_tag="tag", xr_panel_inbound_id=2)
     connection = models.Connection(node_id=1, type=models.ConnectionType.xray, xr_email="email", xr_uuid="UUID_SECRET")
     step = mp.ProvisioningStep(node_id=1, protocol="xray", backend=backend, xr_email="email",
-        xr_inbound_tag="tag", xr_panel_inbound_id=2, staged_xr_uuid="UUID_SECRET")
+        xr_inbound_tag="tag", xr_panel_inbound_id=2, staged_xr_uuid="UUID_SECRET",
+        account_username=sanitize_username(connection.xr_email) if backend == "marzneshin" else None)
     assert removal_matches(step, connection, node)
     step.staged_xr_uuid = "different-object"
     assert not removal_matches(step, connection, node)

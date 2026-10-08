@@ -21,6 +21,7 @@ from . import provisioning_contracts as contracts, provisioning_schema, receipt_
 from . import resource_leases, wallet_accounts, wallet_service
 from .provisioning_host import HostIdentity, validate_snapshot
 from .provisioning_finalization import _Snapshot
+from .marzneshin_client import sanitize_username
 
 
 class DeleteRequest(_Snapshot):
@@ -175,8 +176,10 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
             wg_peer_name=row.wg_peer_name if backend == "mikrotik_wg" else None,
             wg_public_key=row.wg_public_key if backend == "mikrotik_wg" else None,
             wg_client_address=row.wg_client_address if backend == "mikrotik_wg" else None,
-            account_username=row.ppp_username if backend in ("radius_ppp", "softether") else None,
+            account_username=row.ppp_username if backend in ("radius_ppp", "softether") else (
+                sanitize_username(row.xr_email) if backend == "marzneshin" and row.xr_email else None),
             xr_email=row.xr_email if backend in contracts.XRAY_MODES else None,
+            flow=row.xr_flow if backend in contracts.XRAY_MODES else None,
             xr_inbound_tag=node.xr_inbound_tag if backend in contracts.XRAY_MODES else None,
             xr_panel_inbound_id=node.xr_panel_inbound_id if backend in contracts.XRAY_MODES else None,
             # UUID is Xray removal identity, not a delivered/private key.

@@ -1,5 +1,6 @@
 """Pure immutable removal-identity comparison; no queries or remote calls."""
 from .. import models
+from .marzneshin_client import sanitize_username
 
 PPP = frozenset(("openvpn", "l2tp", "ikev2", "sstp", "pptp"))
 XRAY_MODES = {"xray_ssh": "ssh", "threexui": "3xui", "marzban": "marzban",
@@ -23,5 +24,7 @@ def removal_matches(step, connection, node, *, removed=False):
             node.xr_panel_mode or "ssh") == XRAY_MODES[step.backend] and bool(connection.xr_email) and (
             step.xr_email, step.xr_inbound_tag, step.xr_panel_inbound_id) == (
             connection.xr_email, node.xr_inbound_tag, node.xr_panel_inbound_id) and (
+            (step.flow or "") == (connection.xr_flow or "")) and (
+            step.backend != "marzneshin" or step.account_username == sanitize_username(connection.xr_email)) and (
             removed or (bool(connection.xr_uuid) and step.staged_xr_uuid == connection.xr_uuid))
     return False

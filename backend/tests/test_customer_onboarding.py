@@ -17,8 +17,10 @@ from app.routers import bot_onboarding, telegram_bot_settings
 from app.telegram_bot import admin_scope, panel_bridge, runner
 from aiogram.types import CallbackQuery
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 from app.services.bot_auth import BotPrincipal, KeyType
+from app.telegram_bot.config import config as runtime_config
 
 failures: list[str] = []
 
@@ -54,8 +56,12 @@ class FakeCallback:
 
 async def run():
     print("--- durable terms acceptance API ---")
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
+    )
     Base.metadata.create_all(engine)
+    original_session_local = panel_bridge.SessionLocal
+    panel_bridge.SessionLocal = sessionmaker(bind=engine)
     with Session(engine) as db:
         principal = BotPrincipal.internal(None)
         db.add(models.BotSettings(
@@ -80,6 +86,10 @@ async def run():
                   bot_onboarding.get_customer_onboarding_config(db, principal=own_principal), dict.fromkeys(config, ""))
             check("dedicated settings form exposes historical null as disabled",
                   telegram_bot_settings.get_my_bot(admin=owner).required_channel_id, "")
+            runtime_config.configure("", set(), set(), bot_owner_admin_id=owner.id)
+            check("dedicated owner survives PanelBridge asyncio.to_thread",
+                  await panel_bridge.PanelBridge().get_customer_onboarding_config(), dict.fromkeys(config, ""))
+            runtime_config.configure("", set(), set(), bot_owner_admin_id=None)
             result = telegram_bot_settings.update_my_bot(schemas.OwnBotSettingsUpdate(
                 required_channel_id="@own_channel", required_channel_url="https://t.me/own_channel",
                 customer_terms_text="own terms",
@@ -143,6 +153,7 @@ async def run():
         except HTTPException as exc:
             denied = exc.status_code == 403
         check("third-party integration cannot inspect or spoof interactive onboarding", denied, True)
+    panel_bridge.SessionLocal = original_session_local
     engine.dispose()
 
     old_scope = admin_scope.resolve_admin_scope

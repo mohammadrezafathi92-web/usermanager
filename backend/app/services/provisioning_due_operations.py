@@ -65,3 +65,20 @@ def select_due(session_factory, identity, *, installation_uuid, ownership_epoch,
         # Context manager rolls back the read transaction and releases L1
         # shared locks. Do not hand a live Session/ORM object to the executor.
     return ids
+
+
+def recover_due_once(session_factory, identity, *, installation_uuid, ownership_epoch, after_id=0):
+    """Select and attempt ONE operation, without scheduler registration.
+
+    No loop and no invented retry cap. Live shared leases acquired after
+    selection may cause lease_busy: return it, don't bypass the fence or spin.
+    The selection session is closed before resume_one reacquires current
+    guards and before ANY runner call. Caller controls the next cursor/pass.
+    Failure propagates after worker rollback/release; never label it success.
+    """
+    expected = dict(installation_uuid=installation_uuid, ownership_epoch=ownership_epoch)
+    ids = select_due(session_factory, identity, limit=1, after_id=after_id, **expected)
+    if not ids:
+        return dict(status="idle", operation_id=None, selection_cursor=after_id)
+    result = worker.resume_one(session_factory, ids[0], identity, **expected)
+    return dict(result, selection_cursor=ids[0])

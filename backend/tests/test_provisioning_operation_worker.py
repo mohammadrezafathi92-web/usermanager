@@ -18,6 +18,7 @@ from app import models, models_provisioning as mp, models_receipt_void as rv
 from app.services import provisioning_schema, receipt_void_schema, provisioning_contracts as contracts
 from app.services import provisioning_preparation as prep, provisioning_finalization as final
 from app.services import provisioning_operation_worker as worker, provisioning_parent_execute as execute
+from app.services import provisioning_due_operations as due
 from app.services import resource_leases, wallet_accounts, remote_action as action
 from app.services.provisioning_host import HostIdentity
 
@@ -148,6 +149,12 @@ def scenario(engine):
         assert worker.resume_one(Factory, oid, host, **expected)["status"] == "lease_busy"
         assert launch.call_count == count
         release(initial)  # Simulated graceful loss of the original executor.
+        # A selection hint can lose the lease race. One attempt returns busy;
+        # it must not spin or send any remote request on that stale hint.
+        with patch.object(worker, "reacquire", side_effect=resource_leases.LeaseBusy("resource_lease_busy")) as claim:
+            busy = due.recover_due_once(Factory, host, after_id=oid - 1, **expected)
+            assert busy == dict(operation_id=oid, status="lease_busy", selection_cursor=oid)
+            assert claim.call_count == 1 and launch.call_count == count
         def remote_with_available_shared_leases(dto):
             assert engine.pool.checkedout() == 0
             with Factory() as other:
@@ -166,7 +173,9 @@ def scenario(engine):
                 other.commit()
             return remote(dto)
         with patch.object(execute.remote_runner, "run_action", side_effect=remote_with_available_shared_leases):
-            assert worker.resume_one(Factory, oid, host, **expected)["step"]["state"] == "remote_created"
+            result = due.recover_due_once(Factory, host, after_id=oid - 1, **expected)
+            assert result["operation_id"] == result["selection_cursor"] == oid
+            assert result["step"]["state"] == "remote_created"
         with Factory() as db:
             assert all(row["lease_owner"] is None for row in db.execute(rv.resource_locks.select().where(
                 rv.resource_locks.c.resource_key.in_([token.resource_key for token in initial]))).mappings())
@@ -176,7 +185,7 @@ def scenario(engine):
         event.listen(Factory.class_, "before_commit", final_crash)
         try:
             try:
-                worker.resume_one(Factory, oid, host, **expected)
+                due.recover_due_once(Factory, host, after_id=oid - 1, **expected)
                 raise AssertionError("resume commit crash missed")
             except RuntimeError:
                 pass
@@ -187,7 +196,8 @@ def scenario(engine):
             assert db.query(mp.PaymentReservation).filter_by(operation_id=oid).one().state == "reserved"
             assert all(row["lease_owner"] is None for row in db.execute(rv.resource_locks.select().where(
                 rv.resource_locks.c.resource_key.in_([token.resource_key for token in initial]))).mappings())
-        assert worker.resume_one(Factory, oid, host, **expected)["state"] == "completed"
+        assert due.recover_due_once(Factory, host, after_id=oid - 1, **expected)["state"] == "completed"
+        assert due.recover_due_once(Factory, host, after_id=oid - 1, **expected)["status"] == "idle"
         count = launch.call_count
         assert worker.resume_one(Factory, oid, host, **expected)["status"] == "terminal"
         assert launch.call_count == count

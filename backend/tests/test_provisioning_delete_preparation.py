@@ -19,6 +19,8 @@ from app import models, models_provisioning as mp, models_receipt_void as rv
 from app.services import provisioning_delete_preparation as prep, provisioning_deletion as deletion
 from app.services import provisioning_schema, receipt_void_schema, provisioning_contracts as contracts
 from app.services import wallet_accounts, resource_leases as locks
+from app.services import provisioning_transitions as transitions
+from app.services.adapter_base import AbsentOutcome
 from app.services.provisioning_host import HostIdentity
 
 
@@ -138,6 +140,84 @@ def scenario(engine):
                 request.copy(update={"resource_id": request.resource_id + 100000}), **arguments))
             db.rollback()
             assert db.get(models.LedgerEntry, lid) is not None and db.get(models.User, uid).balance == 101
+            # Exercise the REAL T1 snapshot through removal transitions and
+            # the DB finalizer, not manually assembled "already removed" rows.
+            # Results are typed injected observations; no remote is contacted.
+            selected_ids = sorted(expected_ids)
+            other_id = other.id
+            purchase_id = ledger.purchase_id
+            begin()
+            refused("provisioning_operation_changed", lambda: deletion.finish(db, oid,
+                db.get(mp.ProvisioningOperation, oid).version, tokens))
+            db.rollback()
+            for index, cid in enumerate(selected_ids):
+                begin()
+                step = db.query(mp.ProvisioningStep).filter_by(operation_id=oid, connection_id=cid).one()
+                transitions.begin_remove(db, step.id, step.version)
+                db.commit()  # Attempt marker is durable before any observation.
+                sid = step.id
+                if step.backend != "radius_ppp":
+                    if index == 0:
+                        begin()
+                        step = db.get(mp.ProvisioningStep, sid)
+                        transitions.confirm_removed(db, sid, step.version, AbsentOutcome.UNVERIFIED)
+                        db.commit()
+                        assert db.get(mp.ProvisioningOperation, oid).state == "cleanup_required"
+                        assert all(db.get(models.Connection, ident) is not None for ident in selected_ids)
+                        assert db.get(models.LedgerEntry, lid).amount == 50
+                        begin()
+                        refused("provisioning_operation_transition_invalid", lambda: transitions.mark_remote_complete(db, oid))
+                        db.rollback()
+                        begin()
+                        step = db.get(mp.ProvisioningStep, sid)
+                        transitions.begin_remove(db, sid, step.version)
+                        db.commit()
+                    begin()
+                    step = db.get(mp.ProvisioningStep, sid)
+                    transitions.confirm_removed(db, sid, step.version, AbsentOutcome.VERIFIED_ABSENT)
+                    db.commit()
+                assert db.get(mp.ProvisioningStep, sid).state == "removed"
+                assert db.get(mp.ProvisioningStep, sid).staged_xr_uuid is None
+            begin()
+            complete = transitions.mark_remote_complete(db, oid)
+            db.commit()
+            final_version = complete.version
+            # A crash at final commit must restore every record and the
+            # permanent financial row, not leave half a deleted service.
+            def final_crash(_session):
+                raise RuntimeError("injected deletion final commit failure")
+            begin()
+            deletion.finish(db, oid, final_version, tokens)
+            event.listen(db, "before_commit", final_crash)
+            try:
+                try:
+                    db.commit()
+                    raise AssertionError("final commit fault missed")
+                except RuntimeError:
+                    db.rollback()
+            finally:
+                event.remove(db, "before_commit", final_crash)
+            assert db.get(mp.ProvisioningOperation, oid).state == "remote_complete"
+            assert db.get(models.User, uid) is not None
+            assert all(db.get(models.Connection, ident) is not None for ident in selected_ids)
+            assert db.get(models.LedgerEntry, lid).amount == 50
+            begin()
+            deletion.finish(db, oid, final_version, tokens)
+            db.commit()
+            assert db.get(mp.ProvisioningOperation, oid).state == "completed"
+            assert all(db.get(models.Connection, ident) is None for ident in selected_ids)
+            assert db.get(models.LedgerEntry, lid).amount == 50
+            if kind == "user":
+                assert db.get(models.User, uid) is None and db.get(models.Purchase, purchase_id) is None
+                assert db.get(models.LedgerEntry, lid).user_id is None
+                assert db.scalar(select(rv.wallet_accounts.c.id).where(rv.wallet_accounts.c.user_id == uid)) is None
+            else:
+                assert db.get(models.User, uid).balance == 101
+                assert db.get(models.Connection, other_id).enabled
+                assert (db.get(models.Purchase, purchase_id) is None) == (kind == "purchase")
+            begin()
+            assert deletion.finish(db, oid, final_version, tokens).state == "completed"
+            db.rollback()  # Terminal retry cannot repeat any deletion/refund.
             for token in tokens:
                 assert locks.release(db, token)
             db.commit()
@@ -231,6 +311,9 @@ def scenario(engine):
 
 with tempfile.TemporaryDirectory(prefix="um-delete-prepare-") as directory:
     engine = create_engine("sqlite:///" + directory + "/prepare.db")
+    @event.listens_for(engine, "connect")
+    def sqlite_foreign_keys(connection, _record):
+        connection.execute("PRAGMA foreign_keys=ON")
     try:
         scenario(engine)
     finally:

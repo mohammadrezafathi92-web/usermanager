@@ -84,6 +84,7 @@ def scenario(engine):
     seen = []
     def remote(dto):
         assert engine.pool.checkedout() == 0, "worker kept a parent DB connection over remote I/O"
+        assert dto.credential["wg_private_key"] is None, "customer private key sent to remote child"
         seen.append(dto.action_type)
         return action.RemoteActionResult(dto.action_id, action.Outcome.SUCCEEDED, write_attempted=True)
 

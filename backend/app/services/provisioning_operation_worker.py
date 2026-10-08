@@ -73,6 +73,27 @@ def _scope(db, operation, steps, tokens):
         raise HTTPException(409, "provisioning_lease_scope_invalid")
 
 
+def _permanent_failure(db, operation, steps, now):
+    """Frozen 11.4 preconditions; no guessed transport-error classification."""
+    if operation.forward_deadline <= now:
+        return "forward_deadline_exceeded"
+    # L1 wallet runtime is already held by _control; this is not a new lock
+    # taken out of order after operation/resource locks.
+    epoch = db.scalar(select(rv.wallet_runtime_state.c.epoch).where(
+        rv.wallet_runtime_state.c.id == 1).with_for_update(read=True))
+    if epoch != operation.wallet_epoch_at_start:
+        return "wallet_epoch_changed"
+    if operation.target_user_id is not None and db.scalar(select(models.User.id).where(
+            models.User.id == operation.target_user_id).with_for_update(read=True)) is None:
+        return "target_user_missing"
+    ids = {step.node_id for step in steps}
+    nodes = db.execute(select(models.Node.id, models.Node.enabled).where(models.Node.id.in_(sorted(ids)))
+        .order_by(models.Node.id).with_for_update(read=True)).all() if ids else []
+    if {row.id for row in nodes} != ids or any(not row.enabled for row in nodes):
+        return "node_unavailable"
+    return None
+
+
 def reacquire(session_factory, operation_id, identity, *, installation_uuid, ownership_epoch):
     """Recover a committed operation's lease set in ONE short transaction.
 
@@ -151,11 +172,13 @@ def tick(session_factory, operation_id, identity, tokens, *, installation_uuid, 
         now = db.scalar(select(clock))
         if isinstance(now, str):
             now = dt.datetime.fromisoformat(now)
-        if operation.state in ("prepared", "provisioning", "remote_complete") and operation.forward_deadline <= now:
-            transitions.begin_compensation(db, operation.id, "forward_deadline_exceeded")
-            result = _public(operation, "compensation_started")
-            db.commit()
-            return result
+        if operation.state in ("prepared", "provisioning", "remote_complete"):
+            failure = _permanent_failure(db, operation, steps, now)
+            if failure is not None:
+                transitions.begin_compensation(db, operation.id, failure)
+                result = _public(operation, "compensation_started")
+                db.commit()
+                return result
         if operation.state == "cleanup_required":
             result = _public(operation, "manual_recovery_required")
             db.commit()

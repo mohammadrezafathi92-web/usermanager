@@ -216,6 +216,77 @@ def scenario(engine):
             assert db.get(models.User, uid).balance == balance_before - 25
             assert db.query(mp.ProvisioningOperation).filter_by(business_key=request.business_key).count() == 1
             assert db.query(mp.PaymentReservation).filter_by(operation_id=started_id).count() == 1
+        # A node disabled after T1 must not create/capture anything. Because
+        # remote was never attempted, cleanup needs no node I/O even offline.
+        oid, tokens = prepared()
+        with Factory() as db:
+            held = db.get(models.User, uid).balance
+            db.get(models.Node, nid).enabled = False
+            db.commit()
+        count = launch.call_count
+        assert tick(oid, tokens)["status"] == "compensation_started"
+        with Factory() as db:
+            assert db.get(mp.ProvisioningOperation, oid).error_code == "node_unavailable"
+            assert db.query(mp.ProvisioningStep).filter_by(operation_id=oid).one().state == "removed"
+            assert db.query(mp.PaymentReservation).filter_by(operation_id=oid).one().state == "reserved"
+        assert tick(oid, tokens)["state"] == "compensated"
+        assert launch.call_count == count
+        with Factory() as db:
+            assert db.get(models.User, uid).balance == held + 25
+            db.get(models.Node, nid).enabled = True
+            db.commit()
+        release(tokens)
+        # Epoch changes stop forward delivery, but cannot justify releasing
+        # an old-generation hold through the current-generation wallet.
+        oid, tokens = prepared()
+        with Factory() as db:
+            epoch = db.execute(rv.wallet_runtime_state.select()).mappings().one()["epoch"]
+            held = db.get(models.User, uid).balance
+            db.execute(rv.wallet_runtime_state.update().values(epoch=epoch + 1))
+            db.commit()
+        count = launch.call_count
+        assert tick(oid, tokens)["status"] == "compensation_started"
+        try:
+            tick(oid, tokens)
+            raise AssertionError("old epoch hold released through new epoch")
+        except HTTPException as error:
+            assert error.detail == "wallet_epoch_changed"
+        with Factory() as db:
+            assert db.get(mp.ProvisioningOperation, oid).error_code == "wallet_epoch_changed"
+            assert db.get(models.User, uid).balance == held
+            assert db.query(mp.PaymentReservation).filter_by(operation_id=oid).one().state == "reserved"
+            db.execute(rv.wallet_runtime_state.update().values(epoch=epoch))  # Restore OWNED test fixture only.
+            db.commit()
+        assert launch.call_count == count
+        assert tick(oid, tokens)["state"] == "compensated"
+        release(tokens)
+        with Factory() as db:
+            gone = wallet_accounts.create_user_with_wallet(db, id=100000,
+                username="gone-target", balance=50, telegram_id=43)
+            db.commit()
+            gone_id = gone.id
+        request = request_for()
+        request.target_user_id = gone_id
+        request.intent.user = final.UserSnapshot(username="gone-target", telegram_id=43)
+        request.payers[0].id = gone_id
+        with Factory() as db:
+            resource_leases.begin_business(db)
+            result = prep.prepare(db, request, identity=host, **expected)
+            oid, tokens = result.operation.id, result.leases
+            db.commit()
+        with Factory() as db:
+            # Owned scratch row only: simulate external disappearance after
+            # T1. Use an isolated ID so SQLite's later ID reuse does not alias
+            # this deliberately stranded account in unrelated scenarios.
+            db.execute(models.User.__table__.delete().where(models.User.id == gone_id))
+            db.commit()
+        count = launch.call_count
+        assert tick(oid, tokens)["status"] == "compensation_started"
+        with Factory() as db:
+            assert db.get(mp.ProvisioningOperation, oid).error_code == "target_user_missing"
+            assert db.query(mp.PaymentReservation).filter_by(operation_id=oid).one().state == "reserved"
+        assert launch.call_count == count
+        release(tokens)  # No replacement customer / guessed refund is created.
         for kind in worker.KINDS:
             oid, tokens = prepared(kind)
             try:

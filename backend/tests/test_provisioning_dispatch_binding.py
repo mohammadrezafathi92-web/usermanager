@@ -121,6 +121,23 @@ def scenario(engine, directory):
                 shared=False, timeout=0)
             verify = lambda request=request: fence.revalidate(reader, request, identity, mode_hold, node_hold, base_dir=directory)
             try:
+                def drain_refuses(callback):
+                    before = (op.state, op.version, step.state, step.version, step.remote_attempted)
+                    db.get(mp.ProvisioningRuntimeState, 1).owner_state = "draining"  # Owned CAS unit fixture.
+                    db.commit()
+                    db.rollback()
+                    resource_leases.begin_business(db)
+                    try:
+                        callback()
+                        raise AssertionError("parent started dispatch during drain")
+                    except HTTPException as error:
+                        assert error.status_code == 503 and error.detail == "provisioning_draining"
+                    finally:
+                        db.rollback()
+                    assert (op.state, op.version, step.state, step.version, step.remote_attempted) == before
+                    db.get(mp.ProvisioningRuntimeState, 1).owner_state = "active"
+                    db.commit()
+
                 def guarded_refusal():
                     try:
                         with ChildGuard(reader, request, identity, mode_hold, node_hold, base_dir=directory):
@@ -143,6 +160,7 @@ def scenario(engine, directory):
                     setattr(contract_row, field, previous)
                     db.commit()
                 db.rollback()
+                drain_refuses(lambda: parent_dispatch.snapshot(db, step.id, request.step_version, identity, [lease], recovery_read=True))
                 resource_leases.begin_business(db)
                 descriptor = parent_dispatch.snapshot(db, step.id, request.step_version, identity, [lease], recovery_read=True)
                 assert descriptor.params["recovery_read"] is True
@@ -171,6 +189,7 @@ def scenario(engine, directory):
                 step = db.get(mp.ProvisioningStep, request.step_id)
                 step.state = "staged"
                 db.commit()
+                drain_refuses(lambda: parent_dispatch.snapshot(db, request.step_id, request.step_version, identity, [lease], recovery_read=False))
                 db.rollback()
                 resource_leases.begin_business(db)
                 first_send = parent_dispatch.snapshot(db, request.step_id, request.step_version, identity,
@@ -365,6 +384,7 @@ def scenario(engine, directory):
                     .values(epoch=rv.wallet_runtime_state.c.epoch + 1))
                 db.commit()
                 db.rollback()
+                drain_refuses(lambda: parent_dispatch.compensation_snapshot(db, cleanup.step_id, cleanup.step_version, identity, [lease]))
                 resource_leases.begin_business(db)
                 cleanup_dto = parent_dispatch.compensation_snapshot(db, cleanup.step_id, cleanup.step_version, identity, [lease])
                 assert cleanup_dto.action_type in (remote_action.ActionType.WG_ENSURE_ABSENT,

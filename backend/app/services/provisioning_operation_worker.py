@@ -33,7 +33,7 @@ def _control(db, operation_id, identity, expected):
         .with_for_update(read=True))
     if mode != "durable":
         raise HTTPException(409, "provisioning_worker_owner_changed")
-    _runtime_control(db, identity, expected)
+    return _runtime_control(db, identity, expected)
 
 
 def _runtime_control(db, identity, expected):
@@ -48,6 +48,7 @@ def _runtime_control(db, identity, expected):
     panel = db.get(models.PanelSettings, 1, populate_existing=True)
     if panel is not None and panel.ha_enabled:
         raise HTTPException(503, "provisioning_ha_unsupported")
+    return runtime
 
 
 def _public(operation, status, step=None):
@@ -163,7 +164,7 @@ def tick(session_factory, operation_id, identity, tokens, *, installation_uuid, 
     expected = (installation_uuid, ownership_epoch)
     with session_factory() as db:
         leases.begin_business(db)
-        _control(db, operation_id, identity, expected)  # L1 before any L2/L4 locking.
+        runtime = _control(db, operation_id, identity, expected)  # L1 before any L2/L4 locking.
         leases.revalidate(db, tokens)
         if len({token.owner for token in tokens}) != 1 or not any(
                 token.resource_key == f"provisioning_op:{operation_id}" for token in tokens) or any(
@@ -220,6 +221,14 @@ def tick(session_factory, operation_id, identity, tokens, *, installation_uuid, 
             raise HTTPException(409, "provisioning_worker_state_invalid")
         if step.next_retry_at is not None and step.next_retry_at > now:
             result = _public(operation, "waiting", transitions.public_step(step))
+            db.commit()
+            return result
+        if runtime.owner_state == "draining":
+            # Already-returned remote results and DB-only finalization may
+            # finish during drain. Starting ANY new child (including read
+            # recovery / compensation) may not bypass the child gate's
+            # active-owner requirement or commit a false attempted marker.
+            result = _public(operation, "draining", transitions.public_step(step))
             db.commit()
             return result
         sid, version, recovery_read = step.id, step.version, step.state == "remote_calling"

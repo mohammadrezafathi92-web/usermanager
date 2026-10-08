@@ -149,6 +149,21 @@ def scenario(engine):
         assert worker.resume_one(Factory, oid, host, **expected)["status"] == "lease_busy"
         assert launch.call_count == count
         release(initial)  # Simulated graceful loss of the original executor.
+        with Factory() as db:
+            db.get(mp.ProvisioningRuntimeState, 1).owner_state = "draining"
+            step_before = db.query(mp.ProvisioningStep).filter_by(operation_id=oid).one()
+            saved_step = (step_before.state, step_before.version, step_before.remote_attempted)
+            held_balance = db.get(models.User, uid).balance
+            db.commit()
+        assert due.recover_due_once(Factory, host, after_id=oid - 1, **expected)["status"] == "draining"
+        assert launch.call_count == count
+        with Factory() as db:
+            step_after = db.query(mp.ProvisioningStep).filter_by(operation_id=oid).one()
+            assert (step_after.state, step_after.version, step_after.remote_attempted) == saved_step
+            assert db.get(models.User, uid).balance == held_balance
+            assert db.query(mp.PaymentReservation).filter_by(operation_id=oid).one().state == "reserved"
+            db.get(mp.ProvisioningRuntimeState, 1).owner_state = "active"  # Owned fixture drain cancel.
+            db.commit()
         # A selection hint can lose the lease race. One attempt returns busy;
         # it must not spin or send any remote request on that stale hint.
         with patch.object(worker, "reacquire", side_effect=resource_leases.LeaseBusy("resource_lease_busy")) as claim:
@@ -179,6 +194,10 @@ def scenario(engine):
         with Factory() as db:
             assert all(row["lease_owner"] is None for row in db.execute(rv.resource_locks.select().where(
                 rv.resource_locks.c.resource_key.in_([token.resource_key for token in initial]))).mappings())
+            # The remote step is now committed. DB-only completion is still
+            # allowed under drain, without another child / node mutation.
+            db.get(mp.ProvisioningRuntimeState, 1).owner_state = "draining"
+            db.commit()
         def final_crash(db):
             if db.get(mp.ProvisioningOperation, oid).state == "completed":
                 raise RuntimeError("resume final commit crash")
@@ -198,6 +217,9 @@ def scenario(engine):
                 rv.resource_locks.c.resource_key.in_([token.resource_key for token in initial]))).mappings())
         assert due.recover_due_once(Factory, host, after_id=oid - 1, **expected)["state"] == "completed"
         assert due.recover_due_once(Factory, host, after_id=oid - 1, **expected)["status"] == "idle"
+        with Factory() as db:
+            db.get(mp.ProvisioningRuntimeState, 1).owner_state = "active"
+            db.commit()
         count = launch.call_count
         assert worker.resume_one(Factory, oid, host, **expected)["status"] == "terminal"
         assert launch.call_count == count

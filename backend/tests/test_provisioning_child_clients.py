@@ -22,7 +22,7 @@ fingerprint = factory.rules.endpoint_fingerprint({"n_" + key: value for key, val
 credentials = {key: "SECRET_SENTINEL" for key in factory.SECRET_FIELDS}
 credentials["xr_ssh_private_key"] = None
 for backend in ("mikrotik_wg", "softether", "xray_ssh", "threexui", "marzban", "marzneshin", "hiddify", "sui"):
-    binding = SimpleNamespace(node_id=7, backend=backend)
+    binding = SimpleNamespace(node_id=7, backend=backend, phase="forward")
     guard = object.__new__(factory.ChildGuard)  # Explicit unit proof fixture, not a host certificate.
     guard.check = lambda: binding
     guard._contract = json.dumps({"config_fingerprint": fingerprint})

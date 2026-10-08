@@ -75,6 +75,8 @@ def _scope(guard, *, allow_writes=True):
     if type(guard) is not ChildGuard:
         raise WriteAuthorityUnavailable("runner_guard_invalid")
     binding = guard.check()
+    if binding.phase == "deletion" and not guard.removal_sealed:
+        raise WriteAuthorityUnavailable("runner_removal_unsealed")
     current = _current.get()
     if current is not None:
         _require_guard(guard)

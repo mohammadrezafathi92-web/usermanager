@@ -23,6 +23,9 @@ from app.services.provisioning_child_database import ChildDatabase
 from app.services.provisioning_host import HostIdentity
 from app.services.marzneshin_client import sanitize_username
 from app.services import provisioning_child_recovery as recovery
+from app.services import provisioning_contracts as contracts, provisioning_child_clients as clients
+from app.services.provisioning_child_guard import ChildGuard, ChildGuardUnavailable
+from app.services.provisioning_removal_payload import RemovalPayload, RemovalPayloadUnavailable, IDENTITY_FIELDS
 
 # This batch only admits a committed readonly binding. It MUST NOT
 # accidentally make the existing presence/compensation action executable.
@@ -61,7 +64,8 @@ def scenario(engine, directory):
         for kind in ("delete_connection", "delete_purchase", "delete_user"):
             db.get(mp.ProvisioningTypeMode, kind).mode = "durable"
         outsider = models.User(username="other-customer")
-        db.add(outsider)
+        admin = models.AdminUser(username="fixture-admin", hashed_password="fixture")
+        db.add_all([outsider, admin])
         db.commit()
         mode = gate_locks.FileLock(gate_locks.mode_lock_path(namespace, directory)).acquire(shared=True, timeout=0)
         reader = ChildDatabase(engine.url)
@@ -79,6 +83,10 @@ def scenario(engine, directory):
                     if kind == "user" else models.UserStatus.active, purchases_blocked=kind == "user")
                 db.add_all([node, user])
                 db.flush()
+                db.add(mp.ProvisioningNodeContract(node_id=node.id, backend=backend, state="ready",
+                    adapter_version=contracts.adapter_version(), config_fingerprint=contracts.config_fingerprint(node),
+                    server_fingerprint="b" * 64, contract='{"not_exist":[]}',
+                    verified_by_admin_id=admin.id, verified_at=dt.datetime.utcnow()))
                 purchase = models.Purchase(user_id=user.id, quota_bytes=100)
                 db.add(purchase)
                 db.flush()
@@ -115,6 +123,67 @@ def scenario(engine, directory):
                 verify = lambda candidate=binding: fence.revalidate(reader, candidate, host, mode, hold, base_dir=directory)
                 try:
                     assert verify() == binding  # Disabled node/expired forward deadline do not abandon deletion.
+                    values = {name: getattr(step, name) for name in IDENTITY_FIELDS}
+                    credentials = dict(wg_private_key=None, password=None, uuid=step.staged_xr_uuid)
+                    payload = RemovalPayload.from_fields(values, credentials)
+                    assert "UUID-IDENTITY" not in repr(payload)
+                    assert fence.revalidate(reader, binding, host, mode, hold, base_dir=directory,
+                        removal_payload=payload) == binding
+                    def guard():
+                        return ChildGuard(reader, binding, host, mode, hold, base_dir=directory)
+                    public = {name: getattr(node, name) for name in clients.rules.ENDPOINT_FIELDS}
+                    public["type"] = node.type.value
+                    with guard() as unsealed:
+                        assert not unsealed.removal_sealed
+                        try:
+                            clients.build(unsealed, public, {name: None for name in clients.SECRET_FIELDS})
+                            raise AssertionError("client constructed without a removal seal")
+                        except clients.ChildClientUnavailable as error:
+                            assert str(error) == "child_client_removal_unsealed"
+                        assert unsealed.seal_removal(values, credentials) == binding
+                        assert unsealed.removal_sealed and unsealed.check() == binding
+                        # Caller dictionaries are detached, not the mutable
+                        # authority used by subsequent transport checks.
+                        original = values["wg_peer_name"]
+                        values["wg_peer_name"] = "changed-caller-dictionary"
+                        assert unsealed.check() == binding
+                        values["wg_peer_name"] = original
+                        assert unsealed.seal_removal(values, credentials) == binding
+                    wrong = {**values, "wg_peer_name": "another-peer"} if protocol == "wireguard" else (
+                        {**values, "account_username": "another-account"} if protocol == "softether" else
+                        {**values, "xr_email": "another-client"})
+                    for supplied_identity, supplied_credential in ((wrong, credentials), (values,
+                            {**credentials, "uuid": "another-object"}), (values,
+                            {**credentials, "password": "PASSWORD-MUST-NOT-TRAVEL"}),
+                            (values, {**credentials, "wg_private_key": "PRIVATE-MUST-NOT-TRAVEL"}),
+                            ({**values, "xr_panel_inbound_id": True}, credentials)):
+                        with guard() as rejected:
+                            try:
+                                rejected.seal_removal(supplied_identity, supplied_credential)
+                                raise AssertionError("wrong removal payload sealed")
+                            except ChildGuardUnavailable:
+                                pass
+                            assert not rejected.removal_sealed
+                            try:
+                                rejected.check()
+                                raise AssertionError("broken removal guard reused")
+                            except ChildGuardUnavailable:
+                                pass
+                    with guard() as pinned:
+                        pinned.seal_removal(values, credentials)
+                        # Even a field not used by this protocol's adapter
+                        # must stay sealed. An unchanged DB version cannot
+                        # silently substitute another descriptor after seal.
+                        prior = step.account_username
+                        step.account_username = "post-seal-drift"
+                        db.commit()
+                        try:
+                            pinned.check()
+                            raise AssertionError("post-seal committed drift accepted")
+                        except ChildGuardUnavailable:
+                            pass
+                        step.account_username = prior
+                        db.commit()
                     refused(lambda: verify(replace(binding, phase="forward")))
                     refused(lambda: verify(replace(binding, phase="compensation")))
                     refused(lambda: verify(replace(binding, operation_version=binding.operation_version + 1)))

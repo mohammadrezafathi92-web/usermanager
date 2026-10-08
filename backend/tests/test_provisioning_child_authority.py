@@ -107,6 +107,14 @@ with authority._runner_context(os.getppid()):
         refused(lambda: authority._scope(guard, allow_writes=1).__enter__())
         assert authority._registry == {}
 assert authority._runner.get() is None
+unsealed_binding = replace(binding, phase="deletion")
+unsealed = object.__new__(ChildGuard)  # Explicit negative unit fixture, never DB/host proof.
+unsealed.binding, unsealed._entered, unsealed._broken, unsealed._removal_payload = unsealed_binding, True, False, None
+unsealed.check = lambda: unsealed_binding
+with authority._runner_context(os.getppid()), patch.object(authority, "_protected_parent", return_value=True):
+    refused(lambda: authority._scope(unsealed).__enter__())
+    refused(lambda: authority._scope(unsealed, allow_writes=False).__enter__())
+    assert authority._registry == {} and authority._current.get() is None
 if sys.platform.startswith("linux"):
     assert arm_parent_death_signal()
     assert authority._protected_parent(os.getppid())

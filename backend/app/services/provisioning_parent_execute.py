@@ -26,7 +26,7 @@ def _configured_source(expected_url):
 
 def execute_one(session_factory, step_id, version, identity, leases, *, recovery_read, expected_owner=None):
     return _execute(session_factory, step_id, version, identity, leases,
-        recovery_read=recovery_read, compensation=False, expected_owner=expected_owner)
+        recovery_read=recovery_read, phase="forward", expected_owner=expected_owner)
 
 
 def execute_compensation(session_factory, step_id, version, identity, leases, *, expected_owner=None):
@@ -36,16 +36,25 @@ def execute_compensation(session_factory, step_id, version, identity, leases, *,
     operation finalization or refund. Caller owns and retains its leases.
     """
     return _execute(session_factory, step_id, version, identity, leases,
-        recovery_read=False, compensation=True, expected_owner=expected_owner)
+        recovery_read=False, phase="compensation", expected_owner=expected_owner)
 
 
-def _execute(session_factory, step_id, version, identity, leases, *, recovery_read, compensation, expected_owner):
+def execute_removal(session_factory, step_id, version, identity, leases, *, expected_owner=None):
+    """One private durable deletion cycle; no DB finalizer or live caller."""
+    return _execute(session_factory, step_id, version, identity, leases,
+        recovery_read=False, phase="deletion", expected_owner=expected_owner)
+
+
+def _execute(session_factory, step_id, version, identity, leases, *, recovery_read, phase, expected_owner):
+    if phase not in ("forward", "compensation", "deletion"):
+        raise HTTPException(422, "provisioning_dispatch_invalid")
     tokens = tuple(leases)
     with session_factory() as db:
         expected_url = db.get_bind().url
         _configured_source(expected_url)
         resource_leases.begin_business(db)
-        dto = (dispatch.compensation_snapshot(db, step_id, version, identity, tokens) if compensation else
+        dto = (dispatch.compensation_snapshot(db, step_id, version, identity, tokens) if phase == "compensation" else
+            dispatch.deletion_snapshot(db, step_id, version, identity, tokens) if phase == "deletion" else
             dispatch.snapshot(db, step_id, version, identity, tokens, recovery_read=recovery_read))
         if expected_owner is not None and (type(expected_owner) is not tuple or len(expected_owner) != 2 or
                 type(expected_owner[1]) is not int or (dto.fencing["installation_uuid"],

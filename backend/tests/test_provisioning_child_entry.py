@@ -71,10 +71,16 @@ with patch.object(authority, "_protected_parent", return_value=True), authority.
                     with patch.object(absent, "ensure_absent", return_value=expected) as remove, (
                             patch.object(recovery, "read_present")) as read, patch.object(present, "ensure_present") as write:
                         assert entry.compensate(cleanup) is expected
-                        remove.assert_called_once_with(cleanup, guard)
+                        remove.assert_called_once_with(cleanup, guard, phase="compensation")
                         read.assert_not_called()
                         write.assert_not_called()
                     assert constructor.return_value.dispose.call_count == 3
+                    deletion = replace(cleanup,
+                        fencing={"binding": asdict(replace(binding, phase="deletion"))})
+                    with patch.object(absent, "ensure_absent", return_value=expected) as remove:
+                        assert entry.absent(deletion) is expected
+                        remove.assert_called_once_with(deletion, guard, phase="deletion")
+                    assert constructor.return_value.dispose.call_count == 4
                     constructor.return_value.dispose.side_effect = RuntimeError("SECRET")
                     with patch.object(recovery, "read_present", return_value=expected):
                         refused(lambda: entry.forward(dto))

@@ -26,7 +26,7 @@ class RecoveryUnavailable(RuntimeError):
 
 
 def _validate(dto, guard, *, recovery_read=True, phase="forward"):
-    if type(phase) is not str or phase not in ("forward", "compensation"):
+    if type(phase) is not str or phase not in ("forward", "compensation", "deletion"):
         raise RecoveryUnavailable("child_recovery_binding_invalid")
     if type(dto) is not remote_action.RemoteActionDTO or type(guard) is not ChildGuard:
         raise RecoveryUnavailable("child_recovery_invalid")
@@ -39,7 +39,7 @@ def _validate(dto, guard, *, recovery_read=True, phase="forward"):
     expected_action = (remote_action.ActionType.WG_ENSURE_PRESENT if binding.backend == "mikrotik_wg" else
         remote_action.ActionType.SOFTETHER_ENSURE_PRESENT if binding.backend == "softether" else
         remote_action.ActionType.XRAY_ENSURE_PRESENT)
-    if phase == "compensation":
+    if phase in ("compensation", "deletion"):
         expected_action = (remote_action.ActionType.WG_ENSURE_ABSENT if binding.backend == "mikrotik_wg" else
             remote_action.ActionType.SOFTETHER_ENSURE_ABSENT if binding.backend == "softether" else
             remote_action.ActionType.XRAY_ENSURE_ABSENT)
@@ -54,6 +54,11 @@ def _validate(dto, guard, *, recovery_read=True, phase="forward"):
             set(dto.credential) != CREDENTIAL_FIELDS) or set(dto.node_secrets) != clients.SECRET_FIELDS or (
             dto.contract != guard.contract["contract"]):
         raise RecoveryUnavailable("child_recovery_binding_invalid")
+    if phase == "deletion":
+        try:
+            guard.seal_removal(dto.identity, dto.credential)
+        except Exception:
+            raise RecoveryUnavailable("child_recovery_binding_invalid") from None
     return binding
 
 

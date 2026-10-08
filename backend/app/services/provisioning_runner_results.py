@@ -33,7 +33,9 @@ def record(db, binding, identity, leases, expected_action_id, result, *, recover
         raise HTTPException(422, "provisioning_runner_result_invalid") from None
     if result.action_id != expected_action_id or result.schema_version != SCHEMA_VERSION:
         raise HTTPException(409, "provisioning_runner_result_mismatch")
-    forward = binding.phase == "forward"
+    forward, deleting = binding.phase == "forward", binding.phase == "deletion"
+    if binding.phase not in ("forward", "compensation", "deletion"):
+        raise HTTPException(422, "provisioning_runner_result_invalid")
     convergence = result.error_code == "remote_convergence_required"
     if convergence and (not forward or not recovery_read or result.outcome != Outcome.UNREADABLE or result.write_attempted):
         raise HTTPException(422, "provisioning_runner_result_invalid")
@@ -74,11 +76,15 @@ def record(db, binding, identity, leases, expected_action_id, result, *, recover
         raise HTTPException(409, "provisioning_lease_scope_invalid")
     resource_leases.revalidate(db, tokens)
     operation, step = transitions._step(db, binding.step_id, binding.step_version)
+    expected_direction = "remove" if deleting else "create"
+    valid_kinds = (("delete_user", "delete_purchase", "delete_connection") if deleting else
+                   ("create_user", "purchase", "add_connection"))
+    valid_states = (("provisioning",) if forward or deleting else ("compensating", "cleanup_required"))
+    expected_step = "remote_calling" if forward or deleting else "compensating"
     if (operation.id, operation.version, step.node_id, step.backend, step.direction) != (
-            binding.operation_id, binding.operation_version, binding.node_id, binding.backend, "create") or (
-            operation.operation_type not in ("create_user", "purchase", "add_connection")) or (
-            operation.state not in (("provisioning",) if forward else ("compensating", "cleanup_required"))) or (
-            step.state != ("remote_calling" if forward else "compensating")) or not step.remote_attempted:
+            binding.operation_id, binding.operation_version, binding.node_id, binding.backend, expected_direction) or (
+            operation.operation_type not in valid_kinds) or operation.state not in valid_states or (
+            step.state != expected_step) or not step.remote_attempted:
         raise HTTPException(409, "provisioning_runner_result_stale")
     if forward and result.outcome in (Outcome.SUCCEEDED, Outcome.ALREADY_PRESENT_VERIFIED):
         return transitions.confirm_present(db, step.id, step.version,
@@ -90,10 +96,14 @@ def record(db, binding, identity, leases, expected_action_id, result, *, recover
         # blindly. Old result/dispatch versions are no longer usable.
         return transitions._write_step(db, step, "staged", error_code="remote_convergence_required", next_retry_at=None)
     if result.outcome == Outcome.ABSENT_VERIFIED:
+        if deleting:
+            return transitions.confirm_removed(db, step.id, step.version, AbsentOutcome(result.remote_outcome))
         if forward:
             return transitions.recover_read(db, step.id, step.version, ReadResult(ReadState.ABSENT))
         return transitions.confirm_absent(db, step.id, step.version, AbsentOutcome(result.remote_outcome))
     if result.outcome == Outcome.CONFLICT:
+        if deleting:
+            return transitions.confirm_removed(db, step.id, step.version, AbsentOutcome.UNVERIFIED)
         if forward:
             return transitions.recover_read(db, step.id, step.version, ReadResult(ReadState.PRESENT_CONFLICT))
         return transitions.confirm_absent(db, step.id, step.version, AbsentOutcome.UNVERIFIED)

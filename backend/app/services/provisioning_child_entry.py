@@ -34,15 +34,28 @@ def locked_context(mode_hold, node_hold):
 
 
 def forward(dto):
-    return _run(dto, compensation=False)
+    return _run(dto, phase="forward")
 
 
 def compensate(dto):
     """Guarded runner entry for the exact stored cleanup identity."""
-    return _run(dto, compensation=True)
+    return _run(dto, phase="compensation")
 
 
-def _run(dto, *, compensation):
+def absent(dto):
+    """Route the shared ensure-absent action by its sealed state-machine phase."""
+    try:
+        phase = dto.fencing["binding"]["phase"]
+    except Exception:
+        raise ChildEntryUnavailable("child_entry_phase_invalid") from None
+    if phase not in ("compensation", "deletion"):
+        raise ChildEntryUnavailable("child_entry_phase_invalid")
+    return _run(dto, phase=phase)
+
+
+def _run(dto, *, phase):
+    if phase not in ("forward", "compensation", "deletion"):
+        raise ChildEntryUnavailable("child_entry_phase_invalid")
     authority._role()  # Linux kernel protection before DB access or client imports.
     holds = _holds.get()
     if holds is None or holds[:2] != (os.getpid(), threading.get_ident()):
@@ -61,9 +74,9 @@ def _run(dto, *, compensation):
         identity = read_identity()
         database = ChildDatabase(trusted_url)
         with ChildGuard(database, binding, identity, holds[2], holds[3]) as guard:
-            if compensation:
+            if phase in ("compensation", "deletion"):
                 from . import provisioning_child_absent as absent
-                return absent.ensure_absent(dto, guard)
+                return absent.ensure_absent(dto, guard, phase=phase)
             if dto.params.get("recovery_read") is True:
                 return recovery.read_present(dto, guard)
             return present.ensure_present(dto, guard)

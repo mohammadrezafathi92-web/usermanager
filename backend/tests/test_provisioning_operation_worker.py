@@ -36,7 +36,7 @@ def scenario(engine):
         runtime.ownership_epoch, runtime.gate_mode = 1, "enforced"  # Owned test fixture, never a live control API.
         runtime.lock_backend = "flock" if engine.dialect.name == "sqlite" else "flock+get_lock"
         admin = models.AdminUser(username="owner", hashed_password="test", balance=100)
-        user = wallet_accounts.create_user_with_wallet(db, username="payer", balance=100, telegram_id=42)
+        user = wallet_accounts.create_user_with_wallet(db, username="payer", balance=250, telegram_id=42)
         package = models.Package(name="package", quota_gb=1, duration_days=30, price=25)
         node = models.Node(name="fake-node", type=models.NodeType.mikrotik, enabled=True,
             mt_wireguard_interface="wg0", mt_client_subnet="10.1.0.0/24")
@@ -52,7 +52,7 @@ def scenario(engine):
         db.commit()
     expected = dict(installation_uuid=installation, ownership_epoch=1)
 
-    def prepared(kind="purchase"):
+    def request_for(kind="purchase"):
         with Factory() as db:
             request = prep.Preparation(operation_type=kind, business_key=str(uuid.uuid4()),
                 tenant_scope_key=wallet_accounts.tenant_scope(db, aid if kind == "create_user" else None),
@@ -65,7 +65,11 @@ def scenario(engine):
                 slots=[prep.Slot(slot_key="wg", node_id=nid, protocol="wireguard")],
                 payers=[] if kind == "add_connection" else [prep.Payer(kind="reseller_credit" if kind == "create_user" else "customer_wallet",
                     id=aid if kind == "create_user" else uid, amount=25)])
-            db.rollback()
+            return request
+
+    def prepared(kind="purchase"):
+        request = request_for(kind)
+        with Factory() as db:
             resource_leases.begin_business(db)
             result = prep.prepare(db, request, identity=host, **expected)
             oid, tokens = result.operation.id, result.leases
@@ -169,6 +173,49 @@ def scenario(engine):
         count = launch.call_count
         assert worker.resume_one(Factory, oid, host, **expected)["status"] == "terminal"
         assert launch.call_count == count
+        # A full initial request now follows the same recovery path after T1.
+        # A failed T1 has nothing to release; retry reuses a committed row.
+        request = request_for()
+        with Factory() as db:
+            balance_before = db.get(models.User, uid).balance
+        def prepare_crash(db):
+            row = db.query(mp.ProvisioningOperation).filter_by(business_key=request.business_key).first()
+            if row is not None and row.state == "prepared":
+                raise RuntimeError("start T1 commit crash")
+        event.listen(Factory.class_, "before_commit", prepare_crash)
+        try:
+            with patch.object(resource_leases, "release", wraps=resource_leases.release) as release_spy:
+                try:
+                    worker.start_once(Factory, request, host, **expected)
+                    raise AssertionError("T1 crash missed")
+                except RuntimeError:
+                    pass
+                assert release_spy.call_count == 0, "rolled-back T1 tokens were released"
+        finally:
+            event.remove(Factory.class_, "before_commit", prepare_crash)
+        with Factory() as db:
+            assert db.query(mp.ProvisioningOperation).filter_by(business_key=request.business_key).count() == 0
+            assert db.get(models.User, uid).balance == balance_before
+        started = worker.start_once(Factory, request, host, **expected)
+        assert started["step"]["state"] == "remote_created"
+        started_id = started["operation_id"]
+        altered = request.copy(deep=True)
+        altered.intent.sale.amount += 1
+        altered.payers[0].amount += 1
+        try:
+            worker.start_once(Factory, altered, host, **expected)
+            raise AssertionError("changed request replay accepted")
+        except HTTPException as error:
+            assert error.detail == "provisioning_request_changed"
+        completed = worker.start_once(Factory, request, host, **expected)
+        assert completed["operation_id"] == started_id and completed["state"] == "completed"
+        count = launch.call_count
+        assert worker.start_once(Factory, request, host, **expected)["status"] == "terminal"
+        assert launch.call_count == count
+        with Factory() as db:
+            assert db.get(models.User, uid).balance == balance_before - 25
+            assert db.query(mp.ProvisioningOperation).filter_by(business_key=request.business_key).count() == 1
+            assert db.query(mp.PaymentReservation).filter_by(operation_id=started_id).count() == 1
         for kind in worker.KINDS:
             oid, tokens = prepared(kind)
             try:

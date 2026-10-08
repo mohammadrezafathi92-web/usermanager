@@ -17,6 +17,7 @@ from .. import models, models_provisioning as mp, models_receipt_void as rv
 from . import resource_leases as leases, provisioning_schema, wallet_service
 from . import provisioning_transitions as transitions, provisioning_finalization as final
 from . import provisioning_compensation as compensation, provisioning_parent_execute as execute
+from . import provisioning_preparation as preparation
 from .provisioning_host import HostIdentity
 
 KINDS = ("create_user", "purchase", "add_connection")
@@ -230,3 +231,36 @@ def resume_one(session_factory, operation_id, identity, *, installation_uuid, ow
             for token in tokens:
                 leases.release(db, token)
             db.commit()
+
+
+def start_once(session_factory, request, identity, *, installation_uuid, ownership_epoch,
+               actor_kind="system", actor_id=None):
+    """Private bounded entry: commit T1, then advance/recover one iteration.
+
+    Caller must authenticate/authorize the actor and build a trusted request.
+    Same business key / request hash reuses the committed operation, not its
+    benefit, identity or payment reservation. No API or scheduler calls this.
+    Renewals are deliberately excluded until post-commit reconciliation has
+    its own guarded path. Failed T1 never releases rolled-back lease tokens.
+    """
+    if not isinstance(request, preparation.Preparation) or request.operation_type not in KINDS:
+        raise HTTPException(422, "provisioning_worker_invalid")
+    expected = dict(installation_uuid=installation_uuid, ownership_epoch=ownership_epoch)
+    with session_factory() as db:
+        execute._configured_source(db.get_bind().url)
+        leases.begin_business(db)
+        prepared = preparation.prepare(db, request, identity=identity, actor_kind=actor_kind,
+            actor_id=actor_id, **expected)
+        operation_id, tokens = prepared.operation.id, prepared.leases
+        terminal = _public(prepared.operation, "terminal") if prepared.operation.state in transitions.TERMINAL else None
+        db.commit()
+    # Reached ONLY after a successful T1 commit. A rollback can reuse IDs and
+    # epochs later; its discarded tokens must never be released by this code.
+    if tokens:
+        with session_factory() as db:
+            for token in tokens:
+                leases.release(db, token)
+            db.commit()
+    if terminal is not None:
+        return terminal
+    return resume_one(session_factory, operation_id, identity, **expected)

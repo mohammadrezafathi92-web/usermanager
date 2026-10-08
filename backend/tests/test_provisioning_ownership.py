@@ -19,7 +19,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import OperationalError
-from app import models, models_provisioning as mp
+from app import models, models_provisioning as mp, models_receipt_void as rv
 from app.services import provisioning_schema, receipt_void_schema, provisioning_ownership as owner
 from app.services import provisioning_lock_verification as verification, gate_locks, resource_leases
 from app.services.provisioning_host import HostIdentity, OwnershipMismatch, validate_snapshot
@@ -196,6 +196,11 @@ def scenario(engine, base_dir):
         version = db.get(mp.ProvisioningRuntimeState, 1).version
         audit_count = db.query(mp.ProvisioningOwnershipEvent).count()
         db.rollback()
+        resource_leases.begin_business(db)
+        refused("ownership_takeover_invalid", lambda: owner.forced_takeover(db, stranger, version, hold,
+            reason="vacant owner must use ordinary claim", confirmation=owner.TAKEOVER_CONFIRMATION,
+            second_confirmation=True, **arguments))
+        db.rollback()
         barrier, outcomes, errors = threading.Barrier(2), [], []
 
         def competitor(candidate):
@@ -239,15 +244,94 @@ def scenario(engine, base_dir):
         assert row.owner_host_id == next(host for result, host in outcomes if result == "claimed")
         assert db.query(mp.ProvisioningOwnershipEvent).count() == audit_count + 1
         db.rollback()
+        # Explicit different-host takeover. Unlike graceful release it can
+        # preserve unfinished work, but never clears holds/secrets/DB leases.
+        row = db.get(mp.ProvisioningRuntimeState, 1)
+        old_host, old_boot, old_epoch, old_version = row.owner_host_id, row.owner_boot_id, row.ownership_epoch, row.version
+        row.gate_mode = "enforced"
+        row.owner_heartbeat_at = dt.datetime.utcnow()  # Fresh heartbeat cannot authorize takeover.
+        operation = mp.ProvisioningOperation(operation_type="purchase", business_key="unfinished",
+            request_hash="c" * 64, tenant_scope_key="global", actor_kind="system", intent="{}",
+            state="prepared", forward_deadline=dt.datetime.utcnow() + dt.timedelta(days=1), wallet_epoch_at_start=0)
+        db.add(operation)
+        db.flush()
+        operation_id = operation.id
+        db.add(mp.ProvisioningStep(operation_id=operation_id, slot_key="ppp", step_order=0,
+            direction="create", backend="radius_ppp", node_id=1, protocol="pptp", state="staged",
+            staged_password="retained-secret"))
+        db.execute(rv.resource_locks.insert().values(resource_key=f"provisioning_op:{operation_id}",
+            lease_owner=f"op:{operation_id}:1", fencing_epoch=9,
+            leased_until=dt.datetime.utcnow() + dt.timedelta(minutes=5)))
+        db.commit()
+        candidate = replace(proof, identity=HostIdentity("d" * 64, str(uuid.uuid4())), checked_at=dt.datetime.utcnow())
+        takeover = dict(reason="explicit lost-host recovery", confirmation=owner.TAKEOVER_CONFIRMATION,
+            second_confirmation=True, **arguments)
+        for overrides, code in ((dict(confirmation=""), "ownership_takeover_confirmation_required"),
+                (dict(reason=" "), "ownership_takeover_confirmation_required"),
+                (dict(second_confirmation=False), "ownership_takeover_second_confirmation_required"),
+                (dict(second_confirmation=1), "ownership_takeover_second_confirmation_required"),
+                (dict(actor_admin_id=other_id), "ownership_superadmin_required")):
+            resource_leases.begin_business(db)
+            refused(code, lambda: owner.forced_takeover(db, candidate, old_version, hold, **(takeover | overrides)))
+            db.rollback()
+        same_host = replace(candidate, identity=HostIdentity(old_host, str(uuid.uuid4())))
+        resource_leases.begin_business(db)
+        refused("ownership_takeover_invalid", lambda: owner.forced_takeover(db, same_host, old_version, hold, **takeover))
+        db.rollback()
+        resource_leases.begin_business(db)
+        refused("ownership_held", lambda: owner.forced_takeover(db, candidate, old_version + 1, hold, **takeover))
+        db.rollback()
+        event.listen(db, "before_flush", crash_audit)
+        resource_leases.begin_business(db)
+        try:
+            owner.forced_takeover(db, candidate, old_version, hold, **takeover)
+            raise AssertionError("takeover audit crash missed")
+        except RuntimeError:
+            db.rollback()
+        finally:
+            event.remove(db, "before_flush", crash_audit)
+        row = db.get(mp.ProvisioningRuntimeState, 1)
+        assert (row.owner_host_id, row.owner_boot_id, row.ownership_epoch, row.version) == (
+            old_host, old_boot, old_epoch, old_version)
+        assert db.query(mp.ProvisioningOwnershipEvent).filter_by(event_type="forced_takeover").count() == 0
+        db.rollback()
+        commits_before = len(commits)
+        resource_leases.begin_business(db)
+        row = owner.forced_takeover(db, candidate, old_version, hold, **takeover)
+        assert row.ownership_epoch == old_epoch + 1 and row.version == old_version + 1
+        assert row.gate_mode == "enforced" and row.owner_state == "active"
+        assert len(commits) == commits_before, "takeover performed an internal commit"
+        db.commit()
+        snapshot = db.execute(select(mp.ProvisioningRuntimeState.__table__)).mappings().one()
+        try:
+            validate_snapshot(snapshot, HostIdentity(old_host, old_boot), old_epoch, installation)
+            raise AssertionError("old host accepted after takeover")
+        except OwnershipMismatch:
+            pass
+        validate_snapshot(snapshot, candidate.identity, old_epoch + 1, installation)
+        audit = db.query(mp.ProvisioningOwnershipEvent).filter_by(event_type="forced_takeover").one()
+        assert (audit.from_host_id, audit.to_host_id, audit.actor_admin_id, audit.reason) == (
+            old_host, candidate.identity.host_id, root_id, takeover["reason"])
+        assert db.get(mp.ProvisioningOperation, operation_id).state == "prepared"
+        assert db.query(mp.ProvisioningStep).filter_by(operation_id=operation_id).one().staged_password == "retained-secret"
+        lock = db.execute(rv.resource_locks.select().where(
+            rv.resource_locks.c.resource_key == f"provisioning_op:{operation_id}")).mappings().one()
+        assert lock["lease_owner"] == f"op:{operation_id}:1" and lock["fencing_epoch"] == 9
+        db.rollback()
+        resource_leases.begin_business(db)
+        refused("ownership_held", lambda: owner.forced_takeover(db, candidate, old_version, hold, **takeover))
+        db.rollback()
+        assert db.query(mp.ProvisioningOwnershipEvent).filter_by(event_type="forced_takeover").count() == 1
+        db.rollback()
         hold.release()
         resource_leases.begin_business(db)
         try:
-            owner.claim(db, reboot, version + 1, hold, **arguments)
+            owner.claim(db, candidate, old_version + 1, hold, **arguments)
             raise AssertionError("released exclusive lock accepted")
         except verification.VerificationFailed as exc:
             assert str(exc) == "gate_mode_exclusive_required"
         db.rollback()
-        print("PASS", engine.dialect.name, "owner CAS, audit atomicity, no heartbeat takeover, explicit reboot fencing")
+        print("PASS", engine.dialect.name, "owner CAS, audit atomicity, explicit reboot/takeover fencing, pending work retained")
     finally:
         hold.release()
         db.close()

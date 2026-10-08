@@ -1,4 +1,4 @@
-"""Private explicit claim/reboot-reclaim CAS; no live ownership/mode API.
+"""Private explicit claim/reclaim/takeover CAS; no live ownership/mode API.
 
 Caller authenticates the password/confirmation, performs lock verification,
 keeps the exclusive mode lock held through ONE outer commit and rolls back
@@ -16,6 +16,7 @@ from . import gate_locks, provisioning_installation, provisioning_runtime_contra
 from .provisioning_lock_verification import VerifiedLocks, require_exclusive
 
 RECLAIM_CONFIRMATION = "process قبلی این نصب دیگر در حال اجرا نیست"
+TAKEOVER_CONFIRMATION = "host قبلی خاموش است و دوباره روشن نمی‌شود"
 
 
 def _ready(db, proof, mode_hold, actor_admin_id, version, base_dir):
@@ -108,6 +109,33 @@ def reclaim(db, proof, version, mode_hold, *, actor_admin_id, reason, confirmati
         owner_claimed_at=now, owner_heartbeat_at=now, ownership_epoch=row.ownership_epoch + 1,
         lock_backend=proof.backend, lock_verified_at=now, changed_at=now)
     return _write(db, row, values, "reclaim", actor_admin_id, audit)
+
+
+def forced_takeover(db, proof, version, mode_hold, *, actor_admin_id, reason, confirmation,
+                    second_confirmation, base_dir=None):
+    """Private explicit transfer to another host; ONE caller-owned commit.
+
+    Caller must verify the password and show the in-flight-call / fresh
+    heartbeat warning before obtaining a separate second confirmation.
+    Conservatively require it EVERY time: no guessed freshness threshold,
+    and an old heartbeat is never proof the old host stopped. The phrase is
+    a human attestation, NOT a technical guarantee or a process kill.
+    Keep operations, holds, credentials and resource leases unchanged.
+    Only the ownership epoch fences the former host's future dispatches and
+    result commits. This function has no API/startup/scheduler caller.
+    """
+    if confirmation != TAKEOVER_CONFIRMATION or not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 500:
+        raise HTTPException(422, "ownership_takeover_confirmation_required")
+    if second_confirmation is not True:
+        raise HTTPException(422, "ownership_takeover_second_confirmation_required")
+    row = _ready(db, proof, mode_hold, actor_admin_id, version, base_dir)
+    if row.owner_state not in ("active", "draining") or row.owner_host_id == proof.identity.host_id:
+        raise HTTPException(409, "ownership_takeover_invalid")
+    now = _clock(db)
+    return _write(db, row, dict(owner_state="active", owner_host_id=proof.identity.host_id,
+        owner_boot_id=proof.identity.boot_id, owner_claimed_at=now, owner_heartbeat_at=now,
+        ownership_epoch=row.ownership_epoch + 1, lock_backend=proof.backend, lock_verified_at=now,
+        changed_at=now), "forced_takeover", actor_admin_id, reason.strip())
 
 
 def _same(row, proof, state):

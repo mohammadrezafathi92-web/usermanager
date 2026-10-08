@@ -199,3 +199,34 @@ def tick(session_factory, operation_id, identity, tokens, *, installation_uuid, 
         if operation is None:
             raise HTTPException(409, "provisioning_operation_changed")
         return _public(operation, "step_recorded", step_result)
+
+
+def resume_one(session_factory, operation_id, identity, *, installation_uuid, ownership_epoch):
+    """One bounded recovery iteration, with caller-supplied trusted ownership.
+
+    No job scanning, scheduler registration or automatic ownership takeover.
+    Live leases return busy. Every remote result is committed (or the short
+    transaction rolled back) before releasing this iteration's DB leases.
+    Release never touches a child node gate and cannot release a newer owner.
+    Unknown writes retain the committed remote_calling marker for next time.
+    """
+    expected = dict(installation_uuid=installation_uuid, ownership_epoch=ownership_epoch)
+    try:
+        tokens = reacquire(session_factory, operation_id, identity, **expected)
+    except leases.LeaseBusy:
+        return dict(operation_id=operation_id, status="lease_busy")
+    if not tokens:
+        with session_factory() as db:
+            operation = db.get(mp.ProvisioningOperation, operation_id)
+            if operation is None or operation.state not in transitions.TERMINAL:
+                raise HTTPException(409, "provisioning_operation_changed")
+            return _public(operation, "terminal")
+    try:
+        return tick(session_factory, operation_id, identity, tokens, **expected)
+    finally:
+        # The tick's context managers close/roll back its business sessions
+        # before reaching here, including launcher or final commit failures.
+        with session_factory() as db:
+            for token in tokens:
+                leases.release(db, token)
+            db.commit()

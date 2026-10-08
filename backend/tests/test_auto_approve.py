@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import os
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATABASE_URL", "sqlite://")
@@ -106,7 +107,14 @@ def decide_with(row, pending, returning=False):
     auto_approve.SessionLocal = lambda: FakeDb()
     auto_approve._is_returning = lambda db, p: returning
     try:
-        return auto_approve.decide(pending)
+        # Pin the decision's clock too: the outside-window case must not
+        # turn into an allowed purchase when CI happens to run at 01:00.
+        class FixedDateTime(dt.datetime):
+            @classmethod
+            def utcnow(cls):
+                return cls(2026, 1, 1, 12, 0)
+        with patch.object(auto_approve.dt, "datetime", FixedDateTime):
+            return auto_approve.decide(pending)
     finally:
         auto_approve.SessionLocal = real_session
         auto_approve._is_returning = real_returning

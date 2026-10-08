@@ -68,6 +68,8 @@ def _snapshot(db, step_id, version, identity, leases, *, recovery_read, phase):
     if runtime is None or runtime.owner_state not in ("active", "draining") or runtime.gate_mode != "enforced" or (
             runtime.owner_host_id, runtime.owner_boot_id) != (identity.host_id, identity.boot_id):
         raise HTTPException(409, "provisioning_dispatch_owner_changed")
+    if runtime.owner_state == "draining":
+        raise HTTPException(503, "provisioning_draining")
     tokens = tuple(leases)
     if not tokens:
         raise HTTPException(409, "provisioning_lease_scope_invalid")

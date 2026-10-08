@@ -36,14 +36,19 @@ def get_customer_onboarding_config(
     db: Session = Depends(get_db), principal: BotPrincipal = Depends(get_bot_principal),
 ):
     _require_interactive_bot(principal)
-    row = db.get(models.BotSettings, 1)
     owner = db.get(models.AdminUser, principal.owner_admin_id) if principal.owner_admin_id else None
     if principal.owner_admin_id and owner is None:
         raise HTTPException(403, "مالک ربات پیدا نشد")
+    row = db.get(models.BotSettings, 1)
     result = {}
     for field in ("required_channel_id", "required_channel_url", "customer_terms_text"):
-        own_value = getattr(owner, "own_" + field) if owner else None
-        value = own_value if own_value is not None else getattr(row, field, "")
+        # Dedicated bots are independent tenants.  A missing per-owner value
+        # means "disabled", not "silently inherit the shared bot".  The old
+        # inheritance made every newly-created reseller bot try to inspect the
+        # shared channel with its own token; Telegram correctly answered
+        # "member list is inaccessible" even when that bot was an admin of its
+        # *own* channel.  Shared settings remain exclusive to the shared bot.
+        value = getattr(owner, "own_" + field) if owner else getattr(row, field, "")
         result[field] = (value or "").strip()
     return result
 

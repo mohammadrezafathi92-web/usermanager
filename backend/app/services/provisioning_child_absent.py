@@ -27,8 +27,8 @@ def _ensure(client, dto):
     return ensures[dto.backend](client, identity, dto.contract["not_exist"])
 
 
-def ensure_absent(dto, guard):
-    recovery._validate(dto, guard, recovery_read=False, phase="compensation")
+def ensure_absent(dto, guard, *, phase="compensation"):
+    recovery._validate(dto, guard, recovery_read=False, phase=phase)
     client = None
     attempted = False
     outcome, error, remote = remote_action.Outcome.TRANSPORT_ERROR, "remote_transport_error", None

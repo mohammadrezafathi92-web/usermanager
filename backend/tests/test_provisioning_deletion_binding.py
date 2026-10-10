@@ -1,4 +1,4 @@
-"""Read-only deletion binding: exact committed scope/identity, never dispatch."""
+"""Deletion binding/payload: exact committed scope and immutable identity."""
 import datetime as dt
 import json
 import os
@@ -7,6 +7,7 @@ import tempfile
 import uuid
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATABASE_URL", "sqlite://")
@@ -15,6 +16,7 @@ import _no_network
 _no_network.install([os.environ.get("MARIADB_TEST_URL", "")])
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from fastapi import HTTPException
 from app import models, models_provisioning as mp
 from app.services import gate_locks, provisioning_schema, receipt_void_schema, resource_leases
 from app.services import provisioning_deletion as deletion, provisioning_dispatch_binding as fence
@@ -22,19 +24,11 @@ from app.services import provisioning_installation as installation
 from app.services.provisioning_child_database import ChildDatabase
 from app.services.provisioning_host import HostIdentity
 from app.services.marzneshin_client import sanitize_username
-from app.services import provisioning_child_recovery as recovery
+from app.services import provisioning_child_recovery as recovery, provisioning_parent_dispatch as parent_dispatch
+from app.services import provisioning_parent_execute as parent_execute, remote_action
 from app.services import provisioning_contracts as contracts, provisioning_child_clients as clients
 from app.services.provisioning_child_guard import ChildGuard, ChildGuardUnavailable
 from app.services.provisioning_removal_payload import RemovalPayload, RemovalPayloadUnavailable, IDENTITY_FIELDS
-
-# This batch only admits a committed readonly binding. It MUST NOT
-# accidentally make the existing presence/compensation action executable.
-try:
-    recovery._validate(None, None, phase="deletion")
-    raise AssertionError("deletion runner enabled before action/result integration")
-except recovery.RecoveryUnavailable as error:
-    assert str(error) == "child_recovery_binding_invalid"
-
 
 def refused(callback):
     try:
@@ -101,12 +95,12 @@ def scenario(engine, directory):
                 operation = mp.ProvisioningOperation(operation_type="delete_" + kind, business_key=str(uuid.uuid4()),
                     request_hash="a" * 64, tenant_scope_key="shared", actor_kind="system", target_user_id=user.id,
                     intent=deletion.snapshot(kind, target, [connection], purchase_ids=[purchase.id]),
-                    state="provisioning", forward_deadline=dt.datetime.utcnow() - dt.timedelta(days=1), wallet_epoch_at_start=0)
+                    state="prepared", forward_deadline=dt.datetime.utcnow() - dt.timedelta(days=1), wallet_epoch_at_start=0)
                 db.add(operation)
                 db.flush()
                 step = mp.ProvisioningStep(operation_id=operation.id, connection_id=connection.id, node_id=node.id,
                     slot_key="remove", step_order=0, direction="remove", protocol=protocol, backend=backend,
-                    state="remote_calling", remote_attempted=True, wg_interface=node.mt_wireguard_interface,
+                    state="staged", remote_attempted=False, wg_interface=node.mt_wireguard_interface,
                     wg_peer_name=connection.wg_peer_name, wg_public_key=connection.wg_public_key,
                     wg_client_address=connection.wg_client_address, xr_email=connection.xr_email,
                     staged_xr_uuid=connection.xr_uuid if protocol == "xray" else None,
@@ -117,8 +111,17 @@ def scenario(engine, directory):
                 db.commit()
                 lease = resource_leases.acquire(db, f"provisioning_op:{operation.id}", f"op:{operation.id}:1", ttl=300)
                 db.commit()
-                binding = fence.DispatchBinding(namespace, 1, 1, operation.id, operation.version, step.id, step.version,
-                    node.id, backend, lease.owner, lease.epoch, "deletion")
+                resource_leases.begin_business(db)
+                descriptor = parent_dispatch.deletion_snapshot(db, step.id, step.version, host, [lease])
+                binding = fence.DispatchBinding(**descriptor.fencing["binding"])
+                assert binding.phase == "deletion" and descriptor.params["recovery_read"] is False
+                assert descriptor.credential["password"] is None and descriptor.credential["wg_private_key"] is None
+                assert descriptor.credential["uuid"] == step.staged_xr_uuid
+                assert descriptor.action_type.value.endswith("ensure_absent")
+                db.commit()  # remote_calling is durable before any child could start.
+                db.refresh(operation)
+                db.refresh(step)
+                assert (operation.state, step.state, step.remote_attempted) == ("provisioning", "remote_calling", True)
                 hold = gate_locks.FileLock(gate_locks.node_lock_path(namespace, node.id, directory)).acquire(shared=False, timeout=0)
                 verify = lambda candidate=binding: fence.revalidate(reader, candidate, host, mode, hold, base_dir=directory)
                 try:
@@ -149,6 +152,22 @@ def scenario(engine, directory):
                         assert unsealed.check() == binding
                         values["wg_peer_name"] = original
                         assert unsealed.seal_removal(values, credentials) == binding
+                    child_descriptor = replace(descriptor, fencing={**descriptor.fencing,
+                        "expected_parent_pid": os.getppid()})
+                    with guard() as validated:
+                        assert recovery._validate(child_descriptor, validated,
+                            recovery_read=False, phase="deletion") == binding
+                        assert validated.removal_sealed
+                    with guard() as tampered:
+                        wrong_descriptor = replace(child_descriptor, identity={**descriptor.identity,
+                            "wg_peer_name": "wrong-object"})
+                        try:
+                            recovery._validate(wrong_descriptor, tampered,
+                                recovery_read=False, phase="deletion")
+                            raise AssertionError("tampered deletion DTO reached a client")
+                        except recovery.RecoveryUnavailable:
+                            pass
+                        assert not tampered.removal_sealed
                     wrong = {**values, "wg_peer_name": "another-peer"} if protocol == "wireguard" else (
                         {**values, "account_username": "another-account"} if protocol == "softether" else
                         {**values, "xr_email": "another-client"})
@@ -228,8 +247,60 @@ def scenario(engine, directory):
                         drift(operation, "intent", json.dumps(changed))
                     # No loss of versions: this is purely a SELECT proof,
                     # never a marker write, remote result or record removal.
-                    assert (operation.version, step.version, step.state) == (0, 0, "remote_calling")
+                    assert (operation.version, step.version, step.state) == (
+                        binding.operation_version, binding.step_version, "remote_calling")
                     assert db.get(models.Connection, connection.id) is not None
+                    configured = {"DATABASE_URL": engine.url.render_as_string(hide_password=False)}
+                    with patch.dict(os.environ, configured), patch.object(parent_execute.remote_runner,
+                            "run_action", side_effect=lambda dto: remote_action.RemoteActionResult.killed_unknown(
+                                dto.action_id, "hard_deadline_exceeded")):
+                        unknown = parent_execute.execute_removal(Factory, step.id, step.version, host, [lease])
+                    assert unknown["state"] == "remote_calling" and unknown["error_code"] == "remote_result_unknown"
+                    assert unknown["next_retry_at"] is not None
+                    with patch.dict(os.environ, configured), patch.object(parent_execute.remote_runner,
+                            "run_action") as launch:
+                        try:
+                            parent_execute.execute_removal(Factory, step.id, unknown["version"], host, [lease])
+                            raise AssertionError("deletion retry bypassed committed backoff")
+                        except HTTPException as error:
+                            assert error.detail == "provisioning_retry_not_due"
+                        launch.assert_not_called()
+                    # End this session's old repeatable-read snapshot before
+                    # reloading the result written by execute_removal in its
+                    # own session. Otherwise MariaDB can return the pre-result
+                    # NULL here, making the assignment below a no-op while
+                    # the committed 30-second backoff remains in place.
+                    db.rollback()
+                    # The parent dispatch checks both retry clocks. Reset the
+                    # independently-owned scratch rows, then verify from a
+                    # fresh transaction before simulating the next result.
+                    step = db.get(mp.ProvisioningStep, step.id, populate_existing=True)
+                    step.next_retry_at = None
+                    operation = db.get(mp.ProvisioningOperation, operation.id, populate_existing=True)
+                    operation.next_retry_at = None
+                    db.commit()
+                    with Factory() as check:
+                        assert check.get(mp.ProvisioningStep, step.id).next_retry_at is None
+                        assert check.get(mp.ProvisioningOperation, operation.id).next_retry_at is None
+                    with patch.dict(os.environ, configured), patch.object(parent_execute.remote_runner,
+                            "run_action", side_effect=lambda dto: remote_action.RemoteActionResult(
+                                dto.action_id, remote_action.Outcome.CONFLICT, write_attempted=False,
+                                remote_outcome="unverified", error_code="remote_identity_conflict")):
+                        conflict = parent_execute.execute_removal(Factory, step.id, step.version, host, [lease])
+                    assert conflict["state"] == "cleanup_required"
+                    db.rollback()  # Result committed through a separate session; discard the old snapshot.
+                    assert db.get(mp.ProvisioningOperation, operation.id, populate_existing=True).state == "cleanup_required"
+                    step = db.get(mp.ProvisioningStep, step.id, populate_existing=True)
+                    with patch.dict(os.environ, configured), patch.object(parent_execute.remote_runner,
+                            "run_action", side_effect=lambda dto: remote_action.RemoteActionResult(
+                                dto.action_id, remote_action.Outcome.ABSENT_VERIFIED,
+                                write_attempted=True, remote_outcome="verified_absent")):
+                        public_step = parent_execute.execute_removal(Factory, step.id, step.version, host, [lease])
+                    assert public_step["state"] == "removed"
+                    assert public_step["remote_outcome"] == "verified_absent"
+                    db.rollback()  # Observe the second result from a new MariaDB transaction too.
+                    assert db.get(mp.ProvisioningOperation, operation.id, populate_existing=True).state == "provisioning"
+                    assert db.get(models.Connection, connection.id) is not None  # T_final is deliberately separate.
                 finally:
                     hold.release()
                     db.rollback()
@@ -243,7 +314,8 @@ def scenario(engine, directory):
         finally:
             reader.dispose()
             mode.release()
-    print("PASS", engine.dialect.name, "readonly deletion binding, eight adapters, three scopes and drift fences")
+    print("PASS", engine.dialect.name,
+        "deletion marker, sealed child descriptor, result retry, eight adapters and three scopes")
 
 
 with tempfile.TemporaryDirectory(prefix="um-delete-binding-") as directory:

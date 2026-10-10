@@ -20,6 +20,7 @@ from . import resource_leases, provisioning_schema, provisioning_transitions as 
 from . import provisioning_contracts as contracts, provisioning_contract_rules as rules
 from . import remote_action
 from . import wallet_service
+from . import provisioning_deletion
 from .provisioning_dispatch_binding import DispatchBinding
 from .provisioning_host import HostIdentity
 
@@ -43,9 +44,20 @@ def compensation_snapshot(db, step_id, version, identity, leases):
     return _snapshot(db, step_id, version, identity, leases, recovery_read=False, phase="compensation")
 
 
+def deletion_snapshot(db, step_id, version, identity, leases):
+    """Stored removal descriptor; no dispatch, finalization or commit.
+
+    A staged/cleanup-required step is marked remote_calling in this same
+    fenced transaction. A remote_calling retry only re-reads the committed
+    identity. ensure_absent is idempotent, so deletion never borrows the
+    create-compensation state machine.
+    """
+    return _snapshot(db, step_id, version, identity, leases, recovery_read=False, phase="deletion")
+
+
 def _snapshot(db, step_id, version, identity, leases, *, recovery_read, phase):
-    forward = phase == "forward"
-    if type(phase) is not str or phase not in ("forward", "compensation") or (
+    forward, deleting = phase == "forward", phase == "deletion"
+    if type(phase) is not str or phase not in ("forward", "compensation", "deletion") or (
             not isinstance(identity, HostIdentity)) or type(recovery_read) is not bool or type(step_id) is not int or (
             step_id < 1 or type(version) is not int or version < 0):
         raise HTTPException(422, "provisioning_dispatch_invalid")
@@ -75,10 +87,16 @@ def _snapshot(db, step_id, version, identity, leases, *, recovery_read, phase):
         raise HTTPException(409, "provisioning_lease_scope_invalid")
     resource_leases.revalidate(db, tokens)
     operation, step = transitions._step(db, step_id, version)
-    expected_state = ("remote_calling" if recovery_read else "staged") if forward else "compensating"
-    if operation.operation_type != kind or kind not in ("create_user", "purchase", "add_connection") or step.direction != "create" or (
-            operation.state not in (("prepared", "provisioning") if forward else ("compensating",)) or
-            step.state != expected_state or (not forward and not step.remote_attempted)):
+    expected_state = (("remote_calling" if recovery_read else "staged") if forward else
+                      ("staged", "cleanup_required", "remote_calling") if deleting else "compensating")
+    valid_kinds = (("delete_user", "delete_purchase", "delete_connection") if deleting else
+                   ("create_user", "purchase", "add_connection"))
+    valid_operation_states = (("prepared", "provisioning", "cleanup_required") if deleting else
+                              ("prepared", "provisioning") if forward else ("compensating",))
+    if operation.operation_type != kind or kind not in valid_kinds or step.direction != (
+            "remove" if deleting else "create") or operation.state not in valid_operation_states or (
+            step.state not in expected_state if deleting else step.state != expected_state) or (
+            not forward and not deleting and not step.remote_attempted):
         raise HTTPException(409, "provisioning_dispatch_state_invalid")
     owner = {token.owner for token in tokens}
     operation_token = next((token for token in tokens if token.resource_key == f"provisioning_op:{operation.id}"), None)
@@ -111,7 +129,13 @@ def _snapshot(db, step_id, version, identity, leases, *, recovery_read, phase):
             raise HTTPException(422, "provisioning_dispatch_public_credentials_invalid") from None
     contract = contracts.require_ready(db, node, step.backend)
     try:
-        if json.loads(operation.intent)["node_fingerprints"][str(node.id)] != contracts.config_fingerprint(node):
+        saved = json.loads(operation.intent)
+        if deleting:
+            connection = db.get(models.Connection, step.connection_id, populate_existing=True)
+            if connection is None or saved["connection_fingerprints"][str(connection.id)] != (
+                    provisioning_deletion._fingerprint(connection, node)):
+                raise ValueError()
+        elif saved["node_fingerprints"][str(node.id)] != contracts.config_fingerprint(node):
             raise ValueError()
     except (TypeError, ValueError, KeyError):
         raise HTTPException(409, "provisioning_dispatch_endpoint_changed") from None
@@ -124,6 +148,10 @@ def _snapshot(db, step_id, version, identity, leases, *, recovery_read, phase):
         if other_calling is not None:
             raise HTTPException(409, "provisioning_remote_recovery_pending")
         step = transitions.begin_remote(db, step.id, step.version)
+    elif deleting and step.state != "remote_calling":
+        step = transitions.begin_remove(db, step.id, step.version)
+        if step.state == "removed":
+            raise HTTPException(409, "provisioning_dispatch_not_remote")
     # Materialize refreshed CAS versions before serialization; the helper
     # never commits, and a failed caller transaction rolls this mark back.
     binding = DispatchBinding(runtime.installation_uuid, runtime.ownership_epoch, runtime.gate_mode_epoch,
@@ -144,7 +172,7 @@ def _snapshot(db, step_id, version, identity, leases, *, recovery_read, phase):
         # RouterOS needs the PUBLIC key only. The customer's private key stays
         # staged in the parent DB for atomic final delivery; never send it to
         # a child process / node, even for read recovery.
-        credential={"wg_private_key": None, "password": step.staged_password,
+        credential={"wg_private_key": None, "password": None if deleting else step.staged_password,
                     "uuid": step.staged_xr_uuid}, params={"recovery_read": recovery_read,
                     "max_concurrent_sessions": step.max_concurrent_sessions, "speed_limit_mbps": step.speed_limit_mbps},
         timeouts={"connect_timeout": 10, "read_timeout": 15,

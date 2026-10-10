@@ -98,6 +98,29 @@ def scenario(engine):
         db.query(models.LedgerEntry).filter(
             models.LedgerEntry.approval_uuid == first.approval_uuid).delete()
         db.commit()
+    with Factory() as db:
+        expected = db.execute(rv.receipt_approval_expected_effects.select().where(
+            rv.receipt_approval_expected_effects.c.approval_uuid == first.approval_uuid
+        )).mappings().first()
+        assert expected is not None and expected["expected"] != "{}"
+        original_expected = expected["expected"]
+        db.execute(rv.receipt_approval_expected_effects.update().where(
+            rv.receipt_approval_expected_effects.c.id == expected["id"]
+        ).values(expected="{}"))
+        db.commit()
+    call(first.approval_uuid, first.execution_token, internal, (409, "approval_manifest_changed"))
+    with Factory() as db:
+        db.execute(rv.receipt_approval_expected_effects.update().where(
+            rv.receipt_approval_expected_effects.c.id == expected["id"]
+        ).values(expected="{"))
+        db.commit()
+    call(first.approval_uuid, first.execution_token, internal, (409, "approval_manifest_changed"))
+    with Factory() as db:
+        db.execute(rv.receipt_approval_expected_effects.update().where(
+            rv.receipt_approval_expected_effects.c.id == expected["id"]
+        ).values(expected=original_expected))
+        db.commit()
+    call(first.approval_uuid, first.execution_token, internal)
     outsider = bot_auth.BotPrincipal(key_id=key_id, key_type=bot_auth.KeyType.GLOBAL_INTEGRATION,
         owner_admin_id=None, capabilities=frozenset(), label="outsider")
     call(first.approval_uuid, first.execution_token, outsider, (403, "execution_principal_mismatch"))

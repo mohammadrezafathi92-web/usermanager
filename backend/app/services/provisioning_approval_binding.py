@@ -6,6 +6,7 @@ manifest comparison or any business mutation. T1 must perform those checks
 and commit its operation with the approval transition in one transaction.
 """
 from dataclasses import dataclass
+import json
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -103,5 +104,22 @@ def lock_prepare(db, approval_uuid, execution_version, principal, operation_type
     ).limit(1).with_for_update(read=True)).first() is not None
     if has_effect or has_ledger:
         raise HTTPException(409, "approval_has_effects")
+    # The stored manifest is immutable, but its hash is the approval's
+    # integrity anchor. Detect missing/changed rows before T1 can use them
+    # to stage any operation; live target comparison remains T1's job.
+    expected = db.execute(select(rv.receipt_approval_expected_effects.c.effect_type,
+        rv.receipt_approval_expected_effects.c.effect_key,
+        rv.receipt_approval_expected_effects.c.requirement,
+        rv.receipt_approval_expected_effects.c.expected).where(
+            rv.receipt_approval_expected_effects.c.approval_uuid == approval_uuid
+        ).with_for_update(read=True)).all()
+    try:
+        rows = [intent.ManifestRow(row.effect_type, row.effect_key, row.requirement,
+                                   json.loads(row.expected)) for row in expected]
+        matches = intent.manifest_hash(rows) == approval["manifest_hash"]
+    except (TypeError, ValueError):
+        matches = False
+    if not matches:
+        raise HTTPException(409, "approval_manifest_changed")
     return LockedApproval(approval_uuid, execution_version, key_uuid, wallet.epoch,
                           wallet.phase, approval["registered_under_mode"], approval["manifest_hash"])

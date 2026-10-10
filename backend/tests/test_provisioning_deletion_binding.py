@@ -265,10 +265,23 @@ def scenario(engine, directory):
                         except HTTPException as error:
                             assert error.detail == "provisioning_retry_not_due"
                         launch.assert_not_called()
-                    # Reset only this independently-owned scratch retry time.
+                    # End this session's old repeatable-read snapshot before
+                    # reloading the result written by execute_removal in its
+                    # own session. Otherwise MariaDB can return the pre-result
+                    # NULL here, making the assignment below a no-op while
+                    # the committed 30-second backoff remains in place.
+                    db.rollback()
+                    # The parent dispatch checks both retry clocks. Reset the
+                    # independently-owned scratch rows, then verify from a
+                    # fresh transaction before simulating the next result.
                     step = db.get(mp.ProvisioningStep, step.id, populate_existing=True)
                     step.next_retry_at = None
+                    operation = db.get(mp.ProvisioningOperation, operation.id, populate_existing=True)
+                    operation.next_retry_at = None
                     db.commit()
+                    with Factory() as check:
+                        assert check.get(mp.ProvisioningStep, step.id).next_retry_at is None
+                        assert check.get(mp.ProvisioningOperation, operation.id).next_retry_at is None
                     with patch.dict(os.environ, configured), patch.object(parent_execute.remote_runner,
                             "run_action", side_effect=lambda dto: remote_action.RemoteActionResult(
                                 dto.action_id, remote_action.Outcome.CONFLICT, write_attempted=False,

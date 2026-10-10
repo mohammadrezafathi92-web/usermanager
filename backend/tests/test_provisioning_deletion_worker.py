@@ -17,6 +17,7 @@ from app import models, models_provisioning as mp, models_receipt_void as rv
 from app.services import provisioning_schema, receipt_void_schema, wallet_accounts
 from app.services import provisioning_contracts as contracts, provisioning_delete_preparation as prep
 from app.services import provisioning_deletion_worker as worker, provisioning_parent_execute as execute
+from app.services import provisioning_due_deletions as due
 from app.services import resource_leases as leases, remote_action
 from app.services.provisioning_host import HostIdentity
 
@@ -160,6 +161,30 @@ def scenario(engine):
         assert db.get(models.Connection, cid).enabled is False
         db.get(mp.ProvisioningRuntimeState, 1).owner_state = "active"
         db.commit()
+    assert due.select_due(Factory, host, after_id=oid - 1, **expected) == (oid,)
+    assert due.select_due(Factory, host, after_id=0, **expected) == (oid,), "manual cleanup/terminal rows were selected"
+    held = worker.reacquire(Factory, oid, host, **expected)
+    assert due.select_due(Factory, host, after_id=oid - 1, **expected) == ()
+    with Factory() as db:
+        for token in held:
+            assert leases.release(db, token)
+        db.commit()
+    with Factory() as db:
+        db.query(mp.ProvisioningStep).filter_by(operation_id=oid).one().next_retry_at = (
+            dt.datetime.utcnow() + dt.timedelta(days=1))
+        db.commit()
+    assert due.select_due(Factory, host, after_id=oid - 1, **expected) == ()
+    with Factory() as db:
+        db.query(mp.ProvisioningStep).filter_by(operation_id=oid).one().next_retry_at = None
+        db.commit()
+    with patch.dict(os.environ, configured), patch.object(execute.remote_runner,
+            "run_action", side_effect=absence):
+        selected = due.recover_due_once(Factory, host, after_id=oid - 1, **expected)
+        assert selected["selection_cursor"] == oid and selected["step"]["state"] == "removed"
+    assert due.recover_due_once(Factory, host, after_id=oid - 1, **expected)["state"] == "completed"
+    assert due.recover_due_once(Factory, host, after_id=oid - 1, **expected)["status"] == "idle"
+    with Factory() as db:
+        assert db.get(models.Connection, cid) is None
     assert _no_network.attempts == []
     print("PASS", engine.dialect.name, "private deletion worker, retry, conflict, drain and T_final")
 

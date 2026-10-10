@@ -41,6 +41,14 @@ def prepare(db, approval_uuid, execution_version, principal, execution_intent, *
             not isinstance(tenant_scope_key, str) or tenant_scope_key != "shared" or
             not isinstance(execution_intent, ApprovalIntent)):
         raise HTTPException(422, "provisioning_approval_request_invalid")
+    # A missing optional manifest row is not proof that the caller did not
+    # request the option (an unknown discount/referral code yields no row).
+    # None of these writers is integrated into approval T_final yet.
+    if (execution_intent.payment_card_id is not None or
+            (execution_intent.discount_code or "").strip() or
+            (execution_intent.referral_code or "").strip() or
+            execution_intent.connections):
+        raise HTTPException(409, "approval_t1_shape_not_supported")
     digest = _digest(approval_uuid, execution_version, execution_intent, tenant_scope_key)
     resource_leases.begin_business(db)
     locked = binding.lock_prepare(db, approval_uuid, execution_version, principal, "create_user",
@@ -104,7 +112,8 @@ def prepare(db, approval_uuid, execution_version, principal, execution_intent, *
                 max_concurrent_sessions=package.max_concurrent_sessions),
             sale=final.SaleSnapshot(amount=sale_expected["amount"],
                 payment_method="card" if sale_expected["payment_card_id"] is not None else None,
-                payment_card_id=sale_expected["payment_card_id"]))
+                payment_card_id=sale_expected["payment_card_id"]),
+            quota_bytes=user_expected["quota_bytes"], duration_days=user_expected["days"] or 0)
     except (TypeError, ValueError, ValidationError):
         raise HTTPException(409, "approval_t1_intent_invalid") from None
     operation.intent = frozen.json()

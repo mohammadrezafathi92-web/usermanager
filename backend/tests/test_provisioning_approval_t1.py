@@ -1,5 +1,6 @@
 """Private narrow approval T1: one commit or no approval/operation change."""
 import datetime as dt
+import dataclasses
 import os
 import sys
 import tempfile
@@ -18,7 +19,7 @@ from fastapi import HTTPException
 
 from app import models, models_provisioning as mp, models_receipt_void as rv
 from app.services import bot_auth, provisioning_approval_binding as binding
-from app.services import provisioning_approval_t1 as t1, provisioning_schema
+from app.services import provisioning_approval_t1 as t1, provisioning_finalization as final, provisioning_schema
 from app.services import receipt_approval_intent as ri, receipt_approval_registration as registration
 from app.services import receipt_void_schema
 from app.services.provisioning_host import HostIdentity
@@ -38,7 +39,10 @@ def scenario(engine):
         package_id = db.query(models.Package.id).scalar()
         intents = [ri.ApprovalIntent(pending_source_instance_id="t1-test", pending_local_id=n,
             kind="new", target_username=f"new-{n}", amount=100, package_id=package_id,
-            claimed_telegram_id=10000 + n) for n in (1, 2, 3)]
+            claimed_telegram_id=10000 + n) for n in range(1, 7)]
+        intents[3] = dataclasses.replace(intents[3], referral_code="UNKNOWN-REFERRAL")
+        intents[4] = dataclasses.replace(intents[4], discount_code="UNKNOWN-DISCOUNT")
+        intents[5] = dataclasses.replace(intents[5], payment_card_id=999999)
         approvals = [registration.register(db, principal, value, approval_mode="auto") for value in intents]
         for approval in approvals:
             db.execute(rv.receipt_approvals.update().where(
@@ -108,6 +112,10 @@ def scenario(engine):
         db.rollback()
     with Factory() as db:
         assert db.query(mp.ProvisioningOperation).count() == 1
+        frozen = final._intent(db.get(mp.ProvisioningOperation, first_id))
+        assert frozen.package is not None
+        assert frozen.quota_bytes == frozen.package.quota_bytes == 1024 ** 3
+        assert frozen.duration_days == frozen.package.duration_days == 30
         row = db.execute(rv.receipt_approvals.select().where(
             rv.receipt_approvals.c.approval_uuid == approvals[0].approval_uuid)).mappings().one()
         assert row["state"] == "mutating"
@@ -116,6 +124,22 @@ def scenario(engine):
         own_id, own_leases, replay = call(db, 1)
         assert own_id != first_id and own_leases and not replay
         db.commit()
+    # Unknown optional codes/card IDs need not have manifest rows. They
+    # still must not enter mutating while their writers are unavailable.
+    for index in (3, 4, 5):
+        with Factory() as db:
+            try:
+                call(db, index)
+            except HTTPException as exc:
+                assert (exc.status_code, exc.detail) == (409, "approval_t1_shape_not_supported")
+            else:
+                raise AssertionError("unsupported option entered T1")
+            db.rollback()
+        with Factory() as db:
+            row = db.execute(rv.receipt_approvals.select().where(
+                rv.receipt_approvals.c.approval_uuid == approvals[index].approval_uuid)).mappings().one()
+            assert row["state"] == "registered"
+            assert db.query(mp.ProvisioningOperation).count() == 2
     # A drift detected after provisional operation insertion must not leave
     # an orphan operation or move the approval when the caller rolls back.
     with Factory() as db:

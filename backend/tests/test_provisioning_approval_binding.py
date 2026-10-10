@@ -39,13 +39,16 @@ def scenario(engine):
         remote = bot_auth.BotPrincipal.from_api_key(key)
         base = dict(kind="renew", target_username="customer", amount=100, package_id=package.id,
                     pending_source_instance_id="p6-binding")
-        first = registration.register(db, internal, ri.ApprovalIntent(pending_local_id=1, **base), approval_mode="auto")
-        second = registration.register(db, remote, ri.ApprovalIntent(pending_local_id=2, **base), approval_mode="auto")
+        first_intent = ri.ApprovalIntent(pending_local_id=1, **base)
+        second_intent = ri.ApprovalIntent(pending_local_id=2, **base)
+        first = registration.register(db, internal, first_intent, approval_mode="auto")
+        second = registration.register(db, remote, second_intent, approval_mode="auto")
         db.get(mp.ProvisioningTypeMode, "renew_user").mode = "durable"
         db.commit()
         key_id = key.id
 
     def call(uuid, token, principal, expected=None):
+        execution_intent = first_intent if uuid == first.approval_uuid else second_intent
         with Factory() as db:
             resource_leases.begin_business(db)
             statements = []
@@ -55,12 +58,14 @@ def scenario(engine):
             event.listen(engine, "before_cursor_execute", record)
             try:
                 if expected is None:
-                    result = binding.lock_prepare(db, uuid, token, principal, "renew_user")
+                    result = binding.lock_prepare(db, uuid, token, principal, "renew_user",
+                                                  execution_intent=execution_intent)
                     assert result.approval_uuid == uuid and result.execution_version == token
                     assert result.wallet_phase == "normal" and result.wallet_epoch == 0
                 else:
                     try:
-                        binding.lock_prepare(db, uuid, token, principal, "renew_user")
+                        binding.lock_prepare(db, uuid, token, principal, "renew_user",
+                                             execution_intent=execution_intent)
                     except HTTPException as exc:
                         assert (exc.status_code, exc.detail) == expected, (exc.status_code, exc.detail, expected)
                     else:
@@ -76,6 +81,25 @@ def scenario(engine):
                            "provisioning_type_modes", "receipt_approvals")]
     assert order == sorted(order) and len(set(order)) == 4, statements
     assert call(second.approval_uuid, second.execution_token, remote)
+    with Factory() as db:
+        resource_leases.begin_business(db)
+        for changed in (
+            ri.ApprovalIntent(pending_local_id=9, **base),
+            ri.ApprovalIntent(pending_local_id=1, **{**base, "amount": 101}),
+            ri.ApprovalIntent(pending_local_id=1, **{**base, "payment_card_id": 42}),
+            ri.ApprovalIntent(pending_local_id=1, **{**base, "discount_code": "SAVE"}),
+            ri.ApprovalIntent(pending_local_id=1, **{**base, "referral_code": "INVITE"}),
+            ri.ApprovalIntent(pending_local_id=1, **{**base, "connections": (
+                ri.ConnectionSpec(node_id=1, protocol="xray"),)}),
+        ):
+            try:
+                binding.lock_prepare(db, first.approval_uuid, first.execution_token, internal,
+                                     "renew_user", execution_intent=changed)
+            except HTTPException as exc:
+                assert (exc.status_code, exc.detail) == (409, "approval_intent_changed")
+            else:
+                raise AssertionError("changed immutable intent accepted")
+        db.rollback()
     call(first.approval_uuid, first.execution_token + 1, internal, (409, "approval_superseded"))
     call(first.approval_uuid, first.execution_token, remote, (403, "execution_principal_mismatch"))
     call(second.approval_uuid, second.execution_token, internal, (403, "execution_principal_mismatch"))
@@ -142,7 +166,8 @@ def scenario(engine):
     with Factory() as db:
         resource_leases.begin_business(db)
         replay = binding.lock_prepare(db, first.approval_uuid, first.execution_token, internal,
-                                      "renew_user", request_hash=digest, tenant_scope_key="global")
+                                      "renew_user", execution_intent=first_intent,
+                                      request_hash=digest, tenant_scope_key="global")
         assert replay.replay_operation_id == operation_id
         assert db.query(mp.ProvisioningOperation).filter_by(approval_uuid=first.approval_uuid).count() == 1
         db.rollback()
@@ -151,11 +176,21 @@ def scenario(engine):
         for bad_hash, bad_scope in (("b" * 64, "global"), (digest, "other"), (None, None)):
             try:
                 binding.lock_prepare(db, first.approval_uuid, first.execution_token, internal,
-                                     "renew_user", request_hash=bad_hash, tenant_scope_key=bad_scope)
+                                     "renew_user", execution_intent=first_intent,
+                                     request_hash=bad_hash, tenant_scope_key=bad_scope)
             except HTTPException as exc:
                 assert (exc.status_code, exc.detail) == (409, "provisioning_request_changed")
             else:
                 raise AssertionError("changed approval retry accepted")
+        changed_intent = ri.ApprovalIntent(pending_local_id=1, **{**base, "amount": 101})
+        try:
+            binding.lock_prepare(db, first.approval_uuid, first.execution_token, internal,
+                                 "renew_user", execution_intent=changed_intent,
+                                 request_hash=digest, tenant_scope_key="global")
+        except HTTPException as exc:
+            assert (exc.status_code, exc.detail) == (409, "approval_intent_changed")
+        else:
+            raise AssertionError("changed immutable intent replay accepted")
         db.rollback()
     with Factory() as db:
         row = db.execute(rv.receipt_approval_expected_effects.select().where(
@@ -168,7 +203,8 @@ def scenario(engine):
         resource_leases.begin_business(db)
         try:
             binding.lock_prepare(db, first.approval_uuid, first.execution_token, internal,
-                                 "renew_user", request_hash=digest, tenant_scope_key="global")
+                                 "renew_user", execution_intent=first_intent,
+                                 request_hash=digest, tenant_scope_key="global")
         except HTTPException as exc:
             assert (exc.status_code, exc.detail) == (409, "approval_manifest_changed")
         else:
@@ -211,7 +247,8 @@ def scenario(engine):
     call(first.approval_uuid, first.execution_token, internal, (409, "approval_precondition_failed"))
     with Factory() as db:
         try:
-            binding.lock_prepare(db, first.approval_uuid, first.execution_token, internal, "renew_user")
+            binding.lock_prepare(db, first.approval_uuid, first.execution_token, internal,
+                                 "renew_user", execution_intent=first_intent)
         except resource_leases.LeaseProtocolError as exc:
             assert str(exc) == "business_transaction_not_fenced"
         else:

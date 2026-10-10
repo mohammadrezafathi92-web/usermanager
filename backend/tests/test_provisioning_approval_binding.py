@@ -2,6 +2,7 @@
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -121,6 +122,66 @@ def scenario(engine):
         ).values(expected=original_expected))
         db.commit()
     call(first.approval_uuid, first.execution_token, internal)
+    # A committed T1 is replayed under the same approval-row lock even though
+    # the approval is no longer registered. No new operation or effect is made.
+    digest = "a" * 64
+    with Factory() as db:
+        operation = mp.ProvisioningOperation(
+            operation_type="renew_user",
+            business_key=f"approval:{first.approval_uuid}:v:{first.execution_token}",
+            request_hash=digest, tenant_scope_key="global", actor_kind="bot",
+            approval_uuid=first.approval_uuid, approval_execution_version=first.execution_token,
+            approval_key_bound=False, execution_key_instance_uuid=None,
+            intent="{}", state="prepared", forward_deadline=datetime.utcnow() + timedelta(minutes=5),
+            wallet_epoch_at_start=0)
+        db.add(operation)
+        db.execute(rv.receipt_approvals.update().where(
+            rv.receipt_approvals.c.approval_uuid == first.approval_uuid).values(state="mutating"))
+        db.commit()
+        operation_id = operation.id
+    with Factory() as db:
+        resource_leases.begin_business(db)
+        replay = binding.lock_prepare(db, first.approval_uuid, first.execution_token, internal,
+                                      "renew_user", request_hash=digest, tenant_scope_key="global")
+        assert replay.replay_operation_id == operation_id
+        assert db.query(mp.ProvisioningOperation).filter_by(approval_uuid=first.approval_uuid).count() == 1
+        db.rollback()
+    with Factory() as db:
+        resource_leases.begin_business(db)
+        for bad_hash, bad_scope in (("b" * 64, "global"), (digest, "other"), (None, None)):
+            try:
+                binding.lock_prepare(db, first.approval_uuid, first.execution_token, internal,
+                                     "renew_user", request_hash=bad_hash, tenant_scope_key=bad_scope)
+            except HTTPException as exc:
+                assert (exc.status_code, exc.detail) == (409, "provisioning_request_changed")
+            else:
+                raise AssertionError("changed approval retry accepted")
+        db.rollback()
+    with Factory() as db:
+        row = db.execute(rv.receipt_approval_expected_effects.select().where(
+            rv.receipt_approval_expected_effects.c.approval_uuid == first.approval_uuid
+        )).mappings().first()
+        db.execute(rv.receipt_approval_expected_effects.update().where(
+            rv.receipt_approval_expected_effects.c.id == row["id"]).values(expected="{}"))
+        db.commit()
+    with Factory() as db:
+        resource_leases.begin_business(db)
+        try:
+            binding.lock_prepare(db, first.approval_uuid, first.execution_token, internal,
+                                 "renew_user", request_hash=digest, tenant_scope_key="global")
+        except HTTPException as exc:
+            assert (exc.status_code, exc.detail) == (409, "approval_manifest_changed")
+        else:
+            raise AssertionError("changed manifest replay accepted")
+        db.rollback()
+    with Factory() as db:
+        db.delete(db.get(mp.ProvisioningOperation, operation_id))
+        db.execute(rv.receipt_approval_expected_effects.update().where(
+            rv.receipt_approval_expected_effects.c.id == row["id"]
+        ).values(expected=row["expected"]))
+        db.execute(rv.receipt_approvals.update().where(
+            rv.receipt_approvals.c.approval_uuid == first.approval_uuid).values(state="registered"))
+        db.commit()
     outsider = bot_auth.BotPrincipal(key_id=key_id, key_type=bot_auth.KeyType.GLOBAL_INTEGRATION,
         owner_admin_id=None, capabilities=frozenset(), label="outsider")
     call(first.approval_uuid, first.execution_token, outsider, (403, "execution_principal_mismatch"))

@@ -15,6 +15,7 @@ from sqlalchemy import select
 from .. import models, models_provisioning as mp, models_receipt_void as rv
 from . import bot_auth, provisioning_schema, receipt_approval_intent as intent
 from . import receipt_approval_runtime as runtime, receipt_void_schema, resource_leases
+from .provisioning_host import HostIdentity, validate_snapshot
 
 
 _SHAPES = {
@@ -34,11 +35,13 @@ class LockedApproval:
     wallet_phase: str
     registered_under_mode: str
     manifest_hash: str
+    effective_mode: str
     replay_operation_id: int | None = None
 
 
 def lock_prepare(db, approval_uuid, execution_version, principal, operation_type, *,
-                 execution_intent, request_hash=None, tenant_scope_key=None):
+                 execution_intent, request_hash=None, tenant_scope_key=None,
+                 identity=None, ownership_epoch=None, installation_uuid=None):
     """Lock and validate the immutable binding before P6 T1's lease phase.
 
     The caller must already have begun a fenced short business transaction
@@ -62,12 +65,24 @@ def lock_prepare(db, approval_uuid, execution_version, principal, operation_type
     if wallet is None or wallet.phase not in ("normal", "enforced"):
         raise HTTPException(503, "wallet_phase_unavailable")
     approval_runtime = runtime.read_state(db, lock=True, shared_lock=True)
-    if approval_runtime is None or runtime.effective_registration_mode(approval_runtime) == runtime.BLOCKED:
+    effective_mode = runtime.effective_registration_mode(approval_runtime) if approval_runtime is not None else None
+    if effective_mode is None or effective_mode == runtime.BLOCKED:
         raise HTTPException(503, "receipt_approval_blocked")
     type_mode = db.execute(select(mp.ProvisioningTypeMode.mode).where(
         mp.ProvisioningTypeMode.operation_type == operation_type).with_for_update(read=True)).scalar_one_or_none()
     if type_mode != "durable":
         raise HTTPException(503, "provisioning_type_not_durable")
+    if identity is not None or ownership_epoch is not None or installation_uuid is not None:
+        if not isinstance(identity, HostIdentity):
+            raise HTTPException(422, "provisioning_host_identity_invalid")
+        host = db.execute(select(mp.ProvisioningRuntimeState.__table__).where(
+            mp.ProvisioningRuntimeState.id == 1).with_for_update(read=True)).mappings().one_or_none()
+        validate_snapshot(host, identity, ownership_epoch, installation_uuid)
+        if host["gate_mode"] != "enforced":
+            raise HTTPException(503, "gate_not_enforced")
+        panel = db.get(models.PanelSettings, 1)
+        if panel is not None and panel.ha_enabled:
+            raise HTTPException(503, "provisioning_ha_unsupported")
     approval = db.execute(select(rv.receipt_approvals).where(
         rv.receipt_approvals.c.approval_uuid == approval_uuid).with_for_update()).mappings().one_or_none()
     if approval is None:
@@ -150,6 +165,7 @@ def lock_prepare(db, approval_uuid, execution_version, principal, operation_type
             raise HTTPException(409, "approval_binding_lost")
         return LockedApproval(approval_uuid, execution_version, key_uuid, wallet.epoch,
                               wallet.phase, approval["registered_under_mode"], approval["manifest_hash"],
+                              effective_mode,
                               replay_operation_id=previous.id)
     if approval["state"] != "registered":
         raise HTTPException(409, "approval_precondition_failed")
@@ -166,4 +182,4 @@ def lock_prepare(db, approval_uuid, execution_version, principal, operation_type
     if has_effect or has_ledger:
         raise HTTPException(409, "approval_has_effects")
     return LockedApproval(approval_uuid, execution_version, key_uuid, wallet.epoch,
-                          wallet.phase, approval["registered_under_mode"], approval["manifest_hash"])
+                          wallet.phase, approval["registered_under_mode"], approval["manifest_hash"], effective_mode)

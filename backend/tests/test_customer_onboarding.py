@@ -17,8 +17,10 @@ from app.routers import bot_onboarding, telegram_bot_settings
 from app.telegram_bot import admin_scope, panel_bridge, runner
 from aiogram.types import CallbackQuery
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 from app.services.bot_auth import BotPrincipal, KeyType
+from app.telegram_bot.config import config as runtime_config
 
 failures: list[str] = []
 
@@ -54,8 +56,12 @@ class FakeCallback:
 
 async def run():
     print("--- durable terms acceptance API ---")
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
+    )
     Base.metadata.create_all(engine)
+    original_session_local = panel_bridge.SessionLocal
+    panel_bridge.SessionLocal = sessionmaker(bind=engine)
     with Session(engine) as db:
         principal = BotPrincipal.internal(None)
         db.add(models.BotSettings(
@@ -76,8 +82,14 @@ async def run():
         with patch.object(telegram_bot_settings.runner, "restart_admin_bot"), patch.object(
             telegram_bot_settings.runner, "get_admin_bot_status", return_value={}
         ):
-            check("dedicated bot defaults to existing shared settings",
-                  bot_onboarding.get_customer_onboarding_config(db, principal=own_principal), config)
+            check("unconfigured dedicated bot keeps onboarding disabled",
+                  bot_onboarding.get_customer_onboarding_config(db, principal=own_principal), dict.fromkeys(config, ""))
+            check("dedicated settings form exposes historical null as disabled",
+                  telegram_bot_settings.get_my_bot(admin=owner).required_channel_id, "")
+            runtime_config.configure("", set(), set(), bot_owner_admin_id=owner.id)
+            check("dedicated owner survives PanelBridge asyncio.to_thread",
+                  await panel_bridge.PanelBridge().get_customer_onboarding_config(), dict.fromkeys(config, ""))
+            runtime_config.configure("", set(), set(), bot_owner_admin_id=None)
             result = telegram_bot_settings.update_my_bot(schemas.OwnBotSettingsUpdate(
                 required_channel_id="@own_channel", required_channel_url="https://t.me/own_channel",
                 customer_terms_text="own terms",
@@ -85,8 +97,8 @@ async def run():
             check("dedicated form returns its own terms", result.customer_terms_text, "own terms")
             own_config = bot_onboarding.get_customer_onboarding_config(db, principal=own_principal)
             check("dedicated channel isolated", own_config["required_channel_id"], "@own_channel")
-            check("other bot stays shared", bot_onboarding.get_customer_onboarding_config(
-                db, principal=BotPrincipal.internal(other.id)), config)
+            check("other unconfigured bot stays disabled", bot_onboarding.get_customer_onboarding_config(
+                db, principal=BotPrincipal.internal(other.id)), dict.fromkeys(config, ""))
             check("global unchanged", bot_onboarding.get_customer_onboarding_config(db, principal=principal), config)
             for payload in (
                 {"required_channel_id": "invalid"},
@@ -105,12 +117,13 @@ async def run():
             telegram_bot_settings.update_my_bot(schemas.OwnBotSettingsUpdate(
                 required_channel_id="", required_channel_url="", customer_terms_text="",
             ), db=db, admin=owner)
-            check("explicit blank disables shared gate for this bot", bot_onboarding.get_customer_onboarding_config(
+            check("explicit blank disables dedicated gate", bot_onboarding.get_customer_onboarding_config(
                 db, principal=own_principal), dict.fromkeys(config, ""))
             telegram_bot_settings.update_my_bot(schemas.OwnBotSettingsUpdate(
                 required_channel_id=None, required_channel_url=None, customer_terms_text=None,
             ), db=db, admin=owner)
-            check("reset restores shared gate", bot_onboarding.get_customer_onboarding_config(db, principal=own_principal), config)
+            check("null reset remains disabled instead of inheriting shared gate",
+                  bot_onboarding.get_customer_onboarding_config(db, principal=own_principal), dict.fromkeys(config, ""))
             owner.permissions = ""
             try:
                 telegram_bot_settings.update_my_bot(schemas.OwnBotSettingsUpdate(
@@ -140,6 +153,7 @@ async def run():
         except HTTPException as exc:
             denied = exc.status_code == 403
         check("third-party integration cannot inspect or spoof interactive onboarding", denied, True)
+    panel_bridge.SessionLocal = original_session_local
     engine.dispose()
 
     old_scope = admin_scope.resolve_admin_scope

@@ -283,9 +283,12 @@ def _own_bot_response(admin: models.AdminUser) -> schemas.OwnBotSettingsOut:
         last_error=status.get("last_error"),
         bot_username=status.get("bot_username"),
         telegram_id_linked=admin.telegram_id is not None,
-        required_channel_id=admin.own_required_channel_id,
-        required_channel_url=admin.own_required_channel_url,
-        customer_terms_text=admin.own_customer_terms_text,
+        # Null used to mean "inherit the shared bot".  Dedicated onboarding
+        # is now independent, so normalize historical nulls to the truthful UI
+        # state: empty/disabled.  No data rewrite is required.
+        required_channel_id=admin.own_required_channel_id or "",
+        required_channel_url=admin.own_required_channel_url or "",
+        customer_terms_text=admin.own_customer_terms_text or "",
     )
 
 
@@ -313,12 +316,12 @@ def update_my_bot(
         for field in onboarding_fields
     }
     if any(field in data for field in onboarding_fields):
-        # Treat the override as one unit: no accidental mix of another bot's
-        # channel id and an inherited invitation URL.
+        # Treat the dedicated settings as one unit: no accidental mix of a
+        # channel id and a missing invitation URL.
         if any(value is None for value in candidate.values()) and not all(
             value is None for value in candidate.values()
         ):
-            raise HTTPException(400, "تنظیمات ورود را کامل وارد کنید یا همگی را به حالت مشترک برگردانید")
+            raise HTTPException(400, "تنظیمات ورود را کامل وارد کنید یا همگی را خالی بگذارید")
         candidate = {field: value.strip() if value is not None else None for field, value in candidate.items()}
         channel = candidate["required_channel_id"] or ""
         url = candidate["required_channel_url"] or ""

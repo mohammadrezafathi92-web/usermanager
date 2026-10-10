@@ -135,7 +135,10 @@ class CustomerOnboardingMiddleware(BaseMiddleware):
         try:
             member = await bot.get_chat_member(channel_id, telegram_id)
         except Exception as exc:  # Telegram can reject the check if bot isn't in/admin of the channel.
-            logger.warning("اجبار عضویت: بررسی کانال انجام نشد (%s)", type(exc).__name__)
+            logger.warning(
+                "اجبار عضویت: بررسی کانال %s با ربات %s انجام نشد (%s: %s)",
+                channel_id, bot.id, type(exc).__name__, exc,
+            )
             return None
         status = getattr(member.status, "value", member.status)
         result = status in {"member", "administrator", "creator"}

@@ -288,6 +288,7 @@ def scenario(engine, directory):
                                 remote_outcome="unverified", error_code="remote_identity_conflict")):
                         conflict = parent_execute.execute_removal(Factory, step.id, step.version, host, [lease])
                     assert conflict["state"] == "cleanup_required"
+                    db.rollback()  # Result committed through a separate session; discard the old snapshot.
                     assert db.get(mp.ProvisioningOperation, operation.id, populate_existing=True).state == "cleanup_required"
                     step = db.get(mp.ProvisioningStep, step.id, populate_existing=True)
                     with patch.dict(os.environ, configured), patch.object(parent_execute.remote_runner,
@@ -297,6 +298,7 @@ def scenario(engine, directory):
                         public_step = parent_execute.execute_removal(Factory, step.id, step.version, host, [lease])
                     assert public_step["state"] == "removed"
                     assert public_step["remote_outcome"] == "verified_absent"
+                    db.rollback()  # Observe the second result from a new MariaDB transaction too.
                     assert db.get(mp.ProvisioningOperation, operation.id, populate_existing=True).state == "provisioning"
                     assert db.get(models.Connection, connection.id) is not None  # T_final is deliberately separate.
                 finally:

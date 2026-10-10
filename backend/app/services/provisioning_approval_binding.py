@@ -7,6 +7,7 @@ and commit its operation with the approval transition in one transaction.
 """
 from dataclasses import dataclass
 import json
+import re
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -33,9 +34,11 @@ class LockedApproval:
     wallet_phase: str
     registered_under_mode: str
     manifest_hash: str
+    replay_operation_id: int | None = None
 
 
-def lock_prepare(db, approval_uuid, execution_version, principal, operation_type):
+def lock_prepare(db, approval_uuid, execution_version, principal, operation_type, *,
+                 request_hash=None, tenant_scope_key=None):
     """Lock and validate the immutable binding before P6 T1's lease phase.
 
     The caller must already have begun a fenced short business transaction
@@ -70,7 +73,7 @@ def lock_prepare(db, approval_uuid, execution_version, principal, operation_type
         raise HTTPException(404, "receipt_approval_not_found")
     if approval["version"] != execution_version:
         raise HTTPException(409, "approval_superseded")
-    if approval["state"] != "registered" or (approval["kind"], approval["target_shape"]) != _SHAPES[operation_type]:
+    if (approval["kind"], approval["target_shape"]) != _SHAPES[operation_type]:
         raise HTTPException(409, "approval_precondition_failed")
     key_uuid = approval["execution_key_instance_uuid"]
     if principal.is_internal:
@@ -92,21 +95,8 @@ def lock_prepare(db, approval_uuid, execution_version, principal, operation_type
         db, principal, owner, endpoint="provisioning_approval")
     if resolved_owner != owner:
         raise HTTPException(403, "execution_scope_mismatch")
-    # Old shadow paths could commit a financial row before recording its
-    # effect or approval transition. A "registered" row is not proof that
-    # nothing happened. Do not let P6 start a second execution over either
-    # kind of durable mutation evidence.
-    has_effect = db.execute(select(rv.receipt_approval_effects.c.id).where(
-        rv.receipt_approval_effects.c.approval_uuid == approval_uuid
-    ).limit(1).with_for_update(read=True)).first() is not None
-    has_ledger = db.execute(select(models.LedgerEntry.id).where(
-        models.LedgerEntry.approval_uuid == approval_uuid
-    ).limit(1).with_for_update(read=True)).first() is not None
-    if has_effect or has_ledger:
-        raise HTTPException(409, "approval_has_effects")
-    # The stored manifest is immutable, but its hash is the approval's
-    # integrity anchor. Detect missing/changed rows before T1 can use them
-    # to stage any operation; live target comparison remains T1's job.
+    # The approval hash anchors the immutable manifest on both fresh T1 and
+    # replay. Never return an old operation over a changed manifest.
     expected = db.execute(select(rv.receipt_approval_expected_effects.c.effect_type,
         rv.receipt_approval_expected_effects.c.effect_key,
         rv.receipt_approval_expected_effects.c.requirement,
@@ -121,5 +111,40 @@ def lock_prepare(db, approval_uuid, execution_version, principal, operation_type
         matches = False
     if not matches:
         raise HTTPException(409, "approval_manifest_changed")
+    # A committed T1 changes state to mutating. Its exact retry must find
+    # the operation before the registered-only precondition, while a changed
+    # payload or tenant must never inherit that operation. This remains a
+    # read-only private boundary; the future T1 caller owns the rollback.
+    previous = db.execute(select(mp.ProvisioningOperation).where(
+        mp.ProvisioningOperation.approval_uuid == approval_uuid,
+        mp.ProvisioningOperation.approval_execution_version == execution_version
+    ).with_for_update().execution_options(populate_existing=True)).scalar_one_or_none()
+    if previous is not None:
+        if (not isinstance(request_hash, str) or re.fullmatch(r"[0-9a-f]{64}", request_hash) is None or
+                not isinstance(tenant_scope_key, str) or not tenant_scope_key or
+                previous.operation_type != operation_type or previous.request_hash != request_hash or
+                previous.tenant_scope_key != tenant_scope_key):
+            raise HTTPException(409, "provisioning_request_changed")
+        if (previous.business_key != f"approval:{approval_uuid}:v:{execution_version}" or
+                previous.approval_key_bound != (key_uuid is not None) or
+                previous.execution_key_instance_uuid != key_uuid):
+            raise HTTPException(409, "approval_binding_lost")
+        return LockedApproval(approval_uuid, execution_version, key_uuid, wallet.epoch,
+                              wallet.phase, approval["registered_under_mode"], approval["manifest_hash"],
+                              replay_operation_id=previous.id)
+    if approval["state"] != "registered":
+        raise HTTPException(409, "approval_precondition_failed")
+    # Old shadow paths could commit a financial row before recording its
+    # effect or approval transition. A "registered" row is not proof that
+    # nothing happened. Do not let P6 start a second execution over either
+    # kind of durable mutation evidence.
+    has_effect = db.execute(select(rv.receipt_approval_effects.c.id).where(
+        rv.receipt_approval_effects.c.approval_uuid == approval_uuid
+    ).limit(1).with_for_update(read=True)).first() is not None
+    has_ledger = db.execute(select(models.LedgerEntry.id).where(
+        models.LedgerEntry.approval_uuid == approval_uuid
+    ).limit(1).with_for_update(read=True)).first() is not None
+    if has_effect or has_ledger:
+        raise HTTPException(409, "approval_has_effects")
     return LockedApproval(approval_uuid, execution_version, key_uuid, wallet.epoch,
                           wallet.phase, approval["registered_under_mode"], approval["manifest_hash"])

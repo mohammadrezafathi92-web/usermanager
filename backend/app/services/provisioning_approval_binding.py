@@ -83,5 +83,13 @@ def lock_prepare(db, approval_uuid, execution_version, principal, operation_type
         if (key is None or not key.enabled or key.key_instance_uuid != key_uuid or
                 key.key_type != bot_auth.KeyType.REMOTE_SHARED_BOT):
             raise HTTPException(403, "execution_key_revoked")
+    # A dedicated in-process bot has no key instance. Matching NULL alone
+    # would let it execute another tenant's shared-bot approval. Compare the
+    # immutable owner snapshot through the same subtree policy as registration.
+    owner = approval["owner_admin_id_snapshot"]
+    resolved_owner = bot_auth.resolve_claimed_owner(
+        db, principal, owner, endpoint="provisioning_approval")
+    if resolved_owner != owner:
+        raise HTTPException(403, "execution_scope_mismatch")
     return LockedApproval(approval_uuid, execution_version, key_uuid, wallet.epoch,
                           wallet.phase, approval["registered_under_mode"], approval["manifest_hash"])

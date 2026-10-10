@@ -78,6 +78,10 @@ def scenario(engine):
     call(first.approval_uuid, first.execution_token + 1, internal, (409, "approval_superseded"))
     call(first.approval_uuid, first.execution_token, remote, (403, "execution_principal_mismatch"))
     call(second.approval_uuid, second.execution_token, internal, (403, "execution_principal_mismatch"))
+    # The shared approval has a NULL key instance and owner. A dedicated
+    # in-process bot also has a NULL key, but must not cross that tenant.
+    call(first.approval_uuid, first.execution_token,
+         bot_auth.BotPrincipal.internal(1), (403, "execution_scope_mismatch"))
     outsider = bot_auth.BotPrincipal(key_id=key_id, key_type=bot_auth.KeyType.GLOBAL_INTEGRATION,
         owner_admin_id=None, capabilities=frozenset(), label="outsider")
     call(first.approval_uuid, first.execution_token, outsider, (403, "execution_principal_mismatch"))

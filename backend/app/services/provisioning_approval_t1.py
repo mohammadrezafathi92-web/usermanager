@@ -102,6 +102,11 @@ def prepare(db, approval_uuid, execution_version, principal, execution_intent, *
         .with_for_update().execution_options(populate_existing=True)).scalar_one_or_none()
     if package is None or package.one_time_per_user or package.owner_admin_id is not None:
         raise HTTPException(409, "approval_t1_shape_not_supported")
+    settings_row = db.get(models.PanelSettings, 1)
+    if settings_row is not None and settings_row.loyalty_purchase_threshold == 1:
+        # A first-purchase loyalty reward would be another unrecorded effect
+        # until P9a's frozen loyalty manifest/writer is integrated.
+        raise HTTPException(409, "approval_t1_shape_not_supported")
     wallet_policy.can_purchase_telegram(db, approval["telegram_id_snapshot"])
     try:
         frozen = final.FinalIntent(user=final.UserSnapshot(

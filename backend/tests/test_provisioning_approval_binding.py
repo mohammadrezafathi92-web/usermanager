@@ -82,6 +82,22 @@ def scenario(engine):
     # in-process bot also has a NULL key, but must not cross that tenant.
     call(first.approval_uuid, first.execution_token,
          bot_auth.BotPrincipal.internal(1), (403, "execution_scope_mismatch"))
+    with Factory() as db:
+        db.execute(rv.receipt_approval_effects.insert().values(
+            approval_uuid=first.approval_uuid, effect_type="ledger_sale", effect_key="sale",
+            resource_type="LedgerEntry", actual_projection="{}", resource_snapshot="{}"))
+        db.commit()
+    call(first.approval_uuid, first.execution_token, internal, (409, "approval_has_effects"))
+    with Factory() as db:
+        db.execute(rv.receipt_approval_effects.delete().where(
+            rv.receipt_approval_effects.c.approval_uuid == first.approval_uuid))
+        db.add(models.LedgerEntry(kind="sale_renew", amount=100, approval_uuid=first.approval_uuid))
+        db.commit()
+    call(first.approval_uuid, first.execution_token, internal, (409, "approval_has_effects"))
+    with Factory() as db:
+        db.query(models.LedgerEntry).filter(
+            models.LedgerEntry.approval_uuid == first.approval_uuid).delete()
+        db.commit()
     outsider = bot_auth.BotPrincipal(key_id=key_id, key_type=bot_auth.KeyType.GLOBAL_INTEGRATION,
         owner_admin_id=None, capabilities=frozenset(), label="outsider")
     call(first.approval_uuid, first.execution_token, outsider, (403, "execution_principal_mismatch"))

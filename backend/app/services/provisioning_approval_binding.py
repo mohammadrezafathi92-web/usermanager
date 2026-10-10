@@ -91,5 +91,17 @@ def lock_prepare(db, approval_uuid, execution_version, principal, operation_type
         db, principal, owner, endpoint="provisioning_approval")
     if resolved_owner != owner:
         raise HTTPException(403, "execution_scope_mismatch")
+    # Old shadow paths could commit a financial row before recording its
+    # effect or approval transition. A "registered" row is not proof that
+    # nothing happened. Do not let P6 start a second execution over either
+    # kind of durable mutation evidence.
+    has_effect = db.execute(select(rv.receipt_approval_effects.c.id).where(
+        rv.receipt_approval_effects.c.approval_uuid == approval_uuid
+    ).limit(1).with_for_update(read=True)).first() is not None
+    has_ledger = db.execute(select(models.LedgerEntry.id).where(
+        models.LedgerEntry.approval_uuid == approval_uuid
+    ).limit(1).with_for_update(read=True)).first() is not None
+    if has_effect or has_ledger:
+        raise HTTPException(409, "approval_has_effects")
     return LockedApproval(approval_uuid, execution_version, key_uuid, wallet.epoch,
                           wallet.phase, approval["registered_under_mode"], approval["manifest_hash"])

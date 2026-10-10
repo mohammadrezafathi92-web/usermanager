@@ -36,6 +36,7 @@ def scenario(engine):
         runtime.ownership_epoch, runtime.gate_mode_epoch, runtime.gate_mode = 1, 1, "enforced"
         runtime.lock_backend = "flock" if engine.dialect.name == "sqlite" else "flock+get_lock"
         db.get(mp.ProvisioningTypeMode, "delete_connection").mode = "durable"
+        db.get(mp.ProvisioningTypeMode, "delete_purchase").mode = "durable"
         admin = models.AdminUser(username="owner", hashed_password="test", is_superadmin=True)
         user = wallet_accounts.create_user_with_wallet(db, username="delete-customer", balance=101)
         node = models.Node(name="fake-node", type=models.NodeType.mikrotik, enabled=False,
@@ -185,6 +186,38 @@ def scenario(engine):
     assert due.recover_due_once(Factory, host, after_id=oid - 1, **expected)["status"] == "idle"
     with Factory() as db:
         assert db.get(models.Connection, cid) is None
+    # One purchase with mixed WireGuard and local-RADIUS PPP removal. The
+    # latter is DB-only; it must never run a child, skip a preceding step or
+    # remove the customer or sibling purchase.
+    with Factory() as db:
+        group = models.Purchase(user_id=uid, quota_bytes=2000)
+        db.add(group)
+        db.flush()
+        wg = models.Connection(user_id=uid, purchase_id=group.id, node_id=nid,
+            type=models.ConnectionType.wireguard, enabled=True,
+            wg_peer_name="group-peer", wg_public_key="GROUP-PUBLIC", wg_client_address="10.0.0.3/32")
+        ppp = models.Connection(user_id=uid, purchase_id=group.id, node_id=nid,
+            type=models.ConnectionType.pptp, enabled=True, ppp_username="group-ppp")
+        db.add_all([wg, ppp])
+        db.commit()
+        group_id, wg_id, ppp_id = group.id, wg.id, ppp.id
+    request = prep.DeleteRequest(resource_kind="purchase", resource_id=group_id,
+        tenant_scope_key="shared", business_key=str(uuid.uuid4()))
+    with patch.dict(os.environ, configured), patch.object(execute.remote_runner,
+            "run_action", side_effect=absence) as launch:
+        first = worker.start_once(Factory, request, host, **expected)
+        assert first["step"]["state"] == "removed"
+        second = worker.resume_one(Factory, first["operation_id"], host, **expected)
+        assert second["step"]["state"] == "removed"
+        assert second["step"]["backend"] == "radius_ppp"
+        assert launch.call_count == 1, "PPP removal invoked a remote child"
+        complete = worker.resume_one(Factory, first["operation_id"], host, **expected)
+        assert complete["state"] == "completed" and launch.call_count == 1
+    with Factory() as db:
+        assert db.get(models.Purchase, group_id) is None
+        assert db.get(models.Connection, wg_id) is None and db.get(models.Connection, ppp_id) is None
+        assert db.get(models.Purchase, pid) is not None
+        assert db.get(models.User, uid).balance == 101
     assert _no_network.attempts == []
     print("PASS", engine.dialect.name, "private deletion worker, retry, conflict, drain and T_final")
 

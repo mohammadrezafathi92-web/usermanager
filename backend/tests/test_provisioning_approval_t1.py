@@ -19,7 +19,8 @@ from fastapi import HTTPException
 
 from app import models, models_provisioning as mp, models_receipt_void as rv
 from app.services import bot_auth, provisioning_approval_binding as binding
-from app.services import provisioning_approval_t1 as t1, provisioning_approval_zero_final as zero_final
+from app.services import provisioning_approval_t1 as t1, provisioning_approval_zero_comp as zero_comp
+from app.services import provisioning_approval_zero_final as zero_final
 from app.services import provisioning_finalization as final, provisioning_schema
 from app.services import receipt_approval_intent as ri, receipt_approval_registration as registration
 from app.services import receipt_void_schema
@@ -280,6 +281,71 @@ def scenario(engine):
         row = db.execute(rv.receipt_approvals.select().where(
             rv.receipt_approvals.c.approval_uuid == approvals[2].approval_uuid)).mappings().one()
         assert row["state"] == "registered"
+        db.get(mp.ProvisioningRuntimeState, 1).gate_mode = "enforced"
+        db.commit()
+    # A zero-step failed approval has no remote resource, payment reservation
+    # or effect to undo. T_comp still must move BOTH terminal rows in one tx.
+    with Factory() as db:
+        failed_id, failed_leases, replay = call(db, 6)
+        assert not replay and failed_leases
+        db.commit()
+    final_kwargs = {key: value for key, value in kwargs.items() if key != "tenant_scope_key"}
+    with Factory() as db:
+        with patch.object(binding.runtime, "effective_registration_mode", return_value="required"):
+            compensating = zero_comp.begin(db, approvals[6].approval_uuid,
+                approvals[6].execution_token, failed_id, 0, failed_leases, principal,
+                "final_tx_failed_permanent", **final_kwargs)
+        assert compensating.state == "compensating"
+        db.commit()
+    with Factory() as db:
+        with patch.object(binding.runtime, "effective_registration_mode", return_value="required"):
+            staged = zero_comp.finish(db, approvals[6].approval_uuid,
+                approvals[6].execution_token, failed_id, 1, failed_leases, principal,
+                **final_kwargs)
+        assert staged.state == "compensated"
+        assert db.execute(rv.receipt_approvals.select().where(
+            rv.receipt_approvals.c.approval_uuid == approvals[6].approval_uuid)).mappings().one()["state"] == "failed"
+        def comp_crash(_session):
+            raise RuntimeError("comp commit crash")
+        event.listen(db, "before_commit", comp_crash)
+        try:
+            try:
+                db.commit()
+            except RuntimeError as exc:
+                assert str(exc) == "comp commit crash"
+            else:
+                raise AssertionError("T_comp unexpectedly committed")
+        finally:
+            event.remove(db, "before_commit", comp_crash)
+            db.rollback()
+    with Factory() as db:
+        assert db.get(mp.ProvisioningOperation, failed_id).state == "compensating"
+        assert db.execute(rv.receipt_approvals.select().where(
+            rv.receipt_approvals.c.approval_uuid == approvals[6].approval_uuid)).mappings().one()["state"] == "mutating"
+        assert db.query(models.User).count() == 2
+        assert db.query(models.LedgerEntry).count() == 2
+        assert len(db.execute(rv.receipt_approval_effects.select()).all()) == 4
+    with Factory() as db:
+        with patch.object(binding.runtime, "effective_registration_mode", return_value="required"):
+            completed = zero_comp.finish(db, approvals[6].approval_uuid,
+                approvals[6].execution_token, failed_id, 1, failed_leases, principal,
+                **final_kwargs)
+        assert completed.state == "compensated"
+        db.commit()
+    with Factory() as db:
+        operation = db.get(mp.ProvisioningOperation, failed_id)
+        assert operation.state == "compensated"
+        assert operation.error_code == "final_tx_failed_permanent"
+        assert db.execute(rv.receipt_approvals.select().where(
+            rv.receipt_approvals.c.approval_uuid == approvals[6].approval_uuid)).mappings().one()["state"] == "failed"
+        assert db.query(models.User).count() == 2
+    with Factory() as db:
+        with patch.object(binding.runtime, "effective_registration_mode", return_value="required"):
+            replay = zero_comp.finish(db, approvals[6].approval_uuid,
+                approvals[6].execution_token, failed_id, 2, (), principal,
+                **final_kwargs)
+        assert replay.state == "compensated"
+        db.rollback()
     print("PASS", engine.dialect.name, "narrow atomic approval T1")
 
 

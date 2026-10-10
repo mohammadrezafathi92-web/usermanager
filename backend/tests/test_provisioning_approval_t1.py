@@ -19,7 +19,8 @@ from fastapi import HTTPException
 
 from app import models, models_provisioning as mp, models_receipt_void as rv
 from app.services import bot_auth, provisioning_approval_binding as binding
-from app.services import provisioning_approval_t1 as t1, provisioning_finalization as final, provisioning_schema
+from app.services import provisioning_approval_t1 as t1, provisioning_approval_zero_final as zero_final
+from app.services import provisioning_finalization as final, provisioning_schema
 from app.services import receipt_approval_intent as ri, receipt_approval_registration as registration
 from app.services import receipt_void_schema
 from app.services.provisioning_host import HostIdentity
@@ -39,7 +40,7 @@ def scenario(engine):
         package_id = db.query(models.Package.id).scalar()
         intents = [ri.ApprovalIntent(pending_source_instance_id="t1-test", pending_local_id=n,
             kind="new", target_username=f"new-{n}", amount=100, package_id=package_id,
-            claimed_telegram_id=10000 + n) for n in range(1, 7)]
+            claimed_telegram_id=10000 + n) for n in range(1, 8)]
         intents[3] = dataclasses.replace(intents[3], referral_code="UNKNOWN-REFERRAL")
         intents[4] = dataclasses.replace(intents[4], discount_code="UNKNOWN-DISCOUNT")
         intents[5] = dataclasses.replace(intents[5], payment_card_id=999999)
@@ -119,6 +120,26 @@ def scenario(engine):
         row = db.execute(rv.receipt_approvals.select().where(
             rv.receipt_approvals.c.approval_uuid == approvals[0].approval_uuid)).mappings().one()
         assert row["state"] == "mutating"
+    with Factory() as db:
+        with patch.object(binding.runtime, "effective_registration_mode", return_value="required"):
+            completed = zero_final.finish(db, approvals[0].approval_uuid,
+                approvals[0].execution_token, first_id, 0, first_leases, principal,
+                intents[0], **{key: value for key, value in kwargs.items() if key != "tenant_scope_key"})
+        assert completed.state == "completed"
+        assert db.query(models.User).count() == 1
+        assert db.query(models.Purchase).count() == 0
+        assert db.query(models.LedgerEntry).count() == 1
+        assert db.execute(rv.receipt_approval_effects.select()).all().__len__() == 2
+        user = db.query(models.User).one()
+        assert user.total_quota_bytes == 1024 ** 3 and user.expire_at is not None
+        db.commit()
+    with Factory() as db:
+        with patch.object(binding.runtime, "effective_registration_mode", return_value="required"):
+            replay = zero_final.finish(db, approvals[0].approval_uuid,
+                approvals[0].execution_token, first_id, 1, (), principal,
+                intents[0], **{key: value for key, value in kwargs.items() if key != "tenant_scope_key"})
+        assert replay.state == "completed"
+        db.rollback()
     # The second approval still has its own independent T1.
     with Factory() as db:
         own_id, own_leases, replay = call(db, 1)
@@ -140,6 +161,80 @@ def scenario(engine):
                 rv.receipt_approvals.c.approval_uuid == approvals[index].approval_uuid)).mappings().one()
             assert row["state"] == "registered"
             assert db.query(mp.ProvisioningOperation).count() == 2
+    with Factory() as db:
+        db.get(models.PanelSettings, 1).loyalty_purchase_threshold = 1
+        db.commit()
+    with Factory() as db:
+        try:
+            call(db, 6)
+        except HTTPException as exc:
+            assert (exc.status_code, exc.detail) == (409, "approval_t1_shape_not_supported")
+        else:
+            raise AssertionError("unrecorded first-purchase loyalty entered T1")
+        db.rollback()
+    with Factory() as db:
+        row = db.execute(rv.receipt_approvals.select().where(
+            rv.receipt_approvals.c.approval_uuid == approvals[6].approval_uuid)).mappings().one()
+        assert row["state"] == "registered"
+        assert db.query(mp.ProvisioningOperation).count() == 2
+        db.get(models.PanelSettings, 1).loyalty_purchase_threshold = None
+        db.commit()
+    final_kwargs = {key: value for key, value in kwargs.items() if key != "tenant_scope_key"}
+    with Factory() as db:
+        with patch.object(binding.runtime, "effective_registration_mode", return_value="required"):
+            try:
+                zero_final.finish(db, approvals[1].approval_uuid,
+                    approvals[1].execution_token, own_id, 0, (), principal,
+                    intents[1], **final_kwargs)
+            except HTTPException as exc:
+                assert (exc.status_code, exc.detail) == (409, "provisioning_lease_scope_invalid")
+            else:
+                raise AssertionError("T_final accepted no operation lease")
+        db.rollback()
+    with Factory() as db:
+        with patch.object(binding.runtime, "effective_registration_mode", return_value="required"):
+            staged = zero_final.finish(db, approvals[1].approval_uuid,
+                approvals[1].execution_token, own_id, 0, own_leases, principal,
+                intents[1], **final_kwargs)
+        assert staged.state == "completed"
+        assert db.query(models.User).count() == 2
+        def final_crash(_session):
+            raise RuntimeError("final commit crash")
+        event.listen(db, "before_commit", final_crash)
+        try:
+            try:
+                db.commit()
+            except RuntimeError as exc:
+                assert str(exc) == "final commit crash"
+            else:
+                raise AssertionError("T_final unexpectedly committed")
+        finally:
+            event.remove(db, "before_commit", final_crash)
+            db.rollback()
+    with Factory() as db:
+        assert db.query(models.User).count() == 1
+        assert db.query(models.Purchase).count() == 0
+        assert db.query(models.LedgerEntry).count() == 1
+        assert len(db.execute(rv.receipt_approval_effects.select()).all()) == 2
+        assert db.get(mp.ProvisioningOperation, own_id).state == "prepared"
+        row = db.execute(rv.receipt_approvals.select().where(
+            rv.receipt_approvals.c.approval_uuid == approvals[1].approval_uuid)).mappings().one()
+        assert row["state"] == "mutating"
+    with Factory() as db:
+        commits = []
+        event.listen(db, "after_commit", lambda _session: commits.append(True))
+        with patch.object(binding.runtime, "effective_registration_mode", return_value="required"):
+            completed = zero_final.finish(db, approvals[1].approval_uuid,
+                approvals[1].execution_token, own_id, 0, own_leases, principal,
+                intents[1], **final_kwargs)
+        assert completed.state == "completed" and commits == []
+        db.commit()
+        assert commits == [True]
+    with Factory() as db:
+        assert db.query(models.User).count() == 2
+        assert db.query(models.Purchase).count() == 0
+        assert db.query(models.LedgerEntry).count() == 2
+        assert len(db.execute(rv.receipt_approval_effects.select()).all()) == 4
     # A drift detected after provisional operation insertion must not leave
     # an orphan operation or move the approval when the caller rolls back.
     with Factory() as db:

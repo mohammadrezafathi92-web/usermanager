@@ -104,7 +104,8 @@ def prepare(db, approval_uuid, execution_version, principal, execution_intent, *
                 max_concurrent_sessions=package.max_concurrent_sessions),
             sale=final.SaleSnapshot(amount=sale_expected["amount"],
                 payment_method="card" if sale_expected["payment_card_id"] is not None else None,
-                payment_card_id=sale_expected["payment_card_id"]))
+                payment_card_id=sale_expected["payment_card_id"]),
+            quota_bytes=user_expected["quota_bytes"], duration_days=user_expected["days"] or 0)
     except (TypeError, ValueError, ValidationError):
         raise HTTPException(409, "approval_t1_intent_invalid") from None
     operation.intent = frozen.json()

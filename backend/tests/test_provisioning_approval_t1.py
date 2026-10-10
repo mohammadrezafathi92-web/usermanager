@@ -18,7 +18,7 @@ from fastapi import HTTPException
 
 from app import models, models_provisioning as mp, models_receipt_void as rv
 from app.services import bot_auth, provisioning_approval_binding as binding
-from app.services import provisioning_approval_t1 as t1, provisioning_schema
+from app.services import provisioning_approval_t1 as t1, provisioning_finalization as final, provisioning_schema
 from app.services import receipt_approval_intent as ri, receipt_approval_registration as registration
 from app.services import receipt_void_schema
 from app.services.provisioning_host import HostIdentity
@@ -108,6 +108,10 @@ def scenario(engine):
         db.rollback()
     with Factory() as db:
         assert db.query(mp.ProvisioningOperation).count() == 1
+        frozen = final._intent(db.get(mp.ProvisioningOperation, first_id))
+        assert frozen.package is not None
+        assert frozen.quota_bytes == frozen.package.quota_bytes == 1024 ** 3
+        assert frozen.duration_days == frozen.package.duration_days == 30
         row = db.execute(rv.receipt_approvals.select().where(
             rv.receipt_approvals.c.approval_uuid == approvals[0].approval_uuid)).mappings().one()
         assert row["state"] == "mutating"

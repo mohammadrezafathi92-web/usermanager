@@ -38,7 +38,7 @@ class LockedApproval:
 
 
 def lock_prepare(db, approval_uuid, execution_version, principal, operation_type, *,
-                 request_hash=None, tenant_scope_key=None):
+                 execution_intent, request_hash=None, tenant_scope_key=None):
     """Lock and validate the immutable binding before P6 T1's lease phase.
 
     The caller must already have begun a fenced short business transaction
@@ -50,7 +50,8 @@ def lock_prepare(db, approval_uuid, execution_version, principal, operation_type
         raise resource_leases.LeaseProtocolError("business_transaction_not_fenced")
     if (not isinstance(approval_uuid, str) or not approval_uuid or
             type(execution_version) is not int or execution_version < 0 or
-            operation_type not in _SHAPES or not isinstance(principal, bot_auth.BotPrincipal)):
+            operation_type not in _SHAPES or not isinstance(principal, bot_auth.BotPrincipal) or
+            not isinstance(execution_intent, intent.ApprovalIntent)):
         raise HTTPException(422, "provisioning_approval_request_invalid")
     if not intent.is_managed_principal(principal):
         raise HTTPException(403, "execution_principal_mismatch")
@@ -75,6 +76,24 @@ def lock_prepare(db, approval_uuid, execution_version, principal, operation_type
         raise HTTPException(409, "approval_superseded")
     if (approval["kind"], approval["target_shape"]) != _SHAPES[operation_type]:
         raise HTTPException(409, "approval_precondition_failed")
+    # The register-time hash binds the selected immutable intent fields,
+    # including payment/card, package, discount/referral codes and ordered
+    # connection slots. It does not replace the frozen manifest check below.
+    # Reconstruct only the derived target from immutable
+    # approval snapshots; never re-resolve a live username for this check.
+    if (execution_intent.pending_source_instance_id != approval["pending_source_instance_id"] or
+            execution_intent.pending_local_id != approval["pending_local_id"]):
+        raise HTTPException(409, "approval_intent_changed")
+    registered_target = intent.Target(
+        shape=approval["target_shape"], owner_admin_id=approval["owner_admin_id_snapshot"],
+        tenant_scope_key=approval["tenant_scope_key"], telegram_id=approval["telegram_id_snapshot"],
+        telegram_id_source=approval["telegram_id_source"], user_id=approval["target_user_id_snapshot"])
+    try:
+        execution_hash = intent.intent_hash(execution_intent, registered_target)
+    except (AttributeError, TypeError, ValueError):
+        raise HTTPException(422, "provisioning_approval_request_invalid") from None
+    if execution_hash != approval["immutable_intent_hash"]:
+        raise HTTPException(409, "approval_intent_changed")
     key_uuid = approval["execution_key_instance_uuid"]
     if principal.is_internal:
         if principal.key_id is not None or key_uuid is not None:

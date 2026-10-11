@@ -15,6 +15,7 @@ folder = tempfile.mkdtemp()
 os.environ["DATABASE_URL"] = f"sqlite:///{folder}/panel.db"
 
 from sqlalchemy import select
+from fastapi import HTTPException
 
 from app import models, models_receipt_void as rv
 from app.database import SessionLocal, engine
@@ -91,6 +92,16 @@ check("manual approval registered with the approver and the bot's instance id",
       (manual["mode"], manual["proceed_legacy"], row["approval_mode"], row["approved_by_telegram_id"],
        row["pending_source_instance_id"] == first, row["pending_local_id"], row["amount_snapshot"]),
       ("shadow", False, "manual", 1000, True, 7, 900))
+check("registration returns the durable execution version",
+      manual["execution_token"], row["version"])
+runtime.guard_approval_mutation(db, manual["approval_uuid"], manual["execution_token"])
+check("matching token passes the shadow mutation guard", True)
+try:
+    runtime.guard_approval_mutation(db, manual["approval_uuid"], manual["execution_token"] + 1)
+    stale = None
+except HTTPException as exc:
+    stale = (exc.status_code, exc.detail)
+check("a stale execution token is rejected before the mutation", stale, (409, "approval_superseded"))
 auto = run(approval_session.begin({**PENDING, "id": 8}, auto=True, local_decision="allowed"))
 check("auto approval registered as auto, with the central verdict returned for the log",
       (auto["mode"], "central_reason" in auto["central_decision"]), ("shadow", True))
@@ -159,6 +170,20 @@ run(bridge.begin_approval({"x": 1}, "manual"))
 check("posts to /api/accounting/receipt-approvals/<mode> on the same panel",
       (sent["method"], sent["base_url"] + sent["path"], sent["json"]),
       ("POST", "http://panel:8000/api/accounting/receipt-approvals/manual", {"x": 1}))
+
+print("--- production token propagation over the remote bridge ---")
+token = manual["execution_token"]
+uuid_ = manual["approval_uuid"]
+for label, call in (
+    ("top-up", bridge.add_balance("ali", 100, approval_uuid=uuid_, execution_token=token)),
+    ("referral", bridge.apply_referral("ali", "REF", approval_uuid=uuid_, execution_token=token)),
+    ("discount", bridge.redeem_discount("OFF", "ali", approval_uuid=uuid_, execution_token=token)),
+    ("card", bridge.record_card_payment(1, 100, approval_uuid=uuid_, execution_token=token)),
+    ("renew", bridge.renew("ali", 1, 30, sale_info={"approval_uuid": uuid_, "execution_token": token})),
+):
+    run(call)
+    check(f"{label} carries UUID and token", (sent["json"].get("approval_uuid"), sent["json"].get("execution_token")),
+          (uuid_, token))
 
 db.close()
 print()

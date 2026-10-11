@@ -44,6 +44,11 @@ def scenario(engine):
         db.add_all([admin, package, node])
         db.flush()
         uid, aid, pid, nid = user.id, admin.id, package.id, node.id
+        existing_service = models.Purchase(user_id=uid, package_id=pid, quota_bytes=1024**3,
+            status=models.UserStatus.active)
+        db.add(existing_service)
+        db.flush()
+        existing_service_id = existing_service.id
         db.add(mp.ProvisioningNodeContract(node_id=nid, backend="mikrotik_wg", state="ready",
             adapter_version=contracts.adapter_version(), config_fingerprint=contracts.config_fingerprint(node),
             server_fingerprint="b" * 64, contract='{"not_exist":[]}', verified_by_admin_id=aid,
@@ -62,7 +67,8 @@ def scenario(engine):
                     telegram_id=1000 + pid if kind == "create_user" else 42, owner_admin_id=aid if kind == "create_user" else None),
                     package=None if kind == "add_connection" else final.PackageSnapshot(id=pid, name="package", quota_bytes=1024**3,
                         duration_days=30), sale=None if kind == "add_connection" else final.SaleSnapshot(amount=25,
-                        admin_id=aid if kind == "create_user" else None, payment_method="cash" if kind == "create_user" else "wallet")),
+                        admin_id=aid if kind == "create_user" else None, payment_method="cash" if kind == "create_user" else "wallet"),
+                    purchase_id=existing_service_id if kind == "add_connection" else None),
                 slots=[prep.Slot(slot_key="wg", node_id=nid, protocol="wireguard")],
                 payers=[] if kind == "add_connection" else [prep.Payer(kind="reseller_credit" if kind == "create_user" else "customer_wallet",
                     id=aid if kind == "create_user" else uid, amount=25)])

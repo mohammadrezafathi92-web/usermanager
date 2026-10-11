@@ -215,6 +215,37 @@ def finish(db, operation_id, version, leases, *, require_contracts=False):
         purchase = _locked(db, models.Purchase, intent.purchase_id)
         if purchase is None or purchase.user_id != user.id:
             raise HTTPException(409, "provisioning_target_changed")
+    if steps and purchase is None and operation.operation_type in ("create_user", "add_connection"):
+        if operation.operation_type == "add_connection":
+            # An explicitly pinned Purchase wins above. Otherwise there is
+            # only one unambiguous existing destination; multiple services
+            # must never silently receive a new connection at random.
+            existing = db.execute(select(models.Purchase).where(
+                models.Purchase.user_id == user.id).with_for_update()).scalars().all()
+            if len(existing) > 1:
+                raise HTTPException(409, "purchase_target_required")
+            purchase = existing[0] if existing else None
+        if purchase is None:
+            # A connection may no longer be born on User's legacy pool.
+            # Copy the exact user-level allowance, without inventing a
+            # package price or additional quota.
+            purchase = models.Purchase(
+                user_id=user.id, package_id=user.package_id,
+                quota_bytes=int(user.total_quota_bytes or 0),
+                used_bytes=int(user.used_bytes or 0), expire_at=user.expire_at,
+                expire_days_after_first_use=user.expire_days_after_first_use,
+                max_concurrent_sessions=user.max_concurrent_sessions,
+                reserved_quota_bytes=user.reserved_quota_bytes,
+                reserved_duration_days=user.reserved_duration_days,
+                reserved_created_at=user.reserved_created_at,
+                status=user.status,
+            )
+            db.add(purchase)
+            db.flush()
+            user.reserved_quota_bytes = None
+            user.reserved_duration_days = None
+            user.reserved_created_at = None
+            provisioning_claims.bind_purchase(db, operation.id, purchase.id)
     if operation.operation_type == "renew_purchase" and purchase is None:
         raise HTTPException(409, "provisioning_intent_invalid")
     if renewal:

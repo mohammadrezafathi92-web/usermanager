@@ -161,6 +161,7 @@ class PppImportResult(BaseModel):
 # ---------- Connection ----------
 class ConnectionCreateWireguard(BaseModel):
     node_id: int
+    purchase_id: Optional[int] = None
     # >1 means this one WireGuard peer/config is meant to be shared by
     # several people at once (see services/user_ops.py's provision_wireguard
     # docstring) - reserves that many adjacent IPs for the SAME peer instead
@@ -170,36 +171,43 @@ class ConnectionCreateWireguard(BaseModel):
 
 class ConnectionCreateOpenvpn(BaseModel):
     node_id: int
+    purchase_id: Optional[int] = None
     max_concurrent_sessions: Optional[int] = 1  # 0 = unlimited
 
 
 class ConnectionCreateL2tp(BaseModel):
     node_id: int
+    purchase_id: Optional[int] = None
     max_concurrent_sessions: Optional[int] = 1  # 0 = unlimited
 
 
 class ConnectionCreateIkev2(BaseModel):
     node_id: int
+    purchase_id: Optional[int] = None
     max_concurrent_sessions: Optional[int] = 1  # 0 = unlimited
 
 
 class ConnectionCreatePptp(BaseModel):
     node_id: int
+    purchase_id: Optional[int] = None
     max_concurrent_sessions: Optional[int] = 1  # 0 = unlimited
 
 
 class ConnectionCreateSstp(BaseModel):
     node_id: int
+    purchase_id: Optional[int] = None
     max_concurrent_sessions: Optional[int] = 1  # 0 = unlimited
 
 
 class ConnectionCreateXray(BaseModel):
     node_id: int
+    purchase_id: Optional[int] = None
     flow: Optional[str] = ""
 
 
 class ConnectionCreateSoftether(BaseModel):
     node_id: int
+    purchase_id: Optional[int] = None
 
 
 class ApplyPackageRequest(BaseModel):

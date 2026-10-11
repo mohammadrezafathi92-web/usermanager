@@ -263,6 +263,7 @@ export default function UserDetail() {
     purchases_blocked_reason: "",
   });
   const [connNodeId, setConnNodeId] = useState("");
+  const [connPurchaseId, setConnPurchaseId] = useState("");
   const [connFlow, setConnFlow] = useState("");
   const [connMaxSessions, setConnMaxSessions] = useState(location.state?.defaultMaxSessions ?? 1);
   const [limitConn, setLimitConn] = useState(null); // connection being edited in the limit modal
@@ -479,6 +480,7 @@ export default function UserDetail() {
   // silently persist into the next time this modal is opened.
   const openAddConn = () => {
     setConnNodeId("");
+    setConnPurchaseId("");
     setConnFlow("");
     setConnMaxSessions(location.state?.defaultMaxSessions ?? 1);
     setError("");
@@ -490,28 +492,34 @@ export default function UserDetail() {
       setError(t("userDetail.selectServerRequired"));
       return;
     }
+    if ((user?.purchases || []).length > 1 && !connPurchaseId) {
+      setError(t("userDetail.selectServiceRequired"));
+      return;
+    }
+    const purchaseId = connPurchaseId ? Number(connPurchaseId) : null;
     setSaving(true);
     setError("");
     try {
       if (protocol === "wireguard") {
-        await addWireguardConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 1);
+        await addWireguardConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 1, purchaseId);
       } else if (protocol === "openvpn") {
-        await addOpenvpnConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 0);
+        await addOpenvpnConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 0, purchaseId);
       } else if (protocol === "l2tp") {
-        await addL2tpConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 0);
+        await addL2tpConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 0, purchaseId);
       } else if (protocol === "ikev2") {
-        await addIkev2Connection(user.id, Number(connNodeId), Number(connMaxSessions) || 0);
+        await addIkev2Connection(user.id, Number(connNodeId), Number(connMaxSessions) || 0, purchaseId);
       } else if (protocol === "sstp") {
-        await addSstpConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 0);
+        await addSstpConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 0, purchaseId);
       } else if (protocol === "pptp") {
-        await addPptpConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 0);
+        await addPptpConnection(user.id, Number(connNodeId), Number(connMaxSessions) || 0, purchaseId);
       } else if (protocol === "softether") {
-        await addSoftetherConnection(user.id, Number(connNodeId));
+        await addSoftetherConnection(user.id, Number(connNodeId), purchaseId);
       } else {
-        await addXrayConnection(user.id, Number(connNodeId), connFlow);
+        await addXrayConnection(user.id, Number(connNodeId), connFlow, purchaseId);
       }
       setAddConnOpen(false);
       setConnNodeId("");
+      setConnPurchaseId("");
       load();
     } catch (err) {
       setError(err?.response?.data?.detail || t("userDetail.addConnError"));
@@ -1732,6 +1740,19 @@ export default function UserDetail() {
       {/* Add connection modal */}
       <Modal open={addConnOpen} onClose={() => setAddConnOpen(false)} title={t("userDetail.addConnModalTitle")}>
         <div className="space-y-4">
+          {(user?.purchases || []).length > 1 && (
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldService")}</label>
+              <select className="input" value={connPurchaseId} onChange={(e) => setConnPurchaseId(e.target.value)}>
+                <option value="">{t("userDetail.selectPlaceholder")}</option>
+                {user.purchases.map((purchase) => (
+                  <option key={purchase.id} value={purchase.id}>
+                    {purchase.comment || purchase.package_name_snapshot || t("userDetail.fieldService")} #{purchase.id}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldServer")}</label>
             <select className="input" value={connNodeId} onChange={(e) => setConnNodeId(e.target.value)}>

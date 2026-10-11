@@ -23,6 +23,8 @@ def build_connection_core(db, step_id, version, *, user_id, purchase_id=None, pu
     if operation.operation_type not in ("create_user", "purchase", "add_connection") or (
             operation.state != "remote_complete" or step.state != expected or step.direction != "create"):
         raise HTTPException(409, "provisioning_step_transition_invalid")
+    if purchase_id is None:
+        raise HTTPException(409, "purchase_required_for_connection")
     user = _locked(db, models.User, user_id)
     if user is None:
         raise HTTPException(409, "target_user_missing")

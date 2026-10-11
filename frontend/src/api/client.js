@@ -196,22 +196,22 @@ export const resetPurchaseUsage = (userId, purchaseId, packageId = null) =>
 export const renewPurchase = (userId, purchaseId, data) =>
   client.post(`/users/${userId}/purchases/${purchaseId}/renew`, data);
 
-export const addWireguardConnection = (userId, nodeId, maxConcurrentSessions = 1) =>
-  client.post(`/users/${userId}/connections/wireguard`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });
-export const addOpenvpnConnection = (userId, nodeId, maxConcurrentSessions = 1) =>
-  client.post(`/users/${userId}/connections/openvpn`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });
-export const addL2tpConnection = (userId, nodeId, maxConcurrentSessions = 1) =>
-  client.post(`/users/${userId}/connections/l2tp`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });
-export const addIkev2Connection = (userId, nodeId, maxConcurrentSessions = 1) =>
-  client.post(`/users/${userId}/connections/ikev2`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });
-export const addSstpConnection = (userId, nodeId, maxConcurrentSessions = 1) =>
-  client.post(`/users/${userId}/connections/sstp`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });
-export const addPptpConnection = (userId, nodeId, maxConcurrentSessions = 1) =>
-  client.post(`/users/${userId}/connections/pptp`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions });
-export const addXrayConnection = (userId, nodeId, flow = "") =>
-  client.post(`/users/${userId}/connections/xray`, { node_id: nodeId, flow });
-export const addSoftetherConnection = (userId, nodeId) =>
-  client.post(`/users/${userId}/connections/softether`, { node_id: nodeId });
+export const addWireguardConnection = (userId, nodeId, maxConcurrentSessions = 1, purchaseId = null) =>
+  client.post(`/users/${userId}/connections/wireguard`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions, purchase_id: purchaseId });
+export const addOpenvpnConnection = (userId, nodeId, maxConcurrentSessions = 1, purchaseId = null) =>
+  client.post(`/users/${userId}/connections/openvpn`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions, purchase_id: purchaseId });
+export const addL2tpConnection = (userId, nodeId, maxConcurrentSessions = 1, purchaseId = null) =>
+  client.post(`/users/${userId}/connections/l2tp`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions, purchase_id: purchaseId });
+export const addIkev2Connection = (userId, nodeId, maxConcurrentSessions = 1, purchaseId = null) =>
+  client.post(`/users/${userId}/connections/ikev2`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions, purchase_id: purchaseId });
+export const addSstpConnection = (userId, nodeId, maxConcurrentSessions = 1, purchaseId = null) =>
+  client.post(`/users/${userId}/connections/sstp`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions, purchase_id: purchaseId });
+export const addPptpConnection = (userId, nodeId, maxConcurrentSessions = 1, purchaseId = null) =>
+  client.post(`/users/${userId}/connections/pptp`, { node_id: nodeId, max_concurrent_sessions: maxConcurrentSessions, purchase_id: purchaseId });
+export const addXrayConnection = (userId, nodeId, flow = "", purchaseId = null) =>
+  client.post(`/users/${userId}/connections/xray`, { node_id: nodeId, flow, purchase_id: purchaseId });
+export const addSoftetherConnection = (userId, nodeId, purchaseId = null) =>
+  client.post(`/users/${userId}/connections/softether`, { node_id: nodeId, purchase_id: purchaseId });
 export const deleteConnection = (userId, connectionId) =>
   client.delete(`/users/${userId}/connections/${connectionId}`);
 export const getShareLink = (userId, connectionId) =>

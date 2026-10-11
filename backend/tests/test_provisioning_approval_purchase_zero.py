@@ -236,8 +236,6 @@ def scenario(engine):
         db.add(linked)
         db.flush()
         migrated_id, old_id, linked_id = migrated.id, old.id, linked.id
-        historical = (migrated.total_quota_bytes, migrated.expire_at,
-            migrated.reserved_quota_bytes, migrated.reserved_duration_days)
         fresh_intent = ri.ApprovalIntent(pending_source_instance_id="purchase-private", pending_local_id=3,
             kind="new", target_username="migrated", amount=100, package_id=package_id,
             claimed_telegram_id=migrated.telegram_id)
@@ -246,6 +244,11 @@ def scenario(engine):
             rv.receipt_approvals.c.approval_uuid == fresh.approval_uuid).values(
                 registered_under_mode="required", completeness_generation=1))
         db.commit()
+        db.refresh(migrated)
+        # MariaDB DATETIME rounds/truncates fractional seconds. Compare to
+        # the committed baseline, not the pre-commit Python timestamp.
+        historical = (migrated.total_quota_bytes, migrated.expire_at,
+            migrated.reserved_quota_bytes, migrated.reserved_duration_days)
     with Factory() as db:
         with patch.object(binding.runtime, "effective_registration_mode", return_value="required"):
             fresh_id, fresh_leases, replay = purchase_zero.prepare(db,

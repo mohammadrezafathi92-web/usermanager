@@ -314,9 +314,10 @@ class RemoteBridge:
         return await asyncio.to_thread(self._request, "POST", f"/accounting/receipt-approvals/{approval_uuid}/finalize",
                                        base_url=root, json={"failed": failed})
 
-    async def record_card_payment(self, card_id: int, amount: int, approval_uuid: Optional[str] = None) -> None:
+    async def record_card_payment(self, card_id: int, amount: int, approval_uuid: Optional[str] = None,
+                                  execution_token: Optional[int] = None) -> None:
         await self._call("POST", f"/payment-cards/{card_id}/record-payment",
-                         json={"amount": amount, "approval_uuid": approval_uuid})
+                         json={"amount": amount, "approval_uuid": approval_uuid, "execution_token": execution_token})
 
     async def list_purchases(self, username: str, owner_admin_id: Optional[int] = None) -> list[dict]:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
@@ -364,17 +365,20 @@ class RemoteBridge:
         return await self._call("POST", f"/users/{username}/set-enabled", params=params)
 
     async def add_balance(self, username: str, amount: int, payment_card_id: Optional[int] = None,
-                          approval_uuid: Optional[str] = None) -> dict:
+                          approval_uuid: Optional[str] = None, execution_token: Optional[int] = None) -> dict:
         return await self._call("POST", f"/users/{username}/add-balance",
-                                json={"amount": amount, "payment_card_id": payment_card_id, "approval_uuid": approval_uuid})
+                                json={"amount": amount, "payment_card_id": payment_card_id,
+                                      "approval_uuid": approval_uuid, "execution_token": execution_token})
 
     async def delete_user(self, username: str, owner_admin_id: Optional[int] = None) -> None:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         await self._call("DELETE", f"/users/{username}", params=params)
 
     # ------------------------------------------------ referral & discount
-    async def apply_referral(self, username: str, referral_code: str, approval_uuid: Optional[str] = None) -> dict:
-        payload = {"username": username, "referral_code": referral_code, "approval_uuid": approval_uuid}
+    async def apply_referral(self, username: str, referral_code: str, approval_uuid: Optional[str] = None,
+                             execution_token: Optional[int] = None) -> dict:
+        payload = {"username": username, "referral_code": referral_code, "approval_uuid": approval_uuid,
+                   "execution_token": execution_token}
         return await self._call("POST", "/referral/apply", json=payload)
 
     async def validate_discount(
@@ -385,8 +389,8 @@ class RemoteBridge:
 
     async def redeem_discount(
         self, code: str, username: str, package_price: int = 0, owner_admin_id: Optional[int] = None,
-        approval_uuid: Optional[str] = None,
+        approval_uuid: Optional[str] = None, execution_token: Optional[int] = None,
     ) -> dict:
         payload = {"code": code, "username": username, "package_price": package_price, "owner_admin_id": owner_admin_id,
-                   "approval_uuid": approval_uuid}
+                   "approval_uuid": approval_uuid, "execution_token": execution_token}
         return await self._call("POST", "/discount/redeem", json=payload)

@@ -141,7 +141,12 @@ def _credit(db: Session, user: models.User, amount: int, payment_card_id: Option
 
 
 def _run_once(db: Session, principal, username: str, amount: int, payment_card_id: Optional[int],
-              approval_uuid: Optional[str], ensure_can_buy: Callable[[models.User], None]):
+              approval_uuid: Optional[str], ensure_can_buy: Callable[[models.User], None],
+              execution_token: Optional[int] = None):
+    if not approval_uuid and execution_token is not None:
+        raise HTTPException(status_code=422, detail="approval_token_without_uuid")
+    if execution_token is not None and (type(execution_token) is not int or execution_token < 0):
+        raise HTTPException(status_code=422, detail="approval_execution_token_invalid")
     sqlite = _start(db)
     # A top-up without an approval UUID is an ordinary balance credit (also
     # used by compensating refunds). It has no receipt identity to dedupe and
@@ -160,6 +165,8 @@ def _run_once(db: Session, principal, username: str, amount: int, payment_card_i
         approval_state, effective_mode = _lock_approval_mode(db)   # L2; blocked before lookup
 
     row = _approval_row(db, approval_uuid) if approval_uuid and receipt_void_schema.is_ready() else None  # L3
+    if execution_token is not None and (row is None or row["version"] != execution_token):
+        raise HTTPException(status_code=409, detail="approval_superseded")
     # The approval row (L3) is already locked; acquire the target's row lock
     # as part of its scoped lookup so this is the single L4 locking read.
     user = bot_resources._get_user_or_403(db, principal, username, None, for_update=bool(approval_uuid))
@@ -274,12 +281,14 @@ def _run_once(db: Session, principal, username: str, amount: int, payment_card_i
 
 
 def apply(db: Session, principal, username: str, amount: int, payment_card_id: Optional[int],
-          approval_uuid: Optional[str], ensure_can_buy: Callable[[models.User], None]) -> models.User:
+          approval_uuid: Optional[str], ensure_can_buy: Callable[[models.User], None],
+          execution_token: Optional[int] = None) -> models.User:
     """Retry the complete transaction on known transient lock conflicts."""
     dialect = db.get_bind().dialect.name
     for attempt in range(1, ATTEMPTS + 1):
         try:
-            return _run_once(db, principal, username, amount, payment_card_id, approval_uuid, ensure_can_buy)
+            return _run_once(db, principal, username, amount, payment_card_id,
+                             approval_uuid, ensure_can_buy, execution_token)
         except OperationalError as exc:
             db.rollback()
             if not _transient(exc, dialect):

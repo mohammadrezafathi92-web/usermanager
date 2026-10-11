@@ -1104,12 +1104,14 @@ class DiscountRedeemRequest(BaseModel):
     package_price: int = 0
     owner_admin_id: Optional[int] = None
     approval_uuid: Optional[str] = None  # receipt-approval registration
+    execution_token: Optional[int] = None
 
 
 class ReferralApplyRequest(BaseModel):
     username: str  # the brand-new user who was just created
     referral_code: str  # the code they entered
     approval_uuid: Optional[str] = None  # receipt-approval registration
+    execution_token: Optional[int] = None
 
 
 # ---------- Panel-wide settings (payment info shown by the sales bot) ----------
@@ -1514,6 +1516,7 @@ class BotCreateUserRequest(BaseModel):
     paid_amount: Optional[int] = None  # final tomans actually paid (after discount)
     # receipt-approval registration (routers/receipt_approvals.py): which approval this sale belongs to
     approval_uuid: Optional[str] = None
+    execution_token: Optional[int] = None
     payment_method: Optional[str] = None  # "card" | "wallet"
     payment_card_id: Optional[int] = None
     discount_code: Optional[str] = None
@@ -1533,6 +1536,7 @@ class BotRenewRequest(BaseModel):
     paid_amount: Optional[int] = None
     # receipt-approval registration (routers/receipt_approvals.py): which approval this sale belongs to
     approval_uuid: Optional[str] = None
+    execution_token: Optional[int] = None
     payment_method: Optional[str] = None
     payment_card_id: Optional[int] = None
     discount_code: Optional[str] = None
@@ -1552,6 +1556,7 @@ class BotAddBalanceRequest(BaseModel):
     payment_card_id: Optional[int] = None
     # receipt-approval registration: which approval this top-up belongs to
     approval_uuid: Optional[str] = None
+    execution_token: Optional[int] = None
 
 
 class BotLinkTelegramRequest(BaseModel):
@@ -1668,6 +1673,7 @@ class BotPurchasePackageRequest(BaseModel):
     paid_amount: Optional[int] = None
     # receipt-approval registration (routers/receipt_approvals.py): which approval this sale belongs to
     approval_uuid: Optional[str] = None
+    execution_token: Optional[int] = None
     payment_method: Optional[str] = None
     payment_card_id: Optional[int] = None
     discount_code: Optional[str] = None
@@ -1685,6 +1691,7 @@ class BotRecordCardPaymentRequest(BaseModel):
     used for "threshold" mode's accumulated-total tracking."""
     amount: int
     approval_uuid: Optional[str] = None
+    execution_token: Optional[int] = None
 
 
 class BotUserListItem(BaseModel):

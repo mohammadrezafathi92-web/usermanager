@@ -537,7 +537,7 @@ def record_payment_card_use(
     services/payment_cards.py's advance_after_payment for what this does
     ("threshold" mode's auto-switch-to-next-card bookkeeping; a harmless
     no-op for a pool in "manual"/"rotate" mode)."""
-    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     bot_resources._get_payment_card_or_403(db, principal, card_id)  # authorization only - advance_after_payment re-fetches
     # With a registered approval the pool event carries its uuid and becomes
     # the approval's card_payment effect; a repeat for the same approval
@@ -813,7 +813,7 @@ def create_user(
     payload: schemas.BotCreateUserRequest, db: Session = Depends(get_db),
     principal: BotPrincipal = Depends(get_bot_principal),
 ):
-    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     # A locked customer must not be able to start a fresh account from the
     # same Telegram id and keep buying - that would leave the lock looking
     # enforced while doing nothing at all.
@@ -940,7 +940,7 @@ def purchase_package(
     a "plain" package with no admin-defined bundle, where the customer
     picked exactly one node/protocol by hand in the bot's purchase flow
     (see telegram_bot/handlers/customer.py's pick_node/pick_protocol)."""
-    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     wallet_policy.can_purchase(db, user)
     package = bot_resources._get_package_or_403(db, principal, payload.package_id)
@@ -994,7 +994,7 @@ def apply_referral(
     logic lives in services/user_ops.py's apply_referral_code (both the
     referrer and the new user get a gift, per the confirmed design - not
     just the referrer)."""
-    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     user = bot_resources._get_user_or_403(db, principal, payload.username, None)
     # Receipt-approval effects of the rewards that are really applied, written
     # INSIDE apply_referral_code's own transaction, just before its commit
@@ -1048,7 +1048,7 @@ def redeem_discount(
     atomically consumes the code (bumps used_count, records a
     DiscountCodeRedemption row). See services/user_ops.py's
     redeem_discount_code."""
-    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     owner_admin_id = resolve_claimed_owner(db, principal, payload.owner_admin_id, endpoint="redeem_discount")
     discount_evidence: list = []
     recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)
@@ -1360,7 +1360,7 @@ def renew_service(
     service is already exhausted (see user_ops.renew_purchase). Never
     creates anything new - renewal means CONTINUING the same service, per
     the panel owner's definition (2026-08-09)."""
-    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     wallet_policy.can_purchase(db, user)
     purchase = db.get(models.Purchase, purchase_id)
@@ -1407,7 +1407,7 @@ def renew(
     username: str, payload: schemas.BotRenewRequest, db: Session = Depends(get_db),
     owner_admin_id: Optional[int] = None, principal: BotPrincipal = Depends(get_bot_principal),
 ):
-    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     wallet_policy.can_purchase(db, user)
     # Post-migration (services/purchase_migration.py) the user-level pool
@@ -1491,7 +1491,7 @@ def add_balance(
     one gets a clean "insufficient balance" error instead of silently
     overdrawing the wallet."""
     if payload.amount <= 0:
-        approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid)
+        approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     if payload.amount == 0:
         user = bot_resources._get_user_or_403(db, principal, username, None)
         db.commit()
@@ -1519,7 +1519,8 @@ def add_balance(
         # deliberately remain outside it.
         user = receipt_approval_topup.apply(
             db, principal, username, payload.amount, payload.payment_card_id,
-            payload.approval_uuid, lambda customer: wallet_policy.can_topup(db, customer))
+            payload.approval_uuid, lambda customer: wallet_policy.can_topup(db, customer),
+            payload.execution_token)
     return _user_response(user)
 
 

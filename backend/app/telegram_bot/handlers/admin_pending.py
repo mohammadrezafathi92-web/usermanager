@@ -225,6 +225,7 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
     if session.get("approval_uuid"):
         # lets the panel record what this approval really did, next to it
         sale_info["approval_uuid"] = session["approval_uuid"]
+        sale_info["execution_token"] = session.get("execution_token")
     try:
         if pending["kind"] == "new":
             if pending["node_id"]:
@@ -293,13 +294,15 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
                 if pending.get("referral_code"):
                     try:
                         await api.apply_referral(pending["target_username"], pending["referral_code"],
-                                                 approval_uuid=session.get("approval_uuid"))
+                                                 approval_uuid=session.get("approval_uuid"),
+                                                 execution_token=session.get("execution_token"))
                     except ApiError:
                         pass
             if pending.get("discount_code"):
                 try:
                     await api.redeem_discount(pending["discount_code"], pending["target_username"], pending["price"],
-                                              approval_uuid=session.get("approval_uuid"))
+                                              approval_uuid=session.get("approval_uuid"),
+                                              execution_token=session.get("execution_token"))
                 except ApiError:
                     pass
             customer_msg = f"✅ پرداخت شما تایید شد!\n\nنام کاربری: <code>{pending['target_username']}</code>"
@@ -326,7 +329,8 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
             if pending.get("discount_code"):
                 try:
                     await api.redeem_discount(pending["discount_code"], pending["target_username"], pending["price"],
-                                              approval_uuid=session.get("approval_uuid"))
+                                              approval_uuid=session.get("approval_uuid"),
+                                              execution_token=session.get("execution_token"))
                 except ApiError:
                     pass
             if user.get("reserved_quota_gb") or user.get("reserved_duration_days"):
@@ -355,6 +359,7 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
                 pending["target_username"], pending["price"],
                 payment_card_id=pending.get("payment_card_id"),
                 approval_uuid=session.get("approval_uuid"),
+                execution_token=session.get("execution_token"),
             )
             customer_msg = (
                 f"✅ پرداخت شما تایید شد و {pending['price']:,} تومان به اعتبار حساب «{pending['target_username']}» اضافه شد.\n"
@@ -403,7 +408,10 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
             logger.info("pending request %s has payment_card_id=%s but amount=%s - skipping card bookkeeping", pending["id"], card_id, amount)
         else:
             try:
-                await api.record_card_payment(card_id, amount, approval_uuid=session.get("approval_uuid"))
+                await api.record_card_payment(
+                    card_id, amount, approval_uuid=session.get("approval_uuid"),
+                    execution_token=session.get("execution_token"),
+                )
                 logger.info("pending request %s: recorded %s toman against payment card %s", pending["id"], amount, card_id)
             except ApiError:
                 logger.exception("pending request %s: record_card_payment failed for card %s", pending["id"], card_id)

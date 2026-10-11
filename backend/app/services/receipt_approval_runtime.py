@@ -88,7 +88,8 @@ def effective_registration_mode(state: Optional[dict]) -> str:
     return requested
 
 
-def guard_approval_mutation(db: Session, approval_uuid: Optional[str]) -> None:
+def guard_approval_mutation(db: Session, approval_uuid: Optional[str],
+                            execution_token: Optional[int] = None) -> None:
     """Fail closed before any endpoint lookup/mutation when a correlated
     operation reaches a blocked or not-yet-supported required mode.
 
@@ -107,7 +108,11 @@ def guard_approval_mutation(db: Session, approval_uuid: Optional[str]) -> None:
     accounting and the quota poller behind a router call.
     """
     if not approval_uuid:
+        if execution_token is not None:
+            raise HTTPException(status_code=422, detail="approval_token_without_uuid")
         return
+    if execution_token is not None and (type(execution_token) is not int or execution_token < 0):
+        raise HTTPException(status_code=422, detail="approval_execution_token_invalid")
     if not receipt_void_schema.is_ready():
         raise HTTPException(status_code=503, detail="receipt_void_schema_not_ready")
     for attempt in range(1, 4):
@@ -125,6 +130,16 @@ def guard_approval_mutation(db: Session, approval_uuid: Optional[str]) -> None:
             if mode == REQUIRED:
                 db.rollback()
                 raise HTTPException(status_code=503, detail="execution_token_not_supported")
+            if execution_token is not None:
+                from .. import models_receipt_void as rv
+                query = select(rv.receipt_approvals.c.version).where(
+                    rv.receipt_approvals.c.approval_uuid == approval_uuid)
+                if not sqlite:
+                    query = query.with_for_update(read=True)
+                current = db.scalar(query)
+                if current != execution_token:
+                    db.rollback()
+                    raise HTTPException(status_code=409, detail="approval_superseded")
             if sqlite:
                 db.rollback()
             return

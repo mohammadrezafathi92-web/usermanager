@@ -526,8 +526,10 @@ class PanelBridge:
 
         return await _call(_finalize, approval_uuid, failed)
 
-    async def record_card_payment(self, card_id: int, amount: int, approval_uuid: Optional[str] = None) -> None:
-        payload = schemas.BotRecordCardPaymentRequest(amount=amount, approval_uuid=approval_uuid)
+    async def record_card_payment(self, card_id: int, amount: int, approval_uuid: Optional[str] = None,
+                                  execution_token: Optional[int] = None) -> None:
+        payload = schemas.BotRecordCardPaymentRequest(amount=amount, approval_uuid=approval_uuid,
+                                                       execution_token=execution_token)
         await _call(bot_router.record_payment_card_use, card_id, payload)
 
     async def list_purchases(self, username: str, owner_admin_id: Optional[int] = None) -> list[dict]:
@@ -586,20 +588,23 @@ class PanelBridge:
         return _dump(await _call(bot_router.set_user_enabled, username, enabled, owner_admin_id=_scope(owner_admin_id)))
 
     async def add_balance(self, username: str, amount: int, payment_card_id: Optional[int] = None,
-                          approval_uuid: Optional[str] = None) -> dict:
-        payload = schemas.BotAddBalanceRequest(amount=amount, payment_card_id=payment_card_id, approval_uuid=approval_uuid)
+                          approval_uuid: Optional[str] = None, execution_token: Optional[int] = None) -> dict:
+        payload = schemas.BotAddBalanceRequest(amount=amount, payment_card_id=payment_card_id,
+                                               approval_uuid=approval_uuid, execution_token=execution_token)
         return _dump(await _call(bot_router.add_balance, username, payload))
 
     async def delete_user(self, username: str, owner_admin_id: Optional[int] = None) -> None:
         await _call(bot_router.delete_user, username, owner_admin_id=_scope(owner_admin_id))
 
     # ------------------------------------------------ referral & discount
-    async def apply_referral(self, username: str, referral_code: str, approval_uuid: Optional[str] = None) -> dict:
+    async def apply_referral(self, username: str, referral_code: str, approval_uuid: Optional[str] = None,
+                             execution_token: Optional[int] = None) -> dict:
         """Called once, right after create_user, for a brand-new customer
         who entered someone else's invite code - see
         handlers/admin_pending.py (the receipt-approval handler is the one
         choke point new accounts are created through)."""
-        payload = schemas.ReferralApplyRequest(username=username, referral_code=referral_code, approval_uuid=approval_uuid)
+        payload = schemas.ReferralApplyRequest(username=username, referral_code=referral_code,
+                                               approval_uuid=approval_uuid, execution_token=execution_token)
         return _dump(await _call(bot_router.apply_referral, payload))
 
     async def validate_discount(self, code: str, package_price: int = 0, username: Optional[str] = None, owner_admin_id: Optional[int] = None) -> dict:
@@ -610,11 +615,11 @@ class PanelBridge:
         return _dump(await _call(bot_router.validate_discount, payload))
 
     async def redeem_discount(self, code: str, username: str, package_price: int = 0, owner_admin_id: Optional[int] = None,
-                              approval_uuid: Optional[str] = None) -> dict:
+                              approval_uuid: Optional[str] = None, execution_token: Optional[int] = None) -> dict:
         """Called once at final purchase confirmation - actually consumes
         the code (bumps used_count, records a redemption row)."""
         payload = schemas.DiscountRedeemRequest(code=code, username=username, package_price=package_price, owner_admin_id=_scope(owner_admin_id),
-                                               approval_uuid=approval_uuid)
+                                               approval_uuid=approval_uuid, execution_token=execution_token)
         return _dump(await _call(bot_router.redeem_discount, payload))
 
 

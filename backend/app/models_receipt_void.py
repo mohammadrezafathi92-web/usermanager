@@ -156,6 +156,9 @@ receipt_approvals = Table(
     Column("telegram_id_snapshot", BigInteger, nullable=True),
     Column("telegram_id_source", String(12), nullable=False),
     Column("target_user_id_snapshot", Integer, nullable=True),
+    # NULL on approvals registered before the additive upgrade: those remain
+    # unverifiable for renew_user and must not be guessed at execution time.
+    Column("target_purchase_count_snapshot", Integer, nullable=True),
     Column("target_username_snapshot", String(128), nullable=False),
     Column("receipt_file_id_snapshot", String(255), nullable=True),
     Column("amount_snapshot", BigInteger, nullable=False),

@@ -83,7 +83,7 @@ def drop_all(engine):
 
 print("--- shape ---")
 check("36 tables", len(rv.RECEIPT_VOID_TABLES), 36)
-check("398 columns", sum(len(t.columns) for t in rv.RECEIPT_VOID_TABLES), 398)
+check("399 columns", sum(len(t.columns) for t in rv.RECEIPT_VOID_TABLES), 399)
 check("none of them is in the project's general metadata", sorted(set(NAMES) & set(models.Base.metadata.tables)), [])
 check("every CHECK and UNIQUE is named",
       [t.name for t in rv.RECEIPT_VOID_TABLES for c in t.constraints
@@ -155,6 +155,25 @@ def approval_row(**over):
     )
     row.update(over)
     return row
+
+
+print("--- additive approval snapshot upgrade ---")
+upgrade = new_engine()
+models.Base.metadata.create_all(upgrade)
+rvs.create_tables(upgrade)
+old_uuid = str(uuid.uuid4())
+insert(upgrade, rv.receipt_approvals, **approval_row(approval_uuid=old_uuid))
+with upgrade.begin() as conn:
+    conn.execute(text("ALTER TABLE receipt_approvals DROP COLUMN target_purchase_count_snapshot"))
+check("old approval table lacks purchase-count snapshot",
+      "target_purchase_count_snapshot" not in {c["name"] for c in inspect(upgrade).get_columns("receipt_approvals")})
+check("startup adds the nullable snapshot without losing old approvals",
+      rvs.bootstrap(upgrade, sessionmaker(bind=upgrade))["ready"], True)
+with upgrade.connect() as conn:
+    old_row = conn.execute(select(rv.receipt_approvals).where(
+        rv.receipt_approvals.c.approval_uuid == old_uuid)).mappings().one()
+check("old approval remains, with an unverifiable NULL baseline",
+      (old_row["approval_uuid"], old_row["target_purchase_count_snapshot"]), (old_uuid, None))
 
 
 def run_constraint_checks(engine, tag):
@@ -476,6 +495,21 @@ if mariadb_url:
             scratch.wipe(maria)
             models.Base.metadata.create_all(maria)
             run_bootstrap_checks(maria, "mariadb")
+            maria_old_uuid = str(uuid.uuid4())
+            insert(maria, rv.receipt_approvals, **approval_row(approval_uuid=maria_old_uuid))
+            with maria.begin() as conn:
+                conn.execute(text("ALTER TABLE receipt_approvals DROP COLUMN target_purchase_count_snapshot"))
+            check("[mariadb] existing approval snapshot column is absent before upgrade",
+                  "target_purchase_count_snapshot" not in {
+                      c["name"] for c in inspect(maria).get_columns("receipt_approvals")})
+            check("[mariadb] additive approval upgrade is ready",
+                  rvs.bootstrap(maria, sessionmaker(bind=maria))["ready"], True)
+            with maria.connect() as conn:
+                maria_old = conn.execute(select(rv.receipt_approvals).where(
+                    rv.receipt_approvals.c.approval_uuid == maria_old_uuid)).mappings().one()
+            check("[mariadb] old approval preserved with NULL baseline",
+                  (maria_old["approval_uuid"], maria_old["target_purchase_count_snapshot"]),
+                  (maria_old_uuid, None))
             drop_all(maria)
             rvs.create_tables(maria)
             run_constraint_checks(maria, "mariadb")

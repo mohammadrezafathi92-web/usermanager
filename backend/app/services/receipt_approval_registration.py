@@ -321,6 +321,7 @@ def _register_once(db: Session, principal: bot_auth.BotPrincipal, intent: ri.App
         auto_approve_policy_snapshot=runtime.canonical_json(policy), owner_admin_id_snapshot=target.owner_admin_id,
         tenant_scope_key=target.tenant_scope_key, telegram_id_snapshot=target.telegram_id,
         telegram_id_source=target.telegram_id_source, target_user_id_snapshot=target.user_id,
+        target_purchase_count_snapshot=target.purchase_count if target.shape == "renew_user" else None,
         target_username_snapshot=intent.target_username, receipt_file_id_snapshot=intent.receipt_file_id,
         amount_snapshot=intent.amount, payment_card_id_snapshot=intent.payment_card_id,
         package_id_snapshot=intent.package_id, state="registered", created_at=now, version=0))

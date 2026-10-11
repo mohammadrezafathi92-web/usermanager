@@ -53,6 +53,10 @@ def scenario(engine):
         db.commit()
         package_id = package.id
         node_id = node.id
+        existing_user_id = db.query(models.User.id).filter(models.User.username == "existing").scalar()
+        saved = db.execute(rv.receipt_approvals.select().where(
+            rv.receipt_approvals.c.approval_uuid == renew_approval.approval_uuid)).mappings().one()
+        assert saved["target_purchase_count_snapshot"] == 0
 
     def check(approval, execution_intent, kind, mismatch):
         with Factory() as db:
@@ -68,6 +72,19 @@ def scenario(engine):
     check(new_approval, new_intent, "create_user", None)
     check(existing_approval, existing_intent, "purchase", None)
     check(connected_approval, connected_intent, "create_user", None)
+    check(renew_approval, renew_intent, "renew_user", None)
+    with Factory() as db:
+        purchase = models.Purchase(user_id=existing_user_id, package_id=package_id)
+        db.add(purchase)
+        db.commit()
+        purchase_id = purchase.id
+    check(renew_approval, renew_intent, "renew_user", "target_shape_changed")
+    with Factory() as db:
+        db.delete(db.get(models.Purchase, purchase_id))
+        db.execute(rv.receipt_approvals.update().where(
+            rv.receipt_approvals.c.approval_uuid == renew_approval.approval_uuid).values(
+                target_purchase_count_snapshot=None))
+        db.commit()
     check(renew_approval, renew_intent, "renew_user", "target_shape_unverifiable")
     with Factory() as db:
         resource_leases.begin_business(db)

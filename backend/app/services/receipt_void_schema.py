@@ -113,6 +113,15 @@ def _widen_card_event_kind(engine) -> None:
 def create_tables(engine) -> None:
     _widen_card_event_kind(engine)
     rv.RECEIPT_VOID_METADATA.create_all(bind=engine, tables=list(rv.RECEIPT_VOID_TABLES))
+    # These tables use their own MetaData, outside main's additive Base
+    # migration. Preserve existing approval rows while extending their shape.
+    table = rv.receipt_approvals.name
+    columns = {column["name"] for column in inspect(engine).get_columns(table)}
+    if "target_purchase_count_snapshot" not in columns:
+        with engine.begin() as conn:
+            conn.execute(text(
+                f"ALTER TABLE {table} ADD COLUMN target_purchase_count_snapshot INTEGER NULL"
+            ))
 
 
 def inspect_added_columns(engine) -> list[str]:

@@ -7,7 +7,7 @@ cancel-only commit; this module never changes approval state or reserves money.
 from dataclasses import dataclass
 import json
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from .. import models, models_receipt_void as rv
 from . import receipt_approval_intent as intent, resource_leases
@@ -60,10 +60,15 @@ def compare(db, locked: LockedApproval, execution_intent: intent.ApprovalIntent,
             if purchase is None or purchase.user_id != user.id or purchase.package_id != execution_intent.package_id:
                 return LivePreflight("target_purchase_changed")
         if target.shape == "renew_user":
-            # Registration did not persist its Purchase count. Comparing a
-            # current count with a guessed baseline would silently accept a
-            # changed renewal target. Fail closed until that snapshot exists.
-            return LivePreflight("target_shape_unverifiable")
+            baseline = approval["target_purchase_count_snapshot"]
+            if baseline is None:
+                # Approvals predating the additive snapshot cannot establish
+                # which legacy shape registration saw.
+                return LivePreflight("target_shape_unverifiable")
+            current = db.execute(select(func.count(models.Purchase.id)).where(
+                models.Purchase.user_id == user.id)).scalar_one()
+            if current != baseline:
+                return LivePreflight("target_shape_changed")
         if target.shape == "topup" and locked.wallet_phase == "enforced":
             account = db.execute(select(rv.wallet_accounts.c.id).where(
                 rv.wallet_accounts.c.user_id == user.id,

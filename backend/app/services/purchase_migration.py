@@ -118,6 +118,7 @@ def migrate_user(db: Session, user: models.User) -> tuple[int, int]:
             expire_days_after_first_use=user.expire_days_after_first_use,
             reserved_quota_bytes=user.reserved_quota_bytes,
             reserved_duration_days=user.reserved_duration_days,
+            reserved_package_id=user.reserved_package_id,
             reserved_created_at=user.reserved_created_at,
             created_at=min((c.created_at for c in conns if c.created_at), default=user.created_at),
         )
@@ -125,6 +126,7 @@ def migrate_user(db: Session, user: models.User) -> tuple[int, int]:
         # The reservation now lives on the purchase - never in both places.
         user.reserved_quota_bytes = None
         user.reserved_duration_days = None
+        user.reserved_package_id = None
         user.reserved_created_at = None
         return 1, 0
 
@@ -148,7 +150,7 @@ def migrate_user(db: Session, user: models.User) -> tuple[int, int]:
 
     # Rule 4: place the user-level reserved renewal on the one service
     # that's actually finished - the thing it was bought to renew.
-    if (user.reserved_quota_bytes or user.reserved_duration_days) and converted:
+    if (user.reserved_quota_bytes or user.reserved_duration_days or user.reserved_package_id) and converted:
         exhausted = [
             p for p in converted
             if (p.quota_bytes and (p.used_bytes or 0) >= p.quota_bytes) or (p.expire_at and p.expire_at <= now)
@@ -157,9 +159,11 @@ def migrate_user(db: Session, user: models.User) -> tuple[int, int]:
             target = exhausted[0]
             target.reserved_quota_bytes = user.reserved_quota_bytes
             target.reserved_duration_days = user.reserved_duration_days
+            target.reserved_package_id = user.reserved_package_id
             target.reserved_created_at = user.reserved_created_at or now
             user.reserved_quota_bytes = None
             user.reserved_duration_days = None
+            user.reserved_package_id = None
             user.reserved_created_at = None
 
     return len(converted), skipped

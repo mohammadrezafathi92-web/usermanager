@@ -237,6 +237,7 @@ def finish(db, operation_id, version, leases, *, require_contracts=False):
                 max_concurrent_sessions=user.max_concurrent_sessions,
                 reserved_quota_bytes=user.reserved_quota_bytes,
                 reserved_duration_days=user.reserved_duration_days,
+                reserved_package_id=user.reserved_package_id,
                 reserved_created_at=user.reserved_created_at,
                 status=user.status,
             )
@@ -244,6 +245,7 @@ def finish(db, operation_id, version, leases, *, require_contracts=False):
             db.flush()
             user.reserved_quota_bytes = None
             user.reserved_duration_days = None
+            user.reserved_package_id = None
             user.reserved_created_at = None
             provisioning_claims.bind_purchase(db, operation.id, purchase.id)
     if operation.operation_type == "renew_purchase" and purchase is None:

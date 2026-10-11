@@ -1649,6 +1649,7 @@ def absorb_legacy_pool_core(db: Session, user: models.User, comment: Optional[st
         status=models.UserStatus.disabled if user.status == models.UserStatus.disabled else models.UserStatus.active,
         reserved_quota_bytes=user.reserved_quota_bytes,
         reserved_duration_days=user.reserved_duration_days,
+        reserved_package_id=user.reserved_package_id,
         reserved_created_at=user.reserved_created_at,
         created_at=min((c.created_at for c in legacy if c.created_at), default=user.created_at),
         # Falls back to a sequential "اکانت N" when the customer didn't type
@@ -1662,6 +1663,7 @@ def absorb_legacy_pool_core(db: Session, user: models.User, comment: Optional[st
     # The reservation now belongs to the purchase - never to both.
     user.reserved_quota_bytes = None
     user.reserved_duration_days = None
+    user.reserved_package_id = None
     user.reserved_created_at = None
     return purchase
 

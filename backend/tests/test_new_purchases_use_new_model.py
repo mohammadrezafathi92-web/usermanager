@@ -127,6 +127,7 @@ stuck_user = models.User(
     total_quota_bytes=1 * GB, used_bytes=int(0.7 * GB),
     expire_at=dt.datetime.utcnow() + dt.timedelta(days=25),
     package_id=pkg.id,
+    reserved_quota_bytes=2 * GB, reserved_duration_days=30, reserved_package_id=pkg.id,
 )
 db.add(stuck_user)
 db.commit()
@@ -148,6 +149,8 @@ check("after the sweep: no legacy connection left", has_legacy_connections(db, s
 check("it now has its own Purchase", len(stuck_user.purchases), 1)
 check("...carrying the EXACT usage across, not reset to zero", stuck_user.purchases[0].used_bytes, int(0.7 * GB))
 check("...and the exact quota/expiry too", stuck_user.purchases[0].quota_bytes, 1 * GB)
+check("reserved renewal package survives the move", stuck_user.purchases[0].reserved_package_id, pkg.id)
+check("reserved renewal no longer lives on User", stuck_user.reserved_package_id, None)
 
 print("\n--- the sweep is idempotent - running it again does nothing more ---")
 fixed2, left2 = purchase_migration.migrate_legacy_only_users(db)

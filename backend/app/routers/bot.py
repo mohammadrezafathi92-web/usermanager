@@ -1410,37 +1410,20 @@ def renew(
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     wallet_policy.can_purchase(db, user)
-    # Post-migration (services/purchase_migration.py) the user-level pool
-    # governs nothing for a fully-converted customer - a renewal landing
-    # here (old bot build, or a flow that didn't pick a service) would
-    # write to dead fields. If the customer has exactly one service, the
-    # intent is unambiguous: renew THAT service. With several services the
-    # bot's picker flow (renew_service above) should have been used; only
-    # then fall back to the legacy user-level behavior.
+    # This compatibility URL must never create another user-level (legacy)
+    # entitlement. An old bot can omit the service id only when there is
+    # exactly one independent Purchase. All other cases need an explicit
+    # service choice or a successful legacy-data migration first.
     legacy_conns = [c for c in user.connections if c.purchase_id is None]
-    if not legacy_conns and len(user.purchases) == 1:
-        return renew_service(
-            username, user.purchases[0].id, payload, db=db, owner_admin_id=owner_admin_id, principal=principal,
-        )
-    # Same ordering fix as renew_service above: authorize payload.package_id
-    # and payload.payment_card_id BEFORE renew_user, which also commits
-    # internally.
-    renew_package = bot_resources._get_package_or_403(db, principal, payload.package_id) if payload.package_id else None
-    if payload.payment_card_id is not None:
-        bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
-    renewal_evidence: list = []
-    user_ops.renew_user(db, user, payload.add_gb, payload.add_days, payload.reset_usage,
-                        package_id=payload.package_id, evidence_sink=renewal_evidence)
-    sale_entry = None
-    # Accounting: only a package-based renewal (or one where the bot sent
-    # the exact paid amount) is a paid event - a bare reset_usage or manual
-    # add_gb/add_days admin favor isn't a sale.
-    _charge_seller(db, user, renew_package, payload.add_gb or 0)
-    if payload.package_id or payload.paid_amount is not None:
-        sale_entry = _record_bot_sale(db, principal, "sale_renew", payload, user, renew_package)
-    _record_renewal(db, payload, user, renewal_evidence, sale_entry)
-    db.commit()
-    return _user_response(user)
+    if legacy_conns:
+        raise HTTPException(503, "legacy_service_migration_required")
+    if not user.purchases:
+        raise HTTPException(409, "service_purchase_required")
+    if len(user.purchases) != 1:
+        raise HTTPException(409, "service_selection_required")
+    return renew_service(
+        username, user.purchases[0].id, payload, db=db, owner_admin_id=owner_admin_id, principal=principal,
+    )
 
 
 @router.post("/users/{username}/reset-usage", response_model=schemas.BotUserResponse)

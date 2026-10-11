@@ -4,7 +4,7 @@ SQLite's single writer lock while the endpoint talks to a router.
 `receipt_approval_runtime.guard_approval_mutation` decides "blocked or
 not" before any lookup. On SQLite the whole database has ONE writer: if the
 guard left its transaction open, a receipt-approved renewal of an expired
-customer would hold that writer through `reconcile_user_connections`
+service would hold that writer through `reconcile_purchase_connections`
 (MikroTik / Xray calls), and RADIUS accounting, the quota poller and every
 bot write would wait on it - or fail with "database is locked".
 
@@ -67,6 +67,11 @@ with tempfile.TemporaryDirectory(prefix="guard_lock_") as folder:
     setup.add_all([models.PanelSettings(id=1), key] + [
         models.User(username=name, telegram_id=500 + i, balance=0, status=models.UserStatus.expired, expire_at=past)
         for i, name in enumerate(("expired_plain", "expired_approved", "expired_in_flight", "expired_blocked"))])
+    setup.flush()
+    setup.add_all([
+        models.Purchase(user_id=user.id, status=models.UserStatus.expired, expire_at=past)
+        for user in setup.query(models.User).all()
+    ])
     setup.commit()
     runtime.set_requested_mode(setup, registration_mode="shadow")
     setup.commit()
@@ -99,8 +104,8 @@ with tempfile.TemporaryDirectory(prefix="guard_lock_") as folder:
         finally:
             other.close()
 
-    original = user_ops.reconcile_user_connections
-    user_ops.reconcile_user_connections = writer_is_free
+    original = user_ops.reconcile_purchase_connections
+    user_ops.reconcile_purchase_connections = writer_is_free
     try:
         plain = client.post("/api/bot/users/expired_plain/renew", headers=headers,
                             json={"add_gb": 1, "add_days": 30})
@@ -126,15 +131,15 @@ with tempfile.TemporaryDirectory(prefix="guard_lock_") as folder:
             switch.commit()
             switch.close()
 
-        user_ops.reconcile_user_connections = block_now
+        user_ops.reconcile_purchase_connections = block_now
         in_flight = client.post("/api/bot/users/expired_in_flight/renew", headers=headers,
                                 json={"add_gb": 1, "add_days": 30, "approval_uuid": str(uuid.uuid4())})
         after = Session()
-        status = after.query(models.User).filter_by(username="expired_in_flight").one().status
+        status = after.query(models.User).filter_by(username="expired_in_flight").one().purchases[0].status
         after.close()
         check("SQLite trade-off: a renewal already past the guard completes when blocked arrives mid-way",
               (in_flight.status_code, status), (200, models.UserStatus.active))
-        user_ops.reconcile_user_connections = writer_is_free
+        user_ops.reconcile_purchase_connections = writer_is_free
 
         # The guard still decides first: once required is requested without
         # execution-token support the effective mode is blocked.
@@ -144,7 +149,7 @@ with tempfile.TemporaryDirectory(prefix="guard_lock_") as folder:
         check("blocked still wins before the renewal and before any router step",
               (blocked.status_code, blocked.json().get("detail"), probes), (503, "receipt_approval_blocked", []))
         after = Session()
-        status = after.query(models.User).filter_by(username="expired_blocked").one().status
+        status = after.query(models.User).filter_by(username="expired_blocked").one().purchases[0].status
         after.close()
         check("the blocked renewal changed nothing", status, models.UserStatus.expired)
 
@@ -152,7 +157,7 @@ with tempfile.TemporaryDirectory(prefix="guard_lock_") as folder:
         writer_is_free(None, None)
         check("a refused request leaves the writer free", probes, ["free"])
     finally:
-        user_ops.reconcile_user_connections = original
+        user_ops.reconcile_purchase_connections = original
         engine.dispose()
 
 print()

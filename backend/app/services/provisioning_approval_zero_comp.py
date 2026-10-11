@@ -1,4 +1,4 @@
-"""Private, DB-only compensation for a zero-step receipt approval.
+"""Private, DB-only compensation for zero-step receipt approvals.
 
 This is deliberately limited to the same no-connection, no-reservation shape
 as provisioning_approval_t1. The caller owns each transaction and its commit;
@@ -18,7 +18,7 @@ from .provisioning_host import HostIdentity, validate_snapshot
 
 def _lock(db, approval_uuid, execution_version, operation_id, version, leases,
           principal, *, identity, ownership_epoch, installation_uuid,
-          allow_terminal=False):
+          allow_terminal=False, operation_type="create_user"):
     if (db.in_transaction() or not isinstance(approval_uuid, str) or not approval_uuid or
             type(execution_version) is not int or execution_version < 0 or
             type(operation_id) is not int or operation_id < 1 or
@@ -46,9 +46,13 @@ def _lock(db, approval_uuid, execution_version, operation_id, version, leases,
         rv.receipt_approvals.c.approval_uuid == approval_uuid).with_for_update()).mappings().one_or_none()
     if approval is None or approval["version"] != execution_version:
         raise HTTPException(409, "approval_superseded")
+    expected_kind, expected_shape = {
+        "create_user": ("new", "new_user"),
+        "purchase": ("new", "existing_user"),
+    }.get(operation_type, (None, None))
     if (approval["kind"], approval["target_shape"], approval["tenant_scope_key"],
             approval["owner_admin_id_snapshot"], approval["registered_under_mode"]) != (
-            "new", "new_user", "shared", None, "required"):
+            expected_kind, expected_shape, "shared", None, "required"):
         raise HTTPException(409, "approval_t1_shape_not_supported")
     bound_uuid = approval["execution_key_instance_uuid"]
     if principal.is_internal:
@@ -65,14 +69,15 @@ def _lock(db, approval_uuid, execution_version, operation_id, version, leases,
     if bot_auth.resolve_claimed_owner(db, principal, None, endpoint="provisioning_approval") is not None:
         raise HTTPException(403, "execution_scope_mismatch")
     def operation_matches(row):
-        return (row is not None and row.operation_type == "create_user" and
+        return (row is not None and row.operation_type == operation_type and
             row.approval_uuid == approval_uuid and
             row.approval_execution_version == execution_version and
             row.version == version and row.tenant_scope_key == "shared" and
             row.business_key == f"approval:{approval_uuid}:v:{execution_version}" and
             row.approval_key_bound == (bound_uuid is not None) and
             row.execution_key_instance_uuid == bound_uuid and
-            row.target_user_id is None)
+            row.target_user_id == approval["target_user_id_snapshot"] and
+            row.result_purchase_id is None and row.sale_ledger_entry_id is None)
     if allow_terminal and approval["state"] == "failed":
         # A successful retry makes no mutation and does not need its old lease.
         done = db.execute(select(mp.ProvisioningOperation).where(
@@ -83,6 +88,9 @@ def _lock(db, approval_uuid, execution_version, operation_id, version, leases,
             raise HTTPException(409, "provisioning_operation_changed")
         if db.scalar(select(rv.receipt_approval_effects.c.id).where(
                 rv.receipt_approval_effects.c.approval_uuid == approval_uuid).limit(1)) is not None:
+            raise HTTPException(409, "approval_has_effects")
+        if db.scalar(select(models.LedgerEntry.id).where(
+                models.LedgerEntry.approval_uuid == approval_uuid).limit(1)) is not None:
             raise HTTPException(409, "approval_has_effects")
         return done, approval
     if leases is None:
@@ -95,6 +103,13 @@ def _lock(db, approval_uuid, execution_version, operation_id, version, leases,
             any(not token.owner.startswith(f"op:{operation_id}:") for token in tokens)):
         raise HTTPException(409, "provisioning_lease_scope_invalid")
     resource_leases.revalidate(db, tokens)
+    if operation_type == "purchase":
+        customer_id = db.scalar(select(rv.customer_identities.c.id).where(
+            rv.customer_identities.c.tenant_scope_key == "shared",
+            rv.customer_identities.c.identity_key == f"tg:{approval['telegram_id_snapshot']}"))
+        if (customer_id is None or len(tokens) != 2 or keys != {
+                f"customer_identity:{customer_id}", f"provisioning_op:{operation_id}"}):
+            raise HTTPException(409, "provisioning_lease_scope_invalid")
     operation = db.execute(select(mp.ProvisioningOperation).where(
         mp.ProvisioningOperation.id == operation_id).with_for_update()
         .execution_options(populate_existing=True)).scalar_one_or_none()
@@ -108,17 +123,23 @@ def _lock(db, approval_uuid, execution_version, operation_id, version, leases,
             rv.receipt_approval_effects.c.approval_uuid == approval_uuid)
             .limit(1).with_for_update(read=True)) is not None:
         raise HTTPException(409, "approval_has_effects")
+    if db.scalar(select(models.LedgerEntry.id).where(
+            models.LedgerEntry.approval_uuid == approval_uuid)
+            .limit(1).with_for_update(read=True)) is not None:
+        raise HTTPException(409, "approval_has_effects")
     return operation, approval
 
 
 def begin(db, approval_uuid, execution_version, operation_id, version, leases,
-          principal, error_code, *, identity, ownership_epoch, installation_uuid):
+          principal, error_code, *, identity, ownership_epoch, installation_uuid,
+          operation_type="create_user"):
     """Record a permanent failure, leaving the approval mutating for T_comp."""
     if error_code not in transitions.PERMANENT_ERRORS:
         raise HTTPException(422, "provisioning_error_code_invalid")
     operation, approval = _lock(db, approval_uuid, execution_version, operation_id,
         version, leases, principal, identity=identity,
-        ownership_epoch=ownership_epoch, installation_uuid=installation_uuid)
+        ownership_epoch=ownership_epoch, installation_uuid=installation_uuid,
+        operation_type=operation_type)
     if approval["state"] != "mutating" or operation.state != "prepared":
         raise HTTPException(409, "provisioning_operation_transition_invalid")
     transitions._write_operation(db, operation, "compensating", error_code=error_code)
@@ -127,12 +148,13 @@ def begin(db, approval_uuid, execution_version, operation_id, version, leases,
 
 
 def finish(db, approval_uuid, execution_version, operation_id, version, leases,
-           principal, *, identity, ownership_epoch, installation_uuid):
+           principal, *, identity, ownership_epoch, installation_uuid,
+           operation_type="create_user"):
     """Atomically mark the approval failed and the operation compensated."""
     operation, approval = _lock(db, approval_uuid, execution_version, operation_id,
         version, leases, principal, identity=identity,
         ownership_epoch=ownership_epoch, installation_uuid=installation_uuid,
-        allow_terminal=True)
+        allow_terminal=True, operation_type=operation_type)
     if approval["state"] == "failed":
         return operation
     if (approval["state"] != "mutating" or operation.state != "compensating" or

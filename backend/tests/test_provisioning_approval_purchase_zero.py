@@ -19,9 +19,10 @@ from fastapi import HTTPException
 from app import models, models_provisioning as mp, models_receipt_void as rv
 from app.services import bot_auth, provisioning_approval_binding as binding
 from app.services import provisioning_approval_purchase_zero as purchase_zero
+from app.services import provisioning_approval_zero_comp as compensation
 from app.services import provisioning_schema, receipt_approval_intent as ri
 from app.services import receipt_approval_registration as registration, receipt_void_schema
-from app.services import wallet_accounts
+from app.services import resource_leases, wallet_accounts
 from app.services.provisioning_host import HostIdentity
 
 
@@ -155,6 +156,67 @@ def scenario(engine):
         assert db.get(models.User, user_id).balance == 0
         assert db.execute(rv.receipt_approvals.select().where(
             rv.receipt_approvals.c.approval_uuid == approval.approval_uuid)).mappings().one()["state"] == "completed"
+    with Factory() as db:
+        assert all(resource_leases.release(db, token) for token in leases)
+        db.commit()
+    # A second no-step purchase can be abandoned without a sale or effects.
+    with Factory() as db:
+        abandoned_intent = ri.ApprovalIntent(pending_source_instance_id="purchase-private", pending_local_id=2,
+            kind="new", target_username="existing", amount=100, package_id=package_id,
+            claimed_telegram_id=881123)
+        abandoned = registration.register(db, principal, abandoned_intent, approval_mode="auto")
+        db.execute(rv.receipt_approvals.update().where(
+            rv.receipt_approvals.c.approval_uuid == abandoned.approval_uuid).values(
+                registered_under_mode="required", completeness_generation=1))
+        db.commit()
+    with Factory() as db:
+        with patch.object(binding.runtime, "effective_registration_mode", return_value="required"):
+            abandoned_id, abandoned_leases, replay = purchase_zero.prepare(db,
+                abandoned.approval_uuid, abandoned.execution_token, principal, abandoned_intent, **kwargs)
+        assert not replay
+        db.commit()
+    with Factory() as db:
+        operation = compensation.begin(db, abandoned.approval_uuid, abandoned.execution_token,
+            abandoned_id, 0, abandoned_leases, principal, "final_tx_failed_permanent",
+            operation_type="purchase", **kwargs)
+        assert operation.state == "compensating"
+        db.commit()
+    with Factory() as db:
+        operation = compensation.finish(db, abandoned.approval_uuid, abandoned.execution_token,
+            abandoned_id, 1, abandoned_leases, principal, operation_type="purchase", **kwargs)
+        assert operation.state == "compensated"
+        def fail_commit(_session):
+            raise RuntimeError("commit interrupted")
+        event.listen(db, "before_commit", fail_commit)
+        try:
+            try:
+                db.commit()
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("compensation commit unexpectedly succeeded")
+        finally:
+            event.remove(db, "before_commit", fail_commit)
+            db.rollback()
+    with Factory() as db:
+        assert db.get(mp.ProvisioningOperation, abandoned_id).state == "compensating"
+        assert db.execute(rv.receipt_approvals.select().where(
+            rv.receipt_approvals.c.approval_uuid == abandoned.approval_uuid)).mappings().one()["state"] == "mutating"
+        db.rollback()
+    with Factory() as db:
+        operation = compensation.finish(db, abandoned.approval_uuid, abandoned.execution_token,
+            abandoned_id, 1, abandoned_leases, principal, operation_type="purchase", **kwargs)
+        db.commit()
+        compensated_version = operation.version
+    with Factory() as db:
+        assert compensation.finish(db, abandoned.approval_uuid, abandoned.execution_token,
+            abandoned_id, compensated_version, (), principal, operation_type="purchase", **kwargs).id == abandoned_id
+        db.rollback()
+    with Factory() as db:
+        assert db.query(models.Purchase).count() == 1
+        assert db.query(models.LedgerEntry).count() == 1
+        assert db.query(mp.ProvisioningOperation).count() == 2
+        assert len(db.execute(rv.receipt_approval_effects.select()).all()) == 2
     print("PASS", engine.dialect.name, "atomic existing-user purchase")
 
 

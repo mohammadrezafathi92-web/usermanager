@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATABASE_URL", "sqlite://")
 
 import _no_network
-_no_network.install([os.environ.get("MARIADB_TEST_URL", "")])
+_no_network.install([])
 
 from fastapi import HTTPException
 from sqlalchemy import create_engine

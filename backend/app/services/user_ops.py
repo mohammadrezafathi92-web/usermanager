@@ -47,6 +47,88 @@ from .link_builder import (
 logger = logging.getLogger("user_ops")
 
 
+def _precheck_connection_destination(db: Session, user: models.User, purchase_batch: Optional[str]) -> None:
+    preferred_id = db.info.get("provisioning_purchase_id")
+    if preferred_id is not None:
+        purchase = db.get(models.Purchase, preferred_id)
+        if purchase is None or purchase.user_id != user.id:
+            raise HTTPException(409, "سرویس مقصد نامعتبر است")
+        return
+    if purchase_batch and db.query(models.Connection.id).filter(
+        models.Connection.user_id == user.id,
+        models.Connection.purchase_batch == purchase_batch,
+        models.Connection.purchase_id.isnot(None),
+    ).first():
+        return
+    if db.query(models.Purchase.id).filter(models.Purchase.user_id == user.id).limit(2).count() > 1:
+        # The panel must ask which of several services should own this new
+        # connection; do this BEFORE any remote peer/client is created.
+        raise HTTPException(409, "چند سرویس دارید؛ سرویس مقصد اتصال را مشخص کنید")
+
+
+def _commit_new_connection(db: Session, user: models.User, conn: models.Connection) -> models.Connection:
+    """Persist a live credential only together with its owning Purchase.
+
+    The remote side (if any) has already been created by the caller. Lock the
+    customer before choosing the destination so concurrent additions cannot
+    both manufacture a first Purchase from the same user-level allowance.
+    """
+    db.execute(select(models.User.id).where(models.User.id == user.id).with_for_update())
+    db.add(conn)
+    db.flush()
+    preferred_id = db.info.get("provisioning_purchase_id")
+    if preferred_id is not None:
+        purchase = db.get(models.Purchase, preferred_id)
+        if purchase is None or purchase.user_id != user.id:
+            raise HTTPException(409, "سرویس مقصد نامعتبر است")
+        conn.purchase_id = purchase.id
+    else:
+        existing_id = None
+        if conn.purchase_batch:
+            existing_id = db.query(models.Connection.purchase_id).filter(
+                models.Connection.user_id == user.id,
+                models.Connection.id != conn.id,
+                models.Connection.purchase_batch == conn.purchase_batch,
+                models.Connection.purchase_id.isnot(None),
+            ).limit(1).scalar()
+        if existing_id is not None:
+            conn.purchase_id = existing_id
+        else:
+            purchases = db.query(models.Purchase).filter(
+                models.Purchase.user_id == user.id).order_by(models.Purchase.id).limit(2).all()
+            if len(purchases) == 1:
+                conn.purchase_id = purchases[0].id
+            elif len(purchases) > 1:
+                raise HTTPException(409, "چند سرویس دارید؛ سرویس مقصد اتصال را مشخص کنید")
+        if conn.purchase_id is None:
+            # Include the just-flushed row even if user.connections was
+            # loaded earlier by the caller. The established 1:1 conversion
+            # preserves the original quota, consumption and expiry.
+            db.expire(user, ["connections", "purchases"])
+            purchase = absorb_legacy_pool_core(db, user)
+            if purchase is None or conn.purchase_id is None:
+                raise HTTPException(409, "ساخت سرویس مستقل ناموفق بود")
+    # A previously mixed customer may already have other unlinked rows.
+    # Repair those in this same commit; never return a newly provisioned
+    # connection while the account still contains an old shared-pool one.
+    db.flush()
+    if db.query(models.Connection.id).filter(
+        models.Connection.user_id == user.id,
+        models.Connection.purchase_id.is_(None),
+    ).first():
+        db.expire(user, ["connections", "purchases"])
+        absorb_legacy_pool_core(db, user)
+        db.flush()
+        if db.query(models.Connection.id).filter(
+            models.Connection.user_id == user.id,
+            models.Connection.purchase_id.is_(None),
+        ).first():
+            raise HTTPException(409, "تبدیل سرویس‌های قبلی ناموفق بود")
+    db.commit()
+    db.refresh(conn)
+    return conn
+
+
 def gb_to_bytes(gb: float) -> int:
     return int(round((gb or 0) * 1024 ** 3))
 
@@ -1176,6 +1258,8 @@ def provision_wireguard(
     if node.type != models.NodeType.mikrotik:
         raise HTTPException(400, "نود میکروتیک معتبر نیست")
 
+    _precheck_connection_destination(db, user, purchase_batch)
+
     count = max(1, max_concurrent_sessions or 1)
     gateway_with_prefix, client_ips, subnet_expanded = _wg_reserve_ips(node, db, count)
     client_address = ",".join(f"{ip}/32" for ip in client_ips)
@@ -1217,10 +1301,7 @@ def provision_wireguard(
         package_name_snapshot=package_name,
         speed_limit_mbps=speed_limit_mbps or None,
     )
-    db.add(conn)
-    db.commit()
-    db.refresh(conn)
-    return conn
+    return _commit_new_connection(db, user, conn)
 
 
 # ------------------------------------------------------------- openvpn/l2tp
@@ -1276,10 +1357,7 @@ def _provision_ppp(
         package_name_snapshot=package_name,
         speed_limit_mbps=speed_limit_mbps or None,
     )
-    db.add(conn)
-    db.commit()
-    db.refresh(conn)
-    return conn
+    return _commit_new_connection(db, user, conn)
 
 
 def provision_openvpn(
@@ -1357,6 +1435,8 @@ def provision_xray(
     if node.type != models.NodeType.xray:
         raise HTTPException(400, "نود Xray معتبر نیست")
 
+    _precheck_connection_destination(db, user, purchase_batch)
+
     email = f"{user.username[:12]}{uuid.uuid4().hex[:4]}@usermanager.local"
     try:
         with writer_gate(node), client_for_node(node) as xc:
@@ -1374,10 +1454,7 @@ def provision_xray(
         purchase_batch=purchase_batch,
         package_name_snapshot=package_name,
     )
-    db.add(conn)
-    db.commit()
-    db.refresh(conn)
-    return conn
+    return _commit_new_connection(db, user, conn)
 
 
 # ----------------------------------------------------------------- softether
@@ -1404,6 +1481,8 @@ def provision_softether(
     if node.type != models.NodeType.softether:
         raise HTTPException(400, "نود SoftEther معتبر نیست")
 
+    _precheck_connection_destination(db, user, purchase_batch)
+
     username = f"{user.username[:12]}{uuid.uuid4().hex[:4]}"
     password = generate_password()
     try:
@@ -1423,10 +1502,7 @@ def provision_softether(
         package_name_snapshot=package_name,
         speed_limit_mbps=speed_limit_mbps or None,
     )
-    db.add(conn)
-    db.commit()
-    db.refresh(conn)
-    return conn
+    return _commit_new_connection(db, user, conn)
 
 
 def _package_node_scope_enforced(db: Session) -> bool:
@@ -1570,9 +1646,10 @@ def absorb_legacy_pool_core(db: Session, user: models.User, comment: Optional[st
         expire_at=user.expire_at,
         expire_days_after_first_use=user.expire_days_after_first_use,
         max_concurrent_sessions=user.max_concurrent_sessions,
-        status=user.status if user.status != models.UserStatus.disabled else models.UserStatus.active,
+        status=models.UserStatus.disabled if user.status == models.UserStatus.disabled else models.UserStatus.active,
         reserved_quota_bytes=user.reserved_quota_bytes,
         reserved_duration_days=user.reserved_duration_days,
+        reserved_package_id=user.reserved_package_id,
         reserved_created_at=user.reserved_created_at,
         created_at=min((c.created_at for c in legacy if c.created_at), default=user.created_at),
         # Falls back to a sequential "اکانت N" when the customer didn't type
@@ -1586,6 +1663,7 @@ def absorb_legacy_pool_core(db: Session, user: models.User, comment: Optional[st
     # The reservation now belongs to the purchase - never to both.
     user.reserved_quota_bytes = None
     user.reserved_duration_days = None
+    user.reserved_package_id = None
     user.reserved_created_at = None
     return purchase
 
@@ -1692,12 +1770,19 @@ def apply_package_as_purchase(
             skip_reasons.append("نود پیدا نشد")
             continue
         try:
-            conn = provision_connection(
-                db, user, node, spec["protocol"], spec.get("flow") or "", 1,
-                purchase_batch=batch, package_name=package.name,
-                speed_limit_mbps=package.speed_limit_mbps,
-                authorization_scope=authorization_scope,
-            )
+            # The low-level provisioning functions commit each credential.
+            # Bind it to this paid Purchase in that SAME commit, not after
+            # the function returns (when a crash could strand a legacy row).
+            db.info["provisioning_purchase_id"] = purchase.id
+            try:
+                conn = provision_connection(
+                    db, user, node, spec["protocol"], spec.get("flow") or "", 1,
+                    purchase_batch=batch, package_name=package.name,
+                    speed_limit_mbps=package.speed_limit_mbps,
+                    authorization_scope=authorization_scope,
+                )
+            finally:
+                db.info.pop("provisioning_purchase_id", None)
             conn.purchase_id = purchase.id
             created_any = True
         except HTTPException as exc:
@@ -2069,6 +2154,26 @@ def _secret_is_disabled(value) -> bool:
     return value in (True, "true", "yes")
 
 
+def _finish_imported_purchases(db: Session, user_ids: set[int]) -> None:
+    """Link imported credentials before their first database commit."""
+    from . import purchase_migration
+
+    db.flush()
+    for user_id in sorted(user_ids):
+        user = db.get(models.User, user_id)
+        db.expire(user, ["connections", "purchases"])
+        if user.purchases:
+            absorb_legacy_pool_core(db, user)
+        else:
+            purchase_migration.migrate_user(db, user)
+        db.flush()
+        if db.query(models.Connection.id).filter(
+            models.Connection.user_id == user_id,
+            models.Connection.purchase_id.is_(None),
+        ).first():
+            raise HTTPException(409, "تبدیل سرویس ایمپورت‌شده ناموفق بود")
+
+
 def import_ppp_secrets(db: Session, node: models.Node) -> dict:
     """Reads /ppp/secret entries that were created directly on the router
     (outside the panel, before or alongside it) and creates matching
@@ -2093,6 +2198,7 @@ def import_ppp_secrets(db: Session, node: models.Node) -> dict:
 
     imported: list[str] = []
     skipped: list[dict] = []
+    affected_user_ids: set[int] = set()
 
     for secret in secrets_:
         name = secret.get("name")
@@ -2143,7 +2249,9 @@ def import_ppp_secrets(db: Session, node: models.Node) -> dict:
         )
         db.add(conn)
         imported.append(name)
+        affected_user_ids.add(user.id)
 
+    _finish_imported_purchases(db, affected_user_ids)
     db.commit()
     return {
         "imported": imported,
@@ -2459,6 +2567,7 @@ def import_usermanager_accounts(db: Session, node: models.Node, admin: models.Ad
 
     imported: list[str] = []
     skipped: list[dict] = []
+    affected_user_ids: set[int] = set()
 
     for um_user in um_users:
         name = um_user.get("name")
@@ -2520,7 +2629,9 @@ def import_usermanager_accounts(db: Session, node: models.Node, admin: models.Ad
         )
         db.add(conn)
         imported.append(name)
+        affected_user_ids.add(user.id)
 
+    _finish_imported_purchases(db, affected_user_ids)
     db.commit()
     return {
         "imported": imported,
@@ -2552,6 +2663,7 @@ def import_threexui_clients(db: Session, node: models.Node) -> dict:
 
     imported: list[str] = []
     skipped: list[dict] = []
+    affected_user_ids: set[int] = set()
 
     for c in clients:
         email = c.get("email")
@@ -2632,7 +2744,9 @@ def import_threexui_clients(db: Session, node: models.Node) -> dict:
         )
         db.add(conn)
         imported.append(email)
+        affected_user_ids.add(user.id)
 
+    _finish_imported_purchases(db, affected_user_ids)
     db.commit()
     return {
         "imported": imported,

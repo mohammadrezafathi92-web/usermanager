@@ -63,6 +63,9 @@ def scenario(engine):
         prior = db.query(models.Connection).count()
         db.rollback()
         commits.clear()
+        refusal("purchase_required_for_connection", lambda: records.build_connection_core(
+            db, sid, 0, user_id=uid))
+        db.rollback()
         refusal("provisioning_connection_mismatch", lambda: records.build_connection_core(
             db, sid, 0, user_id=other_id, purchase_id=pid))
         db.rollback()

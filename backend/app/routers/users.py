@@ -1,6 +1,7 @@
 import datetime as dt
 import os
 import tempfile
+from contextlib import contextmanager
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -912,6 +913,22 @@ def _get_user_and_node(
     return user, node
 
 
+@contextmanager
+def _connection_purchase(db: Session, user: models.User, purchase_id: Optional[int]):
+    """Pin a manual connection to an explicitly selected owned service."""
+    if purchase_id is None:
+        yield
+        return
+    purchase = db.get(models.Purchase, purchase_id)
+    if purchase is None or purchase.user_id != user.id:
+        raise HTTPException(404, "سرویس مقصد پیدا نشد")
+    db.info["provisioning_purchase_id"] = purchase.id
+    try:
+        yield
+    finally:
+        db.info.pop("provisioning_purchase_id", None)
+
+
 @router.post("/{user_id}/connections/wireguard", response_model=schemas.ConnectionOut)
 def add_wireguard_connection(
     user_id: int,
@@ -920,7 +937,8 @@ def add_wireguard_connection(
     admin: models.AdminUser = Depends(get_current_admin),
  _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
-    return user_ops.provision_wireguard(db, user, node, max_concurrent_sessions=payload.max_concurrent_sessions)
+    with _connection_purchase(db, user, payload.purchase_id):
+        return user_ops.provision_wireguard(db, user, node, max_concurrent_sessions=payload.max_concurrent_sessions)
 
 
 @router.post("/{user_id}/connections/openvpn", response_model=schemas.ConnectionOut)
@@ -931,7 +949,8 @@ def add_openvpn_connection(
     admin: models.AdminUser = Depends(get_current_admin),
  _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
-    return user_ops.provision_openvpn(db, user, node, payload.max_concurrent_sessions)
+    with _connection_purchase(db, user, payload.purchase_id):
+        return user_ops.provision_openvpn(db, user, node, payload.max_concurrent_sessions)
 
 
 @router.post("/{user_id}/connections/l2tp", response_model=schemas.ConnectionOut)
@@ -942,7 +961,8 @@ def add_l2tp_connection(
     admin: models.AdminUser = Depends(get_current_admin),
  _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
-    return user_ops.provision_l2tp(db, user, node, payload.max_concurrent_sessions)
+    with _connection_purchase(db, user, payload.purchase_id):
+        return user_ops.provision_l2tp(db, user, node, payload.max_concurrent_sessions)
 
 
 @router.post("/{user_id}/connections/ikev2", response_model=schemas.ConnectionOut)
@@ -953,7 +973,8 @@ def add_ikev2_connection(
     admin: models.AdminUser = Depends(get_current_admin),
  _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
-    return user_ops.provision_ikev2(db, user, node, payload.max_concurrent_sessions)
+    with _connection_purchase(db, user, payload.purchase_id):
+        return user_ops.provision_ikev2(db, user, node, payload.max_concurrent_sessions)
 
 
 @router.post("/{user_id}/connections/pptp", response_model=schemas.ConnectionOut)
@@ -968,7 +989,8 @@ def add_pptp_connection(
     appears - the credentials handed to the customer carry the warning
     too."""
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
-    return user_ops.provision_pptp(db, user, node, payload.max_concurrent_sessions)
+    with _connection_purchase(db, user, payload.purchase_id):
+        return user_ops.provision_pptp(db, user, node, payload.max_concurrent_sessions)
 
 
 @router.post("/{user_id}/connections/sstp", response_model=schemas.ConnectionOut)
@@ -979,7 +1001,8 @@ def add_sstp_connection(
     admin: models.AdminUser = Depends(get_current_admin),
  _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
-    return user_ops.provision_sstp(db, user, node, payload.max_concurrent_sessions)
+    with _connection_purchase(db, user, payload.purchase_id):
+        return user_ops.provision_sstp(db, user, node, payload.max_concurrent_sessions)
 
 
 @router.post("/{user_id}/connections/xray", response_model=schemas.ConnectionOut)
@@ -990,7 +1013,8 @@ def add_xray_connection(
     admin: models.AdminUser = Depends(get_current_admin),
  _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
-    return user_ops.provision_xray(db, user, node, payload.flow or "")
+    with _connection_purchase(db, user, payload.purchase_id):
+        return user_ops.provision_xray(db, user, node, payload.flow or "")
 
 
 @router.post("/{user_id}/connections/softether", response_model=schemas.ConnectionOut)
@@ -1001,7 +1025,8 @@ def add_softether_connection(
     admin: models.AdminUser = Depends(get_current_admin),
  _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
-    return user_ops.provision_softether(db, user, node)
+    with _connection_purchase(db, user, payload.purchase_id):
+        return user_ops.provision_softether(db, user, node)
 
 
 @router.post("/{user_id}/apply-package", response_model=schemas.UserOut)

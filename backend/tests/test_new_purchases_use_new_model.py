@@ -27,6 +27,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret")
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from fastapi import HTTPException
 
 from app import models, schemas
 from app.routers import users as users_router
@@ -82,6 +83,31 @@ check("...and its own expiry, not the user-level field", user.purchases[0].expir
 check("NO connection is left on the legacy shared pool", has_legacy_connections(db, user), False)
 check("the connection is linked to the Purchase, not floating", user.connections[0].purchase_id, user.purchases[0].id)
 
+print("\n--- a manual connection is linked in its first commit ---")
+db, admin, node, pkg = build()
+manual = models.User(username="manual", owner_admin_id=admin.id,
+                     total_quota_bytes=7 * GB, used_bytes=GB)
+db.add(manual)
+db.commit()
+first = user_ops.provision_openvpn(db, manual, node)
+second = user_ops.provision_l2tp(db, manual, node)
+check("both manual credentials have a Purchase", bool(first.purchase_id and second.purchase_id), True)
+check("no manual credential uses the old pool", has_legacy_connections(db, manual), False)
+check("the original allowance was not multiplied", sum(p.quota_bytes for p in manual.purchases), 7 * GB)
+extra = models.Purchase(user_id=manual.id, quota_bytes=2 * GB, status=models.UserStatus.active)
+db.add(extra)
+db.commit()
+try:
+    users_router.add_openvpn_connection(manual.id, schemas.ConnectionCreateOpenvpn(node_id=node.id), db, admin)
+    check("multiple services require an explicit destination", False, True)
+except HTTPException as exc:
+    check("multiple services require an explicit destination", exc.status_code, 409)
+db.rollback()
+selected = users_router.add_openvpn_connection(
+    manual.id, schemas.ConnectionCreateOpenvpn(node_id=node.id, purchase_id=extra.id), db, admin)
+check("explicit destination owns the new connection", selected.purchase_id, extra.id)
+check("manual multi-service addition still leaves no legacy row", has_legacy_connections(db, manual), False)
+
 print("\n--- panel: bulk-creating users WITH a package (services/user_ops.py) ---")
 db, admin, node, pkg = build()
 result = user_ops.bulk_create_users(db, "bulkcust", 3, package_id=pkg.id)
@@ -101,6 +127,7 @@ stuck_user = models.User(
     total_quota_bytes=1 * GB, used_bytes=int(0.7 * GB),
     expire_at=dt.datetime.utcnow() + dt.timedelta(days=25),
     package_id=pkg.id,
+    reserved_quota_bytes=2 * GB, reserved_duration_days=30, reserved_package_id=pkg.id,
 )
 db.add(stuck_user)
 db.commit()
@@ -122,10 +149,67 @@ check("after the sweep: no legacy connection left", has_legacy_connections(db, s
 check("it now has its own Purchase", len(stuck_user.purchases), 1)
 check("...carrying the EXACT usage across, not reset to zero", stuck_user.purchases[0].used_bytes, int(0.7 * GB))
 check("...and the exact quota/expiry too", stuck_user.purchases[0].quota_bytes, 1 * GB)
+check("reserved renewal package survives the move", stuck_user.purchases[0].reserved_package_id, pkg.id)
+check("reserved renewal no longer lives on User", stuck_user.reserved_package_id, None)
 
 print("\n--- the sweep is idempotent - running it again does nothing more ---")
 fixed2, left2 = purchase_migration.migrate_legacy_only_users(db)
 check("nothing left to convert", (fixed2, left2), (0, 0))
+
+print("\n--- unknown package history remains one exact pool, never legacy ---")
+db, admin, node, pkg = build()
+pooled = models.User(
+    username="ambiguous", owner_admin_id=admin.id,
+    total_quota_bytes=17 * GB, used_bytes=3 * GB,
+    expire_at=dt.datetime.utcnow() + dt.timedelta(days=9),
+)
+db.add(pooled)
+db.flush()
+for batch in ("known", "unknown"):
+    db.add(models.Connection(
+        user_id=pooled.id, node_id=node.id, type="l2tp",
+        ppp_username=f"ambiguous_{batch}", ppp_password="x",
+        purchase_batch=batch,
+        package_name_snapshot=pkg.name if batch == "known" else None,
+    ))
+db.commit()
+fixed, left = purchase_migration.migrate_legacy_only_users(db)
+db.expire_all()
+pooled = db.query(models.User).filter_by(username="ambiguous").one()
+check("ambiguous groups converted without leftovers", (fixed, left), (1, 0))
+check("one shared entitlement is preserved", len(pooled.purchases), 1)
+check("exact quota and usage survive", (pooled.purchases[0].quota_bytes, pooled.purchases[0].used_bytes),
+      (17 * GB, 3 * GB))
+check("both connections belong to it", {c.purchase_id for c in pooled.connections}, {pooled.purchases[0].id})
+
+print("\n--- an import commits only linked credentials ---")
+db, admin, node, pkg = build()
+imported = models.User(username="imported", owner_admin_id=admin.id,
+                       total_quota_bytes=4 * GB, used_bytes=GB)
+db.add(imported)
+db.flush()
+for index in range(2):
+    db.add(models.Connection(user_id=imported.id, node_id=node.id, type="l2tp",
+                             ppp_username=f"imported_{index}", ppp_password="x"))
+user_ops._finish_imported_purchases(db, {imported.id})
+db.commit()
+check("import has no old-model connection", has_legacy_connections(db, imported), False)
+check("import preserves a single allowance", len(imported.purchases), 1)
+check("import preserves usage", imported.purchases[0].used_bytes, GB)
+
+print("\n--- conversion never re-enables a manually disabled account ---")
+db, admin, node, pkg = build()
+disabled = models.User(username="disabled_old", owner_admin_id=admin.id,
+                       status=models.UserStatus.disabled, total_quota_bytes=GB)
+db.add(disabled)
+db.flush()
+db.add(models.Connection(user_id=disabled.id, node_id=node.id, type="l2tp",
+                         ppp_username="disabled_old", ppp_password="x", enabled=False))
+db.commit()
+purchase_migration.migrate_legacy_only_users(db)
+db.expire_all()
+check("disabled service remains disabled", disabled.purchases[0].status, models.UserStatus.disabled)
+check("disabled service has no old-model connection", has_legacy_connections(db, disabled), False)
 
 print("\n--- the sweep must NOT touch a 'mixed' customer - that's fix_mixed_users' job ---")
 db, admin, node, pkg = build()

@@ -22,9 +22,10 @@ Rules (deliberately conservative - NOTHING is guessed):
    quota, expiry = the group's purchase date + package duration, and
    used = the sum of its own connections' total_bytes - which is exact,
    not reconstructed, because per-connection usage was always tracked.
-   Groups whose package can't be identified are left on the shared pool
-   (the UserDetail page keeps showing them under "سرویس اشتراکی" with a
-   manual-convert action instead of us inventing numbers).
+   If ANY group's package cannot be identified, the whole legacy pool is
+   moved as ONE Purchase with the user's exact combined quota/usage/expiry.
+   Splitting only the identifiable groups would leave an unpriced remainder
+   whose entitlement cannot be reconstructed without guessing.
 
 4. The user-level reserved renewal, if any, is attached to the single
    converted purchase that is actually exhausted/expired (that's the
@@ -75,7 +76,12 @@ def _resolve_package(db: Session, user: models.User, key: str, conns: list[model
 
 
 def _make_purchase(db: Session, user: models.User, conns: list[models.Connection], **fields) -> models.Purchase:
-    purchase = models.Purchase(user_id=user.id, status=models.UserStatus.active, **fields)
+    purchase = models.Purchase(
+        user_id=user.id,
+        status=(models.UserStatus.disabled if user.status == models.UserStatus.disabled
+                else models.UserStatus.active),
+        **fields,
+    )
     db.add(purchase)
     db.flush()  # assigns purchase.id for the FK links below
     for conn in conns:
@@ -93,20 +99,26 @@ def migrate_user(db: Session, user: models.User) -> tuple[int, int]:
     converted: list[models.Purchase] = []
     skipped = 0
 
-    if len(groups) == 1:
-        # Rule 2: the whole pool belongs to this one group - copy it 1:1.
-        key, conns = next(iter(groups.items()))
-        pkg = _resolve_package(db, user, key, conns)
+    unresolved = any(_resolve_package(db, user, key, conns) is None
+                     for key, conns in groups.items()) if len(groups) > 1 else False
+    if len(groups) == 1 or unresolved:
+        # A single group, or an inseparable pool with unknown package
+        # history: preserve the entire existing entitlement in one Purchase.
+        key, first_conns = next(iter(groups.items()))
+        conns = [conn for group in groups.values() for conn in group]
+        pkg = _resolve_package(db, user, key, first_conns) if len(groups) == 1 else None
         purchase = _make_purchase(
             db, user, conns,
-            package_id=pkg.id if pkg else user.package_id,
-            package_name_snapshot=(pkg.name if pkg else None) or next((c.package_name_snapshot for c in conns), None),
+            package_id=(pkg.id if pkg else user.package_id) if len(groups) == 1 else None,
+            package_name_snapshot=((pkg.name if pkg else None) or next((c.package_name_snapshot for c in conns), None))
+            if len(groups) == 1 else "سرویس‌های پیشین",
             quota_bytes=user.total_quota_bytes or 0,
             used_bytes=user.used_bytes or 0,
             expire_at=user.expire_at,
             expire_days_after_first_use=user.expire_days_after_first_use,
             reserved_quota_bytes=user.reserved_quota_bytes,
             reserved_duration_days=user.reserved_duration_days,
+            reserved_package_id=user.reserved_package_id,
             reserved_created_at=user.reserved_created_at,
             created_at=min((c.created_at for c in conns if c.created_at), default=user.created_at),
         )
@@ -114,6 +126,7 @@ def migrate_user(db: Session, user: models.User) -> tuple[int, int]:
         # The reservation now lives on the purchase - never in both places.
         user.reserved_quota_bytes = None
         user.reserved_duration_days = None
+        user.reserved_package_id = None
         user.reserved_created_at = None
         return 1, 0
 
@@ -137,7 +150,7 @@ def migrate_user(db: Session, user: models.User) -> tuple[int, int]:
 
     # Rule 4: place the user-level reserved renewal on the one service
     # that's actually finished - the thing it was bought to renew.
-    if (user.reserved_quota_bytes or user.reserved_duration_days) and converted:
+    if (user.reserved_quota_bytes or user.reserved_duration_days or user.reserved_package_id) and converted:
         exhausted = [
             p for p in converted
             if (p.quota_bytes and (p.used_bytes or 0) >= p.quota_bytes) or (p.expire_at and p.expire_at <= now)
@@ -146,9 +159,11 @@ def migrate_user(db: Session, user: models.User) -> tuple[int, int]:
             target = exhausted[0]
             target.reserved_quota_bytes = user.reserved_quota_bytes
             target.reserved_duration_days = user.reserved_duration_days
+            target.reserved_package_id = user.reserved_package_id
             target.reserved_created_at = user.reserved_created_at or now
             user.reserved_quota_bytes = None
             user.reserved_duration_days = None
+            user.reserved_package_id = None
             user.reserved_created_at = None
 
     return len(converted), skipped

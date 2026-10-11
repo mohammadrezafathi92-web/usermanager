@@ -152,20 +152,56 @@ check("purchase_package: purchase, both slots and the sale are recorded",
       (None, sorted(f"{m['effect_type']}:{m['effect_key']}" for m in reg.manifest_of(db, uuid3)), []))
 
 print("--- renewal ---")
+from fastapi import HTTPException
+
+newbie = db.query(models.User).filter_by(username="newbie").one()
+before_legacy = (newbie.total_quota_bytes, newbie.used_bytes, newbie.expire_at,
+                 db.query(models.LedgerEntry).count())
+try:
+    bot_router.renew("newbie", schemas.BotRenewRequest(add_gb=10, add_days=30), db=db, principal=internal)
+    ambiguous = None
+except HTTPException as exc:
+    ambiguous = (exc.status_code, exc.detail)
+db.expire_all()
+check("a multi-service renewal without a service id cannot write the legacy user pool",
+      (ambiguous, (newbie.total_quota_bytes, newbie.used_bytes, newbie.expire_at,
+                   db.query(models.LedgerEntry).count())),
+      ((409, "service_selection_required"), before_legacy))
+
+no_service = models.User(username="no_service", total_quota_bytes=123)
+stale = models.User(username="stale_service", total_quota_bytes=456)
+db.add_all([no_service, stale])
+db.flush()
+db.add(models.Connection(user_id=stale.id, node_id=node.id, type=models.ConnectionType.l2tp))
+db.commit()
+for username, expected in (("no_service", (409, "service_purchase_required")),
+                           ("stale_service", (503, "legacy_service_migration_required"))):
+    previous = db.query(models.User).filter_by(username=username).one().total_quota_bytes
+    try:
+        bot_router.renew(username, schemas.BotRenewRequest(add_gb=1, add_days=5), db=db, principal=internal)
+        refusal = None
+    except HTTPException as exc:
+        refusal = (exc.status_code, exc.detail)
+    db.expire_all()
+    check(f"{username}: renewal cannot create a legacy entitlement",
+          (refusal, db.query(models.User).filter_by(username=username).one().total_quota_bytes),
+          (expected, previous))
+
+target_purchase = db.query(models.Purchase).filter(models.Purchase.user_id == db.query(models.User).filter_by(username="newbie").one().id).first()
 intent4 = ri.ApprovalIntent(pending_source_instance_id="inst", pending_local_id=4, kind="renew", target_username="newbie",
-                            amount=800, package_id=package.id, claimed_telegram_id=999)
+                            amount=800, package_id=package.id, renew_purchase_id=target_purchase.id, claimed_telegram_id=999)
 uuid4 = reg.begin(db, internal, intent4, approval_mode="manual", approved_by_telegram_id=1000)["approval_uuid"]
 before = len(shadow_codes())
-bot_router.renew("newbie", schemas.BotRenewRequest(add_gb=10, add_days=30, package_id=package.id, paid_amount=800,
-                                                    payment_method="card", approval_uuid=uuid4), db=db, principal=internal)
-check("user-level renewal: the renewal itself (evidence from user_ops) and its sale, both recorded; sale tagged",
+bot_router.renew_service("newbie", target_purchase.id, schemas.BotRenewRequest(
+    add_gb=10, add_days=30, package_id=package.id, paid_amount=800,
+    payment_method="card", approval_uuid=uuid4), db=db, principal=internal)
+check("purchase renewal: the renewal itself (evidence from user_ops) and its sale, both recorded; sale tagged",
       (effects(uuid4), shadow_codes()[before:], db.query(models.LedgerEntry).filter_by(kind="sale_renew").one().approval_uuid),
       (["ledger_sale:sale", "purchase_renewed:renew"], [], uuid4))
 import json
 snapshot = json.loads(db.execute(select(F.c.resource_snapshot).where(F.c.approval_uuid == uuid4, F.c.effect_type == "purchase_renewed")).scalar())
 check("the snapshot says which branch ran and what it changed (needed to undo it later)",
       (snapshot["renewal_mode"] in ("reserved", "immediate_reset"), snapshot["add_days"], "q_before" in snapshot), (True, 30, True))
-target_purchase = db.query(models.Purchase).filter(models.Purchase.user_id == db.query(models.User).filter_by(username="newbie").one().id).first()
 intent6 = ri.ApprovalIntent(pending_source_instance_id="inst", pending_local_id=6, kind="renew", target_username="newbie",
                             amount=800, package_id=package.id, renew_purchase_id=target_purchase.id, claimed_telegram_id=999)
 uuid6 = reg.begin(db, internal, intent6, approval_mode="manual", approved_by_telegram_id=1000)["approval_uuid"]

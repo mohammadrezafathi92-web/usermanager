@@ -217,6 +217,86 @@ def scenario(engine):
         assert db.query(models.LedgerEntry).count() == 1
         assert db.query(mp.ProvisioningOperation).count() == 2
         assert len(db.execute(rv.receipt_approval_effects.select()).all()) == 2
+    # A migrated customer can retain historical User-level counters. Only
+    # unlinked Connections make build_purchase_core absorb another Purchase.
+    with Factory() as db:
+        migrated = wallet_accounts.create_user_with_wallet(db,
+            username="migrated", telegram_id=881124, balance=0)
+        migrated.total_quota_bytes = 8 * 1024 ** 3
+        migrated.expire_at = dt.datetime.utcnow() + dt.timedelta(days=12)
+        migrated.reserved_quota_bytes = 2 * 1024 ** 3
+        migrated.reserved_duration_days = 14
+        old = models.Purchase(user_id=migrated.id, package_id=package_id,
+            quota_bytes=8 * 1024 ** 3, expire_at=migrated.expire_at)
+        node = models.Node(name="migrated-node", type=models.NodeType.mikrotik)
+        db.add_all([old, node])
+        db.flush()
+        linked = models.Connection(user_id=migrated.id, purchase_id=old.id,
+            node_id=node.id, type=models.ConnectionType.l2tp)
+        db.add(linked)
+        db.flush()
+        migrated_id, old_id, linked_id = migrated.id, old.id, linked.id
+        fresh_intent = ri.ApprovalIntent(pending_source_instance_id="purchase-private", pending_local_id=3,
+            kind="new", target_username="migrated", amount=100, package_id=package_id,
+            claimed_telegram_id=migrated.telegram_id)
+        fresh = registration.register(db, principal, fresh_intent, approval_mode="auto")
+        db.execute(rv.receipt_approvals.update().where(
+            rv.receipt_approvals.c.approval_uuid == fresh.approval_uuid).values(
+                registered_under_mode="required", completeness_generation=1))
+        db.commit()
+        db.refresh(migrated)
+        # MariaDB DATETIME rounds/truncates fractional seconds. Compare to
+        # the committed baseline, not the pre-commit Python timestamp.
+        historical = (migrated.total_quota_bytes, migrated.expire_at,
+            migrated.reserved_quota_bytes, migrated.reserved_duration_days)
+    with Factory() as db:
+        with patch.object(binding.runtime, "effective_registration_mode", return_value="required"):
+            fresh_id, fresh_leases, replay = purchase_zero.prepare(db,
+                fresh.approval_uuid, fresh.execution_token, principal, fresh_intent, **kwargs)
+        assert not replay
+        db.commit()
+    with Factory() as db:
+        with patch.object(binding.runtime, "effective_registration_mode", return_value="required"):
+            new_operation = purchase_zero.finish(db, fresh.approval_uuid, fresh.execution_token,
+                fresh_id, 0, fresh_leases, principal, fresh_intent, **kwargs)
+        db.commit()
+        new_id = new_operation.result_purchase_id
+    with Factory() as db:
+        migrated = db.get(models.User, migrated_id)
+        assert (migrated.total_quota_bytes, migrated.expire_at,
+            migrated.reserved_quota_bytes, migrated.reserved_duration_days) == historical
+        assert {row.id for row in migrated.purchases} == {old_id, new_id}
+        assert db.get(models.Connection, linked_id).purchase_id == old_id
+        assert len(db.execute(rv.receipt_approval_effects.select().where(
+            rv.receipt_approval_effects.c.approval_uuid == fresh.approval_uuid)).all()) == 2
+    with Factory() as db:
+        unmigrated = wallet_accounts.create_user_with_wallet(db,
+            username="unmigrated", telegram_id=881125, balance=0)
+        node = db.query(models.Node).filter_by(name="migrated-node").one()
+        db.add(models.Connection(user_id=unmigrated.id, node_id=node.id,
+            type=models.ConnectionType.l2tp))
+        old_intent = ri.ApprovalIntent(pending_source_instance_id="purchase-private", pending_local_id=4,
+            kind="new", target_username="unmigrated", amount=100, package_id=package_id,
+            claimed_telegram_id=unmigrated.telegram_id)
+        old_approval = registration.register(db, principal, old_intent, approval_mode="auto")
+        db.execute(rv.receipt_approvals.update().where(
+            rv.receipt_approvals.c.approval_uuid == old_approval.approval_uuid).values(
+                registered_under_mode="required", completeness_generation=1))
+        db.commit()
+    with Factory() as db:
+        try:
+            with patch.object(binding.runtime, "effective_registration_mode", return_value="required"):
+                purchase_zero.prepare(db, old_approval.approval_uuid,
+                    old_approval.execution_token, principal, old_intent, **kwargs)
+        except HTTPException as exc:
+            assert (exc.status_code, exc.detail) == (409, "approval_purchase_shape_not_supported")
+        else:
+            raise AssertionError("unmigrated connection was accepted")
+        db.rollback()
+    with Factory() as db:
+        assert db.execute(rv.receipt_approvals.select().where(
+            rv.receipt_approvals.c.approval_uuid == old_approval.approval_uuid)).mappings().one()["state"] == "registered"
+        assert db.query(mp.ProvisioningOperation).filter_by(approval_uuid=old_approval.approval_uuid).count() == 0
     print("PASS", engine.dialect.name, "atomic existing-user purchase")
 
 

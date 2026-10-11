@@ -96,9 +96,10 @@ def prepare(db, approval_uuid, execution_version, principal, execution_intent, *
             purchase_expected["user"] != {"type": "User", "id": user.id} or
             sale_expected["payment_card_id"] is not None):
         raise HTTPException(409, "approval_purchase_shape_not_supported")
-    # Legacy absorption would create another Purchase without a manifest row.
-    if (user.total_quota_bytes or user.expire_at or user.reserved_quota_bytes or
-            user.reserved_duration_days or any(c.purchase_id is None for c in user.connections)):
+    # build_purchase_core absorbs only unlinked connections. Historical
+    # user-level counters can remain after migration; they do not create an
+    # extra Purchase and must not block a migrated customer's new purchase.
+    if any(c.purchase_id is None for c in user.connections):
         raise HTTPException(409, "approval_purchase_shape_not_supported")
     panel = db.get(models.PanelSettings, 1)
     threshold = panel.loyalty_purchase_threshold if panel is not None else None
@@ -285,8 +286,8 @@ def finish(db, approval_uuid, execution_version, operation_id, version, leases,
             frozen.purchase_id is not None or frozen.purchase_batch is not None or
             frozen.comment is not None or frozen.reset_usage or frozen.node_fingerprints):
         raise HTTPException(409, "provisioning_target_changed")
-    if (user.total_quota_bytes or user.expire_at or user.reserved_quota_bytes or
-            user.reserved_duration_days or any(c.purchase_id is None for c in user.connections)):
+    # Recheck the exact same absorption hazard under T_final's target lock.
+    if any(c.purchase_id is None for c in user.connections):
         raise HTTPException(409, "approval_purchase_shape_not_supported")
     threshold = panel.loyalty_purchase_threshold if panel is not None else None
     if threshold and (user.purchase_count or 0) + 1 >= threshold * ((user.loyalty_rewards_given or 0) + 1):

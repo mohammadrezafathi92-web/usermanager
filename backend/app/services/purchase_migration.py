@@ -37,8 +37,9 @@ Rules (deliberately conservative - NOTHING is guessed):
    renewal on an exhausted service (so the 24/20GB customer flips straight
    onto their already-paid 320GB instead of experiencing a cut-off).
 
-Guarded by PanelSettings.legacy_purchases_migrated so it runs exactly once
-(main.py's on_startup)."""
+Guarded by PanelSettings.legacy_purchases_migrated: it runs on startup
+until every customer in the initial pass converts successfully. A failed
+customer is retried without undoing the other customers' conversions."""
 from __future__ import annotations
 
 import datetime as dt
@@ -187,6 +188,7 @@ def fix_mixed_users(db: Session) -> int:
     users = (
         db.query(models.User)
         .options(selectinload(models.User.purchases), selectinload(models.User.connections))
+        .order_by(models.User.id)
         .all()
     )
     for user in users:
@@ -195,11 +197,14 @@ def fix_mixed_users(db: Session) -> int:
         if not any(c.purchase_id is None for c in user.connections):
             continue  # already fully on the per-service model
         try:
-            if user_ops_absorb(db, user) is not None:
+            # A failed customer must not roll back conversions already staged
+            # for other customers in this startup pass.
+            with db.begin_nested():
+                repaired = user_ops_absorb(db, user) is not None
+            if repaired:
                 fixed += 1
         except Exception:
             logger.exception("failed to absorb the legacy pool for user %s", user.username)
-            db.rollback()
     if fixed:
         db.commit()
         logger.info("%s کاربر ترکیبی اصلاح شد (اتصال‌های قدیمی به سرویس مستقل منتقل شدند)", fixed)
@@ -235,6 +240,7 @@ def migrate_legacy_only_users(db: Session) -> tuple[int, int]:
     users = (
         db.query(models.User)
         .options(selectinload(models.User.connections), selectinload(models.User.purchases))
+        .order_by(models.User.id)
         .all()
     )
     for user in users:
@@ -243,12 +249,12 @@ def migrate_legacy_only_users(db: Session) -> tuple[int, int]:
         if not any(c.purchase_id is None for c in user.connections):
             continue  # nothing legacy to convert
         try:
-            converted, skipped = migrate_user(db, user)
+            with db.begin_nested():
+                converted, skipped = migrate_user(db, user)
             fixed += converted
             left_shared += skipped
         except Exception:
             logger.exception("failed to migrate legacy-only user %s", user.username)
-            db.rollback()
     if fixed or left_shared:
         db.commit()
         logger.info(
@@ -275,21 +281,27 @@ def migrate_if_needed(db: Session) -> tuple[int, int]:
 
     total_converted = 0
     total_skipped = 0
+    failures = 0
     users = (
         db.query(models.User)
         .options(selectinload(models.User.connections))
+        .order_by(models.User.id)
         .all()
     )
     for user in users:
         try:
-            converted, skipped = migrate_user(db, user)
+            with db.begin_nested():
+                converted, skipped = migrate_user(db, user)
             total_converted += converted
             total_skipped += skipped
         except Exception:
             logger.exception("migration failed for user %s - leaving them on the shared pool", user.username)
-            db.rollback()
+            failures += 1
 
-    settings.legacy_purchases_migrated = True
+    # Retry failed users on the next startup. Successful users have no
+    # unlinked connections left, so repeating this pass is idempotent.
+    if failures == 0:
+        settings.legacy_purchases_migrated = True
     db.commit()
     logger.info(
         "مهاجرت سرویس‌های قدیمی: %s سرویس مستقل ساخته شد، %s گروه (پکیج ناشناس) اشتراکی ماند",

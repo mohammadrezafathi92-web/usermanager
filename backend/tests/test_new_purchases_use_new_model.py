@@ -182,6 +182,37 @@ check("exact quota and usage survive", (pooled.purchases[0].quota_bytes, pooled.
       (17 * GB, 3 * GB))
 check("both connections belong to it", {c.purchase_id for c in pooled.connections}, {pooled.purchases[0].id})
 
+print("\n--- an ambiguous queued renewal stays with its exact converted pool ---")
+db, admin, node, pkg = build()
+queued = models.User(
+    username="queued_legacy", owner_admin_id=admin.id, package_id=pkg.id,
+    total_quota_bytes=17 * GB, used_bytes=3 * GB,
+    expire_at=dt.datetime.utcnow() + dt.timedelta(days=9),
+    reserved_quota_bytes=20 * GB, reserved_duration_days=30, reserved_package_id=pkg.id,
+)
+db.add(queued)
+db.flush()
+for batch in ("first", "second"):
+    db.add(models.Connection(
+        user_id=queued.id, node_id=node.id, type="l2tp",
+        ppp_username=f"queued_{batch}", ppp_password="x", purchase_batch=batch,
+        package_name_snapshot=pkg.name, total_bytes=GB,
+    ))
+db.commit()
+check("two known groups convert as one when neither owns the queued renewal",
+      purchase_migration.migrate_legacy_only_users(db), (1, 0))
+db.expire_all()
+queued = db.query(models.User).filter_by(username="queued_legacy").one()
+check("the ambiguous pool has one Purchase and no legacy connection",
+      (len(queued.purchases), has_legacy_connections(db, queued)), (1, False))
+check("its entitlement and paid renewal both survive exactly",
+      (queued.purchases[0].quota_bytes, queued.purchases[0].used_bytes,
+       queued.purchases[0].reserved_quota_bytes, queued.purchases[0].reserved_duration_days),
+      (17 * GB, 3 * GB, 20 * GB, 30))
+check("no queued renewal remains on the old user-level path",
+      (queued.reserved_quota_bytes, queued.reserved_duration_days, queued.reserved_package_id),
+      (None, None, None))
+
 print("\n--- an import commits only linked credentials ---")
 db, admin, node, pkg = build()
 imported = models.User(username="imported", owner_admin_id=admin.id,

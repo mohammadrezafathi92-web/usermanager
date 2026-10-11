@@ -29,8 +29,9 @@ Rules (deliberately conservative - NOTHING is guessed):
 
 4. The user-level reserved renewal, if any, is attached to the single
    converted purchase that is actually exhausted/expired (that's the
-   service the customer paid to renew); if that's ambiguous (zero or 2+
-   exhausted) it stays at user level for the admin to place by hand.
+   service the customer paid to renew). If that destination is ambiguous
+   (zero or 2+ exhausted), keep the exact old pool as one Purchase and
+   move its reservation there; never strand a paid renewal on User.
 
 5. Statuses start as "active": the very next quota_manager poll enforces
    each new Purchase's own limits, which also auto-activates a reserved
@@ -100,9 +101,26 @@ def migrate_user(db: Session, user: models.User) -> tuple[int, int]:
     converted: list[models.Purchase] = []
     skipped = 0
 
-    unresolved = any(_resolve_package(db, user, key, conns) is None
-                     for key, conns in groups.items()) if len(groups) > 1 else False
-    if len(groups) == 1 or unresolved:
+    packages = ({key: _resolve_package(db, user, key, conns) for key, conns in groups.items()}
+                if len(groups) > 1 else {})
+    unresolved = any(pkg is None for pkg in packages.values())
+    reserved = bool(user.reserved_quota_bytes or user.reserved_duration_days or user.reserved_package_id)
+    ambiguous_reservation = False
+    if len(groups) > 1 and not unresolved and reserved:
+        exhausted = 0
+        for key, conns in groups.items():
+            pkg = packages[key]
+            created = min((c.created_at for c in conns if c.created_at), default=now)
+            quota = gb_to_bytes(pkg.quota_gb) if pkg.quota_gb else 0
+            used = sum(c.total_bytes or 0 for c in conns)
+            expires = created + dt.timedelta(days=pkg.duration_days) if pkg.duration_days else None
+            exhausted += bool((quota and used >= quota) or (expires and expires <= now))
+        # A paid, queued renewal cannot be assigned to an arbitrary one of
+        # several services. Preserve the exact original shared entitlement
+        # as one Purchase instead of splitting it and stranding that renewal
+        # on User, where it would remain on the old accounting path.
+        ambiguous_reservation = exhausted != 1
+    if len(groups) == 1 or unresolved or ambiguous_reservation:
         # A single group, or an inseparable pool with unknown package
         # history: preserve the entire existing entitlement in one Purchase.
         key, first_conns = next(iter(groups.items()))
@@ -133,7 +151,7 @@ def migrate_user(db: Session, user: models.User) -> tuple[int, int]:
 
     # Rule 3: several distinct purchases were pooled - split by package.
     for key, conns in groups.items():
-        pkg = _resolve_package(db, user, key, conns)
+        pkg = packages[key]
         if pkg is None:
             skipped += 1
             continue

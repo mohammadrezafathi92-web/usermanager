@@ -1433,7 +1433,15 @@ def reset_usage(
     principal: BotPrincipal = Depends(get_bot_principal),
 ):
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
-    user_ops.renew_user(db, user, reset_usage=True)
+    # This compatibility action has no service id. It must never reset the
+    # obsolete User-level pool while independent Purchases remain unchanged.
+    if any(conn.purchase_id is None for conn in user.connections):
+        raise HTTPException(503, "legacy_service_migration_required")
+    if not user.purchases:
+        raise HTTPException(409, "service_purchase_required")
+    if len(user.purchases) != 1:
+        raise HTTPException(409, "service_selection_required")
+    user_ops.renew_purchase(db, user.purchases[0], reset_usage=True)
     return _user_response(user)
 
 

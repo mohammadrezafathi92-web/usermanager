@@ -328,6 +328,24 @@ def bulk_create_users(
     return result
 
 
+@router.post("/bulk/purchase-targets")
+def bulk_purchase_targets(
+    payload: schemas.BulkPurchaseTargetsRequest,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+    _perm=_may_bulk,
+):
+    return [{
+        "user_id": choice["user"].id,
+        "username": choice["user"].username,
+        "has_legacy": choice["has_legacy"],
+        "purchases": [{
+            "id": purchase.id,
+            "label": purchase.comment or purchase.package_name_snapshot or f"سرویس #{purchase.id}",
+        } for purchase in choice["purchases"]],
+    } for choice in user_ops.bulk_purchase_choices(db, payload.user_ids, admin)]
+
+
 @router.put("/bulk", response_model=schemas.BulkUpdateUsersResult)
 def bulk_update_users(
     payload: schemas.BulkUpdateUsersRequest,
@@ -351,11 +369,16 @@ def bulk_update_users(
     # a bulk "غیرفعال کن" or a concurrent-session change gives the customer
     # nothing and stays free. See admin_billing.require_package_to_grant.
     grants_something = bool(payload.add_gb or payload.add_days or payload.reset_usage)
-    if grants_something:
+    financial = bool(package is not None or grants_something)
+    targets = (
+        user_ops.resolve_bulk_purchase_targets(db, payload.user_ids, payload.purchase_ids, admin)
+        if financial else None
+    )
+    if financial:
         admin_billing.require_package_to_grant(admin, package)
         admin_billing.ensure_volume_available(admin)
 
-    units = len(payload.user_ids or [])
+    units = len(targets) if targets is not None else len(payload.user_ids or [])
     if units and not admin.is_superadmin and admin.billing_mode != "usage":
         if package is not None:
             admin_billing.charge_for_package(db, admin, package, units=units)
@@ -368,17 +391,36 @@ def bulk_update_users(
                     what="این تمدید گروهی",
                 )
 
-    return user_ops.bulk_update_users(
-        db,
-        user_ids=payload.user_ids,
-        add_gb=payload.add_gb,
-        add_days=payload.add_days,
-        reset_usage=payload.reset_usage,
-        status=payload.status,
-        max_concurrent_sessions=payload.max_concurrent_sessions,
-        package=package,
-        admin=admin,
-    )
+    try:
+        if financial:
+            # charge_for_package commits. Re-read after that boundary so a
+            # concurrent new service cannot turn an auto-selected target
+            # into an ambiguous one after the pre-charge check.
+            db.expire_all()
+            targets = user_ops.resolve_bulk_purchase_targets(
+                db, payload.user_ids, payload.purchase_ids, admin)
+        if package is not None and targets is not None:
+            for user, purchase in targets:
+                accounting.record_panel_sale(db, "sale_renew", user, package,
+                                             purchase_id=purchase.id, actor_admin_id=admin.id)
+        return user_ops.bulk_update_users(
+            db,
+            user_ids=payload.user_ids,
+            add_gb=payload.add_gb,
+            add_days=payload.add_days,
+            reset_usage=payload.reset_usage,
+            status=payload.status,
+            max_concurrent_sessions=payload.max_concurrent_sessions,
+            package=package,
+            admin=admin,
+            purchase_ids=payload.purchase_ids,
+            resolved_targets=targets,
+        )
+    except Exception:
+        db.rollback()
+        if package is not None and targets is not None and units:
+            admin_billing.refund_for_package(db, admin, package, units=units)
+        raise
 
 
 @router.delete("/bulk", response_model=schemas.BulkDeleteUsersResult)

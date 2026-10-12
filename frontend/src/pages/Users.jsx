@@ -27,6 +27,7 @@ import {
   resetUsage,
   bulkCreateUsers,
   bulkUpdateUsers,
+  fetchBulkPurchaseTargets,
   bulkDeleteUsers,
   bulkNotifyUsers,
   fetchNodes,
@@ -173,6 +174,8 @@ export default function Users() {
     package_id: "",
   });
   const [bulkEditError, setBulkEditError] = useState("");
+  const [bulkTargets, setBulkTargets] = useState(null);
+  const [bulkPurchaseIds, setBulkPurchaseIds] = useState({});
   const [exporting, setExporting] = useState(false);
 
   const [bulkNotifyOpen, setBulkNotifyOpen] = useState(false);
@@ -583,7 +586,12 @@ export default function Users() {
   const openBulkEdit = () => {
     setBulkEditForm({ add_gb: "", add_days: "", reset_usage: false, status: "", max_concurrent_sessions: "", package_id: "" });
     setBulkEditError("");
+    setBulkTargets(null);
+    setBulkPurchaseIds({});
     setBulkEditOpen(true);
+    fetchBulkPurchaseTargets(Array.from(selected))
+      .then(({ data }) => setBulkTargets(data))
+      .catch((err) => setBulkEditError(err?.response?.data?.detail || t("users.bulkTargetsError")));
   };
 
   const submitBulkEdit = async (e) => {
@@ -598,6 +606,21 @@ export default function Users() {
       setBulkEditError(t("users.bulkEditPackageRequired"));
       return;
     }
+    const changesService = grantsSomething || Boolean(bulkEditForm.package_id);
+    if (changesService) {
+      if (!bulkTargets || bulkTargets.length !== selected.size) {
+        setBulkEditError(t("users.bulkTargetsError"));
+        return;
+      }
+      if (bulkTargets.some((target) => target.has_legacy || !target.purchases.length)) {
+        setBulkEditError(t("users.bulkTargetUnavailable"));
+        return;
+      }
+      if (bulkTargets.some((target) => target.purchases.length > 1 && !bulkPurchaseIds[target.user_id])) {
+        setBulkEditError(t("users.bulkSelectService"));
+        return;
+      }
+    }
     setSaving(true);
     setBulkEditError("");
     try {
@@ -610,6 +633,9 @@ export default function Users() {
         max_concurrent_sessions:
           bulkEditForm.max_concurrent_sessions !== "" ? Number(bulkEditForm.max_concurrent_sessions) : null,
         package_id: bulkEditForm.package_id ? Number(bulkEditForm.package_id) : null,
+        purchase_ids: Object.fromEntries(
+          Object.entries(bulkPurchaseIds).map(([userId, purchaseId]) => [userId, Number(purchaseId)])
+        ),
       };
       await bulkUpdateUsers(payload);
       setBulkEditOpen(false);
@@ -1394,6 +1420,23 @@ export default function Users() {
       {/* Bulk edit modal */}
       <Modal open={bulkEditOpen} onClose={() => setBulkEditOpen(false)} title={t("users.bulkEditModalTitle", { count: selected.size })}>
         <form onSubmit={submitBulkEdit} className="space-y-4">
+          {(bulkEditForm.package_id || bulkEditForm.add_gb || bulkEditForm.add_days || bulkEditForm.reset_usage) && (
+            <div className="space-y-2">
+              {!bulkTargets && <p className="text-sm text-gray-500">{t("users.bulkTargetsLoading")}</p>}
+              {bulkTargets?.filter((target) => target.purchases.length > 1).map((target) => (
+                <label key={target.user_id} className="block text-sm">
+                  <span className="block mb-1">{target.username} — {t("users.bulkSelectService")}</span>
+                  <select className="input" value={bulkPurchaseIds[target.user_id] || ""}
+                    onChange={(e) => setBulkPurchaseIds((current) => ({ ...current, [target.user_id]: e.target.value }))}>
+                    <option value="">{t("users.bulkSelectService")}</option>
+                    {target.purchases.map((purchase) => (
+                      <option key={purchase.id} value={purchase.id}>{purchase.label} (#{purchase.id})</option>
+                    ))}
+                  </select>
+                </label>
+              ))}
+            </div>
+          )}
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("users.renewWithPackage")}</label>
             <select

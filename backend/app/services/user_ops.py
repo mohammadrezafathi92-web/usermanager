@@ -15,7 +15,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .. import models
 from . import hierarchy
@@ -1069,6 +1069,51 @@ def bulk_create_users(
     }
 
 
+def bulk_purchase_choices(db: Session, user_ids: list[int], admin: models.AdminUser) -> list[dict]:
+    """Resolve the visible customers and their independent services in one batch."""
+    if len(user_ids) != len(set(user_ids)):
+        raise HTTPException(400, "شناسهٔ مشتری تکراری است")
+    owned = hierarchy.owned_admin_ids(db, admin)
+    users = db.query(models.User).options(
+        selectinload(models.User.purchases), selectinload(models.User.connections),
+    ).filter(models.User.id.in_(user_ids)).all()
+    by_id = {user.id: user for user in users}
+    choices = []
+    for uid in user_ids:
+        user = by_id.get(uid)
+        if user is None or not hierarchy.can_see_user(admin, owned, user.owner_admin_id):
+            raise HTTPException(404, "مشتری پیدا نشد")
+        choices.append({
+            "user": user,
+            "purchases": sorted(user.purchases, key=lambda purchase: purchase.id),
+            "has_legacy": any(conn.purchase_id is None for conn in user.connections),
+        })
+    return choices
+
+
+def resolve_bulk_purchase_targets(
+    db: Session, user_ids: list[int], purchase_ids: dict[int, int], admin: models.AdminUser,
+) -> list[tuple[models.User, models.Purchase]]:
+    """Reject ambiguous/legacy targets before any reseller credit is charged."""
+    if set(purchase_ids) - set(user_ids):
+        raise HTTPException(400, "انتخاب سرویس برای مشتری خارج از درخواست است")
+    resolved = []
+    for choice in bulk_purchase_choices(db, user_ids, admin):
+        user, purchases = choice["user"], choice["purchases"]
+        if choice["has_legacy"]:
+            raise HTTPException(503, "legacy_service_migration_required")
+        if not purchases:
+            raise HTTPException(409, "service_purchase_required")
+        explicit = purchase_ids.get(user.id)
+        if explicit is None and len(purchases) != 1:
+            raise HTTPException(409, "service_selection_required")
+        purchase = next((p for p in purchases if p.id == explicit), None) if explicit is not None else purchases[0]
+        if purchase is None:
+            raise HTTPException(409, "service_selection_invalid")
+        resolved.append((user, purchase))
+    return resolved
+
+
 def bulk_update_users(
     db: Session,
     user_ids: list,
@@ -1079,6 +1124,8 @@ def bulk_update_users(
     max_concurrent_sessions: Optional[int] = None,
     package: Optional[models.Package] = None,
     admin: Optional[models.AdminUser] = None,
+    purchase_ids: Optional[dict[int, int]] = None,
+    resolved_targets: Optional[list[tuple[models.User, models.Purchase]]] = None,
 ) -> dict:
     """Applies the same renewal/status/limit change to every user in
     user_ids. Silently skips ids that don't exist - and, when admin is
@@ -1086,13 +1133,18 @@ def bulk_update_users(
     their own tree, unless orphaned and admin is a superadmin - see
     bulk_delete_users' docstring for the bug this fixes).
 
-    If `package` is given, it takes priority over add_gb/add_days: each
-    user's quota/expiry/concurrent-session-cap is overwritten outright from
-    the package (same values a fresh "ساخت با پکیج" would set) and their
-    package_id is stamped to match, so this doubles as a group "renew with
-    package" and as a way to (re)tag existing users with a package for
-    future package-based filtering/selection. Does not touch the package's
-    own connections/services - only the user's quota/expiry/cap fields."""
+    Financial changes always target one independently enforced Purchase per
+    user. A single service is unambiguous; multiple services require an
+    explicit purchase_ids choice. User-level legacy quota/usage/expiry is
+    never changed here. Status-only and combined-session-cap edits retain
+    their customer-wide behavior."""
+    financial = bool(package is not None or add_gb or add_days or reset_usage)
+    if financial and admin is None:
+        raise HTTPException(403, "bulk_service_owner_required")
+    targets = resolved_targets if resolved_targets is not None else (
+        resolve_bulk_purchase_targets(db, user_ids, purchase_ids or {}, admin) if financial else None
+    )
+    by_user = {user.id: purchase for user, purchase in targets} if targets is not None else {}
     owned = hierarchy.owned_admin_ids(db, admin) if admin is not None else None
     updated = 0
     for uid in user_ids:
@@ -1101,47 +1153,48 @@ def bulk_update_users(
             continue
         if admin is not None and not hierarchy.can_see_user(admin, owned, user.owner_admin_id):
             continue
-        if package is not None:
-            user.total_quota_bytes = gb_to_bytes(package.quota_gb) if package.quota_gb else 0
-            user.expire_at = (
-                dt.datetime.utcnow() + dt.timedelta(days=package.duration_days) if package.duration_days else None
-            )
-            user.expire_days_after_first_use = None
-            user.max_concurrent_sessions = package.max_concurrent_sessions
-            user.package_id = package.id
-            if reset_usage:
-                user.used_bytes = 0
-            if user.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
-                user.status = models.UserStatus.active
-                reconcile_user_connections(db, user)
-            # This bypasses renew_user() (it overwrites quota/expiry outright
-            # from the package instead of adding to it) so it needs its own
-            # loyalty-progress bump - same rule as renew_user: a real
-            # renewal-by-package counts.
-            user.purchase_count = (user.purchase_count or 0) + 1
-            _maybe_grant_loyalty_reward(db, user)
-        elif add_gb or add_days or reset_usage:
-            renew_user(db, user, add_gb=add_gb, add_days=add_days, reset_usage=reset_usage)
+        if financial:
+            purchase = by_user.get(user.id)
+            if purchase is None or purchase.user_id != user.id:
+                raise HTTPException(409, "service_selection_invalid")
+            if package is not None:
+                purchase.quota_bytes = gb_to_bytes(package.quota_gb) if package.quota_gb else 0
+                purchase.expire_at = (
+                    dt.datetime.utcnow() + dt.timedelta(days=package.duration_days) if package.duration_days else None
+                )
+                purchase.expire_days_after_first_use = None
+                purchase.max_concurrent_sessions = package.max_concurrent_sessions
+                purchase.package_id = package.id
+                user.max_concurrent_sessions = package.max_concurrent_sessions
+                user.package_id = package.id
+                if reset_usage:
+                    purchase.used_bytes = 0
+                if purchase.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
+                    purchase.status = _resolve_status_after_reset(
+                        purchase.quota_bytes, purchase.used_bytes, purchase.expire_at)
+                    if user.status != models.UserStatus.disabled:
+                        reconcile_purchase_connections(db, purchase)
+                user.purchase_count = (user.purchase_count or 0) + 1
+                _maybe_grant_loyalty_reward(db, user)
+            else:
+                reconcile = []
+                renew_purchase_core(db, purchase, add_gb, add_days, reset_usage,
+                                    reconciliation_sink=reconcile)
+                for target in reconcile:
+                    if user.status != models.UserStatus.disabled:
+                        reconcile_purchase_connections(db, target)
+                if add_gb or add_days:
+                    user.purchase_count = (user.purchase_count or 0) + 1
+                    _maybe_grant_loyalty_reward(db, user)
         if status is not None:
-            # UserDetail.jsx's "تمدید سریع" (quick renew) modal calls this
-            # same endpoint with add_gb/add_days/reset_usage AND an explicit
-            # status="active" in one request. Blindly applying that active
-            # here used to stomp right back over whatever correct status
-            # renew_user() just resolved two lines up (see
-            # _resolve_status_after_reset's docstring) - if the user was
-            # quota-exceeded AND expired and this renewal only fixed one of
-            # the two, renew_user correctly left them non-active, but the
-            # unconditional overwrite below flipped them to active anyway
-            # and reconcile_user_connections briefly turned the real VPN
-            # connection back on, until the next poll cycle undid it. Only
-            # an explicit *non*-active status (e.g. "غیرفعال‌سازی گروهی")
-            # is an unconditional admin intent that should always apply as
-            # given; an explicit "active" must go through the same
-            # both-dimensions check as every other renew/reset path.
+            # On independent services, user.status is the account-wide
+            # override; each Purchase still enforces its own quota/expiry.
+            # On a status-only legacy request, preserve the old two-limit
+            # check until that customer's connections are migrated.
             resolved_status = (
+                models.UserStatus.active if financial and status == models.UserStatus.active else
                 _resolve_status_after_reset(user.total_quota_bytes, user.used_bytes, user.expire_at)
-                if status == models.UserStatus.active
-                else status
+                if status == models.UserStatus.active else status
             )
             if resolved_status != user.status:
                 user.status = resolved_status
@@ -1154,6 +1207,8 @@ def bulk_update_users(
             # package was applied above - its own cap already won)
             user.max_concurrent_sessions = max_concurrent_sessions
         updated += 1
+    if financial and updated != len(targets):
+        raise HTTPException(409, "service_selection_changed")
     db.commit()
     return {"updated_count": updated}
 

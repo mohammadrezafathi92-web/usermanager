@@ -14,7 +14,6 @@ import { useConfirm } from "../components/ConfirmDialog.jsx";
 import {
   fetchUser,
   updateUser,
-  bulkUpdateUsers,
   fetchNodes,
   addWireguardConnection,
   addOpenvpnConnection,
@@ -125,7 +124,7 @@ export default function UserDetail() {
   const [admins, setAdmins] = useState([]);
   const [editOpen, setEditOpen] = useState(false);
   const [renewOpen, setRenewOpen] = useState(false);
-  const [renewForm, setRenewForm] = useState({ add_gb: "", add_days: "", reset_usage: true, package_id: "" });
+  const [renewForm, setRenewForm] = useState({ add_gb: "", add_days: "", reset_usage: true, package_id: "", purchase_id: "" });
   const [renewSaving, setRenewSaving] = useState(false);
   const [renewError, setRenewError] = useState("");
   const [addConnOpen, setAddConnOpen] = useState(false);
@@ -432,11 +431,13 @@ export default function UserDetail() {
     }`;
 
   const openRenew = () => {
+    const onlyPurchase = user.purchases?.length === 1 ? user.purchases[0] : null;
     setRenewForm({
-      add_gb: user.total_quota_bytes ? String(bytesToGb(user.total_quota_bytes)) : "",
+      add_gb: onlyPurchase?.quota_bytes ? String(bytesToGb(onlyPurchase.quota_bytes)) : "",
       add_days: "",
       reset_usage: true,
       package_id: "",
+      purchase_id: onlyPurchase ? String(onlyPurchase.id) : "",
     });
     setRenewError("");
     setRenewOpen(true);
@@ -444,6 +445,10 @@ export default function UserDetail() {
 
   const submitRenew = async (e) => {
     e.preventDefault();
+    if (!renewForm.purchase_id || !user.purchases?.some((purchase) => purchase.id === Number(renewForm.purchase_id))) {
+      setRenewError(t("userDetail.selectServiceRequired"));
+      return;
+    }
     if (packageMustBePicked && !renewForm.package_id) {
       setRenewError(t("userDetail.renewPackageRequired"));
       return;
@@ -455,13 +460,10 @@ export default function UserDetail() {
     setRenewSaving(true);
     setRenewError("");
     try {
-      await bulkUpdateUsers({
-        user_ids: [user.id],
+      await renewPurchase(user.id, Number(renewForm.purchase_id), {
         add_gb: renewForm.add_gb ? Number(renewForm.add_gb) : 0,
         add_days: renewForm.add_days ? Number(renewForm.add_days) : 0,
         reset_usage: renewForm.reset_usage,
-        status: "active",
-        max_concurrent_sessions: null,
         package_id: renewForm.package_id ? Number(renewForm.package_id) : null,
       });
       setRenewOpen(false);
@@ -1555,8 +1557,19 @@ export default function UserDetail() {
       <Modal open={renewOpen} onClose={() => setRenewOpen(false)} title={t("userDetail.renewModalTitle")}>
         <form onSubmit={submitRenew} className="space-y-4">
           <p className="text-xs text-gray-400">
-            {t("userDetail.renewNote")}
+            {t("userDetail.renewPurchaseNote")}
           </p>
+          {user.purchases?.length > 1 && (
+            <select className="input" value={renewForm.purchase_id}
+              onChange={(e) => setRenewForm((form) => ({ ...form, purchase_id: e.target.value }))}>
+              <option value="">{t("userDetail.selectServiceRequired")}</option>
+              {user.purchases.map((purchase) => (
+                <option key={purchase.id} value={purchase.id}>
+                  {purchase.comment || purchase.package_name_snapshot || `#${purchase.id}`}
+                </option>
+              ))}
+            </select>
+          )}
           <div>
             <label className="block text-sm text-gray-600 mb-1">
               {t("userDetail.fieldPackage")}{packageMustBePicked ? " *" : ""}

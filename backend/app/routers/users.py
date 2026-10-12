@@ -884,6 +884,23 @@ def transfer_user(
     return user
 
 
+@router.get("/{user_id}/reset-targets")
+def reset_usage_targets(
+    user_id: int,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+    _perm=_may_reset_usage,
+):
+    choice = user_ops.bulk_purchase_choices(db, [user_id], admin)[0]
+    return {
+        "has_legacy": choice["has_legacy"],
+        "purchases": [{
+            "id": purchase.id,
+            "label": purchase.comment or purchase.package_name_snapshot or f"سرویس #{purchase.id}",
+        } for purchase in choice["purchases"]],
+    }
+
+
 @router.post("/{user_id}/reset-usage", response_model=schemas.UserOut)
 def reset_usage(
     user_id: int,
@@ -892,7 +909,7 @@ def reset_usage(
     admin: models.AdminUser = Depends(get_current_admin),
     _perm=_may_reset_usage,
 ):
-    """Zeroes this customer's own usage counter.
+    """Zeroes one unambiguous independent service's usage counter.
 
     Charged like a renewal for a reseller, because that is what it is:
     handing back a used-up quota is selling it again. It was the last free
@@ -901,28 +918,19 @@ def reset_usage(
     پکیجی کن" (2026-09-12). The `reset_usage` permission still gates who
     may do it at all; this decides what it costs.
     """
-    user = _get_owned_user(db, admin, user_id)
+    user, purchase = user_ops.resolve_bulk_purchase_targets(
+        db, [user_id], {user_id: payload.purchase_id} if payload.purchase_id is not None else {}, admin,
+    )[0]
     package = _get_scoped_package(db, admin, payload.package_id) if payload.package_id else None
     admin_billing.require_package_to_grant(admin, package)
     admin_billing.ensure_volume_available(admin)
     if package is not None:
         admin_billing.charge_for_package(db, admin, package, units=1)
-        accounting.record_panel_sale(db, "sale_renew", user, package, actor_admin_id=admin.id)
-    user.used_bytes = 0
-    if user.status == models.UserStatus.quota_exceeded:
-        # Quota being the reason shown doesn't mean expiry is fine too - a
-        # user can be simultaneously over-quota AND past their expire_at
-        # (quota_manager._enforce_user_limits shows "quota_exceeded" first
-        # whenever both are true, masking the expiry side). Blindly setting
-        # active here used to grant a real, if brief, MikroTik/Xray enable
-        # that the next poll cycle would immediately undo. See
-        # user_ops._resolve_status_after_reset.
-        user.status = user_ops._resolve_status_after_reset(user.total_quota_bytes, user.used_bytes, user.expire_at)
-        # Without this, a user whose Xray/3X-UI client got disabled/deleted
-        # on quota cutoff would come back "active" in the DB but their
-        # actual connection would stay dead until the next poll cycle
-        # happened to notice a status transition that already occurred here.
-        user_ops.reconcile_user_connections(db, user)
+        accounting.record_panel_sale(db, "sale_renew", user, package, purchase_id=purchase.id, actor_admin_id=admin.id)
+    purchase.used_bytes = 0
+    if purchase.status == models.UserStatus.quota_exceeded:
+        purchase.status = user_ops._resolve_status_after_reset(purchase.quota_bytes, purchase.used_bytes, purchase.expire_at)
+        user_ops.reconcile_purchase_connections(db, purchase)
     db.commit()
     db.refresh(user)
     return user
@@ -1131,10 +1139,7 @@ def reset_purchase_usage(
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
  _perm=_may_reset_usage):
-    """Resets usage for ONE independent purchase (see models.Purchase) -
-    the per-purchase counterpart to reset_usage above, which only ever
-    touches the user's own combined fields. Priced the same way, and for
-    the same reason - see that endpoint's docstring."""
+    """Resets usage for ONE independent purchase (see models.Purchase)."""
     user = _get_owned_user(db, admin, user_id)
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:

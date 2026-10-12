@@ -171,9 +171,11 @@ export const updateUser = (id, data) => client.put(`/users/${id}`, data);
 export const deleteUser = (id) => client.delete(`/users/${id}`);
 // packageId is what the reset is SOLD as for a reseller (the backend
 // charges it - see admin_billing.require_package_to_grant); a superadmin
-// sends null and is charged nothing.
-export const resetUsage = (id, packageId = null) =>
-  client.post(`/users/${id}/reset-usage`, { package_id: packageId });
+// sends null and is charged nothing. purchaseId selects one service when
+// the customer owns several; the server refuses ambiguity before charging.
+export const resetUsage = (id, packageId = null, purchaseId = null) =>
+  client.post(`/users/${id}/reset-usage`, { package_id: packageId, purchase_id: purchaseId });
+export const fetchResetUsageTargets = (id) => client.get(`/users/${id}/reset-targets`);
 // Superadmin-only (see routers/users.py's transfer_user) - reassigns this
 // customer to a different admin/seller, including back to the superadmin's
 // own id.

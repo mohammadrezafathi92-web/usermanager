@@ -288,9 +288,12 @@ class ResetUsageRequest(BaseModel):
     Optional on the wire, and a superadmin may leave it out: they are never
     charged, and "clear this customer's usage, our meter was wrong" is the
     panel owner's call. Optional also keeps every existing caller that
-    sends no body at all working.
+    sends no body at all working when the customer has exactly one service.
+    The list action may specify purchase_id for a customer with several
+    independent services; the per-purchase endpoint already has it in its URL.
     """
     package_id: Optional[int] = None
+    purchase_id: Optional[int] = None
 
 
 class PurchaseRenewRequest(BaseModel):

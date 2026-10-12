@@ -20,10 +20,11 @@ import { useLanguage } from "../context/LanguageContext.jsx";
  * One component rather than two copies because the rule is one rule; the two
  * pages differ only in which endpoint `onConfirm` calls.
  */
-export default function ResetUsageDialog({ open, onClose, onConfirm, packages = [], title, note }) {
+export default function ResetUsageDialog({ open, onClose, onConfirm, packages = [], services = [], title, note }) {
   const { t } = useLanguage();
   const { isSuperadmin } = useAuth();
   const [packageId, setPackageId] = useState("");
+  const [purchaseId, setPurchaseId] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -32,6 +33,7 @@ export default function ResetUsageDialog({ open, onClose, onConfirm, packages = 
   useEffect(() => {
     if (open) {
       setPackageId("");
+      setPurchaseId("");
       setError("");
     }
   }, [open]);
@@ -42,10 +44,14 @@ export default function ResetUsageDialog({ open, onClose, onConfirm, packages = 
       setError(t("userDetail.resetUsagePackageRequired"));
       return;
     }
+    if (services.length > 1 && !purchaseId) {
+      setError(t("users.bulkSelectService"));
+      return;
+    }
     setSaving(true);
     setError("");
     try {
-      await onConfirm(packageId ? Number(packageId) : null);
+      await onConfirm(packageId ? Number(packageId) : null, purchaseId ? Number(purchaseId) : null);
       onClose();
     } catch (err) {
       setError(err?.response?.data?.detail || t("userDetail.saveError"));
@@ -58,6 +64,20 @@ export default function ResetUsageDialog({ open, onClose, onConfirm, packages = 
     <Modal open={open} onClose={onClose} title={title || t("userDetail.resetUsageModalTitle")}>
       <form onSubmit={submit} className="space-y-4">
         <p className="text-xs text-gray-400">{note || t("userDetail.resetUsageNote")}</p>
+
+        {services.length > 1 && (
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">{t("users.bulkSelectService")} *</label>
+            <select className="input" value={purchaseId} onChange={(e) => setPurchaseId(e.target.value)}>
+              <option value="">{t("userDetail.selectPlaceholder")}</option>
+              {services.map((service) => (
+                <option key={service.id} value={service.id}>
+                  {service.label} (#{service.id})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {!isSuperadmin && (
           <div>

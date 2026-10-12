@@ -25,6 +25,7 @@ import {
   createUser,
   deleteUser,
   resetUsage,
+  fetchResetUsageTargets,
   bulkCreateUsers,
   bulkUpdateUsers,
   fetchBulkPurchaseTargets,
@@ -386,13 +387,26 @@ export default function Users() {
     }
   };
 
-  // See components/ResetUsageDialog.jsx: a reseller has to name the package
-  // a usage reset is sold as, because handing back a used-up quota is
-  // selling it again. A superadmin still just confirms.
+  // Fetch the current independent services before opening the paid reset;
+  // the server checks the selection again before charging.
   const [resetTargetId, setResetTargetId] = useState(null);
-  const onReset = async (packageId) => {
+  const [resetTargetServices, setResetTargetServices] = useState([]);
+  const openReset = async (id) => {
+    try {
+      const { data } = await fetchResetUsageTargets(id);
+      if (data.has_legacy || !data.purchases.length) {
+        toast.error(t("users.bulkTargetUnavailable"));
+        return;
+      }
+      setResetTargetServices(data.purchases);
+      setResetTargetId(id);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || t("users.bulkTargetsError"));
+    }
+  };
+  const onReset = async (packageId, purchaseId) => {
     if (!resetTargetId) return;
-    await resetUsage(resetTargetId, packageId);
+    await resetUsage(resetTargetId, packageId, purchaseId);
     load();
   };
 
@@ -889,7 +903,7 @@ export default function Users() {
                       )}
                       <button
                         title={t("users.resetUsage")}
-                        onClick={() => setResetTargetId(u.id)}
+                        onClick={() => openReset(u.id)}
                         className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-brand-600 hover:bg-brand-50 dark:hover:bg-brand-500/10 dark:hover:text-brand-400 transition-colors"
                       >
                         <RotateCcw size={16} />
@@ -953,7 +967,7 @@ export default function Users() {
                   )}
                   <button
                     title={t("users.resetUsage")}
-                    onClick={() => setResetTargetId(u.id)}
+                    onClick={() => openReset(u.id)}
                     className="w-9 h-9 rounded-lg flex items-center justify-center text-gray-400 hover:text-brand-600 hover:bg-brand-50 dark:hover:bg-brand-500/10 dark:hover:text-brand-400 transition-colors"
                   >
                     <RotateCcw size={16} />
@@ -1026,6 +1040,7 @@ export default function Users() {
         onClose={() => setResetTargetId(null)}
         onConfirm={onReset}
         packages={packages}
+        services={resetTargetServices}
       />
 
       <Modal open={!!transferTargetId} onClose={() => setTransferTargetId(null)} title={t("users.transferModalTitle")}>

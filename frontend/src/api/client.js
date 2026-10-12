@@ -181,6 +181,8 @@ export const transferUser = (id, targetAdminId) =>
   client.post(`/users/${id}/transfer`, { target_admin_id: targetAdminId });
 export const bulkCreateUsers = (data) => client.post("/users/bulk", data);
 export const bulkUpdateUsers = (data) => client.put("/users/bulk", data);
+export const fetchBulkPurchaseTargets = (userIds) =>
+  client.post("/users/bulk/purchase-targets", { user_ids: userIds });
 export const bulkDeleteUsers = (userIds) => client.delete("/users/bulk", { data: { user_ids: userIds } });
 export const bulkNotifyUsers = (userIds, message) => client.post("/users/bulk-notify", { user_ids: userIds, message });
 export const updateConnection = (userId, connectionId, data) =>

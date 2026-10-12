@@ -641,6 +641,8 @@ class BulkCreateUsersResult(BaseModel):
 
 class BulkUpdateUsersRequest(BaseModel):
     user_ids: List[int]
+    # Only needed when a customer has several independent services.
+    purchase_ids: dict[int, int] = Field(default_factory=dict)
     add_gb: float = 0
     add_days: int = 0
     reset_usage: bool = False
@@ -652,6 +654,17 @@ class BulkUpdateUsersRequest(BaseModel):
     # takes priority over add_gb/add_days above when both are sent, so a
     # group can be re-based onto a different package plan in one action.
     package_id: Optional[int] = None
+
+    @field_validator("user_ids")
+    @classmethod
+    def _cap_user_ids(cls, v):
+        if len(v) > 1000:
+            raise ValueError("حداکثر ۱۰۰۰ کاربر در هر بار")
+        return v
+
+
+class BulkPurchaseTargetsRequest(BaseModel):
+    user_ids: List[int]
 
     @field_validator("user_ids")
     @classmethod

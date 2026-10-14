@@ -175,6 +175,23 @@ def xray_rebuild(xc, *, inbound_tag, clients: list) -> dict:
     return {"imported": imported, "skipped": skipped}
 
 
+# ------------------------------------------------------------------ WireGuard address reconciliation (10.5)
+def wg_reconcile(mt, *, interface: str, desired_subnet: str) -> dict:
+    """The 9.1 interface-address contract toward `desired_subnet`: add or widen
+    only, never narrow. In the runner `desired_subnet` is replaced by the
+    value read from the database AFTER the node lock was taken."""
+    from .adapter_base import AdapterPermanentError
+    from .adapter_mikrotik_wg import ADDRESS_ADDED, ensure_interface_address_exact_or_wider
+    try:
+        outcome = ensure_interface_address_exact_or_wider(mt, interface, desired_subnet)
+        result = "repaired" if outcome == ADDRESS_ADDED else outcome
+    except AdapterPermanentError:
+        result = "conflict"
+    rows = mt.list_interface_addresses(interface)
+    return {"result": result, "router_address": rows[0].get("address") if len(rows) == 1 else None,
+            "db_subnet": desired_subnet}
+
+
 BLOCKS = {name: function for name, function in globals().items()
           if callable(function) and not name.startswith("_") and name != "Optional"}
 
@@ -185,7 +202,7 @@ CLIENT_KIND = {
     "xray_add": "xray", "xray_remove": "xray", "xray_bounce": "xray", "xray_set_enabled": "xray",
     "xray_rebuild": "xray",
     "softether_add": "softether", "softether_remove": "softether", "softether_bounce": "softether",
-    "softether_set_enabled": "softether",
+    "softether_set_enabled": "softether", "wg_reconcile": "mikrotik",
 }
 assert set(CLIENT_KIND) == set(BLOCKS), "every block declares its client kind"
 

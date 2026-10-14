@@ -50,6 +50,7 @@ ACTION_FOR_BLOCK = {
     "wg_set_enabled": ActionType.WG_SET_PEER_ENABLED, "xray_set_enabled": ActionType.XRAY_SET_CLIENT_ENABLED,
     "softether_set_enabled": ActionType.SOFTETHER_SET_USER_ENABLED, "wg_rename": ActionType.WG_RENAME_PEER,
     "wg_queue_sync": ActionType.WG_SET_SPEED_QUEUE, "xray_rebuild": ActionType.XRAY_REBUILD_CLIENTS,
+    "wg_reconcile": ActionType.WG_RECONCILE_INTERFACE_ADDRESS,
 }
 PUSH_ACTIONS = {"push_radius_config": ActionType.MT_PUSH_RADIUS, "push_pptp_config": ActionType.MT_PUSH_PPTP,
                 "push_sstp_config": ActionType.MT_PUSH_SSTP, "push_l2tp_config": ActionType.MT_PUSH_L2TP,

@@ -195,14 +195,14 @@ check("...and once the lock is free the same action does run and write its marke
       (Outcome.SUCCEEDED, True))
 
 print("--- only registered actions, by name ---")
-check("every action is registered except the two that have no implementation yet (probe, WG reconcile)",
-      sorted(a.value for a in ActionType if a not in ACTIONS), ["contract_probe", "wg_reconcile_interface_address"])
+check("every action is registered except the contract probe (not implemented yet)",
+      sorted(a.value for a in ActionType if a not in ACTIONS), ["contract_probe"])
 check("every legacy-only writer action runs the guarded legacy child entry",
       {a.value for a, target in ACTIONS.items() if target == "app.services.provisioning_child_legacy:run"},
       {"mt_push_ikev2", "mt_push_l2tp", "mt_push_pptp", "mt_push_radius", "mt_push_sstp", "ppp_kick_session",
        "softether_bounce_user", "softether_set_user_enabled", "wg_bounce_peer", "wg_rename_peer",
        "wg_set_peer_enabled", "wg_set_speed_queue", "xray_bounce_client", "xray_rebuild_clients",
-       "xray_set_client_enabled"})
+       "xray_set_client_enabled", "wg_reconcile_interface_address"})
 spawned = []
 real_popen = subprocess.Popen
 

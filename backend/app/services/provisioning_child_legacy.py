@@ -26,7 +26,8 @@ from dataclasses import asdict, dataclass
 from sqlalchemy import text
 
 from . import gate_locks, provisioning_child_authority as authority, provisioning_contract_rules as rules
-from .provisioning_child_database import ADVISORY_CHECK, ADVISORY_GET, ADVISORY_RELEASE, READ_RUNTIME, ChildDatabase
+from .provisioning_child_database import (ADVISORY_CHECK, ADVISORY_GET, ADVISORY_RELEASE, READ_RUNTIME, READ_SUBNET,
+                                          ChildDatabase)
 from .remote_action import Outcome, RemoteActionResult
 
 BACKENDS = ("mikrotik_wg", "softether", "xray_ssh", "threexui", "marzban", "hiddify", "marzneshin", "sui")
@@ -239,9 +240,17 @@ def run(dto):
         with LegacyChildGuard(database, binding, read_identity(), holds[2], holds[3]) as guard:
             with authority._scope(guard):
                 client = _client(guard, kind, dto.node_config, dto.node_secrets)
+                arguments = dict(dto.params["args"], **dto.credential)
+                if block == "wg_reconcile":
+                    # 9.1: the subnet is read now, under the node lock - never the dispatch-time copy.
+                    with database.connect() as connection:
+                        fresh = connection.execute(text(READ_SUBNET), dict(node_id=binding.node_id)).scalar_one_or_none()
+                    if not fresh:
+                        raise LegacyGuardUnavailable("legacy_reconcile_subnet_missing")
+                    arguments["desired_subnet"] = fresh
                 try:
                     with client:
-                        value = blocks.BLOCKS[block](client, **dto.params["args"], **dto.credential)
+                        value = blocks.BLOCKS[block](client, **arguments)
                 except LegacyGuardUnavailable:
                     raise
                 except authority.WriteAuthorityUnavailable:

@@ -1028,6 +1028,12 @@ def _start_full_services() -> None:
     # Lifecycle 5.12: node_gate counters -> provisioning_gate_stats (best effort).
     from .services.node_gate import flush_counters as flush_gate_counters
     scheduler.add_job(flush_gate_counters, "interval", seconds=30, id="flush_gate_counters", replace_existing=True)
+    # Lifecycle 10.5: WireGuard interface-address reconciliation, startup + every 10 min
+    # (it does nothing until at least one operation type is durable).
+    from .services import wireguard_reconciliation
+    scheduler.add_job(wireguard_reconciliation.run_once, "interval", minutes=wireguard_reconciliation.RECONCILE_MINUTES,
+                      id="wireguard_reconciliation", replace_existing=True,
+                      next_run_time=__import__("datetime").datetime.now())
     # Once a day - prune RadiusLimitEventLog rows older than
     # RADIUS_LIMIT_EVENT_LOG_KEEP_DAYS (7 by default - "لاگ‌های محدودیت
     # اتصال فقط یک هفته کافیه"). This table had no cleanup at all before -

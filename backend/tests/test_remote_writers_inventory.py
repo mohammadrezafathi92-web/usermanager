@@ -180,11 +180,12 @@ check("writer calls inside client modules are the known internal ones only",
           "app.services.threexui_client": ["add_client"],
           "app.services.xray_client": ["add_client", "remove_client", "restart_service", "write_config"],
       })
-check("every adapter exists; only fenced cancellation and private readonly recovery integrate them",
+check("every adapter exists; only fenced cancellation, private readonly recovery and the gated WG reconcile block integrate them",
       (sorted(rw.ADAPTER_MODULES - {dotted for dotted, _ in app_modules()}),
        sorted(dotted for dotted, path in app_modules()
               if dotted not in rw.ADAPTER_MODULES and imports_adapter(path))),
-      ([], ["app.services.provisioning_child_recovery", "app.services.reseller_refund_worker"]))
+      ([], ["app.services.legacy_remote_blocks", "app.services.provisioning_child_recovery",
+            "app.services.reseller_refund_worker"]))
 called_anywhere = set().union(*in_code.values()) | set().union(*client_internal.values())
 check("the three MikroTik writer methods without any caller are exactly the declared ones",
       sorted(rw.WRITER_METHODS - called_anywhere), sorted(rw.UNCALLED_WRITER_METHODS))
@@ -308,9 +309,9 @@ check("legacy writers are gated; private guarded infrastructure has no live dura
                                       "remote_action.RemoteActionDTO", "remote_runner"],
        "app.services.provisioning_child_legacy": ["gate_locks", "remote_action.Outcome",
                                                   "remote_action.RemoteActionResult"]})
-check("every writer action is registered; only the probe and WG reconciliation are not (not built yet)",
+check("every writer action is registered; only the contract probe is not (not built yet)",
       sorted(a.value for a in ActionType if not a.value.startswith("selftest_") and a not in ACTIONS),
-      ["contract_probe", "wg_reconcile_interface_address"])
+      ["contract_probe"])
 
 # ===========================================================================
 print("--- C. characterization of the existing writers (baseline for later batches) ---")

@@ -308,7 +308,9 @@ check("legacy writers are gated; private guarded infrastructure has no live dura
        "app.services.legacy_remote": ["node_gate", "remote_action.ActionType", "remote_action.Outcome",
                                       "remote_action.RemoteActionDTO", "remote_runner"],
        "app.services.provisioning_child_legacy": ["gate_locks", "remote_action.Outcome",
-                                                  "remote_action.RemoteActionResult"]})
+                                                  "remote_action.RemoteActionResult"],
+       # Clean shutdown: refuse new runners, reap live ones (10.4).
+       "app.services.provisioning_host_lifecycle": ["remote_runner"]})
 check("every writer action is registered; only the contract probe is not (not built yet)",
       sorted(a.value for a in ActionType if not a.value.startswith("selftest_") and a not in ACTIONS),
       ["contract_probe"])

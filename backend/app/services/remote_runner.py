@@ -77,6 +77,41 @@ class _Spawner(threading.Thread):
 _spawner: _Spawner | None = None
 _spawner_guard = threading.Lock()
 
+# Live runners of this process, and whether new ones are still accepted
+# (clean shutdown, Lifecycle 10.4: stop starting runners, then confirm the
+# end - or kill - of every live one with waitpid before releasing ownership).
+_live: set = set()
+_live_guard = threading.Lock()
+_closing = False
+
+
+class RunnerShuttingDown(RemoteActionError):
+    """The process is shutting down; no new runner is started."""
+
+
+def shutdown(grace_seconds: float = 5.0) -> int:
+    """Refuse new runners; wait up to `grace_seconds` for live ones, then
+    SIGKILL and waitpid the rest. Returns how many had to be killed."""
+    global _closing
+    with _live_guard:
+        _closing = True
+        processes = list(_live)
+    deadline = time.monotonic() + grace_seconds
+    killed = 0
+    for process in processes:
+        try:
+            process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            killed += 1
+    return killed
+
+
+def live_count() -> int:
+    with _live_guard:
+        return sum(1 for process in _live if process.poll() is None)
+
 
 def _get_spawner() -> _Spawner:
     global _spawner
@@ -108,11 +143,15 @@ def run_action(dto: RemoteActionDTO) -> RemoteActionResult:
     def elapsed_ms() -> int:
         return int((time.monotonic() - started) * 1000)
 
-    process = _get_spawner().popen(
-        child_command(os.getpid()),
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        cwd=_BACKEND_DIR, close_fds=True,
-    )
+    with _live_guard:
+        if _closing:
+            raise RunnerShuttingDown("the process is shutting down")
+        process = _get_spawner().popen(
+            child_command(os.getpid()),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            cwd=_BACKEND_DIR, close_fds=True,
+        )
+        _live.add(process)
     try:
         try:
             stdout, _ = process.communicate(_HEADER.pack(len(payload)) + payload, timeout=deadline)
@@ -127,6 +166,9 @@ def run_action(dto: RemoteActionDTO) -> RemoteActionResult:
         process.kill()
         process.wait()
         raise
+    finally:
+        with _live_guard:
+            _live.discard(process)
 
     if process.returncode != 0:
         logger.error("remote runner exited %s without a result: action=%s node=%s",

@@ -1030,7 +1030,10 @@ def _start_full_services() -> None:
     scheduler.add_job(flush_gate_counters, "interval", seconds=30, id="flush_gate_counters", replace_existing=True)
     # Lifecycle 10.5: WireGuard interface-address reconciliation, startup + every 10 min
     # (it does nothing until at least one operation type is durable).
-    from .services import wireguard_reconciliation
+    from .services import wireguard_reconciliation, provisioning_host_lifecycle
+    scheduler.add_job(provisioning_host_lifecycle.heartbeat, "interval",
+                      seconds=provisioning_host_lifecycle.HEARTBEAT_SECONDS, id="provisioning_heartbeat",
+                      replace_existing=True)
     scheduler.add_job(wireguard_reconciliation.run_once, "interval", minutes=wireguard_reconciliation.RECONCILE_MINUTES,
                       id="wireguard_reconciliation", replace_existing=True,
                       next_run_time=__import__("datetime").datetime.now())
@@ -1266,6 +1269,12 @@ def on_shutdown():
     if scheduler.running:
         scheduler.shutdown(wait=False)
     telegram_bot_runner.stop_bot(timeout=5)
+    # Lifecycle 10.4: stop/reap runners, then release ownership cleanly (best effort).
+    try:
+        from .services import provisioning_host_lifecycle
+        provisioning_host_lifecycle.shutdown_release()
+    except Exception:  # noqa: BLE001
+        logging.exception("provisioning shutdown release failed")
 
 
 @app.get("/api/health")

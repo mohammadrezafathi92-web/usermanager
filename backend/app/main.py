@@ -1037,7 +1037,10 @@ def _start_full_services() -> None:
     scheduler.add_job(flush_gate_counters, "interval", seconds=30, id="flush_gate_counters", replace_existing=True)
     # Lifecycle 10.5: WireGuard interface-address reconciliation, startup + every 10 min
     # (it does nothing until at least one operation type is durable).
-    from .services import wireguard_reconciliation, provisioning_host_lifecycle
+    from .services import wireguard_reconciliation, provisioning_host_lifecycle, provisioning_durable
+    # Lifecycle 11.1: the durable worker (no-op until a type is durable and this host owns it).
+    scheduler.add_job(provisioning_durable.recover_due, "interval", seconds=provisioning_durable.RECOVER_SECONDS,
+                      id="provisioning_recover_due", replace_existing=True, max_instances=1, coalesce=True)
     scheduler.add_job(provisioning_host_lifecycle.heartbeat, "interval",
                       seconds=provisioning_host_lifecycle.HEARTBEAT_SECONDS, id="provisioning_heartbeat",
                       replace_existing=True)

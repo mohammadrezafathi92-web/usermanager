@@ -15,7 +15,7 @@ import time
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -29,6 +29,7 @@ from ..services import reseller_refund
 from ..services import payment_card_events
 from ..services import receipt_approval_effects as approval_effects
 from ..services import receipt_approval_topup
+from ..services import provisioning_durable, provisioning_requests
 from ..services import wallet_service, wallet_policy, wallet_identity
 from ..services import receipt_approval_registration as approval_registration
 from ..services.bot_auth import (
@@ -1177,9 +1178,21 @@ def link_telegram(
 def add_connection(
     username: str, spec: schemas.BotCreateConnectionSpec, db: Session = Depends(get_db),
     owner_admin_id: Optional[int] = None, principal: BotPrincipal = Depends(get_bot_principal),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     node = bot_resources._get_node_or_403(db, principal, spec.node_id)
+    if provisioning_durable.is_durable(db, "add_connection"):
+        # Lifecycle L4: the same authorization, then the durable operation
+        # (T1 -> remote step -> T_final); the response body is unchanged.
+        user_ops.authorize_node(db, node, resolve_bot_authorization_scope(principal))
+        request = provisioning_requests.add_connection(
+            db, user, node, spec.protocol, flow=spec.flow or "", purchase_batch=spec.purchase_batch,
+            key=provisioning_durable.idempotency_key(x_idempotency_key))
+        factory = provisioning_requests.session_factory_for(db)
+        db.rollback()
+        operation = provisioning_durable.run(factory, request, actor_kind="bot")
+        return _connection_info(provisioning_requests.created_connections(db, operation.id)[0])
     conn = user_ops.provision_connection(
         db, user, node, spec.protocol, spec.flow or "",
         purchase_batch=spec.purchase_batch, package_name=spec.package_name,
@@ -1279,6 +1292,7 @@ def delete_connection(
     username: str, connection_id: int,
     db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
     principal: BotPrincipal = Depends(get_bot_principal),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """Same self-service delete as delete_purchase above, for a connection
     that predates the Purchase feature (or was added one-at-a-time) and so
@@ -1296,6 +1310,10 @@ def delete_connection(
         raise HTTPException(400, "این اتصال بخشی از یک سرویس است - حذف باید از طریق همان سرویس انجام شود")
     if user.status not in (models.UserStatus.expired, models.UserStatus.quota_exceeded):
         raise HTTPException(400, "این سرویس هنوز فعال است - فقط سرویس‌های تمام‌شده یا منقضی قابل حذف هستند")
+    if provisioning_durable.is_durable(db, "delete_connection"):
+        provisioning_requests.run_delete(db, "connection", conn.id, user.owner_admin_id, actor_kind="bot",
+                                         key=provisioning_durable.idempotency_key(x_idempotency_key))
+        return {"ok": True}
     user_ops.delete_connection(db, conn)
     return {"ok": True}
 

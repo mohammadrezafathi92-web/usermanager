@@ -4,7 +4,7 @@ import tempfile
 from contextlib import contextmanager
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from sqlalchemy import func, nullsfirst, nullslast, or_
@@ -17,6 +17,7 @@ from ..deps import get_current_admin, require_confirm_password, require_permissi
 from ..services import user_ops, hierarchy, accounting, admin_billing, usage_stats, wallet_service, wallet_accounts
 from ..services.node_gate import writer_gate
 from ..services import legacy_remote
+from ..services import provisioning_durable, provisioning_requests
 from ..services import reseller_refund
 from ..services import reseller_refund_worker
 from ..services import wallet_identity
@@ -1493,11 +1494,16 @@ def delete_connection(
     user_id: int,
     connection_id: int,
     db: Session = Depends(get_db),
-    admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password), _perm=_may_manage_connections):
-    _get_owned_user(db, admin, user_id)
+    admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password), _perm=_may_manage_connections,
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key")):
+    user = _get_owned_user(db, admin, user_id)
     conn = db.get(models.Connection, connection_id)
     if not conn or conn.user_id != user_id:
         raise HTTPException(404, "کانکشن پیدا نشد")
+    if provisioning_durable.is_durable(db, "delete_connection"):
+        provisioning_requests.run_delete(db, "connection", conn.id, user.owner_admin_id, actor_kind="admin",
+                                         actor_id=admin.id, key=provisioning_durable.idempotency_key(x_idempotency_key))
+        return {"ok": True}
     user_ops.delete_connection(db, conn)
     return {"ok": True}
 

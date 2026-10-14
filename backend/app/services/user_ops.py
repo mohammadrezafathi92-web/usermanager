@@ -1970,6 +1970,16 @@ def reconcile_purchase_connections(db: Session, purchase: models.Purchase):
         _set_connection_enabled(db, conn, enabled=enabled)
 
 
+def authorize_node(db: Session, node: models.Node, authorization_scope: NodeAuthorizationScope) -> None:
+    """The node must be in the selling scope of whoever sanctioned it (see
+    provision_connection). Shared by the legacy and the durable path."""
+    if not authorization_scope.unrestricted:
+        owner = db.get(models.AdminUser, authorization_scope.admin_id)
+        allowed = hierarchy.selling_scope_node_ids(db, owner) if owner else set()
+        if allowed is not None and node.id not in allowed:
+            raise HTTPException(403, f"سرور «{node.name}» در اختیار این مجموعه نیست")
+
+
 def provision_connection(
     db: Session,
     user: models.User,
@@ -2000,11 +2010,7 @@ def provision_connection(
     CUSTOMER's tenant, not necessarily the authority that chose the node
     (see hierarchy.selling_scope_node_ids's docstring for why those two
     differ for a Seller-owned customer buying a global/superadmin package)."""
-    if not authorization_scope.unrestricted:
-        owner = db.get(models.AdminUser, authorization_scope.admin_id)
-        allowed = hierarchy.selling_scope_node_ids(db, owner) if owner else set()
-        if allowed is not None and node.id not in allowed:
-            raise HTTPException(403, f"سرور «{node.name}» در اختیار این مجموعه نیست")
+    authorize_node(db, node, authorization_scope)
     if protocol == models.ConnectionType.wireguard:
         return provision_wireguard(db, user, node, purchase_batch, package_name, max_concurrent_sessions, speed_limit_mbps)
     if protocol == models.ConnectionType.openvpn:

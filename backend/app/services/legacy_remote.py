@@ -143,3 +143,31 @@ def _dispatch(node, passage, block, kind, action_type, arguments):
     if result.is_unknown:
         raise error("نتیجه‌ی عملیات روی نود نامعلوم است (runner)؛ دوباره بررسی کنید")
     raise error(f"عملیات روی نود انجام نشد ({result.error_code or result.outcome.value})")
+
+
+def dispatch_probe(node) -> dict:
+    """The 5.10 contract probe of one node: only in 'enforced', only in the
+    runner, same ownership/endpoint fencing as a legacy writer ('probe'
+    phase). Returns the child's observation (no secret)."""
+    kind = "mikrotik" if backend_of(node) == "mikrotik_wg" else "softether" if backend_of(node) == "softether" else "xray"
+    with node_gate.writer_passage(node) as passage:
+        if not isinstance(passage, node_gate.EnforcedPassage):
+            raise GateViolation("gate_not_enforced")
+        owner = _owner_snapshot(passage)
+        public = endpoint(node)
+        binding = dict(installation_uuid=owner["installation_uuid"], ownership_epoch=owner["ownership_epoch"],
+                       gate_mode_epoch=owner["gate_mode_epoch"], node_id=node.id, backend=backend_of(node),
+                       endpoint_fingerprint=rules.endpoint_fingerprint({"n_" + k: v for k, v in public.items()}),
+                       phase="probe")
+        dto = RemoteActionDTO(action_type=ActionType.CONTRACT_PROBE, node_id=node.id, backend=binding["backend"],
+                              node_config=dict(public, **{name: getattr(node, name, None) for name in EXTRA_PUBLIC[kind]}),
+                              node_secrets={name: getattr(node, name, None) for name in SECRETS[kind]},
+                              timeouts={"hard_deadline": HARD_DEADLINE_SECONDS},
+                              fencing={"installation_uuid": owner["installation_uuid"], "binding": binding,
+                                       "expected_parent_pid": os.getpid()})
+        from . import remote_runner
+        result = remote_runner.run_action(dto)
+    if result.outcome != Outcome.SUCCEEDED:
+        return {"ready": False, "reason": result.error_code or result.outcome.value,
+                "cleanup": "unknown" if result.is_unknown else "clean", "probe_identity": None}
+    return dict(result.observed, endpoint_fingerprint=binding["endpoint_fingerprint"])

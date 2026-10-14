@@ -741,6 +741,13 @@ def _bootstrap_provisioning_schema() -> None:
     its legacy path."""
     try:
         provisioning_schema.bootstrap(engine, SessionLocal)
+        if provisioning_schema.is_ready():
+            # 5.10: at startup a 'ready' node contract that no longer matches
+            # the adapter version / node configuration / backend is invalidated.
+            from .services import provisioning_contracts
+            with SessionLocal() as db:
+                provisioning_contracts.invalidate_stale(db)
+                db.commit()
     except Exception:  # noqa: BLE001
         logging.exception("provisioning schema bootstrap raised - provisioning stays not-ready")
         try:

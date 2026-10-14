@@ -186,6 +186,7 @@ check("every adapter exists; only fenced cancellation, private readonly recovery
               if dotted not in rw.ADAPTER_MODULES and imports_adapter(path))),
       ([], ["app.services.legacy_remote_blocks", "app.services.provisioning_child_recovery",
             "app.services.reseller_refund_worker"]))
+check("the contract probe is a runner-only adapter module", "app.services.provisioning_child_probe" in rw.ADAPTER_MODULES)
 called_anywhere = set().union(*in_code.values()) | set().union(*client_internal.values())
 check("the three MikroTik writer methods without any caller are exactly the declared ones",
       sorted(rw.WRITER_METHODS - called_anywhere), sorted(rw.UNCALLED_WRITER_METHODS))
@@ -310,10 +311,11 @@ check("legacy writers are gated; private guarded infrastructure has no live dura
        "app.services.provisioning_child_legacy": ["gate_locks", "remote_action.Outcome",
                                                   "remote_action.RemoteActionResult"],
        # Clean shutdown: refuse new runners, reap live ones (10.4).
-       "app.services.provisioning_host_lifecycle": ["remote_runner"]})
-check("every writer action is registered; only the contract probe is not (not built yet)",
-      sorted(a.value for a in ActionType if not a.value.startswith("selftest_") and a not in ACTIONS),
-      ["contract_probe"])
+       "app.services.provisioning_host_lifecycle": ["remote_runner"],
+       # The 5.10 contract probe's runner child entry.
+       "app.services.provisioning_child_probe": ["remote_action.Outcome", "remote_action.RemoteActionResult"]})
+check("every real action type is registered",
+      sorted(a.value for a in ActionType if not a.value.startswith("selftest_") and a not in ACTIONS), [])
 
 # ===========================================================================
 print("--- C. characterization of the existing writers (baseline for later batches) ---")

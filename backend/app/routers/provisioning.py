@@ -146,3 +146,8 @@ def type_mode(operation_type: str, payload: TypeModeRequest, admin=Depends(requi
 @router.post("/gate-stats/reset")
 def gate_stats_reset(admin=Depends(require_confirm_password), factory=Depends(get_session_factory)):
     return control.reset_gate_stats(factory, admin.id)
+
+
+@router.post("/nodes/{node_id}/contract/verify")
+def verify_node_contract(node_id: int, admin=Depends(require_confirm_password), factory=Depends(get_session_factory)):
+    return control.verify_node_contract(factory, admin.id, node_id)

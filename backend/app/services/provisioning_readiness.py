@@ -34,9 +34,8 @@ RECOVERY_OPEN = ("pending", "running", "cleanup_required")
 # the change that implements it; while any remains, status never reports
 # p6_ready, whatever the data says.
 IMPLEMENTATION_GAPS = (
-    "durable_orchestration_not_implemented",
-    "ownership_verification_not_implemented",
-    "node_contract_probes_not_implemented",
+    "durable_orchestration_not_implemented",      # no operation type's callers are wired (DURABLE_WIRED)
+    "enforced_gate_not_proven",                    # node_gate.ENFORCED_SUPPORTED is False
 )
 
 

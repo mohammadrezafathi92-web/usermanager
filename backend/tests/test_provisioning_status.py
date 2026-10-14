@@ -56,7 +56,7 @@ with tempfile.TemporaryDirectory(prefix="um-provisioning-status-") as directory:
     result = response.json()
     assert result["schema_ready"] and not result["p6_ready"] and not result["receipt_void_execution_available"]
     assert result["operation_counts"] == {"prepared": 1} and result["step_counts"] == {"staged": 1}
-    assert result["runtime"]["gate_mode"] == "off" and result["missing_runner_actions"]
+    assert result["runtime"]["gate_mode"] == "off" and result["missing_runner_actions"] == []
     assert "SENTINEL" not in response.text and "intent" not in result and "owner_host_id" not in result["runtime"]
     assert statements and all(statement.lstrip().upper().startswith("SELECT") for statement in statements)
     current["admin"] = models.AdminUser(id=2, username="seller", is_superadmin=False, parent_admin_id=1)

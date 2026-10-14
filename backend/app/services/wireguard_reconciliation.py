@@ -68,6 +68,14 @@ def run_once(session_factory=None) -> list:
     if not provisioning_schema.is_ready():
         return []
     with session_factory() as db:
+        # 5.10: every reconciliation cycle also invalidates stale contracts.
+        try:
+            from . import provisioning_contracts
+            provisioning_contracts.invalidate_stale(db)
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            logger.exception("node contract invalidation failed")
         if not _due(db):
             return []
         node_ids = db.execute(select(models.Node.id).where(

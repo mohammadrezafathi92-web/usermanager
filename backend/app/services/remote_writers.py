@@ -50,6 +50,9 @@ ADAPTER_MODULES = frozenset({
     "app.services.adapter_mikrotik_wg", "app.services.adapter_radius_ppp",
     "app.services.adapter_xray", "app.services.adapter_softether",
     "app.services.adapter_xray_panels",
+    # The 5.10 contract probe: runs only as the CONTRACT_PROBE runner action,
+    # under the node lock, on its own namespaced test identity.
+    "app.services.provisioning_child_probe",
 })
 
 # Writer methods that exist on MikrotikClient but have no caller today. They

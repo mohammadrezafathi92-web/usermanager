@@ -312,6 +312,9 @@ check("legacy writers are gated; private guarded infrastructure has no live dura
                                                   "remote_action.RemoteActionResult"],
        # Clean shutdown: refuse new runners, reap live ones (10.4).
        "app.services.provisioning_host_lifecycle": ["remote_runner"],
+       # Lifecycle 10.10 rotate / fork-reset: the gate-mode lock, the cache
+       # reset and the live-runner count (no remote write).
+       "app.services.provisioning_operator": ["gate_locks", "node_gate", "remote_runner"],
        # The 5.10 contract probe's runner child entry.
        "app.services.provisioning_child_probe": ["remote_action.Outcome", "remote_action.RemoteActionResult"]})
 check("every real action type is registered",

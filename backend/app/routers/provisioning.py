@@ -183,8 +183,65 @@ def list_approval_recoveries(db: Session = Depends(get_db)):
                                       mp.ProvisioningOperation.error_code).where(
             mp.ProvisioningOperation.approval_uuid == row.business_key)
             .order_by(mp.ProvisioningOperation.id.desc())).first()
+        import datetime as _dt
+        from ..services import provisioning_approval_final as approval_final
+        age = (_dt.datetime.utcnow() - row.created_at).days if row.created_at else 0
         out.append({"approval_uuid": row.business_key, "state": row.state, "created_at": row.created_at,
+                    "stale": age >= approval_final.WARN_AFTER_DAYS,
+                    "continue_allowed": age < approval_final.CONTINUE_CLOSES_AFTER_DAYS,
                     "operation_id": operation.id if operation else None,
                     "operation_state": operation.state if operation else None,
                     "error_code": operation.error_code if operation else None})
     return out
+
+
+class OperatorRequest(BaseModel):
+    reason: str
+
+
+class RotateRequest(BaseModel):
+    reason: str
+    fork: bool = False
+    confirmation: str = ""
+
+
+@router.get("/operations/{operation_id}")
+def get_operation(operation_id: int, db: Session = Depends(get_db)):
+    from ..services import provisioning_operator as operator
+    return operator.view(db, operation_id)
+
+
+@router.post("/operations/{operation_id}/retry")
+def retry_operation(operation_id: int, payload: OperatorRequest, admin=Depends(require_confirm_password),
+                    factory=Depends(get_session_factory)):
+    from ..services import provisioning_operator as operator
+    return operator.retry(factory, admin.id, operation_id, payload.reason)
+
+
+class ForceStepRequest(BaseModel):
+    step_id: int
+    reason: str
+
+
+@router.post("/operations/{operation_id}/force-step")
+def force_operation_step(operation_id: int, payload: ForceStepRequest, admin=Depends(require_confirm_password),
+                         factory=Depends(get_session_factory)):
+    """Lifecycle 11.5: one cleanup_required step -> removed / 'abandoned'
+    with this admin and reason; then compensation (deletion: its T_final)."""
+    from ..services import provisioning_operator as operator
+    return operator.force_step(factory, admin.id, operation_id, payload.step_id, payload.reason)
+
+
+@router.get("/orphans")
+def list_orphans(db: Session = Depends(get_db)):
+    from ..services import provisioning_operator as operator
+    return operator.orphans(db)
+
+
+@router.post("/installation/rotate")
+def rotate_installation(payload: RotateRequest, admin=Depends(require_confirm_password),
+                        factory=Depends(get_session_factory)):
+    from ..services import provisioning_operator as operator
+    return operator.rotate(factory, admin.id, reason=payload.reason, fork=payload.fork,
+                           confirmation=payload.confirmation)
+

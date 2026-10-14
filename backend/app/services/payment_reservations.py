@@ -132,8 +132,11 @@ def release(db, reservation_id):
         raise HTTPException(409, "payment_reservation_operation_state")
     steps = db.execute(select(mp.ProvisioningStep).where(
         mp.ProvisioningStep.operation_id == operation.id)).scalars().all()
+    # A superadmin's force-step ('abandoned' with actor and reason, 11.5) is
+    # the decision that T_comp - and with it this release - may run.
     if any(step.state != "removed" or (step.remote_attempted and step.remote_outcome not in (
-        "verified_absent", "delete_idempotently_absent")) for step in steps):
+        "verified_absent", "delete_idempotently_absent") and not (
+        step.remote_outcome == "abandoned" and step.forced_by_admin_id is not None)) for step in steps):
         raise HTTPException(409, "payment_reservation_remote_unverified")
     result = db.execute(mp.PaymentReservation.__table__.update().where(
         mp.PaymentReservation.id == row.id, mp.PaymentReservation.state == "reserved",

@@ -39,7 +39,7 @@ from app import deps, models, models_provisioning as mp
 from app.routers import provisioning as router
 from app.security import hash_password
 from app.services import gate_locks, node_gate, provisioning_control as control, provisioning_contracts as contracts
-from app.services import provisioning_readiness as readiness, provisioning_schema, receipt_void_schema
+from app.services import provisioning_readiness as readiness, provisioning_schema, receipt_void_schema, wallet_accounts
 from app.services.provisioning_host import HostIdentity
 
 failures = []
@@ -159,10 +159,12 @@ def scenario(label, engine, base_dir):
     # ------------------------------------------------------------------ type mode
     kind = lambda op, mode: refusal(lambda: control.change_type_mode(Factory, 1, op, mode))
     check(L + "unknown operation type rejected", kind("teleport", "durable"), (422, "operation_type_mode_invalid"))
+    original = control.DURABLE_WIRED
+    check(L + "every operation type's callers are wired (P6)", original, frozenset(mp.OPERATION_TYPES))
+    control.DURABLE_WIRED = frozenset()
     check(L + "a type whose callers are not wired cannot become durable", kind("add_connection", "durable"),
           (409, "durable_callers_not_wired"))
-    original = control.DURABLE_WIRED
-    control.DURABLE_WIRED = frozenset({"add_connection"})
+    control.DURABLE_WIRED = frozenset({"add_connection", "purchase"})
     try:
         check(L + "wired, but the gate is not enforced", kind("add_connection", "durable"), (409, "gate_not_enforced"))
         with Factory() as db:   # Pretend enforced to reach the node checks (the gate move itself is refused above).
@@ -185,6 +187,23 @@ def scenario(label, engine, base_dir):
             db.commit()
         check(L + "every precondition met: durable", kind("add_connection", "durable"),
               ("returned", {"operation_type": "add_connection", "mode": "durable"}))
+        # L6: switching 'purchase' backfills the one-time claims of purchases
+        # made before, in the same transaction (Lifecycle 5.5, 16).
+        with Factory() as db:
+            once = models.Package(name="Once", quota_gb=1, duration_days=1, price=1, one_time_per_user=True)
+            buyer = wallet_accounts.create_user_with_wallet(db, username="once-" + L.strip("[] "), telegram_id=4242)
+            db.add(once)
+            db.flush()
+            db.add(models.Purchase(user_id=buyer.id, package_id=once.id, quota_bytes=1,
+                                   status=models.UserStatus.active))
+            db.commit()
+            once_id = once.id
+        check(L + "purchase -> durable", kind("purchase", "durable")[0], "returned")
+        with Factory() as db:
+            claims = sorted(c.claim_kind for c in db.query(mp.OneTimePackageClaim).filter_by(package_id=once_id))
+        check(L + "...the earlier one-time purchase now holds its user and Telegram claims", claims,
+              ["telegram", "user"])
+        check(L + "purchase back to legacy", kind("purchase", "legacy")[0], "returned")
         with Factory() as db:
             db.add(mp.ProvisioningOperation(operation_type="add_connection", business_key="k2", request_hash="0" * 64,
                 tenant_scope_key="shared", actor_kind="system", intent="{}", state="provisioning",
@@ -224,8 +243,10 @@ def scenario(label, engine, base_dir):
           (200, "shadow"))
     check(L + "the response carries no host or boot identity",
           identity.host_id in response.text or identity.boot_id in response.text, False)
+    control.DURABLE_WIRED = frozenset()
     response = client.post("/api/provisioning/type-modes/purchase", json={"mode": "durable"},
                            headers={"X-Confirm-Password": "pw-root"})
+    control.DURABLE_WIRED = original
     check(L + "type route reports the unwired type", (response.status_code, response.json()["detail"]["code"]),
           (409, "durable_callers_not_wired"))
     client.post("/api/provisioning/gate-mode", json={"target": "off"}, headers={"X-Confirm-Password": "pw-root"})

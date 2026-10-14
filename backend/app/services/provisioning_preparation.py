@@ -25,6 +25,11 @@ from .marzneshin_client import sanitize_username
 from .provisioning_host import HostIdentity, validate_snapshot
 
 
+# Lifecycle 18 decision 2: how long an operation may roll forward before it
+# is compensated.
+FORWARD_DEADLINE_MINUTES = 10
+
+
 class Slot(final._Snapshot):
     slot_key: StrictStr
     node_id: StrictInt
@@ -266,7 +271,7 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
         request_hash=digest, tenant_scope_key=request.tenant_scope_key, actor_kind=actor_kind, actor_id=actor_id,
         intent=intent.json(), target_user_id=request.target_user_id, wallet_epoch_at_start=epoch, state="prepared",
         username_claim=intent.user.username if request.operation_type == "create_user" else None,
-        forward_deadline=dt.datetime.utcnow() + dt.timedelta(minutes=5), **approval_columns)
+        forward_deadline=dt.datetime.utcnow() + dt.timedelta(minutes=FORWARD_DEADLINE_MINUTES), **approval_columns)
     db.add(operation)
     db.flush()
     resource_keys = {f"provisioning_op:{operation.id}"}

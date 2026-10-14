@@ -30,6 +30,11 @@ from . import provisioning_approval_exec as approval_exec, receipt_approval_effe
 from . import receipt_approval_intent as ri, receipt_approval_runtime as runtime
 
 
+# Lifecycle 18 decision 12: an open recovery warns after 7 days; "continue"
+# closes after 30.
+WARN_AFTER_DAYS, CONTINUE_CLOSES_AFTER_DAYS = 7, 30
+
+
 class ApprovalEffectFailed(Exception):
     def __init__(self, code: str):
         super().__init__(code)
@@ -225,6 +230,11 @@ def decide(session_factory, approval_uuid: str, decision: str, admin_id: int, re
                               ).mappings().one_or_none()
         if row is None or recovery is None or recovery["state"] != "cleanup_required":
             raise HTTPException(409, "approval_recovery_not_open")
+        if decision == "continue" and recovery["created_at"] is not None and (
+                dt.datetime.utcnow() - recovery["created_at"]).days >= CONTINUE_CLOSES_AFTER_DAYS:
+            # Lifecycle 18 decision 12: delivering a service a month later is
+            # no longer offered; only cancel remains.
+            raise HTTPException(409, "approval_recovery_continue_expired")
         operation = db.execute(select(mp.ProvisioningOperation).where(
             mp.ProvisioningOperation.approval_uuid == approval_uuid,
             mp.ProvisioningOperation.approval_execution_version == row["version"]).with_for_update()

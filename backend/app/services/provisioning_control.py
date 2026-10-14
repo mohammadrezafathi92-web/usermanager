@@ -36,7 +36,11 @@ GATE_MODES = ("off", "shadow", "enforced")
 
 # Operation types whose every production caller runs the durable path when
 # the type is durable. Grows only with the change that wires a type's callers.
-DURABLE_WIRED: frozenset[str] = frozenset()
+# P6: every type is wired - bot, remote bridge (/api/bot), panel, Mini App,
+# wallet purchase and receipt approvals run the durable path when the type is
+# durable (renew_user has no production caller of its own: the bot's
+# user-level renew URL renews the one service through renew_purchase).
+DURABLE_WIRED: frozenset[str] = frozenset(mp.OPERATION_TYPES)
 
 
 def _identity():
@@ -318,6 +322,11 @@ def change_type_mode(session_factory, admin_id, operation_type, target):
                 nodes = readiness.node_contract_blockers(db)
                 if nodes:
                     raise HTTPException(409, dict(code="node_contract_not_ready", items=nodes))
+                if operation_type == "purchase":
+                    # L6: claims for the purchases made before, in this same
+                    # transaction as the switch (Lifecycle 5.5, 16).
+                    from . import provisioning_claims
+                    provisioning_claims.backfill_existing_purchases(db, admin_id)
             else:
                 pending = db.execute(select(mp.ProvisioningOperation.id).where(
                     mp.ProvisioningOperation.operation_type == operation_type,

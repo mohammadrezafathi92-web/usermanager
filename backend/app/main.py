@@ -1025,6 +1025,9 @@ def _start_full_services() -> None:
     without a process restart."""
     scheduler.add_job(poll_all, "interval", seconds=settings.poll_interval_seconds, id="poll_all", replace_existing=True)
     scheduler.add_job(cleanup_stale_radius_sessions, "interval", minutes=5, id="cleanup_stale_radius_sessions", replace_existing=True)
+    # Lifecycle 5.12: node_gate counters -> provisioning_gate_stats (best effort).
+    from .services.node_gate import flush_counters as flush_gate_counters
+    scheduler.add_job(flush_gate_counters, "interval", seconds=30, id="flush_gate_counters", replace_existing=True)
     # Once a day - prune RadiusLimitEventLog rows older than
     # RADIUS_LIMIT_EVENT_LOG_KEEP_DAYS (7 by default - "لاگ‌های محدودیت
     # اتصال فقط یک هفته کافیه"). This table had no cleanup at all before -

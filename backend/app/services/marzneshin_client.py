@@ -139,7 +139,8 @@ class MarzneshinClient:
         except (TypeError, ValueError):
             self.service_id = None
         self.timeout = timeout
-        self.session = requests.Session()
+        from .transport_guard import GuardedSession
+        self.session = GuardedSession(self, "marzneshin")  # write guard, Lifecycle 10.7
         self.session.headers.update({
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

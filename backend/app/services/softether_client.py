@@ -113,6 +113,8 @@ class SoftEtherClient:
 
     # ------------------------------------------------------------------
     def _call(self, method: str, params: Optional[dict] = None) -> dict:
+        from .transport_guard import softether_call
+        softether_call(self, method)  # write guard before any byte (Lifecycle 10.7)
         self._id += 1
         body = {
             "jsonrpc": "2.0",
@@ -292,7 +294,9 @@ class SoftEtherClient:
 
 
 def client_for_node(node) -> SoftEtherClient:
-    return SoftEtherClient(
+    client = SoftEtherClient(
         node.se_host, node.se_port, node.se_hub_name, node.se_admin_password,
         verify_tls=bool(getattr(node, "se_verify_tls", False)),
     )
+    client.bound_node_id = getattr(node, "id", None)  # the node this client may write to (10.7)
+    return client

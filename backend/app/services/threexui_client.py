@@ -77,7 +77,8 @@ class ThreeXUIClient:
         self.api_token = (api_token or "").strip()
         self.inbound_id = inbound_id
         self.timeout = timeout
-        self.session = requests.Session()
+        from .transport_guard import GuardedSession
+        self.session = GuardedSession(self, "threexui")  # write guard, Lifecycle 10.7
         # Some panels sit behind a WAF/reverse proxy (Cloudflare, nginx +
         # basic bot filtering, etc.) that silently 403s requests carrying
         # the default "python-requests/x.x" User-Agent. Look like a normal

@@ -181,6 +181,7 @@ def status_runtime(session_factory):
 
 # ------------------------------------------------------------------ gate mode (10.6)
 def _stat_totals(db):
+    node_gate.flush_counters()                 # this process's own pending counts first
     row = db.execute(select(func.coalesce(func.sum(mp.ProvisioningGateStat.writer_not_instrumented_count), 0),
                             func.coalesce(func.sum(mp.ProvisioningGateStat.mode_lock_miss_count), 0))).one()
     return int(row[0]), int(row[1])
@@ -260,8 +261,12 @@ def change_gate_mode(session_factory, admin_id, target, *, base_dir=None, timeou
         _gate_preconditions(db, current, target, identity, installation_uuid, base_dir)   # 1: before waiting
     with exclusive_mode_lock(installation_uuid, timeout=timeout, base_dir=base_dir):     # 2: writers drained
         with session_factory() as db:
+            committed = False
             try:
                 row = _gate_preconditions(db, current, target, identity, installation_uuid, base_dir)  # 3: again
+                # Writers that start after this lock is released compare their
+                # cached epoch with this file: "changing" forces a fresh read.
+                gate_locks.write_mode_state(installation_uuid, gate_locks.MODE_STATE_CHANGING, base_dir)
                 now = ownership._clock(db)
                 result = db.execute(mp.ProvisioningRuntimeState.__table__.update().where(
                     mp.ProvisioningRuntimeState.id == 1, mp.ProvisioningRuntimeState.version == row.version,
@@ -274,8 +279,11 @@ def change_gate_mode(session_factory, admin_id, target, *, base_dir=None, timeou
                     to_host_id=row.owner_host_id, ownership_epoch=row.ownership_epoch, gate_mode_from=current,
                     gate_mode_to=target, actor_admin_id=admin_id))
                 db.commit()
+                committed = True
+                gate_locks.write_mode_state(installation_uuid, str(row.gate_mode_epoch + 1), base_dir)
             except Exception:
-                db.rollback()
+                if not committed:
+                    db.rollback()
                 raise
     return status_runtime(session_factory)
 

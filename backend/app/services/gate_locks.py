@@ -65,6 +65,37 @@ def mode_lock_path(installation_uuid: str, base_dir: Optional[str] = None) -> st
     return os.path.join(installation_dir(installation_uuid, base_dir), GATE_MODE_LOCK_NAME)
 
 
+MODE_STATE_NAME = "gate-mode.state"
+MODE_STATE_CHANGING = "?"
+
+
+def mode_state_path(installation_uuid: str, base_dir: Optional[str] = None) -> str:
+    return os.path.join(installation_dir(installation_uuid, base_dir), MODE_STATE_NAME)
+
+
+def write_mode_state(installation_uuid: str, value: str, base_dir: Optional[str] = None) -> None:
+    """Written ONLY while the gate-mode lock is held exclusively: the current
+    gate_mode_epoch, or MODE_STATE_CHANGING while a change is being
+    committed. Writers read it under the shared lock to know whether their
+    cached mode is still the persisted one (no stale-cache write window)."""
+    path = mode_state_path(installation_uuid, base_dir)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    temporary = path + ".tmp"
+    with open(temporary, "w", encoding="ascii") as handle:
+        handle.write(value)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+def read_mode_state(installation_uuid: str, base_dir: Optional[str] = None) -> Optional[str]:
+    try:
+        with open(mode_state_path(installation_uuid, base_dir), "r", encoding="ascii") as handle:
+            return handle.read(32).strip()
+    except (OSError, ValueError):
+        return None
+
+
 def node_lock_path(installation_uuid: str, node_id: int, base_dir: Optional[str] = None) -> str:
     if type(node_id) is not int or node_id <= 0:
         raise ValueError("node_id must be a positive integer")

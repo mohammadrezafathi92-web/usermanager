@@ -274,7 +274,12 @@ check("legacy writers are gated; private guarded infrastructure has no live dura
     "app.services.provisioning_child_absent": ["remote_action"],
     "app.services.provisioning_child_entry": ["gate_locks"],
     "app.services.provisioning_parent_execute": ["remote_action", "remote_runner"],
-       "app.routers.provisioning": ["remote_action.ActionType", "remote_runner_registry.ACTIONS"]})
+       "app.routers.provisioning": ["remote_action.ActionType", "remote_runner_registry.ACTIONS"],
+       # P6 control plane (runner self-test, mode lock), the 10.7 transport
+       # guard and the 5.12 counter flush job - none dispatches a durable action.
+       "app.main": ["node_gate.flush_counters"],
+       "app.services.provisioning_control": ["gate_locks", "node_gate", "remote_action", "remote_runner"],
+       "app.services.transport_guard": ["node_gate"]})
 check("only six runtime-guarded forward/compensation actions are registered; all other actions remain unavailable",
       sorted(a.value for a in ACTIONS if not a.value.startswith("selftest_")),
       ["softether_ensure_absent", "softether_ensure_present", "wg_ensure_absent", "wg_ensure_present",

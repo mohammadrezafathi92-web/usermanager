@@ -34,6 +34,7 @@ exclusivity. (The exclusive GateToken of 'enforced' arrives with it.)
 from __future__ import annotations
 
 import contextlib
+import datetime
 import contextvars
 import logging
 import threading
@@ -75,21 +76,46 @@ class ShadowGateContext:
     node_lock_held: bool      # 'shadow' only: the node lock happened to be free
 
 
+# In-process counter name -> provisioning_gate_stats column (5.12).
+PERSISTED = {"contention": "contention_count", "not_instrumented": "writer_not_instrumented_count",
+             "mode_lock_miss": "mode_lock_miss_count"}
+
+
 @dataclass
 class GateCounters:
-    """In-process counters. Persisting them to provisioning_gate_stats is
-    part of the shadow batch; here they exist so behaviour is observable
-    and testable."""
+    """In-process counters, plus the per-node deltas not yet persisted to
+    provisioning_gate_stats (flush_counters). Persisting is best-effort and
+    outside every business transaction (5.12)."""
     mode_lock_miss: int = 0
     contention: int = 0
     passages: int = 0
     ungated: int = 0       # writer_gate() given something that is not a saved node
     gate_error: int = 0    # the gate itself failed in 'off'; the writer ran anyway
+    not_instrumented: int = 0   # transport_guard saw a write outside node_gate in 'shadow'
+    _pending: dict = field(default_factory=dict, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    def add(self, name: str) -> None:
+    def add(self, name: str, node_id: int = 0) -> None:
         with self._lock:
             setattr(self, name, getattr(self, name) + 1)
+            if name in PERSISTED:
+                row = self._pending.setdefault(node_id if name != "mode_lock_miss" else 0, {})
+                row[name] = row.get(name, 0) + 1
+
+    def count_not_instrumented(self, node_id: int) -> None:
+        self.add("not_instrumented", node_id)
+
+    def take_pending(self) -> dict:
+        with self._lock:
+            pending, self._pending = self._pending, {}
+        return pending
+
+    def restore_pending(self, pending: dict) -> None:
+        with self._lock:
+            for node_id, values in pending.items():
+                row = self._pending.setdefault(node_id, {})
+                for name, count in values.items():
+                    row[name] = row.get(name, 0) + count
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -99,6 +125,8 @@ class GateCounters:
     def reset(self) -> None:
         with self._lock:
             self.mode_lock_miss = self.contention = self.passages = self.ungated = self.gate_error = 0
+            self.not_instrumented = 0
+            self._pending = {}
 
 
 counters = GateCounters()
@@ -124,6 +152,50 @@ RUNTIME_CACHE_SECONDS = 5.0
 # never read the singleton at all treats "unreadable" as 'off'.
 _cached_runtime: Optional[GateRuntime] = None
 _checked_at: Optional[float] = None
+
+
+def flush_counters(session_factory: Optional[Callable] = None) -> bool:
+    """Add this process's pending deltas to provisioning_gate_stats. Best
+    effort, its own short transaction; a failure keeps the deltas for the
+    next flush and never raises into a caller. Returns True if written."""
+    pending = counters.take_pending()
+    if not pending:
+        return True
+    try:
+        from sqlalchemy import update
+        from sqlalchemy.exc import IntegrityError
+        from .. import models_provisioning as mp
+        from . import provisioning_schema
+        if not provisioning_schema.is_ready():
+            raise RuntimeError("provisioning schema not ready")
+        if session_factory is None:
+            from ..database import SessionLocal as session_factory  # noqa: N813
+        table = mp.ProvisioningGateStat.__table__
+        for node_id, values in sorted(pending.items()):
+            columns = {PERSISTED[name]: table.c[PERSISTED[name]] + count for name, count in values.items()}
+            stamps = {"updated_at": datetime.datetime.utcnow()}
+            if "contention" in values:
+                stamps["last_contention_at"] = stamps["updated_at"]
+            if "not_instrumented" in values:
+                stamps["last_not_instrumented_at"] = stamps["updated_at"]
+            for _attempt in range(2):
+                db = session_factory()
+                try:
+                    if db.execute(update(table).where(table.c.node_id == node_id).values(
+                            **columns, **stamps, version=table.c.version + 1)).rowcount == 0:
+                        db.execute(table.insert().values(node_id=node_id, **{
+                            PERSISTED[name]: count for name, count in values.items()}, **stamps))
+                    db.commit()
+                    break
+                except IntegrityError:            # another process inserted the row first: update it
+                    db.rollback()
+                finally:
+                    db.close()
+        return True
+    except Exception:  # noqa: BLE001
+        counters.restore_pending(pending)
+        logger.exception("node_gate: could not persist gate counters")
+        return False
 
 
 def reset_cache() -> None:
@@ -209,6 +281,20 @@ def node_gate(node_id: int, *, session_factory: Optional[Callable] = None) -> It
     mode_lock = _try_shared_mode_lock(runtime.installation_uuid) if runtime is not None else None
     node_lock: Optional[gate_locks.FileLock] = None
     try:
+        if runtime is not None and runtime.gate_mode != MODE_OFF or mode_lock is not None:
+            # The cache may be up to RUNTIME_CACHE_SECONDS old. Under the
+            # shared lock the mode cannot change, and the state file names
+            # the epoch persisted by the last change: if the cache is not
+            # that epoch, read the singleton now. Without the lock (a miss)
+            # only a fresh read may decide that the mode really is 'off'.
+            state = gate_locks.read_mode_state(runtime.installation_uuid) if mode_lock is not None else None
+            if mode_lock is not None and state is None:
+                state = "0"               # no change was ever made through this lock directory
+            if mode_lock is None or state != str(runtime.gate_mode_epoch):
+                fresh = read_runtime(session_factory)
+                _checked_at = time.monotonic()
+                if fresh is not None:
+                    _cached_runtime = runtime = fresh
         mode = runtime.gate_mode if runtime is not None else MODE_OFF
         epoch = runtime.gate_mode_epoch if runtime is not None else 0
 
@@ -227,7 +313,7 @@ def node_gate(node_id: int, *, session_factory: Optional[Callable] = None) -> It
             try:
                 node_lock = candidate.acquire(shared=False, timeout=0)
             except gate_locks.LockTimeout:
-                counters.add("contention")
+                counters.add("contention", node_id)
             except gate_locks.LockUnavailable:
                 raise GateNotAvailable("node lock file unavailable in 'shadow'") from None
 

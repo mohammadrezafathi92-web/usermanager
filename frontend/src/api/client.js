@@ -463,6 +463,19 @@ export const deleteLicenseKey = () => client.delete("/license/key");
 export const runDbHealthCheck = () => client.get("/db-health/check");
 export const optimizeDatabase = () => client.post("/db-health/optimize");
 
+// Durable provisioning (routers/provisioning.py, Lifecycle 11.5 / 13 / 7.6) -
+// superadmin only; every action asks for the admin's own password.
+export const fetchProvisioningStatus = () => client.get("/provisioning/status");
+export const fetchProvisioningOperation = (id) => client.get(`/provisioning/operations/${id}`);
+export const retryProvisioningOperation = (id, reason) =>
+  client.post(`/provisioning/operations/${id}/retry`, { reason }, { _pwForce: true });
+export const forceProvisioningStep = (id, stepId, reason) =>
+  client.post(`/provisioning/operations/${id}/force-step`, { step_id: stepId, reason }, { _pwForce: true });
+export const fetchProvisioningOrphans = () => client.get("/provisioning/orphans");
+export const fetchApprovalRecoveries = () => client.get("/provisioning/approval-recovery");
+export const decideApprovalRecovery = (uuid, decision, reason) =>
+  client.post(`/provisioning/approval-recovery/${uuid}`, { decision, reason }, { _pwForce: true });
+
 // Discount/promo codes (کد تخفیف) - panel-wide, see routers/discount_codes.py.
 export const fetchDiscountCodes = () => client.get("/discount-codes");
 export const createDiscountCode = (data) => client.post("/discount-codes", data);

@@ -1,13 +1,16 @@
-"""Read-only superadmin provisioning status and the real p6_ready() (7.7)."""
+"""Superadmin provisioning status (real p6_ready(), 7.7) and the explicit control plane."""
+from typing import Literal
+
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
 from .. import models_provisioning as mp
 from ..database import get_db
-from ..deps import require_superadmin
-from ..services import provisioning_readiness, provisioning_schema
+from ..deps import require_confirm_password, require_superadmin
+from ..services import provisioning_control as control, provisioning_readiness, provisioning_schema
 from ..services.remote_action import ActionType
 from ..services.remote_runner_registry import ACTIONS
 
@@ -65,3 +68,81 @@ def _snapshot(db):
     result["missing_runner_actions"] = sorted(action.value for action in ActionType
         if not action.value.startswith("selftest_") and action not in ACTIONS)
     return result
+
+
+# ------------------------------------------------------------------ control plane (10.4, 10.6, 16)
+# Every action is superadmin + the admin's own password (X-Confirm-Password),
+# one explicit step, audited in provisioning_ownership_events where the
+# design says so. Nothing here is automatic.
+
+def get_session_factory():
+    from ..database import SessionLocal
+    return SessionLocal
+
+
+class ReclaimRequest(BaseModel):
+    reason: str
+    confirmation: str
+
+
+class TakeoverRequest(BaseModel):
+    reason: str
+    confirmation: str
+    second_confirmation: bool = False
+
+
+class GateModeRequest(BaseModel):
+    target: Literal["off", "shadow", "enforced"]
+
+
+class TypeModeRequest(BaseModel):
+    mode: Literal["legacy", "durable"]
+
+
+@router.post("/lock-backend/verify")
+def verify_lock_backend(admin=Depends(require_confirm_password), factory=Depends(get_session_factory)):
+    return control.verify_claim(factory, admin.id)
+
+
+@router.post("/ownership/drain")
+def ownership_drain(admin=Depends(require_confirm_password), factory=Depends(get_session_factory)):
+    return control.drain(factory, admin.id)
+
+
+@router.post("/ownership/drain-cancel")
+def ownership_drain_cancel(admin=Depends(require_confirm_password), factory=Depends(get_session_factory)):
+    return control.cancel_drain(factory, admin.id)
+
+
+@router.post("/ownership/release")
+def ownership_release(admin=Depends(require_confirm_password), factory=Depends(get_session_factory)):
+    return control.release(factory, admin.id)
+
+
+@router.post("/ownership/reclaim")
+def ownership_reclaim(payload: ReclaimRequest, admin=Depends(require_confirm_password),
+                      factory=Depends(get_session_factory)):
+    return control.reclaim(factory, admin.id, reason=payload.reason, confirmation=payload.confirmation)
+
+
+@router.post("/ownership/forced-takeover")
+def ownership_forced_takeover(payload: TakeoverRequest, admin=Depends(require_confirm_password),
+                              factory=Depends(get_session_factory)):
+    return control.forced_takeover(factory, admin.id, reason=payload.reason, confirmation=payload.confirmation,
+                                   second_confirmation=payload.second_confirmation)
+
+
+@router.post("/gate-mode")
+def gate_mode(payload: GateModeRequest, admin=Depends(require_confirm_password), factory=Depends(get_session_factory)):
+    return control.change_gate_mode(factory, admin.id, payload.target)
+
+
+@router.post("/type-modes/{operation_type}")
+def type_mode(operation_type: str, payload: TypeModeRequest, admin=Depends(require_confirm_password),
+              factory=Depends(get_session_factory)):
+    return control.change_type_mode(factory, admin.id, operation_type, payload.mode)
+
+
+@router.post("/gate-stats/reset")
+def gate_stats_reset(admin=Depends(require_confirm_password), factory=Depends(get_session_factory)):
+    return control.reset_gate_stats(factory, admin.id)

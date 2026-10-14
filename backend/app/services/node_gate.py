@@ -103,6 +103,11 @@ class GateCounters:
 
 counters = GateCounters()
 
+# Whether this build can run 'enforced': every legacy writer executed by the
+# runner under the real node lock and host-ownership check (10.7, 10.8).
+# The control plane refuses shadow -> enforced while this is False.
+ENFORCED_SUPPORTED = False
+
 # The singleton is re-read at most once per this many seconds per process.
 # Every remote block of every writer passes through the gate, and a database
 # round-trip (and, on MariaDB, a pooled connection) for each one would be a

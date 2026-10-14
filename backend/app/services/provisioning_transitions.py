@@ -33,8 +33,9 @@ def _operation(db, operation_id):
         mp.ProvisioningOperation.id == operation_id).with_for_update().execution_options(populate_existing=True)).scalar_one_or_none()
     if row is None:
         raise HTTPException(404, "provisioning_operation_not_found")
-    if row.approval_uuid is not None:
-        raise HTTPException(503, "provisioning_approval_integration_unavailable")
+    # Approval operations are allowed here: T_final and T_comp check the
+    # approval binding under its row lock (provisioning_approval_exec.check),
+    # and every forward remote write re-checks it in the dispatch binding.
     return row
 
 

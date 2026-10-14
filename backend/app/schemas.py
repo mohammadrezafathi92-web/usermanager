@@ -1545,6 +1545,12 @@ class BotCreateUserRequest(BaseModel):
     payment_card_id: Optional[int] = None
     discount_code: Optional[str] = None
     discount_amount: Optional[int] = None
+    # A receipt approval's own terms, sent again with its production call so
+    # the durable path can rebuild the registered intent (its hash is
+    # compared; nothing here is trusted): the code typed at purchase and the
+    # price before any discount.
+    referral_code: Optional[str] = None
+    list_price: Optional[int] = None
 
 
 class BotRenewRequest(BaseModel):
@@ -1565,6 +1571,12 @@ class BotRenewRequest(BaseModel):
     payment_card_id: Optional[int] = None
     discount_code: Optional[str] = None
     discount_amount: Optional[int] = None
+    # A receipt approval's own terms, sent again with its production call so
+    # the durable path can rebuild the registered intent (its hash is
+    # compared; nothing here is trusted): the code typed at purchase and the
+    # price before any discount.
+    referral_code: Optional[str] = None
+    list_price: Optional[int] = None
     # The panel takes paid_amount from the customer's wallet itself, in the
     # same operation as the service (payment_method "wallet"); the caller
     # does not debit first. Without it a wallet sale on a durable type is
@@ -1707,6 +1719,12 @@ class BotPurchasePackageRequest(BaseModel):
     payment_card_id: Optional[int] = None
     discount_code: Optional[str] = None
     discount_amount: Optional[int] = None
+    # A receipt approval's own terms, sent again with its production call so
+    # the durable path can rebuild the registered intent (its hash is
+    # compared; nothing here is trusted): the code typed at purchase and the
+    # price before any discount.
+    referral_code: Optional[str] = None
+    list_price: Optional[int] = None
     # The panel takes paid_amount from the customer's wallet itself, in the
     # same operation as the service (payment_method "wallet"); the caller
     # does not debit first. Without it a wallet sale on a durable type is

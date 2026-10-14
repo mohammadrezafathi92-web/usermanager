@@ -78,7 +78,7 @@ def scenario(label, engine):
     def switch():
         with Session() as db:
             db.execute(rv.receipt_approval_runtime_state.update().where(rv.receipt_approval_runtime_state.c.id == 1)
-                       .values(registration_mode="required", loyalty_timing_mode="payment_event",
+                       .values(registration_mode="required", key_identity_ready=False, key_identity_failure="duplicate_uuid", loyalty_timing_mode="payment_event",
                                completeness_generation=1))
             db.commit()
         order.append("mode_switched")

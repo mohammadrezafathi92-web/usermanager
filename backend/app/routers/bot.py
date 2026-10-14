@@ -270,6 +270,48 @@ def _legacy_wallet_charge(db: Session, user_id: int, amount: int):
         raise
 
 
+def _durable_approval(db: Session, principal, payload, operation_type: str, *, package, user=None,
+                      renew_purchase_id=None, full_name=None, comment=None):
+    """A receipt approval's production call on a durable type (Lifecycle
+    7.6): exactly one operation approval:{uuid}:v:{token}; T1 binds the
+    token, the execution key and the frozen manifest, T_final records every
+    effect. Old token -> 409 approval_superseded; no token -> 422."""
+    from ..services import provisioning_approval_exec as approval_exec
+    token = approval_exec.require_token(payload)
+    intent = approval_exec.intent_of(db, payload.approval_uuid, payload, package=package,
+                                     renew_purchase_id=renew_purchase_id)
+    execution = approval_exec.ApprovalExecution(payload.approval_uuid, token, principal, intent)
+    request = approval_exec.build(db, execution, operation_type, user=user, full_name=full_name, comment=comment,
+                                  payment_method=payload.payment_method, discount_amount=payload.discount_amount)
+    factory = provisioning_requests.session_factory_for(db)
+    db.rollback()
+    operation = provisioning_durable.run(factory, request, actor_kind="bot", actor_id=principal.key_id,
+                                         approval=execution)
+    db.expire_all()
+    return operation
+
+
+def _optional_answer(db: Session, payload, effect: str):
+    """The bot's separate apply_referral / redeem_discount / record-payment
+    call for an approval whose durable operation exists: answered from that
+    operation (nothing applied twice); None -> the legacy endpoint runs."""
+    if not payload.approval_uuid:
+        return None
+    from ..services import provisioning_approval_exec as approval_exec
+    if not provisioning_durable.provisioning_schema.is_ready():
+        return None
+    # Blocked still wins before anything is looked up (the guard's contract);
+    # 'required' is allowed only for an answer, never for a mutation here.
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
+                                                          allow_required=True)
+    operation = approval_exec.operation_of(db, payload.approval_uuid)
+    if operation is None:
+        return None
+    if payload.execution_token is not None and payload.execution_token != operation.approval_execution_version:
+        raise HTTPException(409, "approval_superseded")
+    return approval_exec.optional_answer(db, payload.approval_uuid, effect)
+
+
 # Phase C (docs/api-key-scope-audit-2026-09-27.md): the old _visibility_filter
 # helper that used to live here (same clause, same reasoning as
 # hierarchy.user_visibility_clause) moved into services/bot_resources.py's
@@ -626,6 +668,10 @@ def record_payment_card_use(
     services/payment_cards.py's advance_after_payment for what this does
     ("threshold" mode's auto-switch-to-next-card bookkeeping; a harmless
     no-op for a pool in "manual"/"rotate" mode)."""
+    if _optional_answer(db, payload, "card_payment") is not None:
+        bot_resources._get_payment_card_or_403(db, principal, card_id)
+        db.rollback()
+        return {"ok": True}         # recorded in the approval's T_final (Lifecycle 7.6)
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     bot_resources._get_payment_card_or_403(db, principal, card_id)  # authorization only - advance_after_payment re-fetches
     # With a registered approval the pool event carries its uuid and becomes
@@ -903,7 +949,9 @@ def create_user(
     principal: BotPrincipal = Depends(get_bot_principal),
     x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
-    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
+    durable_create = provisioning_durable.is_durable(db, "create_user")
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
+                                                          allow_required=durable_create)
     # A locked customer must not be able to start a fresh account from the
     # same Telegram id and keep buying - that would leave the lock looking
     # enforced while doing nothing at all.
@@ -925,7 +973,12 @@ def create_user(
     # real User row committed by the time the request was refused.
     if payload.payment_card_id is not None:
         bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
-    if not payload.approval_uuid and provisioning_durable.is_durable(db, "create_user"):
+    if payload.approval_uuid and durable_create:
+        operation = _durable_approval(db, principal, payload, "create_user",
+                                      package=_new_package if payload.package_id else None,
+                                      full_name=payload.full_name, comment=payload.comment)
+        return _user_response(db.get(models.User, operation.result_user_id))
+    if not payload.approval_uuid and durable_create:
         return _durable_create_user(db, principal, payload, owner_admin_id,
                                     _new_package if payload.package_id else None, x_idempotency_key)
     user = user_ops.create_user_record(
@@ -1034,7 +1087,9 @@ def purchase_package(
     a "plain" package with no admin-defined bundle, where the customer
     picked exactly one node/protocol by hand in the bot's purchase flow
     (see telegram_bot/handlers/customer.py's pick_node/pick_protocol)."""
-    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
+    durable_purchase = provisioning_durable.is_durable(db, "purchase")
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
+                                                          allow_required=durable_purchase)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     wallet_policy.can_purchase(db, user)
     package = bot_resources._get_package_or_403(db, principal, payload.package_id)
@@ -1052,7 +1107,13 @@ def purchase_package(
         if payload.connections else None
     )
     wallet_charge = _wallet_charge_amount(payload)
-    if not payload.approval_uuid and provisioning_durable.is_durable(db, "purchase"):
+    if payload.approval_uuid and durable_purchase:
+        operation = _durable_approval(db, principal, payload, "purchase", package=package, user=user,
+                                      comment=payload.comment)
+        return schemas.BotPurchaseResponse(
+            user=_user_response(db.get(models.User, user.id)),
+            connections=[_connection_info(c) for c in provisioning_requests.created_connections(db, operation.id)])
+    if not payload.approval_uuid and durable_purchase:
         # Lifecycle L6: every connection or none; the reseller's credit (and
         # with charge_wallet the customer's wallet) is reserved in T1 and
         # captured with the sale in T_final.
@@ -1111,6 +1172,11 @@ def apply_referral(
     logic lives in services/user_ops.py's apply_referral_code (both the
     referrer and the new user get a gift, per the confirmed design - not
     just the referrer)."""
+    answer = _optional_answer(db, payload, "referral")
+    if answer is not None:
+        bot_resources._get_user_or_403(db, principal, payload.username, None)
+        db.rollback()
+        return {"ok": answer.get("outcome") == "applied", "reason": answer.get("reason") or ""}
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     user = bot_resources._get_user_or_403(db, principal, payload.username, None)
     # Receipt-approval effects of the rewards that are really applied, written
@@ -1165,6 +1231,14 @@ def redeem_discount(
     atomically consumes the code (bumps used_count, records a
     DiscountCodeRedemption row). See services/user_ops.py's
     redeem_discount_code."""
+    answer = _optional_answer(db, payload, "discount")
+    if answer is not None:
+        resolve_claimed_owner(db, principal, payload.owner_admin_id, endpoint="redeem_discount")
+        db.rollback()
+        amount = int(answer.get("discount_amount") or 0)
+        return schemas.DiscountValidateResult(valid=answer.get("outcome") == "applied", reason=answer.get("reason"),
+                                              discount_amount=amount,
+                                              final_price=max(0, (payload.package_price or 0) - amount))
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     owner_admin_id = resolve_claimed_owner(db, principal, payload.owner_admin_id, endpoint="redeem_discount")
     discount_evidence: list = []
@@ -1501,7 +1575,9 @@ def renew_service(
     service is already exhausted (see user_ops.renew_purchase). Never
     creates anything new - renewal means CONTINUING the same service, per
     the panel owner's definition (2026-08-09)."""
-    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
+    durable_renew = provisioning_durable.is_durable(db, "renew_purchase")
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
+                                                          allow_required=durable_renew)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     wallet_policy.can_purchase(db, user)
     purchase = db.get(models.Purchase, purchase_id)
@@ -1521,7 +1597,16 @@ def renew_service(
     if payload.payment_card_id is not None:
         bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
     wallet_charge = _wallet_charge_amount(payload)
-    if not payload.approval_uuid and provisioning_durable.is_durable(db, "renew_purchase"):
+    if payload.approval_uuid and durable_renew:
+        _durable_approval(db, principal, payload, "renew_purchase", package=renew_package, user=user,
+                          renew_purchase_id=purchase.id)
+        user, purchase = db.get(models.User, user.id), db.get(models.Purchase, purchase.id)
+        out = _user_response(user)
+        if purchase.reserved_quota_bytes or purchase.reserved_duration_days:
+            out.reserved_quota_gb = (purchase.reserved_quota_bytes / (1024 ** 3)) if purchase.reserved_quota_bytes else None
+            out.reserved_duration_days = purchase.reserved_duration_days
+        return out
+    if not payload.approval_uuid and durable_renew:
         # Lifecycle L5: renewal, reseller (and charge_wallet) reservation+capture and the sale in ONE transaction.
         sale = _durable_sale(db, payload, user, renew_package) if (payload.package_id or payload.paid_amount is not None) else None
         request = provisioning_requests.renewal(

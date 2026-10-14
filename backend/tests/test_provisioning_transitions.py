@@ -189,7 +189,10 @@ def scenario(engine):
     operation.approval_execution_version = 1
     operation.approval_key_bound = False
     db.commit()
-    refusal("provisioning_approval_integration_unavailable", lambda: transitions.begin_remote(db, sid, 0))
+    # A step transition of an approval operation is allowed: the approval
+    # binding is enforced by the dispatch binding before any remote byte and
+    # by T_final / T_comp under the approval row lock (Lifecycle 7.6).
+    transitions.begin_remote(db, sid, 0)
     db.rollback()
     operation = db.get(mp.ProvisioningOperation, oid)
     operation.approval_uuid = operation.approval_execution_version = operation.approval_key_bound = None

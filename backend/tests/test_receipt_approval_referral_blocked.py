@@ -105,7 +105,9 @@ with tempfile.TemporaryDirectory(prefix="referral_blocked_") as folder:
 
     # required is requested but execution-token validation does not exist yet:
     # the effective mode is blocked.
-    set_mode(registration_mode="required", loyalty_timing_mode="payment_event", completeness_generation=1)
+    # 'blocked' = required with a missing prerequisite (here: key identity not ready).
+    set_mode(registration_mode="required", loyalty_timing_mode="payment_event", completeness_generation=1,
+             key_identity_ready=False, key_identity_failure="duplicate_uuid")
     before = snapshot()
     blocked = client.post("/api/bot/referral/apply", headers=headers, json={
         "username": "new_blocked", "referral_code": "RCODE", "approval_uuid": str(uuid.uuid4())})

@@ -119,22 +119,29 @@ def _finish(session_factory, operation_id, deadline, step):
         return operation
 
 
-def _run_renewal(session_factory, request, identity, owner, *, actor_kind, actor_id):
+def _run_renewal(session_factory, request, identity, owner, *, actor_kind, actor_id, approval=None):
     """renew_user / renew_purchase are ONE transaction (Lifecycle 7.4): T1
     and T_final together. Afterwards, best effort, the existing
     reconciliation re-enables connections of a service that was cut off (a
     failure there never undoes the renewal; the poller applies it later)."""
     from . import provisioning_preparation as preparation, resource_leases as leases, user_ops
+    from . import provisioning_approval_exec as approval_exec, provisioning_approval_final as approval_final
     targets = []
-    with session_factory() as db:
-        leases.begin_business(db)
-        prepared = preparation.prepare(db, request, identity=identity, actor_kind=actor_kind, actor_id=actor_id,
-                                       **owner)
-        operation = prepared.operation
-        for target in getattr(operation, "_reconciliation_after_commit", None) or []:
-            targets.append((type(target).__name__, target.id))
-        operation_id, tokens = operation.id, prepared.leases
-        db.commit()
+    try:
+        with session_factory() as db:
+            leases.begin_business(db)
+            prepared = preparation.prepare(db, request, identity=identity, actor_kind=actor_kind, actor_id=actor_id,
+                                           approval=approval, **owner)
+            operation = prepared.operation
+            for target in getattr(operation, "_reconciliation_after_commit", None) or []:
+                targets.append((type(target).__name__, target.id))
+            operation_id, tokens = operation.id, prepared.leases
+            db.commit()
+    except (approval_exec.ApprovalCancel, approval_final.ApprovalEffectFailed) as exc:
+        # One transaction: nothing of it committed. The approval is cancelled
+        # on its own (a 'required' renewal whose effects cannot be valid too).
+        approval_exec.cancel(session_factory, approval.approval_uuid, approval.version, exc.code)
+        raise HTTPException(409, exc.code) from None
     if tokens:
         with session_factory() as db:
             for token in tokens:
@@ -163,19 +170,24 @@ def _run_renewal(session_factory, request, identity, owner, *, actor_kind, actor
         return operation
 
 
-def run(session_factory, request, *, actor_kind="system", actor_id=None, budget=None):
-    """Run one durable operation from the request thread (see module doc)."""
+def run(session_factory, request, *, actor_kind="system", actor_id=None, budget=None, approval=None):
+    """Run one durable operation from the request thread (see module doc).
+    `approval`: provisioning_approval_exec.ApprovalExecution of a receipt
+    approval's production call (T1 binds it; 7.6)."""
     budget = REQUEST_BUDGET_SECONDS if budget is None else budget
     if getattr(request, "operation_type", "").startswith("renew_"):
         identity, owner = _owner(session_factory)
-        return _run_renewal(session_factory, request, identity, owner, actor_kind=actor_kind, actor_id=actor_id)
+        return _run_renewal(session_factory, request, identity, owner, actor_kind=actor_kind, actor_id=actor_id,
+                            approval=approval)
     from . import provisioning_delete_preparation as delete_preparation
     from . import provisioning_deletion_worker as deletion_worker
     from . import provisioning_operation_worker as operation_worker
     identity, owner = _owner(session_factory)
     deadline = time.monotonic() + budget
     worker = deletion_worker if isinstance(request, delete_preparation.DeleteRequest) else operation_worker
-    first = worker.start_once(session_factory, request, identity, actor_kind=actor_kind, actor_id=actor_id, **owner)
+    extra = {"approval": approval} if approval is not None else {}
+    first = worker.start_once(session_factory, request, identity, actor_kind=actor_kind, actor_id=actor_id,
+                              **extra, **owner)
     operation_id = first["operation_id"]
     return _finish(session_factory, operation_id, deadline,
                    lambda op_id: worker.resume_one(session_factory, op_id, identity, **owner))

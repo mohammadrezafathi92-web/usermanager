@@ -81,6 +81,15 @@ class SaleSnapshot(_Snapshot):
         return value
 
 
+class ApprovalTerms(_Snapshot):
+    """What a receipt-approved operation needs at T_final beyond the sale
+    (Lifecycle 7.6): the optional benefits applied from the frozen manifest
+    and the card payment recorded in the same commit."""
+    list_price: StrictInt = 0
+    discount_code: StrictStr | None = None
+    referral_code: StrictStr | None = None
+
+
 class FinalIntent(_Snapshot):
     # Persisted by T1; never reconstructed from live package prices/limits.
     schema_version: StrictInt = 1
@@ -101,6 +110,7 @@ class FinalIntent(_Snapshot):
     reseller_count_delta: StrictInt = 0
     created_via: StrictStr | None = None          # create_user: models.User.created_via (e.g. "bot")
     node_fingerprints: dict[str, StrictStr] | None = None
+    approval: ApprovalTerms | None = None
 
     @validator("node_fingerprints")
     def fingerprints(cls, value):
@@ -140,8 +150,12 @@ def _locked(db, model, ident):
         .execution_options(populate_existing=True)).scalar_one_or_none()
 
 
-def finish(db, operation_id, version, leases, *, require_contracts=False):
-    """Atomically build/capture/complete; replay never repeats a mutation."""
+def finish(db, operation_id, version, leases, *, require_contracts=False, approval_row=None):
+    """Atomically build/capture/complete; replay never repeats a mutation.
+    An approval operation needs its approval row, locked by the caller
+    before the leases (provisioning_approval_exec.lock_for): the binding is
+    checked here and its effects are recorded in this same transaction."""
+    from . import provisioning_approval_exec as approval_exec, provisioning_approval_final as approval_final
     receipt_void_schema.assert_ready()
     wallet_service.require_legacy_phase(db)
     epoch = db.execute(select(rv.wallet_runtime_state.c.epoch).where(
@@ -157,13 +171,25 @@ def finish(db, operation_id, version, leases, *, require_contracts=False):
         raise HTTPException(409, "wallet_epoch_changed")
     if operation.state == "completed":
         return operation
+    approved = operation.approval_uuid is not None
+    if approved:
+        if not approval_row:
+            raise HTTPException(409, "provisioning_approval_unlocked")
+        approval_exec.check(db, operation, approval_row)
+        if approval_row["state"] != "mutating":
+            raise approval_exec.ApprovalBindingLost("approval_binding_lost")
     renewal = operation.operation_type in ("renew_user", "renew_purchase")
     if operation.operation_type not in ("create_user", "purchase", "add_connection", "renew_user", "renew_purchase") or (
             operation.version != version or operation.state != ("prepared" if renewal else "remote_complete")):
         raise HTTPException(409, "provisioning_operation_changed")
     intent = _intent(operation)
-    if intent.purchase_id is not None and operation.operation_type not in ("add_connection", "renew_purchase") or (
-            operation.operation_type == "create_user" and intent.package and (intent.quota_bytes or intent.duration_days)):
+    # An approved new customer carries the package's limits itself (T1).
+    user_limits = approved and operation.operation_type == "create_user" and intent.package is not None and (
+        (intent.quota_bytes, intent.duration_days) == (intent.package.quota_bytes, intent.package.duration_days))
+    if approved != (intent.approval is not None) or (
+            intent.purchase_id is not None and operation.operation_type not in ("add_connection", "renew_purchase")) or (
+            operation.operation_type == "create_user" and intent.package and (intent.quota_bytes or intent.duration_days)
+            and not user_limits):
         raise HTTPException(409, "provisioning_intent_invalid")
     reservations = db.execute(select(mp.PaymentReservation).where(mp.PaymentReservation.operation_id == operation.id)
         .order_by(mp.PaymentReservation.payer_kind).with_for_update()
@@ -219,7 +245,7 @@ def finish(db, operation_id, version, leases, *, require_contracts=False):
         raise HTTPException(409, "provisioning_package_missing")
     purchase = None
     reconcile = []
-    if operation.operation_type in ("create_user", "purchase") and package:
+    if operation.operation_type in ("create_user", "purchase") and package and (steps or not user_limits):
         purchase = user_ops.build_purchase_core(db, user, package, intent.comment,
             count_purchase=operation.operation_type != "create_user", grant_loyalty=False)
         purchase.quota_bytes = intent.package.quota_bytes
@@ -274,11 +300,13 @@ def finish(db, operation_id, version, leases, *, require_contracts=False):
             provisioning_claims.bind_purchase(db, operation.id, purchase.id)
     if operation.operation_type == "renew_purchase" and purchase is None:
         raise HTTPException(409, "provisioning_intent_invalid")
+    renewal_evidence = [] if approved else None
     if renewal:
         core = user_ops.renew_purchase_core if purchase is not None else user_ops.renew_user_core
         core(db, purchase if purchase is not None else user, add_gb=intent.quota_bytes / 1024 ** 3,
             add_days=intent.duration_days, reset_usage=intent.reset_usage,
-            package_id=package.id if package and not intent.keep_package else None, reconciliation_sink=reconcile)
+            package_id=package.id if package and not intent.keep_package else None, reconciliation_sink=reconcile,
+            evidence_sink=renewal_evidence)
     if intent.node_fingerprints is not None:
         if set(intent.node_fingerprints) != {str(step.node_id) for step in steps}:
             raise HTTPException(409, "provisioning_node_config_changed")
@@ -291,9 +319,11 @@ def finish(db, operation_id, version, leases, *, require_contracts=False):
                     provisioning_contracts.require_ready(db, node, backend)
     elif require_contracts and steps:
         raise HTTPException(409, "provisioning_node_config_changed")
+    connections = []
     for step in steps:
-        provisioning_records.build_connection_core(db, step.id, step.version, user_id=user.id,
-            purchase_id=purchase.id if purchase else None, purchase_batch=intent.purchase_batch)
+        connections.append((step.slot_key, provisioning_records.build_connection_core(
+            db, step.id, step.version, user_id=user.id,
+            purchase_id=purchase.id if purchase else None, purchase_batch=intent.purchase_batch)))
     if operation.operation_type in ("create_user", "purchase"):
         user_ops._maybe_grant_loyalty_reward(db, user)
     entry = None
@@ -323,9 +353,20 @@ def finish(db, operation_id, version, leases, *, require_contracts=False):
             reseller_refund.bind_sale(db, purchase, debit, _locked(db, models.Package, package.id),
                                       sale_entry=entry, purchase_count_delta=intent.reseller_count_delta)
             db.flush()
+    optional = None
+    if approved:
+        credits = []
+        for reservation in reservations:
+            db.refresh(reservation)
+            if reservation.payer_kind == "reseller_credit":
+                credits.append(db.get(models.LedgerEntry, reservation.capture_ledger_entry_id))
+        optional = approval_final.record(db, operation, intent, approval_row, user=user, purchase=purchase,
+                                         connections=connections, entry=entry, credit_entries=credits,
+                                         renewal_evidence=renewal_evidence)
+        db.flush()
     transitions._write_operation(db, operation, "completed", result_user_id=user.id,
         result_purchase_id=purchase.id if purchase else None, sale_ledger_entry_id=entry.id if entry else None,
-        username_claim=None, completed_at=dt.datetime.utcnow())
+        username_claim=None, completed_at=dt.datetime.utcnow(), optional_effects=optional)
     # Transient only: the controller must consume AFTER its successful commit.
     operation._reconciliation_after_commit = reconcile
     return operation

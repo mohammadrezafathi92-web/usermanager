@@ -18,6 +18,7 @@ from . import resource_leases as leases, provisioning_schema, wallet_service
 from . import provisioning_transitions as transitions, provisioning_finalization as final
 from . import provisioning_compensation as compensation, provisioning_parent_execute as execute
 from . import provisioning_preparation as preparation
+from . import provisioning_approval_exec as approval_exec, provisioning_approval_final as approval_final
 from .provisioning_host import HostIdentity
 
 KINDS = ("create_user", "purchase", "add_connection")
@@ -118,8 +119,9 @@ def reacquire(session_factory, operation_id, identity, *, installation_uuid, own
     with session_factory() as db:
         leases.begin_business(db)
         _control(db, operation_id, identity, expected)  # L1.
+        approval_exec.lock_for(db, operation_id)        # receipt runtime -> approval row, before L2.
         operation = db.get(mp.ProvisioningOperation, operation_id)
-        if operation is None or operation.approval_uuid is not None:
+        if operation is None:
             raise HTTPException(409, "provisioning_worker_operation_unavailable")
         if operation.state in transitions.TERMINAL:
             return ()
@@ -162,85 +164,102 @@ def tick(session_factory, operation_id, identity, tokens, *, installation_uuid, 
         raise HTTPException(422, "provisioning_worker_invalid")
     tokens = tuple(tokens)
     expected = (installation_uuid, ownership_epoch)
-    with session_factory() as db:
-        leases.begin_business(db)
-        runtime = _control(db, operation_id, identity, expected)  # L1 before any L2/L4 locking.
-        leases.revalidate(db, tokens)
-        if len({token.owner for token in tokens}) != 1 or not any(
-                token.resource_key == f"provisioning_op:{operation_id}" for token in tokens) or any(
-                not token.owner.startswith(f"op:{operation_id}:") for token in tokens):
-            raise HTTPException(409, "provisioning_lease_scope_invalid")
-        for token in tokens:
-            leases.renew(db, token, ttl=300)  # > the child hard deadline (120s), not an unbounded heartbeat.
-        operation = transitions._operation(db, operation_id)
-        if operation.state in transitions.TERMINAL:
-            result = _public(operation, "terminal")
-            db.commit()
-            return result
-        steps = db.execute(select(mp.ProvisioningStep).where(mp.ProvisioningStep.operation_id == operation_id)
-            .order_by(mp.ProvisioningStep.step_order, mp.ProvisioningStep.id).with_for_update()
-            .execution_options(populate_existing=True)).scalars().all()
-        _scope(db, operation, steps, tokens)
-        clock, _ = leases._clock(db)
-        now = db.scalar(select(clock))
-        if isinstance(now, str):
-            now = dt.datetime.fromisoformat(now)
-        if operation.state in ("prepared", "provisioning", "remote_complete"):
-            failure = _permanent_failure(db, operation, steps, now)
-            if failure is not None:
-                transitions.begin_compensation(db, operation.id, failure)
-                result = _public(operation, "compensation_started")
+    try:
+        with session_factory() as db:
+            leases.begin_business(db)
+            runtime = _control(db, operation_id, identity, expected)  # L1 before any L2/L4 locking.
+            approval_row = approval_exec.lock_for(db, operation_id)   # then the approval row, before L2.
+            leases.revalidate(db, tokens)
+            if len({token.owner for token in tokens}) != 1 or not any(
+                    token.resource_key == f"provisioning_op:{operation_id}" for token in tokens) or any(
+                    not token.owner.startswith(f"op:{operation_id}:") for token in tokens):
+                raise HTTPException(409, "provisioning_lease_scope_invalid")
+            for token in tokens:
+                leases.renew(db, token, ttl=300)  # > the child hard deadline (120s), not an unbounded heartbeat.
+            operation = transitions._operation(db, operation_id)
+            if operation.state in transitions.TERMINAL:
+                result = _public(operation, "terminal")
                 db.commit()
                 return result
-        if operation.state == "cleanup_required":
-            result = _public(operation, "manual_recovery_required")
-            db.commit()
-            return result
-        if operation.next_retry_at is not None and operation.next_retry_at > now:
-            # Selection is only a hint. A direct resume, or a retry time
-            # changed after selection, must respect the same DB-clock
-            # backoff before dispatch, capture or reservation release.
-            # Permanent forward preconditions above still start cleanup.
-            result = _public(operation, "waiting")
-            db.commit()
-            return result
-        cleaning = operation.state == "compensating"
-        if cleaning:
-            pending = [step for step in steps if step.state != "removed"]
-            if not pending:
-                compensation.finish(db, operation.id, operation.version)
-                result = _public(operation, "compensated")
+            if approval_row is not None and operation.state in ("prepared", "provisioning", "remote_complete"):
+                # No new remote call, no T_final once the binding is gone (7.6).
+                approval_exec.check(db, operation, approval_row)
+                if approval_row["state"] != "mutating":
+                    raise approval_exec.ApprovalBindingLost("approval_binding_lost")
+            steps = db.execute(select(mp.ProvisioningStep).where(mp.ProvisioningStep.operation_id == operation_id)
+                .order_by(mp.ProvisioningStep.step_order, mp.ProvisioningStep.id).with_for_update()
+                .execution_options(populate_existing=True)).scalars().all()
+            _scope(db, operation, steps, tokens)
+            clock, _ = leases._clock(db)
+            now = db.scalar(select(clock))
+            if isinstance(now, str):
+                now = dt.datetime.fromisoformat(now)
+            if operation.state in ("prepared", "provisioning", "remote_complete"):
+                failure = _permanent_failure(db, operation, steps, now)
+                if failure is not None:
+                    transitions.begin_compensation(db, operation.id, failure)
+                    result = _public(operation, "compensation_started")
+                    db.commit()
+                    return result
+            if operation.state == "cleanup_required":
+                result = _public(operation, "manual_recovery_required")
                 db.commit()
                 return result
-        elif operation.state in ("prepared", "provisioning", "remote_complete"):
-            pending = [step for step in steps if step.backend != "radius_ppp" and step.state != "remote_created"]
-            pending.sort(key=lambda step: (step.state != "remote_calling", step.step_order, step.id))
-            if not pending:
-                if operation.state != "remote_complete":
-                    transitions.mark_remote_complete(db, operation.id)
-                final.finish(db, operation.id, operation.version, tokens, require_contracts=True)
-                result = _public(operation, "completed")
+            if operation.next_retry_at is not None and operation.next_retry_at > now:
+                # Selection is only a hint. A direct resume, or a retry time
+                # changed after selection, must respect the same DB-clock
+                # backoff before dispatch, capture or reservation release.
+                # Permanent forward preconditions above still start cleanup.
+                result = _public(operation, "waiting")
                 db.commit()
                 return result
-        else:
-            raise HTTPException(409, "provisioning_worker_state_invalid")
-        step = pending[0]
-        if step.state not in (("compensating",) if cleaning else ("staged", "remote_calling")):
-            raise HTTPException(409, "provisioning_worker_state_invalid")
-        if step.next_retry_at is not None and step.next_retry_at > now:
-            result = _public(operation, "waiting", transitions.public_step(step))
+            cleaning = operation.state == "compensating"
+            if cleaning:
+                pending = [step for step in steps if step.state != "removed"]
+                if not pending:
+                    compensation.finish(db, operation.id, operation.version, approval_row=approval_row)
+                    result = _public(operation, "compensated")
+                    db.commit()
+                    return result
+            elif operation.state in ("prepared", "provisioning", "remote_complete"):
+                pending = [step for step in steps if step.backend != "radius_ppp" and step.state != "remote_created"]
+                pending.sort(key=lambda step: (step.state != "remote_calling", step.step_order, step.id))
+                if not pending:
+                    if operation.state != "remote_complete":
+                        transitions.mark_remote_complete(db, operation.id)
+                    final.finish(db, operation.id, operation.version, tokens, require_contracts=True,
+                                 approval_row=approval_row)
+                    result = _public(operation, "completed")
+                    db.commit()
+                    return result
+            else:
+                raise HTTPException(409, "provisioning_worker_state_invalid")
+            step = pending[0]
+            if step.state not in (("compensating",) if cleaning else ("staged", "remote_calling")):
+                raise HTTPException(409, "provisioning_worker_state_invalid")
+            if step.next_retry_at is not None and step.next_retry_at > now:
+                result = _public(operation, "waiting", transitions.public_step(step))
+                db.commit()
+                return result
+            if runtime.owner_state == "draining":
+                # Already-returned remote results and DB-only finalization may
+                # finish during drain. Starting ANY new child (including read
+                # recovery / compensation) may not bypass the child gate's
+                # active-owner requirement or commit a false attempted marker.
+                result = _public(operation, "draining", transitions.public_step(step))
+                db.commit()
+                return result
+            sid, version, recovery_read = step.id, step.version, step.state == "remote_calling"
             db.commit()
-            return result
-        if runtime.owner_state == "draining":
-            # Already-returned remote results and DB-only finalization may
-            # finish during drain. Starting ANY new child (including read
-            # recovery / compensation) may not bypass the child gate's
-            # active-owner requirement or commit a false attempted marker.
-            result = _public(operation, "draining", transitions.public_step(step))
-            db.commit()
-            return result
-        sid, version, recovery_read = step.id, step.version, step.state == "remote_calling"
-        db.commit()
+    except approval_exec.ApprovalBindingLost as exc:
+        # Rolled back above; cleanup_required + approval_recovery in its own commit.
+        approval_exec.mark_binding_lost(session_factory, operation_id, exc.code)
+        return dict(operation_id=operation_id, status="manual_recovery_required")
+    except approval_final.ApprovalEffectFailed:
+        # 'required' T_final cannot be valid: nothing of it committed, so the
+        # operation is compensated (final_tx_failed_permanent, 11.5).
+        _final_failed(session_factory, operation_id, identity, expected)
+        return dict(operation_id=operation_id, status="compensation_started")
     if release_shared_for_remote:
         with session_factory() as db:
             leases.begin_business(db)
@@ -265,6 +284,17 @@ def tick(session_factory, operation_id, identity, tokens, *, installation_uuid, 
         if operation is None:
             raise HTTPException(409, "provisioning_operation_changed")
         return _public(operation, "step_recorded", step_result)
+
+
+def _final_failed(session_factory, operation_id, identity, expected):
+    with session_factory() as db:
+        leases.begin_business(db)
+        _control(db, operation_id, identity, expected)
+        approval_exec.lock_for(db, operation_id)
+        operation = transitions._operation(db, operation_id)
+        if operation.state in ("prepared", "provisioning", "remote_complete"):
+            transitions.begin_compensation(db, operation_id, "final_tx_failed_permanent")
+        db.commit()
 
 
 def resume_one(session_factory, operation_id, identity, *, installation_uuid, ownership_epoch):
@@ -299,7 +329,7 @@ def resume_one(session_factory, operation_id, identity, *, installation_uuid, ow
 
 
 def start_once(session_factory, request, identity, *, installation_uuid, ownership_epoch,
-               actor_kind="system", actor_id=None):
+               actor_kind="system", actor_id=None, approval=None):
     """Private bounded entry: commit T1, then advance/recover one iteration.
 
     Caller must authenticate/authorize the actor and build a trusted request.
@@ -311,14 +341,19 @@ def start_once(session_factory, request, identity, *, installation_uuid, ownersh
     if not isinstance(request, preparation.Preparation) or request.operation_type not in KINDS:
         raise HTTPException(422, "provisioning_worker_invalid")
     expected = dict(installation_uuid=installation_uuid, ownership_epoch=ownership_epoch)
-    with session_factory() as db:
-        execute._configured_source(db.get_bind().url)
-        leases.begin_business(db)
-        prepared = preparation.prepare(db, request, identity=identity, actor_kind=actor_kind,
-            actor_id=actor_id, **expected)
-        operation_id, tokens = prepared.operation.id, prepared.leases
-        terminal = _public(prepared.operation, "terminal") if prepared.operation.state in transitions.TERMINAL else None
-        db.commit()
+    try:
+        with session_factory() as db:
+            execute._configured_source(db.get_bind().url)
+            leases.begin_business(db)
+            prepared = preparation.prepare(db, request, identity=identity, actor_kind=actor_kind,
+                actor_id=actor_id, approval=approval, **expected)
+            operation_id, tokens = prepared.operation.id, prepared.leases
+            terminal = _public(prepared.operation, "terminal") if prepared.operation.state in transitions.TERMINAL else None
+            db.commit()
+    except approval_exec.ApprovalCancel as exc:
+        # T1 rolled back; the cancellation is its own commit (Lifecycle 7.6).
+        approval_exec.cancel(session_factory, approval.approval_uuid, approval.version, exc.code)
+        raise HTTPException(409, exc.code) from None
     # Reached ONLY after a successful T1 commit. A rollback can reuse IDs and
     # epochs later; its discarded tokens must never be released by this code.
     if tokens:

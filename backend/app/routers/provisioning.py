@@ -151,3 +151,40 @@ def gate_stats_reset(admin=Depends(require_confirm_password), factory=Depends(ge
 @router.post("/nodes/{node_id}/contract/verify")
 def verify_node_contract(node_id: int, admin=Depends(require_confirm_password), factory=Depends(get_session_factory)):
     return control.verify_node_contract(factory, admin.id, node_id)
+
+
+class ApprovalRecoveryRequest(BaseModel):
+    decision: Literal["continue", "cancel"]
+    reason: str
+
+
+@router.post("/approval-recovery/{approval_uuid}")
+def approval_recovery(approval_uuid: str, payload: ApprovalRecoveryRequest, admin=Depends(require_confirm_password),
+                      factory=Depends(get_session_factory)):
+    """An approval whose binding was lost (key revoked/rotated mid-execution)
+    or whose shadow manifest did not validate (Lifecycle 7.6): continue ->
+    the same T_final with this recovery in place of the key check; cancel ->
+    compensation and T_comp. Actor and reason stay on the recovery row."""
+    from ..services import provisioning_approval_final as approval_final
+    return approval_final.decide(factory, approval_uuid, payload.decision, admin.id, payload.reason)
+
+
+@router.get("/approval-recovery")
+def list_approval_recoveries(db: Session = Depends(get_db)):
+    """Open approval recoveries with their operation (no secret, no username)."""
+    from .. import models_receipt_void as rv
+    ops = rv.wallet_operations
+    rows = db.execute(select(ops.c.business_key, ops.c.state, ops.c.created_at).where(
+        ops.c.operation_type == "approval_recovery", ops.c.state.in_(("cleanup_required", "running")))
+        .order_by(ops.c.id)).all()
+    out = []
+    for row in rows:
+        operation = db.execute(select(mp.ProvisioningOperation.id, mp.ProvisioningOperation.state,
+                                      mp.ProvisioningOperation.error_code).where(
+            mp.ProvisioningOperation.approval_uuid == row.business_key)
+            .order_by(mp.ProvisioningOperation.id.desc())).first()
+        out.append({"approval_uuid": row.business_key, "state": row.state, "created_at": row.created_at,
+                    "operation_id": operation.id if operation else None,
+                    "operation_state": operation.state if operation else None,
+                    "error_code": operation.error_code if operation else None})
+    return out

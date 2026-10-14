@@ -1,8 +1,10 @@
-"""DB-only T_comp for non-approval legacy-generation operations.
+"""DB-only T_comp (Lifecycle 11.5).
 
 Caller owns runtime/resource leases and a short writer transaction, rolls
 back any failure and commits once. No remote calls, hidden commit or force.
-Approval operations and forced-abandoned steps remain deliberately refused.
+An approval operation needs its approval row locked by the caller before the
+leases: binding checked, no effect, then the approval fails in this same
+commit (provisioning_approval_final.fail). Forced-abandoned steps stay refused.
 """
 import datetime as dt
 
@@ -13,11 +15,11 @@ from .. import models_provisioning as mp
 from . import payment_reservations, provisioning_transitions as transitions
 
 
-def finish(db, operation_id, version):
+def finish(db, operation_id, version, *, approval_row=None):
     # Canonical wallet runtime/epoch precedes operation and reservation locks.
     operation = payment_reservations._operation(db, operation_id)
-    if operation.approval_uuid is not None:
-        raise HTTPException(503, "provisioning_approval_integration_unavailable")
+    if operation.approval_uuid is not None and operation.state != "compensated" and not approval_row:
+        raise HTTPException(409, "provisioning_approval_unlocked")
     if operation.operation_type.startswith("delete_"):
         raise HTTPException(409, "provisioning_delete_irreversible")
     if operation.state == "compensated":
@@ -53,5 +55,8 @@ def finish(db, operation_id, version):
         if result.rowcount != 1:
             raise HTTPException(409, "provisioning_claim_changed")
         db.expire(claim)
+    if operation.approval_uuid is not None:
+        from . import provisioning_approval_final as approval_final
+        approval_final.fail(db, operation, approval_row)
     transitions._write_operation(db, operation, "compensated", username_claim=None, completed_at=now)
     return operation

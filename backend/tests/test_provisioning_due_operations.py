@@ -103,8 +103,10 @@ def scenario(engine):
     event.listen(engine, "before_cursor_execute", record)
     try:
         selected = due.select_due(Factory, host, limit=25, **expected)
-        wanted = tuple(ids[label] for label in ("ready", "expired", "final", "expired_lease",
-            "unowned_lease", "comp_final", "ppp", "create"))
+        # Approval operations are recovered too (Lifecycle 7.6: the worker
+        # checks their binding before any step or final transaction).
+        wanted = tuple(sorted(ids[label] for label in ("ready", "expired", "final", "approval", "expired_lease",
+            "unowned_lease", "comp_final", "ppp", "create")))
         assert selected == wanted, (engine.dialect.name, selected, wanted)
         assert engine.pool.checkedout() == 0, "selection retained DB session"
         assert all(sql.lstrip().upper().startswith("SELECT") for sql in statements), statements

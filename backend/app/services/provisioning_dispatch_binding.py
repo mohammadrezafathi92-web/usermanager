@@ -105,7 +105,12 @@ def dispatch_statement(dialect, *, deletion=False):
       l.lease_owner, l.fencing_epoch, CASE WHEN l.leased_until >= {clock} THEN 1 ELSE 0 END AS lease_live,
       m.mode AS type_mode, w.epoch AS wallet_epoch, COALESCE(p.ha_enabled,0) AS ha_enabled,
       u.id AS user_id, u.username AS user_username, u.owner_admin_id AS user_owner, u.telegram_id AS user_telegram,
-      n.enabled AS node_enabled, {endpoints}{removal}
+      n.enabled AS node_enabled, o.approval_execution_version, o.approval_key_bound,
+      o.execution_key_instance_uuid AS op_key_instance, a.state AS approval_state, a.version AS approval_version,
+      a.execution_key_instance_uuid AS approval_key_instance, k.enabled AS key_enabled, k.key_type AS key_type,
+      (SELECT COUNT(*) FROM wallet_operations wo WHERE wo.operation_type='approval_recovery'
+         AND wo.business_key=o.approval_uuid AND wo.state='running') AS recovery_running,
+      {endpoints}{removal}
       FROM provisioning_runtime_state r
       JOIN provisioning_operations o ON o.id=:operation_id
       JOIN provisioning_steps s ON s.id=:step_id AND s.operation_id=o.id
@@ -116,7 +121,22 @@ def dispatch_statement(dialect, *, deletion=False):
       LEFT JOIN users u ON u.id=o.target_user_id OR (o.target_user_id IS NULL AND u.username=o.username_claim)
       {removal_join}
       LEFT JOIN panel_settings p ON p.id=1
+      LEFT JOIN receipt_approvals a ON a.approval_uuid=o.approval_uuid
+      LEFT JOIN api_keys k ON k.key_instance_uuid=o.execution_key_instance_uuid
       WHERE r.id=1""")
+
+
+def _approval_live(row) -> bool:
+    """An approval operation may write forward only while its approval is
+    'mutating' at the operation's version with the same execution key, and
+    that key is still enabled (or a running approval_recovery replaces the
+    key check) - Lifecycle 7.6. Removal (compensation) is always allowed."""
+    if row["approval_state"] != "mutating" or row["approval_version"] != row["approval_execution_version"] or (
+            row["approval_key_instance"] != row["op_key_instance"]):
+        return False
+    if not row["approval_key_bound"] or row["recovery_running"]:
+        return True
+    return bool(row["key_enabled"]) and row["key_type"] == "remote_shared_bot"
 
 
 def revalidate(engine, binding, identity, mode_hold, node_hold, *, base_dir=None, removal_payload=None):
@@ -150,7 +170,8 @@ def revalidate(engine, binding, identity, mode_hold, node_hold, *, base_dir=None
         row["gate_mode_epoch"] != binding.gate_mode_epoch,
         row["lock_backend"] != ("flock" if engine.dialect.name == "sqlite" else "flock+get_lock"),
         row["operation_type"] not in (("delete_user", "delete_purchase", "delete_connection") if deleting else
-            ("create_user", "purchase", "add_connection")), row["approval_uuid"] is not None,
+            ("create_user", "purchase", "add_connection")),
+        row["approval_uuid"] is not None and (deleting or (forward and not _approval_live(row))),
         row["operation_version"] != binding.operation_version, row["step_version"] != binding.step_version,
         row["operation_state"] not in (("provisioning",) if forward or deleting else ("compensating", "cleanup_required")),
         row["step_state"] != ("remote_calling" if forward or deleting else "compensating"),

@@ -117,10 +117,12 @@ def payers(*, reseller_admin_id=None, reseller_cost=0, wallet_user_id=None, wall
 def renewal(db, user: models.User, *, purchase: models.Purchase | None, add_gb: float = 0, add_days: int = 0,
             reset_usage: bool = False, package=None, sale: final.SaleSnapshot | None = None,
             reseller_cost: int = 0, reseller_admin_id=None, keep_package: bool = False,
-            key: str) -> preparation.Preparation:
-    """renew_purchase (purchase given) or renew_user: one transaction (7.4)."""
+            charge_wallet: bool = False, key: str) -> preparation.Preparation:
+    """renew_purchase (purchase given) or renew_user: one transaction (7.4).
+    charge_wallet: the customer's wallet pays the sale, reserved in T1 (8);
+    without it a wallet sale is refused - the money was taken elsewhere."""
     tenant = wallet_accounts.tenant_scope(db, user.owner_admin_id)
-    wallet = sale is not None and sale.payment_method == "wallet" and sale.amount > 0
+    wallet = charge_wallet and sale is not None and sale.payment_method == "wallet" and sale.amount > 0
     return preparation.Preparation(
         operation_type="renew_purchase" if purchase is not None else "renew_user",
         business_key=f"req:{tenant}:{key}", tenant_scope_key=tenant, target_user_id=user.id,
@@ -161,11 +163,13 @@ def authorize_slots(db, slots, authorization_scope) -> None:
 
 
 def purchase(db, user: models.User, package, *, slots, comment=None, sale=None, reseller_cost=0,
-             reseller_admin_id=None, count_delta=1, key: str) -> preparation.Preparation:
-    """An existing customer buys a new, independent service (purchase)."""
+             reseller_admin_id=None, count_delta=1, charge_wallet: bool = False,
+             key: str) -> preparation.Preparation:
+    """An existing customer buys a new, independent service (purchase);
+    charge_wallet as in renewal()."""
     import uuid as _uuid
     tenant = wallet_accounts.tenant_scope(db, user.owner_admin_id)
-    wallet = sale is not None and sale.payment_method == "wallet" and sale.amount > 0
+    wallet = charge_wallet and sale is not None and sale.payment_method == "wallet" and sale.amount > 0
     return preparation.Preparation(
         operation_type="purchase", business_key=f"req:{tenant}:{key}", tenant_scope_key=tenant,
         target_user_id=user.id,

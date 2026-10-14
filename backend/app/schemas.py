@@ -1565,6 +1565,11 @@ class BotRenewRequest(BaseModel):
     payment_card_id: Optional[int] = None
     discount_code: Optional[str] = None
     discount_amount: Optional[int] = None
+    # The panel takes paid_amount from the customer's wallet itself, in the
+    # same operation as the service (payment_method "wallet"); the caller
+    # does not debit first. Without it a wallet sale on a durable type is
+    # refused (the money would have been taken outside the operation).
+    charge_wallet: bool = False
 
 
 class BotPurchaseResponse(BaseModel):
@@ -1702,6 +1707,11 @@ class BotPurchasePackageRequest(BaseModel):
     payment_card_id: Optional[int] = None
     discount_code: Optional[str] = None
     discount_amount: Optional[int] = None
+    # The panel takes paid_amount from the customer's wallet itself, in the
+    # same operation as the service (payment_method "wallet"); the caller
+    # does not debit first. Without it a wallet sale on a durable type is
+    # refused (the money would have been taken outside the operation).
+    charge_wallet: bool = False
 
 
 class BotPurchaseResponse(BaseModel):

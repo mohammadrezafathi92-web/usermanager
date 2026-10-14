@@ -516,31 +516,18 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
     discount_amount = data.get("discount_amount") or 0
     final_price = max(0, pkg["price"] - discount_amount)
 
-    # Debit the wallet FIRST (atomic on the server side - see
-    # routers/bot.py's add_balance) and only provision/renew after that
-    # succeeds. This order matters: debiting last would let a customer keep
-    # a service that was already provisioned even if the debit then failed
-    # (e.g. a double-tap racing the balance down to insufficient funds in
-    # between) - i.e. free service. Debiting first means the worst case on
-    # a mid-flow failure is "charged but not yet provisioned", which we
-    # recover from below with a refund instead of a free service. Charges
-    # final_price (after any discount code applied in _advance_purchase_flow),
-    # NOT the original pkg["price"].
-    try:
-        user = await api.add_balance(target_username, -final_price)
-    except ApiError as exc:
-        await call.answer(f"خطا: {exc}", show_alert=True)
+    # The panel takes final_price (after any discount code) from the wallet
+    # itself, in the same operation as the service (charge_wallet - see
+    # routers/bot.py's _wallet_charge_amount): on a durable type it is
+    # reserved with the service and captured or released with it, on a
+    # legacy type the endpoint debits, provisions and refunds a failure.
+    # This handler never debits first and never refunds, so a failure here
+    # leaves the wallet as it was. A plain renew with nothing to add is not
+    # a sale and is not charged.
+    if final_price > 0 and not (kind == "new" or add_gb or add_days):
+        await call.answer("خطا: این بسته چیزی برای تمدید ندارد", show_alert=True)
         return
-
-    # Consume the discount code now that payment actually succeeded - best
-    # effort, since the customer has already been charged the discounted
-    # amount either way; a failure here would only mean the code's
-    # used_count/redemption record undercounts, not a wrong charge.
-    if data.get("discount_code"):
-        try:
-            await api.redeem_discount(data["discount_code"], target_username, pkg["price"])
-        except ApiError:
-            pass
+    sale_info = {**_sale_info(data, final_price, "wallet"), "charge_wallet": True}
 
     # Collects only the connection(s) actually created by THIS purchase, so
     # the message below sends just those - not every connection the
@@ -575,7 +562,7 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
             # not this possibly-stale bot-side pkg snapshot).
             result = await api.purchase_package(
                 target_username, pkg["id"], connections=connections_override,
-                sale_info=_sale_info(data, final_price, "wallet"),
+                sale_info=sale_info,
                 comment=data.get("comment"),
             )
             new_connections = result["connections"]
@@ -588,23 +575,26 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
                 await api.renew_service(
                     target_username, data["renew_purchase_id"],
                     add_gb=add_gb, add_days=add_days, package_id=pkg.get("id"),
-                    sale_info=_sale_info(data, final_price, "wallet"),
+                    sale_info=sale_info,
                 )
             else:
                 await api.renew(
                     target_username, add_gb=add_gb, add_days=add_days, package_id=pkg.get("id"),
-                    sale_info=_sale_info(data, final_price, "wallet"),
+                    sale_info=sale_info,
                 )
         user = await api.get_user(target_username)
     except ApiError as exc:
-        # Provisioning failed after the debit already went through - refund
-        # so the customer isn't charged for nothing, and tell them clearly.
+        # Nothing was taken: the panel charges only together with the service.
+        await call.answer(f"خطا در فعال‌سازی سرویس - مبلغی از کیف پول شما کسر نشد: {exc}", show_alert=True)
+        return
+
+    # Consume the discount code now that the paid sale exists - best effort,
+    # as before: a failure only undercounts the code's redemptions.
+    if data.get("discount_code"):
         try:
-            await api.add_balance(target_username, final_price)
+            await api.redeem_discount(data["discount_code"], target_username, pkg["price"])
         except ApiError:
             pass
-        await call.answer(f"خطا در فعال‌سازی سرویس - مبلغ به کیف پول شما بازگشت داده شد: {exc}", show_alert=True)
-        return
 
     await state.clear()
     text = f"✅ خرید با موفقیت از اعتبار شما پرداخت شد.\n\nموجودی فعلی: {user['balance']:,} تومان"

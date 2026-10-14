@@ -8,6 +8,7 @@ telegram_bot/remote_bridge.py + services/remote_deploy.py) when the admin
 chooses to run the interactive Telegram bot on a second server instead of
 in-process here - same endpoints, same X-API-Key auth, just reached over
 the network instead of in-process."""
+import contextlib
 import datetime as dt
 import logging
 import os
@@ -230,6 +231,43 @@ def _durable_create_user(db, principal, payload, owner_admin_id, package, idempo
     operation = provisioning_durable.run(factory, request, actor_kind="bot")
     db.expire_all()
     return _user_response(db.get(models.User, operation.result_user_id))
+
+
+def _wallet_charge_amount(payload) -> int:
+    """What charge_wallet asks the panel to take from the customer's wallet
+    (0: nothing). Only for an unapproved wallet sale with a stated price."""
+    if not getattr(payload, "charge_wallet", False):
+        return 0
+    if payload.payment_method != "wallet" or payload.approval_uuid or payload.paid_amount is None:
+        raise HTTPException(422, "wallet_charge_invalid")
+    return max(0, int(payload.paid_amount))
+
+
+@contextlib.contextmanager
+def _legacy_wallet_charge(db: Session, user_id: int, amount: int):
+    """charge_wallet on a type still 'legacy': the order the bot used to do
+    itself (debit, provision, refund on failure), now on the panel so the
+    caller never holds the money. A durable type reserves it in T1 instead."""
+    if amount <= 0:
+        yield
+        return
+    wallet_service.begin_writer(db)
+    if not wallet_service.debit_atomic(db, user_id, amount, source_kind=wallet_service.SALE):
+        db.rollback()
+        raise HTTPException(400, "موجودی کیف پول کافی نیست")
+    db.commit()
+    try:
+        yield
+    except BaseException:
+        db.rollback()
+        try:
+            wallet_service.begin_writer(db)
+            wallet_service.credit_atomic(db, user_id, amount, source_kind=wallet_service.UNSPECIFIED)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("wallet charge: refund after a failed sale did not commit (user_id=%s)", user_id)
+        raise
 
 
 # Phase C (docs/api-key-scope-audit-2026-09-27.md): the old _visibility_filter
@@ -1013,16 +1051,18 @@ def purchase_package(
         [{"node_id": c.node_id, "protocol": c.protocol, "flow": c.flow or ""} for c in payload.connections]
         if payload.connections else None
     )
+    wallet_charge = _wallet_charge_amount(payload)
     if not payload.approval_uuid and provisioning_durable.is_durable(db, "purchase"):
-        # Lifecycle L6: every connection or none; the reseller's credit is
-        # reserved in T1 and captured with the sale in T_final.
+        # Lifecycle L6: every connection or none; the reseller's credit (and
+        # with charge_wallet the customer's wallet) is reserved in T1 and
+        # captured with the sale in T_final.
         slots = provisioning_requests.package_slots(db, package, override)
         provisioning_requests.authorize_slots(
             db, slots, resolve_bot_authorization_scope(principal) if override is not None else
             provisioning_requests.package_scope(db, package))
         request = provisioning_requests.purchase(
             db, user, package, slots=slots, comment=payload.comment, sale=_durable_sale(db, payload, user, package),
-            reseller_cost=_seller_cost(db, user, package), count_delta=1,
+            reseller_cost=_seller_cost(db, user, package), count_delta=1, charge_wallet=wallet_charge > 0,
             key=provisioning_durable.idempotency_key(x_idempotency_key))
         factory = provisioning_requests.session_factory_for(db)
         db.rollback()
@@ -1031,23 +1071,26 @@ def purchase_package(
         return schemas.BotPurchaseResponse(
             user=_user_response(db.get(models.User, user.id)),
             connections=[_connection_info(c) for c in provisioning_requests.created_connections(db, operation.id)])
-    purchase = user_ops.apply_package_as_purchase(
-        db, user, package, connections_override=override, comment=payload.comment, principal=principal,
-    )
-    reseller_debit = _charge_seller(db, user, package)
-    sale_entry = _record_bot_sale(db, principal, "sale_new", payload, user, package, purchase_id=purchase.id)
-    db.flush()
-    reseller_refund.bind_sale(db, purchase, reseller_debit, package, sale_entry=sale_entry, purchase_count_delta=1)
-    recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)      # no-op without an approval
-    if recorder.active:
+    user_id, package_id = user.id, package.id
+    with _legacy_wallet_charge(db, user_id, wallet_charge):
+        user, package = db.get(models.User, user_id), db.get(models.Package, package_id)
+        purchase = user_ops.apply_package_as_purchase(
+            db, user, package, connections_override=override, comment=payload.comment, principal=principal,
+        )
+        reseller_debit = _charge_seller(db, user, package)
+        sale_entry = _record_bot_sale(db, principal, "sale_new", payload, user, package, purchase_id=purchase.id)
         db.flush()
-        recorder.effect("purchase_created", "purchase", purchase,
-                        approval_effects.PurchaseCreatedEvidence(days=package.duration_days or None))
-        for connection in purchase.connections:
-            recorder.connection(connection)
-        recorder.effect("ledger_sale", "sale", sale_entry)
-        recorder.tag_ledger(sale_entry)
-    db.commit()
+        reseller_refund.bind_sale(db, purchase, reseller_debit, package, sale_entry=sale_entry, purchase_count_delta=1)
+        recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)      # no-op without an approval
+        if recorder.active:
+            db.flush()
+            recorder.effect("purchase_created", "purchase", purchase,
+                            approval_effects.PurchaseCreatedEvidence(days=package.duration_days or None))
+            for connection in purchase.connections:
+                recorder.connection(connection)
+            recorder.effect("ledger_sale", "sale", sale_entry)
+            recorder.tag_ledger(sale_entry)
+        db.commit()
     db.refresh(user)
     return schemas.BotPurchaseResponse(
         user=_user_response(user),
@@ -1477,13 +1520,14 @@ def renew_service(
     # authorized before it too, not inside _record_bot_sale afterward.
     if payload.payment_card_id is not None:
         bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
+    wallet_charge = _wallet_charge_amount(payload)
     if not payload.approval_uuid and provisioning_durable.is_durable(db, "renew_purchase"):
-        # Lifecycle L5: renewal, reseller reservation+capture and the sale in ONE transaction.
+        # Lifecycle L5: renewal, reseller (and charge_wallet) reservation+capture and the sale in ONE transaction.
         sale = _durable_sale(db, payload, user, renew_package) if (payload.package_id or payload.paid_amount is not None) else None
         request = provisioning_requests.renewal(
             db, user, purchase=purchase, add_gb=payload.add_gb or 0, add_days=payload.add_days or 0,
             reset_usage=bool(payload.reset_usage), package=renew_package, sale=sale,
-            reseller_cost=_seller_cost(db, user, renew_package, payload.add_gb or 0),
+            reseller_cost=_seller_cost(db, user, renew_package, payload.add_gb or 0), charge_wallet=wallet_charge > 0,
             key=provisioning_durable.idempotency_key(x_idempotency_key))
         factory = provisioning_requests.session_factory_for(db)
         db.rollback()
@@ -1497,14 +1541,18 @@ def renew_service(
             out.reserved_duration_days = purchase.reserved_duration_days
         return out
     renewal_evidence: list = []
-    user_ops.renew_purchase(db, purchase, payload.add_gb, payload.add_days, payload.reset_usage,
-                            package_id=payload.package_id, evidence_sink=renewal_evidence)
-    sale_entry = None
-    _charge_seller(db, user, renew_package, payload.add_gb or 0)
-    if payload.package_id or payload.paid_amount is not None:
-        sale_entry = _record_bot_sale(db, principal, "sale_renew", payload, user, renew_package, purchase_id=purchase.id)
-    _record_renewal(db, payload, purchase, renewal_evidence, sale_entry)
-    db.commit()
+    user_id, purchase_id = user.id, purchase.id
+    with _legacy_wallet_charge(db, user_id, wallet_charge):
+        user, purchase = db.get(models.User, user_id), db.get(models.Purchase, purchase_id)
+        renew_package = db.get(models.Package, payload.package_id) if payload.package_id else None
+        user_ops.renew_purchase(db, purchase, payload.add_gb, payload.add_days, payload.reset_usage,
+                                package_id=payload.package_id, evidence_sink=renewal_evidence)
+        sale_entry = None
+        _charge_seller(db, user, renew_package, payload.add_gb or 0)
+        if payload.package_id or payload.paid_amount is not None:
+            sale_entry = _record_bot_sale(db, principal, "sale_renew", payload, user, renew_package, purchase_id=purchase.id)
+        _record_renewal(db, payload, purchase, renewal_evidence, sale_entry)
+        db.commit()
     db.refresh(user)
     db.refresh(purchase)
     out = _user_response(user)

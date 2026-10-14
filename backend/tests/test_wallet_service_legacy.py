@@ -24,6 +24,7 @@ import os
 import sys
 import tempfile
 import threading
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -71,6 +72,7 @@ def scenario(label: str, engine) -> None:
     L = f"[{label}] "
     models.Base.metadata.create_all(engine)
     Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)        # the application's settings
+    SessionLocal_ = Session
     check(L + "schema ready", receipt_void_schema.bootstrap(engine, Session)["ready"], True)
 
     names = ("topup", "debit", "loyal", "referrer", "invited", "edited", "race", "inflight", "noschema")
@@ -194,6 +196,29 @@ def scenario(label: str, engine) -> None:
         session.close()
     set_phase("normal")
     check(L + "back in normal the writer works again", (add_balance("topup", 1)[0], balance("topup")), (200, AMOUNT + 1))
+
+    # ------------------------------------------------------------------ P5a finding 3: balance + remote edit
+    # The balance change commits in its own writer transaction BEFORE the
+    # node is contacted; a phase change during the remote step cannot leave
+    # a remote effect next to a rolled-back balance.
+    seen_by_remote = []
+
+    def remote_then_cutover(db_, user_):
+        with SessionLocal_() as probe:
+            seen_by_remote.append(probe.query(models.User).filter_by(username="edited").one().balance)
+        set_phase("fencing")
+
+    with patch.object(user_ops, "reconcile_user_connections", side_effect=remote_then_cutover):
+        result = refusal(lambda: panel_edit("edited", balance=777, status=models.UserStatus.disabled))
+    set_phase("normal")
+    check(L + "balance + status edit: the balance was already committed when the node was contacted",
+          (seen_by_remote, result[0], balance("edited")), ([777], "returned", 777))
+    set_phase("fencing")
+    with patch.object(user_ops, "reconcile_user_connections", side_effect=AssertionError("node contacted")) as remote:
+        result = refusal(lambda: panel_edit("edited", balance=1, status=models.UserStatus.active))
+    set_phase("normal")
+    check(L + "phase not normal at the start: refused before any remote call, nothing changed",
+          (result, balance("edited")), (REFUSED, 777))
 
     # ------------------------------------------------------------------ 9.3: a phase change waits for the writer in flight
     print(f"--- {label}: a phase change waits for a writer in flight; the next writer sees the new phase ---")

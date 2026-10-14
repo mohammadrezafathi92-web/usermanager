@@ -824,7 +824,11 @@ def update_user(
     if "balance" in data:
         new_balance = data.pop("balance")
         if new_balance != user.balance:
-            wallet_service.overwrite(db, user, new_balance, source_kind=wallet_service.MANUAL_ADJUSTMENT)
+            # Committed on its own, before anything below may contact a node
+            # (status change -> reconcile): see wallet_service.overwrite_committed.
+            wallet_service.overwrite_committed(db.get_bind(), user.id, new_balance,
+                                               source_kind=wallet_service.MANUAL_ADJUSTMENT)
+            db.expire(user, ["balance"])
 
     identity_fields = {key: data.pop(key) for key in ("telegram_id", "owner_admin_id") if key in data}
     identity_operation = None
@@ -961,8 +965,15 @@ def reset_usage(
 
 
 @router.delete("/{user_id}")
-def delete_user(user_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password), _perm=_may_delete_users):
+def delete_user(user_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password), _perm=_may_delete_users,
+                x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key")):
     user = _get_owned_user(db, admin, user_id)
+    if provisioning_durable.is_durable(db, "delete_user"):
+        # Lifecycle L8 / 12: disabled and purchase-blocked first, every
+        # connection removed by identity, the rows deleted only at the end.
+        provisioning_requests.run_delete(db, "user", user.id, user.owner_admin_id, actor_kind="admin",
+                                         actor_id=admin.id, key=provisioning_durable.idempotency_key(x_idempotency_key))
+        return {"ok": True}
     user_ops.delete_user_cascade(db, user)
     return {"ok": True}
 
@@ -1290,6 +1301,7 @@ def delete_purchase(
     # paid-for service is a deletion, and it was already gated this way.
     # manage_connections covers adding/removing individual connections.
     _perm=_may_delete_users,
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """Deletes ONE of a customer's services: its connections are removed
     from the real nodes first (user_ops.delete_connection deprovisions each
@@ -1302,6 +1314,13 @@ def delete_purchase(
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
+    if provisioning_durable.is_durable(db, "delete_purchase"):
+        count = len(purchase.connections)
+        provisioning_requests.run_delete(db, "purchase", purchase.id, user.owner_admin_id, actor_kind="admin",
+                                         actor_id=admin.id, key=provisioning_durable.idempotency_key(x_idempotency_key))
+        # All-or-nothing: either every connection is gone, or the request
+        # failed above and nothing was deleted.
+        return {"ok": True, "connections_removed": count, "failed": []}
 
     removed = 0
     failed: list[str] = []

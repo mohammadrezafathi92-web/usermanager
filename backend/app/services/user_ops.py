@@ -853,7 +853,14 @@ def bulk_delete_users(db: Session, user_ids: list[int], admin: Optional[models.A
         if admin is not None and not hierarchy.can_see_user(admin, owned, user.owner_admin_id):
             continue
         try:
-            delete_user_cascade(db, user)
+            from . import provisioning_durable, provisioning_requests
+            if provisioning_durable.is_durable(db, "delete_user"):
+                # Lifecycle 12: one independent durable deletion per user.
+                provisioning_requests.run_delete(db, "user", user.id, user.owner_admin_id, actor_kind="admin",
+                                                 actor_id=getattr(admin, "id", None),
+                                                 key=provisioning_durable.idempotency_key(None))
+            else:
+                delete_user_cascade(db, user)
             deleted_count += 1
         except HTTPException as exc:
             db.rollback()

@@ -194,3 +194,23 @@ def debit_atomic(db: Session, user_id: int, amount: int, *, source_kind: str) ->
     result = db.execute(users.update().where(
         users.c.id == user_id, (users.c.balance - amount) >= 0).values(balance=users.c.balance - amount))
     return result.rowcount == 1
+
+
+def overwrite_committed(bind, user_id: int, new_balance: Optional[int], *, source_kind: str) -> None:
+    """overwrite() in its OWN short wallet-writer transaction, committed now.
+
+    For a request that goes on to contact a router after changing the
+    balance (the panel's edit form re-enabling connections): the phase is
+    read as the writer (BEGIN IMMEDIATE / shared row lock), the balance is
+    written and committed BEFORE any remote effect, and no SQLite writer is
+    held across the network. A phase change can then never leave a remote
+    effect next to a rolled-back balance."""
+    from sqlalchemy.orm import Session as _Session
+    with _Session(bind=bind, autoflush=False) as wallet_db:
+        begin_writer(wallet_db)
+        user = wallet_db.get(models.User, user_id)
+        if user is None:
+            wallet_db.rollback()
+            raise HTTPException(status_code=404, detail="user_not_found")
+        overwrite(wallet_db, user, new_balance, source_kind=source_kind)
+        wallet_db.commit()

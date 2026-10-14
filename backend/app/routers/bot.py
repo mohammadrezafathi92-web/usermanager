@@ -1282,6 +1282,7 @@ def delete_purchase(
     username: str, purchase_id: int,
     db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
     principal: BotPrincipal = Depends(get_bot_principal),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """Deletes one of the customer's own expired/exhausted services (all of
     its connections, deprovisioned from their nodes, then the Purchase row
@@ -1294,6 +1295,11 @@ def delete_purchase(
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
     _ensure_deletable_purchase(purchase)
+    if provisioning_durable.is_durable(db, "delete_purchase"):
+        count = len(purchase.connections)
+        provisioning_requests.run_delete(db, "purchase", purchase.id, user.owner_admin_id, actor_kind="bot",
+                                         key=provisioning_durable.idempotency_key(x_idempotency_key))
+        return {"ok": True, "connections_removed": count, "failed": []}
     removed = 0
     failed: list[str] = []
     for conn in list(purchase.connections):
@@ -1549,7 +1555,7 @@ def add_balance(
     button) can't both succeed and drive the balance negative - the second
     one gets a clean "insufficient balance" error instead of silently
     overdrawing the wallet."""
-    if payload.amount <= 0:
+    if payload.amount == 0:
         approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     if payload.amount == 0:
         user = bot_resources._get_user_or_403(db, principal, username, None)
@@ -1558,8 +1564,13 @@ def add_balance(
         return _user_response(user)
     if payload.amount < 0:
         # A wallet-only transaction (design 9.2): become the writer and read
-        # the wallet phase before anything else.
+        # the wallet phase first (L1), then the approval mode INSIDE the same
+        # transaction (L2) so its lock - and on SQLite the writer - is held
+        # to the commit: a switch to 'blocked' cannot pass between the check
+        # and the debit. (The old order checked, rolled back, then wrote.)
         wallet_service.begin_writer(db)
+        approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
+                                                              keep_transaction=True)
         user = bot_resources._get_user_or_403(db, principal, username, None)
         # Only a TOP-UP is blocked. A negative amount is the wallet being
         # spent on a purchase, and that purchase is already refused upstream
@@ -1588,8 +1599,13 @@ def add_balance(
 def delete_user(
     username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
     principal: BotPrincipal = Depends(get_bot_principal),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
+    if provisioning_durable.is_durable(db, "delete_user"):
+        provisioning_requests.run_delete(db, "user", user.id, user.owner_admin_id, actor_kind="bot",
+                                         key=provisioning_durable.idempotency_key(x_idempotency_key))
+        return {"ok": True}
     user_ops.delete_user_cascade(db, user)
     return {"ok": True}
 

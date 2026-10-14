@@ -88,8 +88,26 @@ def effective_registration_mode(state: Optional[dict]) -> str:
     return requested
 
 
+def _check_mutation_mode(db, approval_uuid, execution_token, *, sqlite, locking):
+    state = read_state(db, lock=locking and not sqlite, shared_lock=locking and not sqlite)
+    if state is None:
+        raise HTTPException(status_code=503, detail="receipt_approval_runtime_unavailable")
+    mode = effective_registration_mode(state)
+    if mode == BLOCKED:
+        raise HTTPException(status_code=503, detail="receipt_approval_blocked")
+    if mode == REQUIRED:
+        raise HTTPException(status_code=503, detail="execution_token_not_supported")
+    if execution_token is not None:
+        from .. import models_receipt_void as rv
+        query = select(rv.receipt_approvals.c.version).where(rv.receipt_approvals.c.approval_uuid == approval_uuid)
+        if locking and not sqlite:
+            query = query.with_for_update(read=True)
+        if db.scalar(query) != execution_token:
+            raise HTTPException(status_code=409, detail="approval_superseded")
+
+
 def guard_approval_mutation(db: Session, approval_uuid: Optional[str],
-                            execution_token: Optional[int] = None) -> None:
+                            execution_token: Optional[int] = None, *, keep_transaction: bool = False) -> None:
     """Fail closed before any endpoint lookup/mutation when a correlated
     operation reaches a blocked or not-yet-supported required mode.
 
@@ -115,6 +133,14 @@ def guard_approval_mutation(db: Session, approval_uuid: Optional[str],
         raise HTTPException(status_code=422, detail="approval_execution_token_invalid")
     if not receipt_void_schema.is_ready():
         raise HTTPException(status_code=503, detail="receipt_void_schema_not_ready")
+    if keep_transaction:
+        # The caller already began a short wallet-writer transaction (L1,
+        # wallet_service.begin_writer) and commits it itself: check INSIDE it,
+        # keeping every lock (and on SQLite the writer) until that commit, so
+        # a concurrent switch to 'blocked' cannot slip between check and write.
+        _check_mutation_mode(db, approval_uuid, execution_token, sqlite=db.get_bind().dialect.name == "sqlite",
+                             locking=True)
+        return
     for attempt in range(1, 4):
         db.rollback()
         try:

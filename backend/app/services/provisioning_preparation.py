@@ -190,7 +190,10 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
             kind != "create_user" and request.target_user_id is None):
         raise HTTPException(422, "provisioning_request_invalid")
     for payer in request.payers:
-        if intent.sale is None or (payer.kind == "customer_wallet" and (
+        # A reseller may be charged without a customer sale (a raw-gigabyte
+        # renewal at the account's per-GB rate books cost, not revenue -
+        # admin_billing.charge_for_renewal); a customer wallet only for a sale.
+        if (payer.kind == "customer_wallet" and intent.sale is None) or (payer.kind == "customer_wallet" and (
                 kind == "create_user" or payer.id != request.target_user_id or
                 intent.sale.payment_method != "wallet" or payer.amount != intent.sale.amount)):
             raise HTTPException(422, "provisioning_payment_invalid")

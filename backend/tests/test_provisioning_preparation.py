@@ -130,8 +130,11 @@ def scenario(engine):
             db.flush()
             refused(detail, lambda: run(request))
             db.rollback()
-        if request.payers:
-            invalid = request.copy(update={"intent": request.intent.copy(update={"sale": None})})
+        if request.payers and request.target_user_id is not None:
+            # A customer wallet may only pay for a sale. (A reseller alone may
+            # be charged without one: a raw-gigabyte renewal books cost only.)
+            invalid = request.copy(update={"intent": request.intent.copy(update={"sale": None}), "payers": [
+                prep.Payer(kind="customer_wallet", id=request.target_user_id, amount=1)]})
             locks.begin_business(db)
             refused("provisioning_payment_invalid", lambda: run(invalid))
             db.rollback()

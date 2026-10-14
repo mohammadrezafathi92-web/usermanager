@@ -58,7 +58,10 @@ def is_durable(db, operation_type: str) -> bool:
 def idempotency_key(request_header) -> str:
     """The caller's X-Idempotency-Key, or a fresh one (an old caller's retry
     is then a new request, exactly as today)."""
-    value = (request_header or "").strip()
+    # In-process callers (telegram_bot/panel_bridge) call the route functions
+    # directly; an omitted header parameter then arrives as FastAPI's own
+    # default object, which is "no key", not a key.
+    value = request_header.strip() if isinstance(request_header, str) else ""
     if value:
         try:
             return str(uuid.UUID(value))
@@ -107,9 +110,56 @@ def _finish(session_factory, operation_id, deadline, step):
         return operation
 
 
+def _run_renewal(session_factory, request, identity, owner, *, actor_kind, actor_id):
+    """renew_user / renew_purchase are ONE transaction (Lifecycle 7.4): T1
+    and T_final together. Afterwards, best effort, the existing
+    reconciliation re-enables connections of a service that was cut off (a
+    failure there never undoes the renewal; the poller applies it later)."""
+    from . import provisioning_preparation as preparation, resource_leases as leases, user_ops
+    targets = []
+    with session_factory() as db:
+        leases.begin_business(db)
+        prepared = preparation.prepare(db, request, identity=identity, actor_kind=actor_kind, actor_id=actor_id,
+                                       **owner)
+        operation = prepared.operation
+        for target in getattr(operation, "_reconciliation_after_commit", None) or []:
+            targets.append((type(target).__name__, target.id))
+        operation_id, tokens = operation.id, prepared.leases
+        db.commit()
+    if tokens:
+        with session_factory() as db:
+            for token in tokens:
+                leases.release(db, token)
+            db.commit()
+    for kind, ident in targets:
+        try:
+            with session_factory() as db:
+                if kind == "Purchase":
+                    target = db.get(models.Purchase, ident)
+                    if target is not None:
+                        user_ops.reconcile_purchase_connections(db, target)
+                else:
+                    target = db.get(models.User, ident)
+                    if target is not None:
+                        user_ops.reconcile_user_connections(db, target)
+                db.commit()
+        except Exception:  # noqa: BLE001 - the renewal is committed; the poller converges
+            logger.exception("renewal reconciliation failed for %s %s", kind, ident)
+    with session_factory() as db:
+        operation = db.get(mp.ProvisioningOperation, operation_id)
+        if operation.state != "completed":
+            raise HTTPException(409, {"error": "operation_in_progress", "operation_id": operation_id,
+                                      "state": operation.state})
+        db.expunge(operation)
+        return operation
+
+
 def run(session_factory, request, *, actor_kind="system", actor_id=None, budget=None):
     """Run one durable operation from the request thread (see module doc)."""
     budget = REQUEST_BUDGET_SECONDS if budget is None else budget
+    if getattr(request, "operation_type", "").startswith("renew_"):
+        identity, owner = _owner(session_factory)
+        return _run_renewal(session_factory, request, identity, owner, actor_kind=actor_kind, actor_id=actor_id)
     from . import provisioning_delete_preparation as delete_preparation
     from . import provisioning_deletion_worker as deletion_worker
     from . import provisioning_operation_worker as operation_worker

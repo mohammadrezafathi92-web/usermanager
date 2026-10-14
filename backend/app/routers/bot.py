@@ -182,6 +182,28 @@ def _charge_seller(
     return admin_billing.charge_for_renewal(db, admin, package, add_gb)
 
 
+def _seller_cost(db: Session, user: models.User, package: Optional[models.Package], add_gb: float = 0) -> int:
+    """What _charge_seller would debit, without debiting (the durable path
+    reserves it in T1). Same exemptions: no owner, a trial, a missing admin,
+    a superadmin or a volume-billed account."""
+    if user.owner_admin_id is None or trial.is_trial(package):
+        return 0
+    return admin_billing.renewal_cost(db.get(models.AdminUser, user.owner_admin_id), package, add_gb)
+
+
+def _durable_sale(db: Session, payload, user: models.User, package: Optional[models.Package]):
+    """The sale _record_bot_sale would write, as a frozen snapshot (or None)."""
+    paid = getattr(payload, "paid_amount", None)
+    if paid is None:
+        if package is None:
+            return None
+        paid = accounting.sale_fallback_price(db, package, user.owner_admin_id)
+    return provisioning_requests.sale_snapshot(
+        paid, admin_id=user.owner_admin_id, payment_method=getattr(payload, "payment_method", None),
+        payment_card_id=getattr(payload, "payment_card_id", None),
+        discount_code=getattr(payload, "discount_code", None), discount_amount=getattr(payload, "discount_amount", None))
+
+
 # Phase C (docs/api-key-scope-audit-2026-09-27.md): the old _visibility_filter
 # helper that used to live here (same clause, same reasoning as
 # hierarchy.user_visibility_clause) moved into services/bot_resources.py's
@@ -1371,6 +1393,7 @@ def renew_service(
     username: str, purchase_id: int, payload: schemas.BotRenewRequest,
     db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
     principal: BotPrincipal = Depends(get_bot_principal),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """Renews ONE specific service: same connections/credentials, the new
     package queued (reserved) behind whatever the service has left and
@@ -1397,6 +1420,25 @@ def renew_service(
     # authorized before it too, not inside _record_bot_sale afterward.
     if payload.payment_card_id is not None:
         bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
+    if not payload.approval_uuid and provisioning_durable.is_durable(db, "renew_purchase"):
+        # Lifecycle L5: renewal, reseller reservation+capture and the sale in ONE transaction.
+        sale = _durable_sale(db, payload, user, renew_package) if (payload.package_id or payload.paid_amount is not None) else None
+        request = provisioning_requests.renewal(
+            db, user, purchase=purchase, add_gb=payload.add_gb or 0, add_days=payload.add_days or 0,
+            reset_usage=bool(payload.reset_usage), package=renew_package, sale=sale,
+            reseller_cost=_seller_cost(db, user, renew_package, payload.add_gb or 0),
+            key=provisioning_durable.idempotency_key(x_idempotency_key))
+        factory = provisioning_requests.session_factory_for(db)
+        db.rollback()
+        provisioning_durable.run(factory, request, actor_kind="bot")
+        db.expire_all()
+        user = db.get(models.User, user.id)
+        purchase = db.get(models.Purchase, purchase.id)
+        out = _user_response(user)
+        if purchase.reserved_quota_bytes or purchase.reserved_duration_days:
+            out.reserved_quota_gb = (purchase.reserved_quota_bytes / (1024 ** 3)) if purchase.reserved_quota_bytes else None
+            out.reserved_duration_days = purchase.reserved_duration_days
+        return out
     renewal_evidence: list = []
     user_ops.renew_purchase(db, purchase, payload.add_gb, payload.add_days, payload.reset_usage,
                             package_id=payload.package_id, evidence_sink=renewal_evidence)
@@ -1459,6 +1501,14 @@ def reset_usage(
         raise HTTPException(409, "service_purchase_required")
     if len(user.purchases) != 1:
         raise HTTPException(409, "service_selection_required")
+    if provisioning_durable.is_durable(db, "renew_purchase"):
+        request = provisioning_requests.renewal(db, user, purchase=user.purchases[0], reset_usage=True,
+                                                key=provisioning_durable.idempotency_key(None))
+        factory = provisioning_requests.session_factory_for(db)
+        db.rollback()
+        provisioning_durable.run(factory, request, actor_kind="bot")
+        db.expire_all()
+        return _user_response(db.get(models.User, user.id))
     user_ops.renew_purchase(db, user.purchases[0], reset_usage=True)
     return _user_response(user)
 

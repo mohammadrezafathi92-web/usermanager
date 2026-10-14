@@ -70,6 +70,9 @@ class SaleSnapshot(_Snapshot):
     actor_admin_id: StrictInt | None = None
     payment_method: StrictStr | None = None
     payment_card_id: StrictInt | None = None
+    discount_code: StrictStr | None = None
+    discount_amount: StrictInt | None = None
+    note: StrictStr | None = None
 
     @validator("amount")
     def nonnegative(cls, value):
@@ -90,6 +93,9 @@ class FinalIntent(_Snapshot):
     quota_bytes: StrictInt = 0
     duration_days: StrictInt = 0
     reset_usage: StrictBool = False
+    # A panel usage reset sold as a package keeps the service's own package
+    # (the package only prices the sale) - exactly what the legacy reset does.
+    keep_package: StrictBool = False
     node_fingerprints: dict[str, StrictStr] | None = None
 
     @validator("node_fingerprints")
@@ -158,7 +164,8 @@ def finish(db, operation_id, version, leases, *, require_contracts=False):
     reservations = db.execute(select(mp.PaymentReservation).where(mp.PaymentReservation.operation_id == operation.id)
         .order_by(mp.PaymentReservation.payer_kind).with_for_update()
         .execution_options(populate_existing=True)).scalars().all()
-    if any(row.state != "reserved" for row in reservations) or (reservations and not intent.sale) or (
+    if any(row.state != "reserved" for row in reservations) or (
+            any(row.payer_kind == "customer_wallet" for row in reservations) and not intent.sale) or (
             any(row.payer_kind == "customer_wallet" for row in reservations) and intent.sale.payment_method != "wallet"):
         raise HTTPException(409, "provisioning_reservation_invalid")
     steps = db.execute(select(mp.ProvisioningStep).where(mp.ProvisioningStep.operation_id == operation.id)
@@ -254,7 +261,7 @@ def finish(db, operation_id, version, leases, *, require_contracts=False):
         core = user_ops.renew_purchase_core if purchase is not None else user_ops.renew_user_core
         core(db, purchase if purchase is not None else user, add_gb=intent.quota_bytes / 1024 ** 3,
             add_days=intent.duration_days, reset_usage=intent.reset_usage,
-            package_id=package.id if package else None, reconciliation_sink=reconcile)
+            package_id=package.id if package and not intent.keep_package else None, reconciliation_sink=reconcile)
     if intent.node_fingerprints is not None:
         if set(intent.node_fingerprints) != {str(step.node_id) for step in steps}:
             raise HTTPException(409, "provisioning_node_config_changed")
@@ -277,7 +284,9 @@ def finish(db, operation_id, version, leases, *, require_contracts=False):
         entry = accounting.record_core(db, "sale_renew" if renewal else "sale_new", intent.sale.amount,
             user=user, package=package, purchase_id=purchase.id if purchase else None,
             admin_id=intent.sale.admin_id, actor_admin_id=intent.sale.actor_admin_id,
-            payment_method=intent.sale.payment_method, payment_card_id=intent.sale.payment_card_id)
+            payment_method=intent.sale.payment_method, payment_card_id=intent.sale.payment_card_id,
+            discount_code=intent.sale.discount_code, discount_amount=intent.sale.discount_amount,
+            note=intent.sale.note)
         db.flush()
     if operation.operation_type == "add_connection" and reservations:
         raise HTTPException(409, "provisioning_intent_invalid")

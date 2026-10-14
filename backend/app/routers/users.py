@@ -903,6 +903,24 @@ def reset_usage_targets(
     }
 
 
+def _durable_panel_renewal(db, admin, user, purchase, package, *, add_gb=0, add_days=0, reset_usage=False,
+                           keep_package=False, key=None, as_package_charge=False):
+    """One durable renew_purchase from the panel (Lifecycle 7.4). The acting
+    admin pays, exactly as charge_for_renewal / charge_for_package would."""
+    cost = (admin_billing.package_cost(admin, package, units=1) if package is not None else 0) if as_package_charge \
+        else admin_billing.renewal_cost(admin, package, add_gb or 0)
+    request = provisioning_requests.renewal(
+        db, user, purchase=purchase, add_gb=add_gb or 0, add_days=add_days or 0, reset_usage=bool(reset_usage),
+        package=package, sale=provisioning_requests.panel_sale(db, user, package, admin.id),
+        reseller_cost=cost, reseller_admin_id=admin.id, keep_package=keep_package,
+        key=provisioning_durable.idempotency_key(key))
+    factory = provisioning_requests.session_factory_for(db)
+    db.rollback()
+    provisioning_durable.run(factory, request, actor_kind="admin", actor_id=admin.id)
+    db.expire_all()
+    return db.get(models.Purchase, purchase.id)
+
+
 @router.post("/{user_id}/reset-usage", response_model=schemas.UserOut)
 def reset_usage(
     user_id: int,
@@ -926,6 +944,10 @@ def reset_usage(
     package = _get_scoped_package(db, admin, payload.package_id) if payload.package_id else None
     admin_billing.require_package_to_grant(admin, package)
     admin_billing.ensure_volume_available(admin)
+    if provisioning_durable.is_durable(db, "renew_purchase"):
+        _durable_panel_renewal(db, admin, user, purchase, package, reset_usage=True, keep_package=True,
+                               key=None, as_package_charge=True)
+        return db.get(models.User, user.id)
     if package is not None:
         admin_billing.charge_for_package(db, admin, package, units=1)
         accounting.record_panel_sale(db, "sale_renew", user, package, purchase_id=purchase.id, actor_admin_id=admin.id)
@@ -1149,6 +1171,9 @@ def reset_purchase_usage(
     package = _get_scoped_package(db, admin, payload.package_id) if payload.package_id else None
     admin_billing.require_package_to_grant(admin, package)
     admin_billing.ensure_volume_available(admin)
+    if provisioning_durable.is_durable(db, "renew_purchase"):
+        return _durable_panel_renewal(db, admin, user, purchase, package, reset_usage=True, keep_package=True,
+                                      key=None, as_package_charge=True)
     if package is not None:
         admin_billing.charge_for_package(db, admin, package, units=1)
         accounting.record_panel_sale(
@@ -1173,6 +1198,7 @@ def renew_purchase_endpoint(
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
     _perm=_may_spend,
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """Renews/extends ONE independent purchase - the per-purchase
     counterpart to the user-level renew action, without touching anything
@@ -1187,6 +1213,12 @@ def renew_purchase_endpoint(
     # See admin_billing.require_package_to_grant.
     admin_billing.require_package_to_grant(admin, package)
     admin_billing.ensure_volume_available(admin)
+    if provisioning_durable.is_durable(db, "renew_purchase"):
+        # Lifecycle L5: the acting admin's credit reserved and captured, the
+        # renewal and the panel sale - one transaction.
+        return _durable_panel_renewal(db, admin, user, purchase, package, add_gb=payload.add_gb,
+                                      add_days=payload.add_days, reset_usage=payload.reset_usage,
+                                      key=x_idempotency_key)
     # Charged BEFORE the renewal is applied, so an admin who cannot afford
     # it gets a refusal instead of a renewed service and a debt.
     admin_billing.charge_for_renewal(db, admin, package, payload.add_gb)

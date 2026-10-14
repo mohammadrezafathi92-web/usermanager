@@ -1122,6 +1122,31 @@ def resolve_bulk_purchase_targets(
     return resolved
 
 
+def replace_purchase_with_package_core(db: Session, user: models.User, purchase: models.Purchase,
+                                       package: models.Package, *, reset_usage: bool = False,
+                                       reconciliation_sink: Optional[list] = None) -> models.Purchase:
+    """The panel's bulk "apply package": the service's limits REPLACED by the
+    package's (not queued like a renewal). DB only; the caller reconciles
+    the returned sink after its commit (never for a disabled customer)."""
+    purchase.quota_bytes = gb_to_bytes(package.quota_gb) if package.quota_gb else 0
+    purchase.expire_at = (
+        dt.datetime.utcnow() + dt.timedelta(days=package.duration_days) if package.duration_days else None
+    )
+    purchase.expire_days_after_first_use = None
+    purchase.max_concurrent_sessions = package.max_concurrent_sessions
+    purchase.package_id = package.id
+    user.max_concurrent_sessions = package.max_concurrent_sessions
+    user.package_id = package.id
+    if reset_usage:
+        purchase.used_bytes = 0
+    if purchase.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
+        purchase.status = _resolve_status_after_reset(
+            purchase.quota_bytes, purchase.used_bytes, purchase.expire_at)
+        if user.status != models.UserStatus.disabled and reconciliation_sink is not None:
+            reconciliation_sink.append(purchase)
+    return purchase
+
+
 def bulk_update_users(
     db: Session,
     user_ids: list,
@@ -1166,22 +1191,11 @@ def bulk_update_users(
             if purchase is None or purchase.user_id != user.id:
                 raise HTTPException(409, "service_selection_invalid")
             if package is not None:
-                purchase.quota_bytes = gb_to_bytes(package.quota_gb) if package.quota_gb else 0
-                purchase.expire_at = (
-                    dt.datetime.utcnow() + dt.timedelta(days=package.duration_days) if package.duration_days else None
-                )
-                purchase.expire_days_after_first_use = None
-                purchase.max_concurrent_sessions = package.max_concurrent_sessions
-                purchase.package_id = package.id
-                user.max_concurrent_sessions = package.max_concurrent_sessions
-                user.package_id = package.id
-                if reset_usage:
-                    purchase.used_bytes = 0
-                if purchase.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
-                    purchase.status = _resolve_status_after_reset(
-                        purchase.quota_bytes, purchase.used_bytes, purchase.expire_at)
-                    if user.status != models.UserStatus.disabled:
-                        reconcile_purchase_connections(db, purchase)
+                reconcile = []
+                replace_purchase_with_package_core(db, user, purchase, package, reset_usage=reset_usage,
+                                                   reconciliation_sink=reconcile)
+                for target in reconcile:
+                    reconcile_purchase_connections(db, target)
                 user.purchase_count = (user.purchase_count or 0) + 1
                 _maybe_grant_loyalty_reward(db, user)
             else:

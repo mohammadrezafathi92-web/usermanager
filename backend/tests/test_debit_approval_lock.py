@@ -67,13 +67,15 @@ def scenario(label, engine):
 
     def debit():
         with Session() as db, patch.object(wallet_service, "debit_atomic", side_effect=paused_debit):
+            # Recorded at the debit's COMMIT, while its locks are still held:
+            # a switch that waited for them can only finish after this.
+            event.listen(db, "before_commit", lambda _session: order.append("debit_committed"))
             try:
                 bot_router.add_balance("payer", schemas.BotAddBalanceRequest(amount=-100, approval_uuid=str(uuid.uuid4())),
                                        db=db, principal=principal)
                 results["debit"] = "ok"
             except HTTPException as exc:
                 results["debit"] = exc.detail
-        order.append("debit_committed")
 
     def switch():
         with Session() as db:

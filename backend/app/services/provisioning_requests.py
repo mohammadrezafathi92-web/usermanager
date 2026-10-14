@@ -117,7 +117,8 @@ def payers(*, reseller_admin_id=None, reseller_cost=0, wallet_user_id=None, wall
 def renewal(db, user: models.User, *, purchase: models.Purchase | None, add_gb: float = 0, add_days: int = 0,
             reset_usage: bool = False, package=None, sale: final.SaleSnapshot | None = None,
             reseller_cost: int = 0, reseller_admin_id=None, keep_package: bool = False,
-            charge_wallet: bool = False, key: str) -> preparation.Preparation:
+            charge_wallet: bool = False, bulk: bool = False, key: str,
+            business_key: str | None = None) -> preparation.Preparation:
     """renew_purchase (purchase given) or renew_user: one transaction (7.4).
     charge_wallet: the customer's wallet pays the sale, reserved in T1 (8);
     without it a wallet sale is refused - the money was taken elsewhere."""
@@ -125,11 +126,11 @@ def renewal(db, user: models.User, *, purchase: models.Purchase | None, add_gb: 
     wallet = charge_wallet and sale is not None and sale.payment_method == "wallet" and sale.amount > 0
     return preparation.Preparation(
         operation_type="renew_purchase" if purchase is not None else "renew_user",
-        business_key=f"req:{tenant}:{key}", tenant_scope_key=tenant, target_user_id=user.id,
+        business_key=business_key or f"req:{tenant}:{key}", tenant_scope_key=tenant, target_user_id=user.id,
         intent=final.FinalIntent(user=user_snapshot(user), package=package_snapshot(package), sale=sale,
                                  purchase_id=purchase.id if purchase is not None else None,
                                  quota_bytes=int(round((add_gb or 0) * GB)), duration_days=int(add_days or 0),
-                                 reset_usage=bool(reset_usage), keep_package=keep_package),
+                                 reset_usage=bool(reset_usage), keep_package=keep_package, bulk=bulk),
         payers=payers(reseller_admin_id=reseller_admin_id if reseller_admin_id is not None else user.owner_admin_id,
                       reseller_cost=reseller_cost,
                       wallet_user_id=user.id if wallet else None, wallet_amount=sale.amount if wallet else 0))
@@ -265,3 +266,31 @@ def bulk_create(db, admin, *, prefix, count, package=None, quota_gb=0, expire_da
             if exc.status_code == 400 and "اعتبار" in str(detail):
                 break                              # the reseller's credit ran out: the rest would fail the same way
     return {"created": created, "created_count": len(created), "skipped": skipped, "skipped_count": len(skipped)}
+
+
+def bulk_renew(db, admin, targets, *, package=None, add_gb=0, add_days=0, reset_usage=False,
+               batch_token: str) -> dict:
+    """Panel bulk renewal as N independent renew_purchase operations, one per
+    (customer, service) target (business key bulk_renew:{token}:{purchase}):
+    each reserves and captures its own credit; a failed one leaves nothing.
+    No batch charge and no batch refund (same rule as bulk creation, 7.5)."""
+    from fastapi import HTTPException
+    from . import admin_billing, provisioning_durable
+    factory = session_factory_for(db)
+    updated, failed = 0, []
+    for user, purchase in targets:
+        request = renewal(db, user, purchase=purchase, add_gb=add_gb, add_days=add_days, reset_usage=reset_usage,
+                          package=package, sale=panel_sale(db, user, package, admin.id) if package else None,
+                          reseller_cost=admin_billing.renewal_cost(admin, package, add_gb or 0),
+                          reseller_admin_id=admin.id, bulk=True, key=batch_token,
+                          business_key=f"bulk_renew:{batch_token}:{purchase.id}")
+        user_id, purchase_id = user.id, purchase.id
+        db.rollback()
+        try:
+            provisioning_durable.run(factory, request, actor_kind="admin", actor_id=admin.id)
+            updated += 1
+        except HTTPException as exc:
+            failed.append({"user_id": user_id, "purchase_id": purchase_id,
+                           "reason": exc.detail if isinstance(exc.detail, str) else exc.detail.get("error")})
+    return {"updated_count": updated, "failed": failed}
+

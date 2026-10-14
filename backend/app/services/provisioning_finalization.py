@@ -111,6 +111,10 @@ class FinalIntent(_Snapshot):
     created_via: StrictStr | None = None          # create_user: models.User.created_via (e.g. "bot")
     node_fingerprints: dict[str, StrictStr] | None = None
     approval: ApprovalTerms | None = None
+    # Panel bulk renewal (routers/users.py bulk_update_users): the package
+    # REPLACES the service's limits, the purchase is counted and loyalty
+    # applies, and a disabled customer's connections stay as they are.
+    bulk: StrictBool = False
 
     @validator("node_fingerprints")
     def fingerprints(cls, value):
@@ -301,7 +305,21 @@ def finish(db, operation_id, version, leases, *, require_contracts=False, approv
     if operation.operation_type == "renew_purchase" and purchase is None:
         raise HTTPException(409, "provisioning_intent_invalid")
     renewal_evidence = [] if approved else None
-    if renewal:
+    if renewal and intent.bulk:
+        if approved or purchase is None:
+            raise HTTPException(409, "provisioning_intent_invalid")
+        if package is not None:
+            user_ops.replace_purchase_with_package_core(db, user, purchase, _locked(db, models.Package, package.id),
+                                                       reset_usage=intent.reset_usage, reconciliation_sink=reconcile)
+        else:
+            user_ops.renew_purchase_core(db, purchase, intent.quota_bytes / 1024 ** 3, intent.duration_days,
+                                         intent.reset_usage, reconciliation_sink=reconcile)
+            if user.status == models.UserStatus.disabled:
+                reconcile.clear()
+        if package is not None or intent.quota_bytes or intent.duration_days:
+            user.purchase_count = (user.purchase_count or 0) + 1
+            user_ops._maybe_grant_loyalty_reward(db, user)
+    elif renewal:
         core = user_ops.renew_purchase_core if purchase is not None else user_ops.renew_user_core
         core(db, purchase if purchase is not None else user, add_gb=intent.quota_bytes / 1024 ** 3,
             add_days=intent.duration_days, reset_usage=intent.reset_usage,

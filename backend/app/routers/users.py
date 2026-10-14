@@ -365,6 +365,7 @@ def bulk_update_users(
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
     _perm=_may_bulk,
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     package = None
     if payload.package_id:
@@ -391,6 +392,17 @@ def bulk_update_users(
         admin_billing.require_package_to_grant(admin, package)
         admin_billing.ensure_volume_available(admin)
 
+    if financial and provisioning_durable.is_durable(db, "renew_purchase"):
+        # Lifecycle 7.5: one independent renew_purchase per service, each
+        # reserving and capturing its own credit - no batch charge/refund.
+        result = provisioning_requests.bulk_renew(
+            db, admin, targets, package=package, add_gb=payload.add_gb or 0, add_days=payload.add_days or 0,
+            reset_usage=bool(payload.reset_usage), batch_token=provisioning_durable.idempotency_key(x_idempotency_key))
+        if payload.status is not None or payload.max_concurrent_sessions is not None:
+            db.expire_all()
+            user_ops.bulk_update_users(db, user_ids=payload.user_ids, status=payload.status,
+                                       max_concurrent_sessions=payload.max_concurrent_sessions, admin=admin)
+        return result
     units = len(targets) if targets is not None else len(payload.user_ids or [])
     if units and not admin.is_superadmin and admin.billing_mode != "usage":
         if package is not None:
@@ -815,6 +827,21 @@ def update_user(
         elif target is not None and not db.get(models.AdminUser, target):
             raise HTTPException(400, "ادمین مقصد پیدا نشد")
 
+    # The wallet has one writer (services/wallet_service.py). The form posts
+    # the field back on every save; only a real change is a wallet write.
+    # Committed on its own, after the checks above and before anything below
+    # may contact a node (status change -> reconcile): see
+    # wallet_service.overwrite_committed. This request's read transaction is
+    # then ended and the customer read again, so nothing below writes over a
+    # snapshot older than that commit (MariaDB snapshot isolation, 1020).
+    if "balance" in data:
+        new_balance = data.pop("balance")
+        if new_balance != user.balance:
+            wallet_service.overwrite_committed(db.get_bind(), user.id, new_balance,
+                                               source_kind=wallet_service.MANUAL_ADJUSTMENT)
+            db.rollback()
+            user = _get_owned_user(db, admin, user_id)
+
     # NOTE: telegram_id is intentionally allowed on more than one User - a
     # single Telegram account can have several separate panel accounts (a
     # customer who bought more than once ended up with more than one
@@ -851,17 +878,6 @@ def update_user(
             user.purchases_blocked_reason = None
             data.pop("purchases_blocked_reason", None)
         user.purchases_blocked = now_blocked
-
-    # The wallet has one writer (services/wallet_service.py). The form posts
-    # the field back on every save; only a real change is a wallet write.
-    if "balance" in data:
-        new_balance = data.pop("balance")
-        if new_balance != user.balance:
-            # Committed on its own, before anything below may contact a node
-            # (status change -> reconcile): see wallet_service.overwrite_committed.
-            wallet_service.overwrite_committed(db.get_bind(), user.id, new_balance,
-                                               source_kind=wallet_service.MANUAL_ADJUSTMENT)
-            db.expire(user, ["balance"])
 
     identity_fields = {key: data.pop(key) for key in ("telegram_id", "owner_admin_id") if key in data}
     identity_operation = None

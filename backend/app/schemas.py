@@ -679,6 +679,9 @@ class BulkPurchaseTargetsRequest(BaseModel):
 
 class BulkUpdateUsersResult(BaseModel):
     updated_count: int
+    # Durable bulk renewal (Lifecycle 7.5): the members that did not renew,
+    # each with its reason; every other member is complete.
+    failed: List[dict] = []
 
 
 class BulkDeleteUsersRequest(BaseModel):

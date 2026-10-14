@@ -55,6 +55,15 @@ def is_durable(db, operation_type: str) -> bool:
     return type_mode(db, operation_type) == "durable"
 
 
+def username_claimed(db, username: str) -> bool:
+    """A non-terminal durable create_user holds this username (5.1
+    username_claim): a legacy creation must not take it meanwhile."""
+    if not provisioning_schema.is_ready():
+        return False
+    return db.execute(select(mp.ProvisioningOperation.id).where(
+        mp.ProvisioningOperation.username_claim == username)).first() is not None
+
+
 def idempotency_key(request_header) -> str:
     """The caller's X-Idempotency-Key, or a fresh one (an old caller's retry
     is then a new request, exactly as today)."""

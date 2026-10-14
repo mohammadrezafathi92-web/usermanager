@@ -96,6 +96,10 @@ class FinalIntent(_Snapshot):
     # A panel usage reset sold as a package keeps the service's own package
     # (the package only prices the sale) - exactly what the legacy reset does.
     keep_package: StrictBool = False
+    # reseller_refund.bind_sale's purchase_count_delta for a new service sold
+    # with a reseller debit (the caller states it exactly as its legacy path).
+    reseller_count_delta: StrictInt = 0
+    created_via: StrictStr | None = None          # create_user: models.User.created_via (e.g. "bot")
     node_fingerprints: dict[str, StrictStr] | None = None
 
     @validator("node_fingerprints")
@@ -197,6 +201,8 @@ def finish(db, operation_id, version, leases, *, require_contracts=False):
         user = user_ops.create_user_record_core(db, **intent.user.dict(), quota_gb=intent.quota_bytes / 1024 ** 3,
             expire_days=intent.duration_days, package_id=package.id if package else None, defer_loyalty=True)
         user.total_quota_bytes = intent.quota_bytes
+        if intent.created_via is not None:
+            user.created_via = intent.created_via
     else:
         user = _locked(db, models.User, operation.target_user_id)
         if user is None or (user.username, user.telegram_id, user.owner_admin_id) != (
@@ -304,6 +310,19 @@ def finish(db, operation_id, version, leases, *, require_contracts=False):
     for reservation in reservations:
         payment_reservations.capture(db, reservation.id, sale_ledger_entry_id=entry.id if entry else None, package=package)
     db.flush()
+    if operation.operation_type in ("create_user", "purchase") and purchase is not None and package is not None:
+        # The new service's sale basis for a later unpaid-cancellation refund,
+        # in the same commit as the sale - exactly what the legacy sale paths
+        # bind (reseller_refund.bind_sale; no reseller debit -> nothing).
+        from . import reseller_refund
+        reseller = next((row for row in reservations if row.payer_kind == "reseller_credit"), None)
+        if reseller is not None:
+            db.refresh(reseller)
+            debit = db.get(models.LedgerEntry, reseller.capture_ledger_entry_id)
+            db.refresh(purchase)
+            reseller_refund.bind_sale(db, purchase, debit, _locked(db, models.Package, package.id),
+                                      sale_entry=entry, purchase_count_delta=intent.reseller_count_delta)
+            db.flush()
     transitions._write_operation(db, operation, "completed", result_user_id=user.id,
         result_purchase_id=purchase.id if purchase else None, sale_ledger_entry_id=entry.id if entry else None,
         username_claim=None, completed_at=dt.datetime.utcnow())

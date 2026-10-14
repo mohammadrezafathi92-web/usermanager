@@ -204,6 +204,34 @@ def _durable_sale(db: Session, payload, user: models.User, package: Optional[mod
         discount_code=getattr(payload, "discount_code", None), discount_amount=getattr(payload, "discount_amount", None))
 
 
+def _durable_create_user(db, principal, payload, owner_admin_id, package, idempotency_key):
+    """Lifecycle L7: the new customer, their service and every connection -
+    or nothing; the reseller's credit reserved in T1, captured with the sale."""
+    from types import SimpleNamespace
+    if package is not None:
+        quota_ok = not payload.quota_gb or float(payload.quota_gb) == float(package.quota_gb or 0)
+        days_ok = not payload.expire_days or int(payload.expire_days) == int(package.duration_days or 0)
+        if not (quota_ok and days_ok):
+            # The durable sale is frozen from the package; a different
+            # quota/expiry for the same package is not something to guess at.
+            raise HTTPException(409, "provisioning_package_limits_mismatch")
+    slots = provisioning_requests.package_slots(db, package, [
+        {"node_id": spec.node_id, "protocol": spec.protocol, "flow": spec.flow or ""} for spec in payload.connections])
+    provisioning_requests.authorize_slots(db, slots, resolve_bot_authorization_scope(principal))
+    buyer = SimpleNamespace(owner_admin_id=owner_admin_id)
+    request = provisioning_requests.create_user(
+        db, username=payload.username, full_name=payload.full_name, telegram_id=payload.telegram_id,
+        owner_admin_id=owner_admin_id, package=package, quota_gb=payload.quota_gb or 0,
+        expire_days=payload.expire_days or 0, slots=slots, comment=payload.comment,
+        sale=_durable_sale(db, payload, buyer, package), reseller_cost=_seller_cost(db, buyer, package),
+        count_delta=1, created_via="bot", key=provisioning_durable.idempotency_key(idempotency_key))
+    factory = provisioning_requests.session_factory_for(db)
+    db.rollback()
+    operation = provisioning_durable.run(factory, request, actor_kind="bot")
+    db.expire_all()
+    return _user_response(db.get(models.User, operation.result_user_id))
+
+
 # Phase C (docs/api-key-scope-audit-2026-09-27.md): the old _visibility_filter
 # helper that used to live here (same clause, same reasoning as
 # hierarchy.user_visibility_clause) moved into services/bot_resources.py's
@@ -835,6 +863,7 @@ def telegram_user_ids(
 def create_user(
     payload: schemas.BotCreateUserRequest, db: Session = Depends(get_db),
     principal: BotPrincipal = Depends(get_bot_principal),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     # A locked customer must not be able to start a fresh account from the
@@ -858,6 +887,9 @@ def create_user(
     # real User row committed by the time the request was refused.
     if payload.payment_card_id is not None:
         bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
+    if not payload.approval_uuid and provisioning_durable.is_durable(db, "create_user"):
+        return _durable_create_user(db, principal, payload, owner_admin_id,
+                                    _new_package if payload.package_id else None, x_idempotency_key)
     user = user_ops.create_user_record(
         db, payload.username, payload.full_name, payload.quota_gb, payload.expire_days,
         telegram_id=payload.telegram_id, owner_admin_id=owner_admin_id,
@@ -946,6 +978,7 @@ def create_user(
 def purchase_package(
     username: str, payload: schemas.BotPurchasePackageRequest, db: Session = Depends(get_db),
     owner_admin_id: Optional[int] = None, principal: BotPrincipal = Depends(get_bot_principal),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """Bot counterpart of routers/users.py's apply_package ("افزودن پکیج") -
     gives an EXISTING customer a NEW, independently-enforced Purchase (its
@@ -980,6 +1013,24 @@ def purchase_package(
         [{"node_id": c.node_id, "protocol": c.protocol, "flow": c.flow or ""} for c in payload.connections]
         if payload.connections else None
     )
+    if not payload.approval_uuid and provisioning_durable.is_durable(db, "purchase"):
+        # Lifecycle L6: every connection or none; the reseller's credit is
+        # reserved in T1 and captured with the sale in T_final.
+        slots = provisioning_requests.package_slots(db, package, override)
+        provisioning_requests.authorize_slots(
+            db, slots, resolve_bot_authorization_scope(principal) if override is not None else
+            provisioning_requests.package_scope(db, package))
+        request = provisioning_requests.purchase(
+            db, user, package, slots=slots, comment=payload.comment, sale=_durable_sale(db, payload, user, package),
+            reseller_cost=_seller_cost(db, user, package), count_delta=1,
+            key=provisioning_durable.idempotency_key(x_idempotency_key))
+        factory = provisioning_requests.session_factory_for(db)
+        db.rollback()
+        operation = provisioning_durable.run(factory, request, actor_kind="bot")
+        db.expire_all()
+        return schemas.BotPurchaseResponse(
+            user=_user_response(db.get(models.User, user.id)),
+            connections=[_connection_info(c) for c in provisioning_requests.created_connections(db, operation.id)])
     purchase = user_ops.apply_package_as_purchase(
         db, user, package, connections_override=override, comment=payload.comment, principal=principal,
     )

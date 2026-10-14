@@ -131,3 +131,133 @@ def renewal(db, user: models.User, *, purchase: models.Purchase | None, add_gb: 
         payers=payers(reseller_admin_id=reseller_admin_id if reseller_admin_id is not None else user.owner_admin_id,
                       reseller_cost=reseller_cost,
                       wallet_user_id=user.id if wallet else None, wallet_amount=sale.amount if wallet else 0))
+
+
+def package_slots(db, package, override=None) -> list:
+    """The connection slots of a package sale (5.2 slot_key): the package's own
+    connections by stable id, or the customer's hand-picked override."""
+    speed = getattr(package, "speed_limit_mbps", None)
+    if override is not None:
+        return [preparation.Slot(slot_key=f"request_slot:{index}", node_id=int(spec["node_id"]),
+                                 protocol=protocol_value(spec["protocol"]), flow=spec.get("flow") or "",
+                                 max_concurrent_sessions=1, speed_limit_mbps=speed)
+                for index, spec in enumerate(override)]
+    return [preparation.Slot(slot_key=f"package_connection:{pc.id}", node_id=pc.node_id,
+                             protocol=protocol_value(pc.protocol), flow=pc.flow or "", max_concurrent_sessions=1,
+                             speed_limit_mbps=speed)
+            for pc in sorted(package.connections, key=lambda row: row.id)]
+
+
+def authorize_slots(db, slots, authorization_scope) -> None:
+    """Every slot's node in the sanctioning authority's selling scope -
+    the same check the legacy provision_connection makes per connection."""
+    from fastapi import HTTPException
+    from . import user_ops
+    for slot in slots:
+        node = db.get(models.Node, slot.node_id)
+        if node is None:
+            raise HTTPException(409, "node_unavailable")
+        user_ops.authorize_node(db, node, authorization_scope)
+
+
+def purchase(db, user: models.User, package, *, slots, comment=None, sale=None, reseller_cost=0,
+             reseller_admin_id=None, count_delta=1, key: str) -> preparation.Preparation:
+    """An existing customer buys a new, independent service (purchase)."""
+    import uuid as _uuid
+    tenant = wallet_accounts.tenant_scope(db, user.owner_admin_id)
+    wallet = sale is not None and sale.payment_method == "wallet" and sale.amount > 0
+    return preparation.Preparation(
+        operation_type="purchase", business_key=f"req:{tenant}:{key}", tenant_scope_key=tenant,
+        target_user_id=user.id,
+        intent=final.FinalIntent(user=user_snapshot(user), package=package_snapshot(package), sale=sale,
+                                 comment=comment, purchase_batch=_uuid.uuid4().hex,
+                                 reseller_count_delta=count_delta),
+        slots=slots,
+        payers=payers(reseller_admin_id=reseller_admin_id if reseller_admin_id is not None else user.owner_admin_id,
+                      reseller_cost=reseller_cost, wallet_user_id=user.id if wallet else None,
+                      wallet_amount=sale.amount if wallet else 0))
+
+
+def package_scope(db, package):
+    """Who sanctions a bundled package's nodes: the package's own owner when
+    package node scope is enforced (same as the legacy package paths)."""
+    from . import user_ops
+    if user_ops._package_node_scope_enforced(db):
+        return user_ops.resolve_package_authorization_scope(package)
+    return user_ops.NodeAuthorizationScope.unrestricted_scope()
+
+
+def create_user(db, *, username, full_name=None, notes=None, telegram_id=None, owner_admin_id=None, package=None,
+                quota_gb=0, expire_days=0, slots=(), comment=None, sale=None, reseller_cost=0,
+                reseller_admin_id=None, count_delta=0, created_via=None, key: str,
+                business_key: str | None = None) -> preparation.Preparation:
+    """A brand-new customer, optionally with a package and connections (7.5).
+    With a package the service's limits come from the frozen package."""
+    import uuid as _uuid
+    tenant = wallet_accounts.tenant_scope(db, owner_admin_id)
+    return preparation.Preparation(
+        operation_type="create_user", business_key=business_key or f"req:{tenant}:{key}", tenant_scope_key=tenant,
+        intent=final.FinalIntent(
+            user=final.UserSnapshot(username=username, full_name=full_name, notes=notes, telegram_id=telegram_id,
+                                    owner_admin_id=owner_admin_id),
+            package=package_snapshot(package), sale=sale, comment=comment,
+            purchase_batch=_uuid.uuid4().hex if slots else None,
+            quota_bytes=0 if package is not None else int(round((quota_gb or 0) * GB)),
+            duration_days=0 if package is not None else int(expire_days or 0),
+            reseller_count_delta=count_delta, created_via=created_via),
+        slots=list(slots),
+        payers=payers(reseller_admin_id=reseller_admin_id if reseller_admin_id is not None else owner_admin_id,
+                      reseller_cost=reseller_cost))
+
+
+def bulk_create(db, admin, *, prefix, count, package=None, quota_gb=0, expire_days=None, notes=None,
+                connections=None, batch_token: str) -> dict:
+    """Panel bulk creation as N independent create_user operations (7.5):
+    business key bulk:{batch_token}:{index}; every member that succeeds is
+    complete (its own reservation captured), every one that fails left
+    nothing. No batch charge and no batch refund. Same result shape and the
+    same name skipping as the legacy bulk_create_users."""
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from . import accounting, admin_billing, provisioning_durable, user_ops
+    created, skipped = [], []
+    if package is not None:
+        slots = package_slots(db, package)
+        authorize_slots(db, slots, package_scope(db, package))
+    else:
+        owner = db.get(models.AdminUser, admin.id)
+        scope = (user_ops.NodeAuthorizationScope.unrestricted_scope() if owner is None or owner.is_superadmin
+                 else user_ops.NodeAuthorizationScope.scoped(owner.id))
+        slots = package_slots(db, None, [{"node_id": spec.node_id, "protocol": spec.protocol, "flow": ""}
+                                         for spec in (connections or [])])
+        for index, spec in enumerate(connections or []):
+            slots[index] = slots[index].copy(update={"max_concurrent_sessions": getattr(spec, "max_concurrent_sessions", 1) or 1})
+        authorize_slots(db, slots, scope)
+    factory = session_factory_for(db)
+    index, attempts, cap = 1, 0, count * 5 + 20
+    while len(created) < count and attempts < cap:
+        attempts += 1
+        username = f"{prefix}{index}"
+        member = index
+        index += 1
+        if db.query(models.User.id).filter(models.User.username == username).first() or (
+                provisioning_durable.username_claimed(db, username)):
+            skipped.append({"name": username, "reason": "این نام کاربری قبلا وجود دارد"})
+            continue
+        buyer = SimpleNamespace(owner_admin_id=admin.id)
+        request = create_user(
+            db, username=username, notes=notes, owner_admin_id=admin.id, package=package,
+            quota_gb=0 if package else (quota_gb or 0), expire_days=0 if package else (expire_days or 0),
+            slots=slots, sale=panel_sale(db, buyer, package, admin.id),
+            reseller_cost=admin_billing.package_cost(admin, package, units=1) if package is not None else 0,
+            reseller_admin_id=admin.id, key="", business_key=f"bulk:{batch_token}:{member}")
+        db.rollback()
+        try:
+            provisioning_durable.run(factory, request, actor_kind="admin", actor_id=admin.id)
+            created.append(username)
+        except HTTPException as exc:
+            detail = exc.detail.get("error") if isinstance(exc.detail, dict) else exc.detail
+            skipped.append({"name": username, "reason": str(detail)})
+            if exc.status_code == 400 and "اعتبار" in str(detail):
+                break                              # the reseller's credit ran out: the rest would fail the same way
+    return {"created": created, "created_count": len(created), "skipped": skipped, "skipped_count": len(skipped)}

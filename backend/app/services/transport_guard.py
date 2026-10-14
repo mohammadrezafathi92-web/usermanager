@@ -63,17 +63,28 @@ def _in_runner() -> bool:
     return role is not None and role[:2] == (os.getpid(), threading.get_ident())
 
 
+UNREADABLE = "unreadable"
+
+
 def _fresh_mode() -> Optional[str]:
-    """The persisted gate mode, read now (no cache). None when unreadable."""
+    """The persisted gate mode, read now (no cache).
+
+    None only when the read SUCCEEDED and found no gate at all (provisioning
+    schema not set up, no persisted strict mode). A failed read is
+    UNREADABLE unless this process has already seen a mode - never weaker
+    than that one; a cold process that cannot read the mode does not get to
+    assume 'off'."""
     from . import node_gate
     try:
-        runtime = node_gate.read_runtime()
+        runtime, ok = node_gate.read_runtime_checked()
     except node_gate.GateNotAvailable:
         return node_gate.MODE_ENFORCED            # an unverified strict gate never relaxes
     if runtime is not None:
         return runtime.gate_mode
-    cached = node_gate._cached_runtime            # unreadable now: never weaker than what we last saw
-    return cached.gate_mode if cached is not None else None
+    if ok:
+        return None
+    cached = node_gate._cached_runtime
+    return cached.gate_mode if cached is not None else UNREADABLE
 
 
 def _node(owner) -> Optional[int]:
@@ -93,9 +104,13 @@ def require(node_id: Optional[int], backend: str) -> None:
         return
     from . import node_gate
     context = node_gate.current_context()
-    if context is not None and type(node_id) is int and context.node_id == node_id:
+    if context is not None and type(node_id) is int and context.node_id == node_id and context.mode_lock_held:
         return                                    # instrumented passage, under the shared mode lock
+    # No context, another node's context, or an 'off' passage that missed the
+    # shared mode lock (a mode change may be in progress): decide on a fresh read.
     mode = _fresh_mode()
+    if mode == UNREADABLE:
+        raise GateViolation("the gate mode cannot be read; a remote write is not allowed")
     if mode is None or mode == node_gate.MODE_OFF:
         return
     if mode == node_gate.MODE_SHADOW:

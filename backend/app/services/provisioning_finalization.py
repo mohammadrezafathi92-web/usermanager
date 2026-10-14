@@ -224,11 +224,22 @@ def finish(db, operation_id, version, leases, *, require_contracts=False):
             raise HTTPException(409, "provisioning_target_changed")
     if steps and purchase is None and operation.operation_type in ("create_user", "add_connection"):
         if operation.operation_type == "add_connection":
-            # An explicitly pinned Purchase wins above. Otherwise there is
-            # only one unambiguous existing destination; multiple services
-            # must never silently receive a new connection at random.
+            # An explicitly pinned Purchase wins above. A purchase_batch names
+            # the service whose connections carry it: exactly one such
+            # Purchase of THIS customer (locked) is the destination; several
+            # are ambiguous. Without either there is only one unambiguous
+            # destination; multiple services never receive a connection at random.
             existing = db.execute(select(models.Purchase).where(
-                models.Purchase.user_id == user.id).with_for_update()).scalars().all()
+                models.Purchase.user_id == user.id).order_by(models.Purchase.id).with_for_update()).scalars().all()
+            if intent.purchase_batch is not None:
+                batch_owners = set(db.execute(select(models.Connection.purchase_id).where(
+                    models.Connection.user_id == user.id, models.Connection.purchase_batch == intent.purchase_batch,
+                    models.Connection.purchase_id.isnot(None))).scalars())
+                matching = [row for row in existing if row.id in batch_owners]
+                if len(matching) > 1:
+                    raise HTTPException(409, "purchase_target_required")
+                if matching:
+                    existing = matching
             if len(existing) > 1:
                 raise HTTPException(409, "purchase_target_required")
             purchase = existing[0] if existing else None

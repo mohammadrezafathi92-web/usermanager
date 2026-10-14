@@ -173,6 +173,7 @@ def flush_counters(session_factory: Optional[Callable] = None) -> bool:
     pending = counters.take_pending()
     if not pending:
         return True
+    written = set()                               # nodes whose deltas really committed
     try:
         from sqlalchemy import update
         from sqlalchemy.exc import IntegrityError
@@ -198,14 +199,18 @@ def flush_counters(session_factory: Optional[Callable] = None) -> bool:
                         db.execute(table.insert().values(node_id=node_id, **{
                             PERSISTED[name]: count for name, count in values.items()}, **stamps))
                     db.commit()
+                    written.add(node_id)
                     break
                 except IntegrityError:            # another process inserted the row first: update it
                     db.rollback()
                 finally:
                     db.close()
+            if node_id not in written:
+                raise RuntimeError("gate counter row could not be written")
         return True
     except Exception:  # noqa: BLE001
-        counters.restore_pending(pending)
+        # Keep exactly what did not commit - never lose a count, never count twice.
+        counters.restore_pending({node: values for node, values in pending.items() if node not in written})
         logger.exception("node_gate: could not persist gate counters")
         return False
 
@@ -259,6 +264,39 @@ def read_runtime(session_factory: Optional[Callable] = None) -> Optional[GateRun
     except Exception:  # noqa: BLE001
         logger.exception("node_gate: could not read provisioning_runtime_state")
         return None
+
+
+def read_runtime_checked(session_factory: Optional[Callable] = None):
+    """(runtime, read_ok): like read_runtime, but tells "the read worked and
+    there is no gate" (None, True) apart from "the read failed" (None, False)."""
+    try:
+        from .. import models_provisioning as mp
+        from . import provisioning_schema
+        if session_factory is None:
+            from ..database import SessionLocal as session_factory  # noqa: N813
+        db = session_factory()
+        try:
+            from sqlalchemy import select
+            if not provisioning_schema.is_ready():
+                mode = db.execute(select(mp.ProvisioningRuntimeState.gate_mode).where(
+                    mp.ProvisioningRuntimeState.id == provisioning_schema.RUNTIME_STATE_ID)).scalar_one_or_none()
+                if mode is not None and mode != MODE_OFF:
+                    raise GateNotAvailable("unverified schema with a persisted non-off gate")
+                return None, True
+            row = db.get(mp.ProvisioningRuntimeState, provisioning_schema.RUNTIME_STATE_ID)
+            if row is None:
+                return None, True
+            return GateRuntime(row.installation_uuid, row.gate_mode, int(row.gate_mode_epoch)), True
+        finally:
+            db.close()
+    except GateNotAvailable:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # A schema that was never created (no table) is "no gate", not an error.
+        if "no such table" in str(exc).lower() or "doesn't exist" in str(exc).lower():
+            return None, True
+        logger.warning("node_gate: provisioning_runtime_state unreadable (%s)", type(exc).__name__)
+        return None, False
 
 
 def _try_shared_mode_lock(installation_uuid: str) -> Optional[gate_locks.FileLock]:

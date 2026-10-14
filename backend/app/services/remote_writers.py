@@ -116,31 +116,35 @@ def action_types_in_use() -> frozenset[ActionType]:
 
 
 A = ActionType
-_USER_OPS, _QUOTA = "app.services.user_ops", "app.services.quota_manager"
-_USERS, _NODES = "app.routers.users", "app.routers.nodes"
+# Every legacy writer's remote part lives in ONE module of plain functions
+# (Lifecycle 10.8): run inline under writer_gate by services/legacy_remote.py
+# in off/shadow, and by the runner child in 'enforced'. Nothing else calls
+# them (tests/test_remote_writers_inventory.py checks the importers).
+_BLOCKS = "app.services.legacy_remote_blocks"
+BLOCK_MODULE = _BLOCKS
 
-register_writer_site(_USER_OPS, "provision_wireguard", (A.WG_ENSURE_PRESENT,),
+register_writer_site(_BLOCKS, "wg_provision", (A.WG_ENSURE_PRESENT,),
                      {"ensure_wireguard_interface", "set_interface_address", "ensure_interface_address",
                       "add_peer", "upsert_simple_queue"})
-register_writer_site(_USER_OPS, "provision_xray", (A.XRAY_ENSURE_PRESENT,), {"add_client"})
-register_writer_site(_USER_OPS, "provision_softether", (A.SOFTETHER_ENSURE_PRESENT,), {"add_client"})
-register_writer_site(_USER_OPS, "deprovision_connection",
-                     (A.WG_ENSURE_ABSENT, A.XRAY_ENSURE_ABSENT, A.SOFTETHER_ENSURE_ABSENT),
-                     {"remove_peer", "remove_simple_queue", "remove_client"})
-register_writer_site(_USER_OPS, "kick_connection",
-                     (A.PPP_KICK_SESSION, A.WG_BOUNCE_PEER, A.XRAY_BOUNCE_CLIENT, A.SOFTETHER_BOUNCE_USER),
-                     {"kick_ppp_session", "set_peer_disabled", "set_client_enabled"})
-register_writer_site(_QUOTA, "_set_connection_enabled",
-                     (A.WG_SET_PEER_ENABLED, A.XRAY_SET_CLIENT_ENABLED, A.SOFTETHER_SET_USER_ENABLED),
-                     {"set_peer_disabled", "set_client_enabled"})
-register_writer_site(_USERS, "update_connection", (A.WG_RENAME_PEER, A.WG_SET_SPEED_QUEUE),
-                     {"rename_peer", "upsert_simple_queue", "remove_simple_queue"})
-register_writer_site(_NODES, "push_radius_config", (A.MT_PUSH_RADIUS,), {"push_radius_config"})
-register_writer_site(_NODES, "push_pptp_config", (A.MT_PUSH_PPTP,), {"push_radius_config", "push_pptp_config"})
-register_writer_site(_NODES, "push_sstp_config", (A.MT_PUSH_SSTP,), {"push_radius_config", "push_sstp_config"})
-register_writer_site(_NODES, "push_l2tp_config", (A.MT_PUSH_L2TP,), {"push_radius_config", "push_l2tp_config"})
-register_writer_site(_NODES, "push_ikev2_config", (A.MT_PUSH_IKEV2,), {"push_radius_config", "push_ikev2_config"})
-register_writer_site(_NODES, "rebuild_node_clients", (A.XRAY_REBUILD_CLIENTS,), {"add_client"})
+register_writer_site(_BLOCKS, "xray_add", (A.XRAY_ENSURE_PRESENT,), {"add_client"})
+register_writer_site(_BLOCKS, "softether_add", (A.SOFTETHER_ENSURE_PRESENT,), {"add_client"})
+register_writer_site(_BLOCKS, "wg_remove", (A.WG_ENSURE_ABSENT,), {"remove_peer", "remove_simple_queue"})
+register_writer_site(_BLOCKS, "xray_remove", (A.XRAY_ENSURE_ABSENT,), {"remove_client"})
+register_writer_site(_BLOCKS, "softether_remove", (A.SOFTETHER_ENSURE_ABSENT,), {"remove_client"})
+register_writer_site(_BLOCKS, "ppp_kick", (A.PPP_KICK_SESSION,), {"kick_ppp_session"})
+register_writer_site(_BLOCKS, "wg_bounce", (A.WG_BOUNCE_PEER,), {"set_peer_disabled"})
+register_writer_site(_BLOCKS, "xray_bounce", (A.XRAY_BOUNCE_CLIENT,), {"set_client_enabled"})
+register_writer_site(_BLOCKS, "softether_bounce", (A.SOFTETHER_BOUNCE_USER,), {"set_client_enabled"})
+register_writer_site(_BLOCKS, "wg_set_enabled", (A.WG_SET_PEER_ENABLED,), {"set_peer_disabled"})
+register_writer_site(_BLOCKS, "xray_set_enabled", (A.XRAY_SET_CLIENT_ENABLED,), {"set_client_enabled"})
+register_writer_site(_BLOCKS, "softether_set_enabled", (A.SOFTETHER_SET_USER_ENABLED,), {"set_client_enabled"})
+register_writer_site(_BLOCKS, "wg_rename", (A.WG_RENAME_PEER,), {"rename_peer"})
+register_writer_site(_BLOCKS, "wg_queue_sync", (A.WG_SET_SPEED_QUEUE,), {"upsert_simple_queue", "remove_simple_queue"})
+register_writer_site(_BLOCKS, "mt_push", (A.MT_PUSH_RADIUS, A.MT_PUSH_PPTP, A.MT_PUSH_SSTP, A.MT_PUSH_L2TP,
+                                          A.MT_PUSH_IKEV2),
+                     {"push_radius_config", "push_pptp_config", "push_sstp_config", "push_l2tp_config",
+                      "push_ikev2_config"})
+register_writer_site(_BLOCKS, "xray_rebuild", (A.XRAY_REBUILD_CLIENTS,), {"add_client"})
 
 # Action types that have no call site in today's code because the thing
 # they do does not exist yet (the design adds it): the WireGuard address

@@ -16,6 +16,7 @@ from ..services.jalali import fmt_jalali
 from ..deps import get_current_admin, require_confirm_password, require_permission, require_superadmin
 from ..services import user_ops, hierarchy, accounting, admin_billing, usage_stats, wallet_service, wallet_accounts
 from ..services.node_gate import writer_gate
+from ..services import legacy_remote
 from ..services import reseller_refund
 from ..services import reseller_refund_worker
 from ..services import wallet_identity
@@ -1370,8 +1371,8 @@ def update_connection(
     )
     if renamed:
         try:
-            with writer_gate(conn.node), user_ops.MikrotikClient.for_node(conn.node) as mt:
-                mt.rename_peer(conn.node.mt_wireguard_interface, old_peer_name, new_peer_name)
+            legacy_remote.run(conn.node, "wg_rename", factory=user_ops.MikrotikClient.for_node, interface=conn.node.mt_wireguard_interface,
+                              old_name=old_peer_name, new_name=new_peer_name)
         except user_ops.MikrotikError as exc:
             raise HTTPException(400, str(exc))
 
@@ -1390,15 +1391,10 @@ def update_connection(
         effective_peer_name = new_peer_name if renamed else old_peer_name
         effective_limit = data.get("speed_limit_mbps", conn.speed_limit_mbps) or None
         try:
-            with writer_gate(conn.node), user_ops.MikrotikClient.for_node(conn.node) as mt:
-                if renamed:
-                    mt.remove_simple_queue(user_ops.wg_speed_queue_name(old_peer_name))
-                if effective_limit:
-                    mt.upsert_simple_queue(
-                        user_ops.wg_speed_queue_name(effective_peer_name), conn.wg_client_address, effective_limit
-                    )
-                else:
-                    mt.remove_simple_queue(user_ops.wg_speed_queue_name(effective_peer_name))
+            legacy_remote.run(conn.node, "wg_queue_sync", factory=user_ops.MikrotikClient.for_node, renamed=bool(renamed),
+                              old_queue=user_ops.wg_speed_queue_name(old_peer_name),
+                              new_queue=user_ops.wg_speed_queue_name(effective_peer_name),
+                              address=conn.wg_client_address, limit=effective_limit)
         except user_ops.MikrotikError as exc:
             raise HTTPException(400, str(exc))
 

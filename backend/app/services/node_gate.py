@@ -81,6 +81,18 @@ PERSISTED = {"contention": "contention_count", "not_instrumented": "writer_not_i
              "mode_lock_miss": "mode_lock_miss_count"}
 
 
+@dataclass(frozen=True)
+class EnforcedPassage:
+    """'enforced' seen by a caller that dispatches to the runner: the parent
+    holds the SHARED gate-mode lock (the mode cannot change until it is
+    done) but no node lock and no write context - any inline write in this
+    process is refused by transport_guard. The runner child takes the node
+    lock itself."""
+    node_id: int
+    installation_uuid: str
+    gate_mode_epoch: int
+
+
 @dataclass
 class GateCounters:
     """In-process counters, plus the per-node deltas not yet persisted to
@@ -258,7 +270,8 @@ def _try_shared_mode_lock(installation_uuid: str) -> Optional[gate_locks.FileLoc
 
 
 @contextlib.contextmanager
-def node_gate(node_id: int, *, session_factory: Optional[Callable] = None) -> Iterator[ShadowGateContext]:
+def node_gate(node_id: int, *, session_factory: Optional[Callable] = None,
+              allow_dispatch: bool = False) -> Iterator[ShadowGateContext]:
     """with node_gate(node.id): <remote writes for that node>
 
     See the module docstring for what each mode does. In 'off' this never
@@ -299,7 +312,14 @@ def node_gate(node_id: int, *, session_factory: Optional[Callable] = None) -> It
         epoch = runtime.gate_mode_epoch if runtime is not None else 0
 
         if mode == MODE_ENFORCED:
-            raise GateNotAvailable("gate_mode is 'enforced', which this build does not implement yet")
+            if not allow_dispatch:
+                raise GateNotAvailable("gate_mode is 'enforced': this writer must run in the runner")
+            if mode_lock is None:
+                raise GateNotAvailable("shared gate-mode lock unavailable in 'enforced'")
+            counters.add("passages")
+            yield EnforcedPassage(node_id=node_id, installation_uuid=runtime.installation_uuid,
+                                  gate_mode_epoch=epoch)
+            return
         if mode not in (MODE_OFF, MODE_SHADOW):
             raise GateNotAvailable(f"unknown gate_mode {mode!r}")
 
@@ -338,7 +358,7 @@ from .reseller_refund_fence import barrier as _refund_barrier
 
 
 @contextlib.contextmanager
-def _legacy_writer_gate(node) -> Iterator[Optional[ShadowGateContext]]:
+def _legacy_writer_gate(node, allow_dispatch: bool = False) -> Iterator[Optional[ShadowGateContext]]:
     """What the existing ("legacy") remote writers use:
 
         with writer_gate(node), MikrotikClient.for_node(node) as mt:
@@ -356,7 +376,7 @@ def _legacy_writer_gate(node) -> Iterator[Optional[ShadowGateContext]]:
     context = None
     if type(node_id) is int and node_id > 0:
         try:
-            gate = node_gate(node_id)
+            gate = node_gate(node_id, allow_dispatch=allow_dispatch)
             context = gate.__enter__()
         except GateNotAvailable:
             raise
@@ -390,4 +410,14 @@ def _legacy_writer_gate(node) -> Iterator[Optional[ShadowGateContext]]:
 def writer_gate(node) -> Iterator[Optional[ShadowGateContext]]:
     with _refund_barrier():
         with _legacy_writer_gate(node) as context:
+            yield context
+
+
+@contextlib.contextmanager
+def writer_passage(node):
+    """For services/legacy_remote.py only: writer_gate, except that in
+    'enforced' it yields an EnforcedPassage (dispatch to the runner) instead
+    of refusing. Off/shadow are exactly writer_gate."""
+    with _refund_barrier():
+        with _legacy_writer_gate(node, allow_dispatch=True) as context:
             yield context

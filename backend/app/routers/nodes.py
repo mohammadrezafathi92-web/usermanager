@@ -12,6 +12,7 @@ from ..services.xray_client import XrayError, client_for_node
 from ..services.softether_client import SoftEtherError, client_for_node as softether_client_for_node
 from ..services import user_ops, hierarchy, node_monitor
 from ..services.node_gate import writer_gate
+from ..services import legacy_remote
 from ..services.keys import generate_password
 
 
@@ -251,14 +252,10 @@ def push_radius_config(node_id: int, payload: schemas.RadiusPushRequest, db: Ses
         )
 
     try:
-        with writer_gate(node), MikrotikClient.for_node(node) as mt:
-            mt.push_radius_config(
-                panel_host=panel_host,
-                secret=node.mt_radius_secret,
-                auth_port=settings.radius_auth_port,
-                acct_port=settings.radius_acct_port,
-                interim_update=payload.interim_update or "00:05:00",
-            )
+        legacy_remote.run(node, "mt_push", factory=MikrotikClient.for_node, action_type=legacy_remote.PUSH_ACTIONS["push_radius_config"], calls=[
+            ["push_radius_config", dict(panel_host=panel_host, secret=node.mt_radius_secret,
+                                        auth_port=settings.radius_auth_port, acct_port=settings.radius_acct_port,
+                                        interim_update=payload.interim_update or "00:05:00")]])
     except MikrotikError as exc:
         raise HTTPException(400, str(exc))
 
@@ -283,15 +280,11 @@ def push_pptp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Ses
 
     panel_host = _resolve_panel_host(payload.panel_host)
     try:
-        with writer_gate(node), MikrotikClient.for_node(node) as mt:
-            mt.push_radius_config(
-                panel_host=panel_host,
-                secret=node.mt_radius_secret,
-                auth_port=settings.radius_auth_port,
-                acct_port=settings.radius_acct_port,
-                service="ppp",
-            )
-            mt.push_pptp_config()
+        legacy_remote.run(node, "mt_push", factory=MikrotikClient.for_node, action_type=legacy_remote.PUSH_ACTIONS["push_pptp_config"], calls=[
+            ["push_radius_config", dict(panel_host=panel_host, secret=node.mt_radius_secret,
+                                        auth_port=settings.radius_auth_port, acct_port=settings.radius_acct_port,
+                                        service="ppp")],
+            ["push_pptp_config", dict()]])
     except MikrotikError as exc:
         raise HTTPException(400, str(exc))
 
@@ -315,15 +308,11 @@ def push_sstp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Ses
     port = node.mt_sstp_port or 443
 
     try:
-        with writer_gate(node), MikrotikClient.for_node(node) as mt:
-            mt.push_radius_config(
-                panel_host=panel_host,
-                secret=node.mt_radius_secret,
-                auth_port=settings.radius_auth_port,
-                acct_port=settings.radius_acct_port,
-                service="ppp",
-            )
-            cert = mt.push_sstp_config(port=port)
+        cert = legacy_remote.run(node, "mt_push", factory=MikrotikClient.for_node, action_type=legacy_remote.PUSH_ACTIONS["push_sstp_config"], calls=[
+            ["push_radius_config", dict(panel_host=panel_host, secret=node.mt_radius_secret,
+                                        auth_port=settings.radius_auth_port, acct_port=settings.radius_acct_port,
+                                        service="ppp")],
+            ["push_sstp_config", dict(port=port)]])[-1]
     except MikrotikError as exc:
         raise HTTPException(400, str(exc))
 
@@ -351,15 +340,11 @@ def push_l2tp_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Ses
         db.commit()
 
     try:
-        with writer_gate(node), MikrotikClient.for_node(node) as mt:
-            mt.push_radius_config(
-                panel_host=panel_host,
-                secret=node.mt_radius_secret,
-                auth_port=settings.radius_auth_port,
-                acct_port=settings.radius_acct_port,
-                service="ppp",
-            )
-            mt.push_l2tp_config(ipsec_secret=node.mt_l2tp_ipsec_secret)
+        legacy_remote.run(node, "mt_push", factory=MikrotikClient.for_node, action_type=legacy_remote.PUSH_ACTIONS["push_l2tp_config"], calls=[
+            ["push_radius_config", dict(panel_host=panel_host, secret=node.mt_radius_secret,
+                                        auth_port=settings.radius_auth_port, acct_port=settings.radius_acct_port,
+                                        service="ppp")],
+            ["push_l2tp_config", dict(ipsec_secret=node.mt_l2tp_ipsec_secret)]])
     except MikrotikError as exc:
         raise HTTPException(400, str(exc))
 
@@ -390,22 +375,12 @@ def push_ikev2_config(node_id: int, payload: schemas.ProtocolPushRequest, db: Se
         db.commit()
 
     try:
-        with writer_gate(node), MikrotikClient.for_node(node) as mt:
-            mt.push_radius_config(
-                panel_host=panel_host,
-                secret=node.mt_radius_secret,
-                auth_port=settings.radius_auth_port,
-                acct_port=settings.radius_acct_port,
-                service="ppp",
-            )
-            mt.push_radius_config(
-                panel_host=panel_host,
-                secret=node.mt_radius_secret,
-                auth_port=settings.radius_auth_port,
-                acct_port=settings.radius_acct_port,
-                service="ipsec",
-            )
-            mt.push_ikev2_config(psk=node.mt_ikev2_psk)
+        radius = dict(panel_host=panel_host, secret=node.mt_radius_secret,
+                      auth_port=settings.radius_auth_port, acct_port=settings.radius_acct_port)
+        legacy_remote.run(node, "mt_push", factory=MikrotikClient.for_node, action_type=legacy_remote.PUSH_ACTIONS["push_ikev2_config"], calls=[
+            ["push_radius_config", dict(radius, service="ppp")],
+            ["push_radius_config", dict(radius, service="ipsec")],
+            ["push_ikev2_config", dict(psk=node.mt_ikev2_psk)]])
     except MikrotikError as exc:
         raise HTTPException(400, str(exc))
 
@@ -455,32 +430,15 @@ def rebuild_node_clients(node_id: int, db: Session = Depends(get_db), admin: mod
     imported: list[str] = []
     skipped: list[schemas.PppImportSkipped] = []
     try:
-        with writer_gate(node), client_for_node(node) as xc:
-            # Only the 3X-UI client can enumerate what's already there; the
-            # SSH-managed one has no such call, but ITS add_client already
-            # replaces any same-email entry in config.json, so re-adding is
-            # harmless there either way.
-            existing = (
-                {c.get("email") for c in xc.list_clients_with_usage()}
-                if hasattr(xc, "list_clients_with_usage") else set()
-            )
-            for conn in conns:
-                if not conn.xr_email or not conn.xr_uuid:
-                    skipped.append(schemas.PppImportSkipped(
-                        name=conn.xr_email or f"#{conn.id}", reason="شناسه/ایمیل ذخیره‌شده ندارد",
-                    ))
-                    continue
-                if conn.xr_email in existing:
-                    skipped.append(schemas.PppImportSkipped(name=conn.xr_email, reason="از قبل روی نود هست"))
-                    continue
-                try:
-                    xc.add_client(
-                        node.xr_inbound_tag, conn.xr_email,
-                        client_uuid=conn.xr_uuid, flow=conn.xr_flow or "",
-                    )
-                    imported.append(conn.xr_email)
-                except XrayError as exc:
-                    skipped.append(schemas.PppImportSkipped(name=conn.xr_email, reason=str(exc)))
+        # Only the 3X-UI client can enumerate what's already there; the
+        # SSH-managed one has no such call, but ITS add_client already
+        # replaces any same-email entry in config.json, so re-adding is
+        # harmless there either way (see legacy_remote_blocks.xray_rebuild).
+        outcome = legacy_remote.run(node, "xray_rebuild", factory=client_for_node, inbound_tag=node.xr_inbound_tag, clients=[
+            dict(name=conn.xr_email or f"#{conn.id}", email=conn.xr_email, client_uuid=conn.xr_uuid,
+                 flow=conn.xr_flow or "") for conn in conns])
+        imported.extend(outcome["imported"])
+        skipped.extend(schemas.PppImportSkipped(name=name, reason=reason) for name, reason in outcome["skipped"])
     except XrayError as exc:
         raise HTTPException(400, str(exc))
 

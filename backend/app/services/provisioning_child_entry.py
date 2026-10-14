@@ -33,7 +33,17 @@ def locked_context(mode_hold, node_hold):
         _holds.reset(mark)
 
 
+def _legacy(dto):
+    try:
+        return dto.fencing["binding"]["phase"] == "legacy"
+    except Exception:
+        return False
+
+
 def forward(dto):
+    if _legacy(dto):
+        from . import provisioning_child_legacy
+        return provisioning_child_legacy.run(dto)
     return _run(dto, phase="forward")
 
 
@@ -44,6 +54,9 @@ def compensate(dto):
 
 def absent(dto):
     """Route the shared ensure-absent action by its sealed state-machine phase."""
+    if _legacy(dto):
+        from . import provisioning_child_legacy
+        return provisioning_child_legacy.run(dto)
     try:
         phase = dto.fencing["binding"]["phase"]
     except Exception:

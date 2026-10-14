@@ -164,7 +164,7 @@ check("each site declares exactly the writer methods it calls",
       {key: (sorted(in_code[key]), sorted(registered[key])) for key in set(in_code) & set(registered)
        if in_code[key] != registered[key]},
       {})
-check("thirteen writer functions today", len(registered), 13)
+check("seventeen writer block functions today", len(registered), 17)
 check("no writer call sits at module level", [k for k in in_code if k[1] == "<module>"], [])
 check("every client module that exists is listed as a client module",
       sorted(rw.CLIENT_MODULES - {dotted for dotted, _ in app_modules()}), [])
@@ -200,7 +200,7 @@ check("23 real action types, 4 self-test ones", (len(real_actions), len(set(Acti
 print("--- A. the registration API is type-safe ---")
 E = rw.WriterRegistryError
 check("a duplicate (module, function) is rejected",
-      raises(E, lambda: rw.register_writer_site("app.services.user_ops", "provision_xray",
+      raises(E, lambda: rw.register_writer_site("app.services.legacy_remote_blocks", "xray_add",
                                                 (ActionType.XRAY_ENSURE_PRESENT,), {"add_client"})))
 check("an action given as a plain string is rejected",
       raises(E, lambda: rw.register_writer_site("app.x", "f", ("wg_ensure_present",), {"add_peer"})))
@@ -215,7 +215,7 @@ check("a module outside the application is rejected",
       raises(E, lambda: rw.register_writer_site("os", "system", (ActionType.WG_ENSURE_PRESENT,), {"add_peer"})))
 check("a function that is not an identifier is rejected",
       raises(E, lambda: rw.register_writer_site("app.x", "f; rm", (ActionType.WG_ENSURE_PRESENT,), {"add_peer"})))
-check("none of the rejected registrations left a trace", len(rw.writer_sites()), 13)
+check("none of the rejected registrations left a trace", len(rw.writer_sites()), 17)
 site = rw.site_for("app.services.user_ops", "provision_wireguard")
 check("a site is immutable", raises(Exception, lambda: setattr(site, "function", "x")))
 
@@ -223,12 +223,35 @@ check("a site is immutable", raises(Exception, lambda: setattr(site, "function",
 print("--- B. every writer goes through writer_gate; nothing else of the new code is used ---")
 loose = {}
 for dotted, path in app_modules():
-    if dotted in rw.CLIENT_MODULES or dotted in rw.ADAPTER_MODULES:
+    if dotted in rw.CLIENT_MODULES or dotted in rw.ADAPTER_MODULES or dotted == rw.BLOCK_MODULE:
         continue
     found = ungated_writer_calls(path)
     if found:
         loose[dotted] = found
 check("no writer call outside a `with writer_gate(...)` block", loose, {})
+# The block module is exempt above ONLY because nothing but the gated
+# dispatcher (inline under writer_passage, or the runner child under its
+# node lock) may call it.
+def _imports_blocks(path):
+    for node in ast.walk(ast.parse(open(path, encoding="utf-8").read())):
+        if isinstance(node, ast.ImportFrom) and (
+                (node.module or "").endswith("legacy_remote_blocks") or
+                any(alias.name == "legacy_remote_blocks" for alias in node.names)):
+            return True
+        if isinstance(node, ast.Import) and any(alias.name.endswith("legacy_remote_blocks") for alias in node.names):
+            return True
+    return False
+
+
+block_importers = sorted(dotted for dotted, path in app_modules() if dotted != rw.BLOCK_MODULE and _imports_blocks(path))
+check("only the gated dispatcher and the runner child use the writer blocks", block_importers,
+      ["app.services.legacy_remote", "app.services.provisioning_child_legacy"])
+import inspect
+from app.services import legacy_remote
+run_source = inspect.getsource(legacy_remote.run)
+check("the dispatcher runs a block only inside writer_passage (gate) or via the runner",
+      ("with node_gate.writer_passage(node) as passage" in run_source and
+       run_source.index("writer_passage") < run_source.index("blocks.BLOCKS[block]")), True)
 
 snippet = "def f(node):\n    with writer_gate(node), C.for_node(node) as mt:\n        mt.add_peer(1)\n    mt.remove_peer(2)\n"
 probe_path = os.path.join(BACKEND_DIR, "tests", "_gate_probe_tmp.py")
@@ -279,11 +302,15 @@ check("legacy writers are gated; private guarded infrastructure has no live dura
        # guard and the 5.12 counter flush job - none dispatches a durable action.
        "app.main": ["node_gate.flush_counters"],
        "app.services.provisioning_control": ["gate_locks", "node_gate", "remote_action", "remote_runner"],
-       "app.services.transport_guard": ["node_gate"]})
-check("only six runtime-guarded forward/compensation actions are registered; all other actions remain unavailable",
-      sorted(a.value for a in ACTIONS if not a.value.startswith("selftest_")),
-      ["softether_ensure_absent", "softether_ensure_present", "wg_ensure_absent", "wg_ensure_present",
-       "xray_ensure_absent", "xray_ensure_present"])
+       "app.services.transport_guard": ["node_gate"],
+       # Legacy writers in 'enforced' (10.8): the gated dispatcher and its runner child entry.
+       "app.services.legacy_remote": ["node_gate", "remote_action.ActionType", "remote_action.Outcome",
+                                      "remote_action.RemoteActionDTO", "remote_runner"],
+       "app.services.provisioning_child_legacy": ["gate_locks", "remote_action.Outcome",
+                                                  "remote_action.RemoteActionResult"]})
+check("every writer action is registered; only the probe and WG reconciliation are not (not built yet)",
+      sorted(a.value for a in ActionType if not a.value.startswith("selftest_") and a not in ACTIONS),
+      ["contract_probe", "wg_reconcile_interface_address"])
 
 # ===========================================================================
 print("--- C. characterization of the existing writers (baseline for later batches) ---")

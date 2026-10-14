@@ -72,7 +72,8 @@ def _scope(guard, *, allow_writes=True):
     # Self-test runner import remains database-free. Real action authority
     # alone needs the closed read-only database/guard dependency.
     from .provisioning_child_guard import ChildGuard
-    if type(guard) is not ChildGuard:
+    from .provisioning_child_legacy import LegacyChildGuard
+    if type(guard) not in (ChildGuard, LegacyChildGuard):
         raise WriteAuthorityUnavailable("runner_guard_invalid")
     binding = guard.check()
     if binding.phase == "deletion" and not guard.removal_sealed:

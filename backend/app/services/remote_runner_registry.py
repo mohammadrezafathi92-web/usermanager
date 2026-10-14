@@ -23,3 +23,14 @@ ACTIONS: dict[ActionType, str] = {
     ActionType.XRAY_ENSURE_ABSENT: "app.services.provisioning_child_entry:absent",
     ActionType.SOFTETHER_ENSURE_ABSENT: "app.services.provisioning_child_entry:absent",
 }
+
+# Legacy writers (10.8): in 'enforced' every one of them runs here, with
+# today's semantics (legacy_remote_blocks) under LegacyChildGuard. The six
+# ensure_* entries above route their legacy phase to the same entry.
+_LEGACY = "app.services.provisioning_child_legacy:run"
+ACTIONS.update({action: _LEGACY for action in (
+    ActionType.WG_BOUNCE_PEER, ActionType.WG_SET_PEER_ENABLED, ActionType.WG_RENAME_PEER,
+    ActionType.WG_SET_SPEED_QUEUE, ActionType.XRAY_BOUNCE_CLIENT, ActionType.XRAY_SET_CLIENT_ENABLED,
+    ActionType.XRAY_REBUILD_CLIENTS, ActionType.SOFTETHER_BOUNCE_USER, ActionType.SOFTETHER_SET_USER_ENABLED,
+    ActionType.PPP_KICK_SESSION, ActionType.MT_PUSH_RADIUS, ActionType.MT_PUSH_PPTP, ActionType.MT_PUSH_SSTP,
+    ActionType.MT_PUSH_L2TP, ActionType.MT_PUSH_IKEV2)})

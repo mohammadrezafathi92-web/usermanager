@@ -13,6 +13,7 @@ from .. import models
 from ..database import SessionLocal
 from .mikrotik_client import MikrotikClient, MikrotikError, parse_ros_duration_seconds
 from .node_gate import writer_gate
+from . import legacy_remote
 from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
 from .xray_client import XrayError, client_for_node
 from .softether_client import SoftEtherError, client_for_node as softether_client_for_node
@@ -632,19 +633,15 @@ def _set_connection_enabled(db: Session, connection: models.Connection, enabled:
     applied = True  # PPP has nothing to push to the node - the DB flag alone is the switch
     try:
         if connection.type == models.ConnectionType.wireguard:
-            with writer_gate(node), MikrotikClient.for_node(node) as mt:
-                peers = mt.list_peers(node.mt_wireguard_interface)
-                match = next((p for p in peers if p.get("comment") == connection.wg_peer_name), None)
-                if match:
-                    mt.set_peer_disabled(match[".id"], disabled=not enabled)
-                else:
-                    applied = False
-                    logger.warning(
-                        "wireguard peer not found on node %s for connection %s (wg_peer_name=%r) - "
-                        "could not %s it; will retry next poll cycle",
-                        node.id, connection.id, connection.wg_peer_name,
-                        "enable" if enabled else "disable",
-                    )
+            if not legacy_remote.run(node, "wg_set_enabled", factory=MikrotikClient.for_node, interface=node.mt_wireguard_interface,
+                                     peer_name=connection.wg_peer_name, enabled=enabled):
+                applied = False
+                logger.warning(
+                    "wireguard peer not found on node %s for connection %s (wg_peer_name=%r) - "
+                    "could not %s it; will retry next poll cycle",
+                    node.id, connection.id, connection.wg_peer_name,
+                    "enable" if enabled else "disable",
+                )
         elif connection.type in PPP_TYPES:
             # Authenticated via RADIUS - the RADIUS auth handler checks
             # connection.enabled live on every Access-Request, so flipping
@@ -654,26 +651,24 @@ def _set_connection_enabled(db: Session, connection: models.Connection, enabled:
             # manually if instant cutoff is required).
             pass
         elif connection.type == models.ConnectionType.xray:
-            with writer_gate(node), client_for_node(node) as xc:
-                applied = xc.set_client_enabled(
-                    node.xr_inbound_tag, connection.xr_email, connection.xr_uuid,
-                    connection.xr_flow or "", enabled,
+            applied = legacy_remote.run(node, "xray_set_enabled", factory=client_for_node, inbound_tag=node.xr_inbound_tag,
+                                        email=connection.xr_email, client_uuid=connection.xr_uuid,
+                                        flow=connection.xr_flow or "", enabled=enabled)
+            if not applied:
+                logger.warning(
+                    "xray client could not be %s on node %s for connection %s (xr_email=%r); "
+                    "will retry next poll cycle",
+                    "enabled" if enabled else "disabled", node.id, connection.id, connection.xr_email,
                 )
-                if not applied:
-                    logger.warning(
-                        "xray client could not be %s on node %s for connection %s (xr_email=%r); "
-                        "will retry next poll cycle",
-                        "enabled" if enabled else "disabled", node.id, connection.id, connection.xr_email,
-                    )
         elif connection.type == models.ConnectionType.softether:
-            with writer_gate(node), softether_client_for_node(node) as sc:
-                applied = sc.set_client_enabled(connection.ppp_username, connection.ppp_password, enabled)
-                if not applied:
-                    logger.warning(
-                        "softether user could not be %s on node %s for connection %s (ppp_username=%r); "
-                        "will retry next poll cycle",
-                        "enabled" if enabled else "disabled", node.id, connection.id, connection.ppp_username,
-                    )
+            applied = legacy_remote.run(node, "softether_set_enabled", factory=softether_client_for_node, username=connection.ppp_username,
+                                        password=connection.ppp_password, enabled=enabled)
+            if not applied:
+                logger.warning(
+                    "softether user could not be %s on node %s for connection %s (ppp_username=%r); "
+                    "will retry next poll cycle",
+                    "enabled" if enabled else "disabled", node.id, connection.id, connection.ppp_username,
+                )
         if applied:
             connection.enabled = enabled
     except (MikrotikError, XrayError, SoftEtherError) as exc:

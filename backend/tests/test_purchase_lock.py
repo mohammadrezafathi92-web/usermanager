@@ -139,7 +139,8 @@ check("...carrying the reason", me.purchases_blocked_reason, REASON)
 # would pay and get nothing.
 was, _ = refused(lambda: bot_router.add_balance(
     "cust1", schemas.BotAddBalanceRequest(amount=-1000, source_kind="manual_adjustment", reason="r",
-                                          actor_telegram_id=990001), db=db, principal=_principal))
+                                          actor_telegram_id=990001), db=db, principal=_principal,
+    x_idempotency_key="00000000-0000-4000-8000-0000000000aa"))
 check("a wallet DEBIT is not blocked (never take money for nothing)", was, False)
 
 print("\n--- nothing in the enforcement path may read the flag ---")

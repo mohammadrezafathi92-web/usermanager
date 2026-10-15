@@ -9,6 +9,7 @@ import inspect
 import os
 import sys
 import tempfile
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATABASE_URL", "sqlite://")
@@ -286,7 +287,8 @@ check("the request that lost the race answers ok and changes nothing; event logg
       ({"ok": True}, ["payment_recorded"], "event_logged", 5000))
 db.rollback()
 bot_router.add_balance("newbie", schemas.BotAddBalanceRequest(amount=-100, source_kind="manual_adjustment", reason="r",
-                                                            actor_telegram_id=1000), db=db, principal=internal)
+                                                            actor_telegram_id=1000), db=db, principal=internal,
+                       x_idempotency_key=str(uuid.uuid4()))
 bot_router.record_payment_card_use(card.id, schemas.BotRecordCardPaymentRequest(amount=1), db=db, principal=internal)
 check("a wallet debit and a card payment without an approval behave as before",
       (db.query(models.User).filter_by(username="newbie").one().balance - balance, db.get(models.PaymentCard, card.id).accumulated_amount),

@@ -50,8 +50,10 @@ def _blockers(db, *, phase_expected="normal") -> tuple[list, dict]:
     state = db.execute(select(rv.wallet_runtime_state).where(rv.wallet_runtime_state.c.id == 1)).mappings().one()
     if state["phase"] != phase_expected:
         blockers.append({"code": "wallet_phase_not_normal", "phase": state["phase"]})
-    panel = db.get(models.PanelSettings, 1)
-    if (panel is not None and panel.ha_enabled) and state["external_fencing"] != "coordinator":
+    ha = select(models.PanelSettings.ha_enabled).where(models.PanelSettings.id == 1)
+    if db.get_bind().dialect.name != "sqlite":
+        ha = ha.with_for_update(read=True)               # current, not the snapshot
+    if db.execute(ha).scalar() and state["external_fencing"] != "coordinator":
         blockers.append({"code": "ha_requires_external_fencing"})
     negative = db.query(models.User.id, models.User.username).filter(models.User.balance < 0).order_by(
         models.User.id).all()

@@ -12,7 +12,11 @@ activation (P9a), on SQLite and real MariaDB (CI). Fake runner; no network.
   * the joint activation while a sale's T_final is in flight: the
     activation waits for its commit, and that sale is in the baseline - not
     lost between the baseline and the payment events;
-  * the wallet rollback after the activation: refused.
+  * the wallet rollback after the activation: refused;
+  * 'required' activated between the API's receipt check and T1: T1, under
+    the receipt runtime lock, refuses the unapproved priced sale;
+  * HA on / a type to legacy started while the cutover holds the phase row:
+    they wait, the cutover commits, they read the CURRENT phase and refuse.
 (p6_ready() is patched to ready: host ownership is covered by the P6 tests.)
 """
 import contextlib
@@ -186,6 +190,38 @@ def scenario(label, engine):
         db.get(mp.ProvisioningTypeMode, "add_connection").mode = "durable"
         db.commit()
 
+    # ------------------------------------------------------------------ 'required' lands between the API check and T1
+    real_guard = bot_router._require_payment_evidence
+
+    def guard_then_activation(db, payload, **kwargs):
+        real_guard(db, payload, **kwargs)              # passes: still 'shadow' here
+        with Session() as other:                       # the joint activation commits in between
+            other.execute(rv.receipt_approval_runtime_state.update().values(
+                registration_mode="required", loyalty_timing_mode="payment_event", completeness_generation=1))
+            other.commit()
+
+    with Session() as db:
+        operations_before = db.query(mp.ProvisioningOperation).count()
+        holds_before = db.query(mp.PaymentReservation).count()
+    with Session() as db, patch.object(bot_router, "_require_payment_evidence", side_effect=guard_then_activation), \
+            patch.object(execute.remote_runner, "run_action", side_effect=ok_runner), \
+            patch.object(user_ops, "get_connection_share", side_effect=RuntimeError("no node")):
+        try:
+            bot_router.purchase_package("cust", schemas.BotPurchasePackageRequest(
+                package_id=OWNED, paid_amount=500, payment_method="card"), db=db, owner_admin_id=None,
+                principal=principal, x_idempotency_key=str(uuid.uuid4()))
+            raced = "sold"
+        except HTTPException as exc:
+            raced = exc.detail
+    with Session() as db:
+        created = (db.query(mp.ProvisioningOperation).count() - operations_before,
+                   db.query(mp.PaymentReservation).count() - holds_before)
+        db.execute(rv.receipt_approval_runtime_state.update().values(
+            registration_mode="shadow", loyalty_timing_mode="legacy_activation"))
+        db.commit()
+    check(L + "'required' activated between the API check and T1: T1 refuses the unapproved sale, nothing made",
+          (raced, created), ("approval_uuid_required", (0, 0)))
+
     # ------------------------------------------------------------------ an operation in flight vs the cutover
     in_remote, go_on = threading.Event(), threading.Event()
 
@@ -219,7 +255,49 @@ def scenario(label, engine):
         captured = db.execute(select(mp.PaymentReservation.state)).scalars().all()
     check(L + "...the operation then ends in its own epoch: its hold captured", (bought.get("result"), captured),
           ("ok", ["captured"]))
-    check(L + "with nothing in flight the cutover goes through", cutover(), "enforced")
+    backfilling, finish = threading.Event(), threading.Event()
+    real_backfill = wallet_cutover._backfill
+
+    def paused_backfill(db):
+        result = real_backfill(db)
+        backfilling.set()
+        finish.wait(30)
+        return result
+
+    def late_ha():
+        with Session() as db:
+            try:
+                ha_fencing.refuse_enabling(db)        # waits for the cutover's phase lock
+                db.get(models.PanelSettings, 1).ha_enabled = True
+                db.commit()
+                return "ha on"
+            except HTTPException as exc:
+                db.rollback()
+                return exc.detail
+
+    def late_type():
+        try:
+            return control.change_type_mode(Session, ROOT, "add_connection", "legacy")["mode"]
+        except HTTPException as exc:
+            return exc.detail
+
+    with patch.object(wallet_cutover, "_backfill", side_effect=paused_backfill):
+        cut_thread, cut = threaded(cutover)
+        backfilling.wait(30)                          # the cutover holds the phase row
+        ha_thread, ha_late = threaded(late_ha)
+        type_thread, type_late = threaded(late_type)
+        time.sleep(1.5)
+        waiting = (ha_thread.is_alive(), type_thread.is_alive())
+        finish.set()                                  # the cutover commits 'enforced' ...
+        cut_thread.join(60)
+        ha_thread.join(60)                            # ... then HA and the type change leave their wait
+        type_thread.join(60)
+    with Session() as db:
+        after = (bool(db.get(models.PanelSettings, 1).ha_enabled), db.get(mp.ProvisioningTypeMode, "add_connection").mode)
+    check(L + "with nothing in flight the cutover goes through", cut.get("result"), "enforced")
+    check(L + "HA and a legacy type started during it waited, then saw 'enforced' (current read) and were refused",
+          (waiting, ha_late.get("result"), type_late.get("result"), after),
+          ((True, True), "ha_requires_external_fencing", "wallet_enforced_requires_durable", (False, "durable")))
     with Session() as db:
         try:
             ha_fencing.refuse_enabling(db)

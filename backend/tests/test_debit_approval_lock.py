@@ -5,8 +5,10 @@ which never carries a receipt approval. What must hold now:
 
   * no source_kind -> 422 for every caller, nothing written;
   * a negative amount with an approval (or a card) -> 422, nothing written;
-  * a negative manual adjustment needs the admin's Telegram id and a
-    reason; with them it takes exactly its amount, once per key;
+  * a negative manual adjustment needs the admin's Telegram id, a reason
+    and the caller's X-Idempotency-Key (none -> 422, nothing written); it
+    takes exactly its amount, once per key - a resend after a lost answer
+    changes nothing;
   * a receipt top-up cannot be negative;
   * only a MANAGED bot (in-process, or the panel's remote installation key)
     may name the adjusting admin; an integration key or an old global key
@@ -55,6 +57,8 @@ PRINCIPAL = bot_auth.BotPrincipal.internal(None, scope_enforced=False)
 
 
 def call(key=None, **body):
+    if key is None and body.get("source_kind") == "manual_adjustment":
+        key = str(uuid.uuid4())            # a fresh attempt; key="" is "no key at all"
     with SessionLocal() as db:
         try:
             return bot_router.add_balance("payer", schemas.BotAddBalanceRequest(**body), db=db, principal=PRINCIPAL,
@@ -80,10 +84,13 @@ check("...by a Telegram id that is no admin: 403",
 check("...without a reason: 422",
       call(amount=-100, source_kind="manual_adjustment", actor_telegram_id=1000),
       (422, "wallet_adjustment_reason_required"))
+check("a manual adjustment with no X-Idempotency-Key: 422 before anything, nothing written",
+      (call("", amount=-100, source_kind="manual_adjustment", reason="r", actor_telegram_id=1000), balance()),
+      ((422, "idempotency_key_required"), 1000))
 key = str(uuid.uuid4())
 check("a manual debit by the admin with a reason takes exactly its amount",
       call(key, amount=-100, source_kind="manual_adjustment", reason="r", actor_telegram_id=1000), 900)
-check("...the same key again: applied once",
+check("...its answer lost, the bot resends the same key: applied once",
       (call(key, amount=-100, source_kind="manual_adjustment", reason="r", actor_telegram_id=1000), balance()),
       (900, 900))
 check("...the same key with another amount: 409",

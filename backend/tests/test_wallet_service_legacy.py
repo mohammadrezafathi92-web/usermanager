@@ -131,7 +131,8 @@ def scenario(label: str, engine) -> None:
         manual adjustment (reason + the admin's Telegram id)."""
         body = {"amount": amount, "source_kind": "receipt_topup"} if amount > 0 else {
             "amount": amount, "source_kind": "manual_adjustment", "reason": "test", "actor_telegram_id": 1000}
-        response = (own or client).post(f"/api/bot/users/{username}/add-balance", headers=headers, json=body)
+        sent = dict(headers, **({"X-Idempotency-Key": str(__import__("uuid").uuid4())} if amount < 0 else {}))
+        response = (own or client).post(f"/api/bot/users/{username}/add-balance", headers=sent, json=body)
         return response.status_code, (response.json().get("detail") if response.status_code != 200 else None)
 
     def loyalty(username):

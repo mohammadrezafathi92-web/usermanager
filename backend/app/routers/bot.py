@@ -1877,12 +1877,15 @@ def add_balance(
     if payload.source_kind == wallet_service.MANUAL_ADJUSTMENT:
         if payload.approval_uuid or payload.execution_token is not None or payload.payment_card_id is not None:
             raise HTTPException(422, "manual_adjustment_without_receipt")
+        # A money change is applied once per attempt: the caller's own stable
+        # key is mandatory (a retry after a lost answer is then a replay).
+        if not isinstance(x_idempotency_key, str) or not x_idempotency_key.strip():
+            raise HTTPException(422, "idempotency_key_required")
         actor = _adjusting_admin(db, principal, payload.actor_telegram_id)
         user = bot_resources._get_user_or_403(db, principal, username, None)
         from ..services import wallet_adjustments
         wallet_adjustments.adjust(db, user.id, payload.amount, actor=actor, reason=payload.reason or "",
-                                  token=x_idempotency_key if isinstance(x_idempotency_key, str) and
-                                  x_idempotency_key.strip() else uuid.uuid4())
+                                  token=x_idempotency_key)
         db.expire_all()
         return _user_response(db.get(models.User, user.id))
     if payload.amount <= 0:

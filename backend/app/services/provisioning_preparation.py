@@ -148,6 +148,26 @@ def _stage(db, operation, slot, node, backend):
     return attributes
 
 
+def _require_payment_evidence(receipt_state, request, actor_kind, approval) -> None:
+    """The API's receipt rule again, in T1, under the shared lock of the
+    receipt runtime row held to this commit (Receipt Void 5.5): the joint
+    activation cannot land between the API's check and this transaction.
+    After it ('required', or 'blocked'), a bot sale with a price is created
+    only with its approval or with the customer's wallet reserved here -
+    otherwise refused fail-closed, before any lease or row."""
+    from . import receipt_approval_runtime as runtime
+    if approval is not None or actor_kind != "bot" or receipt_state is None:
+        return
+    if runtime.effective_registration_mode(receipt_state) not in (runtime.REQUIRED, runtime.BLOCKED):
+        return
+    sale = request.intent.sale
+    if sale is None or int(sale.amount or 0) <= 0:
+        return
+    if any(payer.kind == "customer_wallet" for payer in request.payers):
+        return
+    raise HTTPException(422, "approval_uuid_required")
+
+
 def request_digest(request) -> str:
     """The request_hash of a Preparation: the same request is the same hash."""
     canonical = json.dumps(request.dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -171,7 +191,7 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
     wallet_service.writer_phase(db)
     epoch = db.execute(select(rv.wallet_runtime_state.c.epoch).where(rv.wallet_runtime_state.c.id == 1)
         .with_for_update(read=True)).scalar_one()
-    db.execute(select(rv.receipt_approval_runtime_state.c.id).with_for_update(read=True)).all()
+    receipt_state = db.execute(select(rv.receipt_approval_runtime_state).with_for_update(read=True)).mappings().first()
     mode = db.execute(select(mp.ProvisioningTypeMode.mode).where(
         mp.ProvisioningTypeMode.operation_type == request.operation_type).with_for_update(read=True)).scalar_one_or_none()
     if mode != "durable":
@@ -203,6 +223,7 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
         if previous.request_hash != digest or previous.tenant_scope_key != request.tenant_scope_key:
             raise HTTPException(409, "provisioning_request_changed")
         return Prepared(previous, replay=True)
+    _require_payment_evidence(receipt_state, request, actor_kind, approval)
     renewing = request.operation_type.startswith("renew_")
     if len({slot.slot_key for slot in request.slots}) != len(request.slots) or (
             renewing and request.slots) or (request.operation_type == "add_connection" and (

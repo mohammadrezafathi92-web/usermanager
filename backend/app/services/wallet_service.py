@@ -129,7 +129,12 @@ def lock_phase_for_change(db: Session) -> str:
         return LEGACY_PHASE
     table = _phase_table()
     db.execute(table.update().where(table.c.id == receipt_void_schema.SINGLETON_ID).values(version=table.c.version))
-    return db.execute(select(table.c.phase).where(table.c.id == receipt_void_schema.SINGLETON_ID)).scalar()
+    # A CURRENT read of the row just locked (never an older snapshot: on
+    # MariaDB a plain SELECT may read the transaction's snapshot).
+    query = select(table.c.phase).where(table.c.id == receipt_void_schema.SINGLETON_ID)
+    if db.get_bind().dialect.name != "sqlite":
+        query = query.with_for_update()
+    return db.execute(query).scalar()
 
 
 def credit_reward(db: Session, user: models.User, amount: int, *, source_kind: str, source_key: str,

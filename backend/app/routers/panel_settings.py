@@ -298,7 +298,9 @@ def update_settings(
                                 ("payment_card_switch_threshold", "switch_threshold"))
         if field in data
     }
-    if data.get("ha_enabled") and not row.ha_enabled:
+    if data.get("ha_enabled"):
+        # Decided under the phase lock, on current reads - never on the row
+        # read before it (that could be older than a cutover's commit).
         # Receipt Void 20.4: HA (a lagging snapshot standby) has no fencing;
         # the lot wallet and required approvals must never run on it.
         from ..services import ha_fencing

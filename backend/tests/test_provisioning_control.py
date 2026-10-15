@@ -132,9 +132,13 @@ def scenario(label, engine, base_dir):
     check(L + "shadow -> enforced refused while an uninstrumented writer was seen", gate("enforced"),
           (409, "writer_not_instrumented_count_nonzero"))
     control.reset_gate_stats(Factory, 1)
-    check(L + "shadow -> enforced refused: this build cannot run legacy writers in the runner",
-          (node_gate.ENFORCED_SUPPORTED, gate("enforced"), runtime().gate_mode),
-          (False, (409, "gate_enforced_not_implemented"), "shadow"))
+    check(L + "this build runs legacy writers in the runner (enforced supported)", node_gate.ENFORCED_SUPPORTED, True)
+    node_gate.ENFORCED_SUPPORTED = False
+    try:
+        check(L + "a build that cannot run legacy writers in the runner refuses shadow -> enforced",
+              (gate("enforced"), runtime().gate_mode), ((409, "gate_enforced_not_implemented"), "shadow"))
+    finally:
+        node_gate.ENFORCED_SUPPORTED = True
 
     # Lowering.
     with Factory() as db:

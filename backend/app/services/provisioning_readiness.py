@@ -33,9 +33,7 @@ RECOVERY_OPEN = ("pending", "running", "cleanup_required")
 # Code that P6 needs and that does not exist yet. Each entry is removed by
 # the change that implements it; while any remains, status never reports
 # p6_ready, whatever the data says.
-IMPLEMENTATION_GAPS = (
-    "enforced_gate_not_proven",                    # node_gate.ENFORCED_SUPPORTED is False
-)
+IMPLEMENTATION_GAPS: tuple = ()
 
 
 def _node_backend(node):

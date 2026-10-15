@@ -135,6 +135,12 @@ def _ownership(session_factory, admin_id, action, *, base_dir=None, **kwargs):
                         raise HTTPException(409, dict(code="ownership_nodes_not_quiescent", node_id=node_id)) from None
             with session_factory() as db:
                 try:
+                    # The ownership cores require their ONE transaction to be
+                    # open (and on SQLite to be the writer) before they read.
+                    if db.get_bind().dialect.name == "sqlite":
+                        db.execute(text("BEGIN IMMEDIATE"))
+                    else:
+                        db.begin()
                     if action is ownership.release:
                         action(db, proof, version, hold, node_holds, actor_admin_id=admin_id, base_dir=base_dir)
                     else:

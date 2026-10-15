@@ -145,8 +145,11 @@ counters = GateCounters()
 
 # Whether this build can run 'enforced': every legacy writer executed by the
 # runner under the real node lock and host-ownership check (10.7, 10.8).
-# The control plane refuses shadow -> enforced while this is False.
-ENFORCED_SUPPORTED = False
+# The control plane refuses shadow -> enforced while this is False. Proven on
+# Linux in CI (tests/test_legacy_runner_linux.py: a real runner child, its own
+# gate-mode and node locks, a fake RouterOS on loopback, ownership checked by
+# the child). Entering 'enforced' is still one explicit superadmin step.
+ENFORCED_SUPPORTED = True
 
 # The singleton is re-read at most once per this many seconds per process.
 # Every remote block of every writer passes through the gate, and a database

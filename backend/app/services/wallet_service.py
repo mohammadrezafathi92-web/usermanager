@@ -6,12 +6,13 @@ wallet has one door before the cutover (P9) replaces what is behind it.
 tests/test_wallet_single_writer.py (RV-60) fails the build if any other
 module writes the column.
 
-Only the LEGACY generation exists here: it writes User.balance directly and
-is allowed only while wallet_runtime_state.phase is 'normal'. The wallet-lot
-generation (sources, lots, debts) is P9 and is not implemented; nothing in
-this module creates an account, a source or a lot, and nothing here can
-reverse a credit. AdminUser.balance (reseller credit) is a separate system
-and is not touched.
+Two generations (9.1). The LEGACY one writes User.balance directly and is
+allowed only while wallet_runtime_state.phase is 'normal'. The wallet-lot
+generation (P9: sources, lots, debits; services/wallet_lots.py) only in
+'enforced'; writer_phase() tells a caller which one it is in, and the
+callers that can run in both (rewards: credit_reward; the durable
+reservations: payment_reservations) dispatch on it. 'fencing' refuses both.
+AdminUser.balance (reseller credit) is a separate system and is not touched.
 
 What each function keeps exactly as it was before the move:
   adjust_in_session / overwrite   plain attribute writes on the loaded User,
@@ -92,6 +93,72 @@ def require_legacy_phase(db: Session) -> None:
         query = query.with_for_update(read=True)
     if db.execute(query).scalar() != LEGACY_PHASE:
         raise LegacyWriterUnavailable()
+
+
+ENFORCED_PHASE = "enforced"
+
+
+class WriterUnavailable(HTTPException):
+    def __init__(self) -> None:
+        super().__init__(status_code=503, detail="wallet_writer_unavailable")
+
+
+def writer_phase(db: Session) -> str:
+    """Current read of the phase for a writer of EITHER generation: 'normal'
+    (legacy) or 'enforced' (wallet lots); 'fencing' refuses everything (9.1).
+    Shared row lock on MariaDB, held to the commit."""
+    if not receipt_void_schema.is_ready():
+        return LEGACY_PHASE
+    table = _phase_table()
+    query = select(table.c.phase).where(table.c.id == receipt_void_schema.SINGLETON_ID)
+    if db.get_bind().dialect.name != "sqlite":
+        query = query.with_for_update(read=True)
+    phase = db.execute(query).scalar()
+    if phase not in (LEGACY_PHASE, ENFORCED_PHASE):
+        raise WriterUnavailable()
+    return phase
+
+
+def credit_reward(db: Session, user: models.User, amount: int, *, source_kind: str, source_key: str,
+                  causation_approval_uuid: Optional[str] = None) -> int:
+    """A loyalty or referral reward credit in the caller's transaction, in
+    whichever generation the phase allows. Legacy: adjust_in_session (a
+    negative panel setting still subtracts, as always). Wallet lots: one
+    credit source per reward (Receipt Void 11.1 source keys); a non-positive
+    amount is no reward at all. Returns the balance after it."""
+    _kind(source_kind, (LOYALTY_REWARD, REFERRAL_REWARD))
+    if writer_phase(db) == LEGACY_PHASE:
+        return adjust_in_session(db, user, amount, source_kind=source_kind)
+    amount = int(amount)
+    from . import wallet_lots
+    account = wallet_lots.account_of_user(db, user.id)
+    if amount <= 0:
+        return wallet_lots.available(db, account["id"])
+    wallet_lots.fence_identity(db, account["customer_identity_id"])
+    db.flush()
+    epoch = wallet_lots.require_enforced(db)
+    operation_id, _ = wallet_lots.operation(
+        db, "wallet_credit_apply", f"{account['id']}:{source_kind}:{source_key}",
+        payload={"origin": source_kind, "source_key": source_key, "amount": amount},
+        tenant_scope_key=wallet_lots.tenant_of(db, account), epoch=epoch)
+    source = wallet_lots.credit(db, account, origin_kind=source_kind, source_key=source_key, amount=amount,
+                                operation_id=operation_id, causation_approval_uuid=causation_approval_uuid)
+    wallet_lots.complete(db, operation_id, {"wallet_credit_source_id": source})
+    return wallet_lots.available(db, account["id"])
+
+
+def referral_source_key(db: Session, referred: models.User, side: str) -> str:
+    """referral:{referred_lineage_key}:referrer|new_user (11.1). The lineage
+    is the referred customer's live account; before the Receipt Void schema
+    exists there is none and the key is not used (legacy writer)."""
+    if side not in ("referrer", "new_user"):
+        raise ValueError("referral side")
+    lineage = None
+    if receipt_void_schema.is_ready():
+        from .. import models_receipt_void as rv
+        lineage = db.execute(select(rv.wallet_accounts.c.lineage_key).where(
+            rv.wallet_accounts.c.user_id == referred.id)).scalar()
+    return f"referral:{lineage or 'user-' + str(referred.id)}:{side}"
 
 
 _RECHECK = "wallet_legacy_phase_recheck"

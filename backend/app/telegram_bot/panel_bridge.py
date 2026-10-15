@@ -591,10 +591,14 @@ class PanelBridge:
         return _dump(await _call(bot_router.set_user_enabled, username, enabled, owner_admin_id=_scope(owner_admin_id)))
 
     async def add_balance(self, username: str, amount: int, payment_card_id: Optional[int] = None,
-                          approval_uuid: Optional[str] = None, execution_token: Optional[int] = None) -> dict:
+                          approval_uuid: Optional[str] = None, execution_token: Optional[int] = None, *,
+                          source_kind: Optional[str] = None, reason: Optional[str] = None,
+                          actor_telegram_id: Optional[int] = None, idempotency_key: Optional[str] = None) -> dict:
         payload = schemas.BotAddBalanceRequest(amount=amount, payment_card_id=payment_card_id,
-                                               approval_uuid=approval_uuid, execution_token=execution_token)
-        return _dump(await _call(bot_router.add_balance, username, payload))
+                                               approval_uuid=approval_uuid, execution_token=execution_token,
+                                               source_kind=source_kind, reason=reason,
+                                               actor_telegram_id=actor_telegram_id)
+        return _dump(await _call(bot_router.add_balance, username, payload, x_idempotency_key=idempotency_key))
 
     async def delete_user(self, username: str, owner_admin_id: Optional[int] = None) -> None:
         await _call(bot_router.delete_user, username, owner_admin_id=_scope(owner_admin_id))

@@ -24,7 +24,7 @@ KINDS = ("delete_connection", "delete_purchase", "delete_user")
 
 def _control(db, operation_id, identity, expected):
     provisioning_schema.assert_ready()
-    wallet_service.require_legacy_phase(db)
+    wallet_service.writer_phase(db)
     kind = db.scalar(select(mp.ProvisioningOperation.operation_type).where(
         mp.ProvisioningOperation.id == operation_id))
     if kind not in KINDS:

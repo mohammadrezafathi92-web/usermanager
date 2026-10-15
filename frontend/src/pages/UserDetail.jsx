@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import QRCode from "qrcode";
 import { ArrowRight, Plus, Trash2, QrCode, Copy, Download, Check, Wifi, Globe, Network, ShieldCheck, Lock, Save, KeyRound, Power, ShieldEllipsis, ShieldAlert, RefreshCw, Pencil, Package, LogOut, Send } from "lucide-react";
@@ -14,6 +14,8 @@ import { useConfirm } from "../components/ConfirmDialog.jsx";
 import {
   fetchUser,
   updateUser,
+  adjustUserWallet,
+  newIdempotencyKey,
   fetchNodes,
   addWireguardConnection,
   addOpenvpnConnection,
@@ -247,6 +249,8 @@ export default function UserDetail() {
     }
   };
 
+  // One key per wallet-adjustment attempt; a new one only after it succeeded.
+  const adjustKey = useRef(newIdempotencyKey());
   const [editForm, setEditForm] = useState({
     full_name: "",
     quota_gb: "",
@@ -255,11 +259,13 @@ export default function UserDetail() {
     expire_at: "",
     expire_days: "",
     max_concurrent_sessions: "",
-    balance: "",
+    balance_change: "",
+    balance_reason: "",
     telegram_id: "",
     owner_admin_id: "",
     purchases_blocked: false,
     purchases_blocked_reason: "",
+    topup_blocked: true,
   });
   const [connNodeId, setConnNodeId] = useState("");
   const [connPurchaseId, setConnPurchaseId] = useState("");
@@ -304,11 +310,13 @@ export default function UserDetail() {
       expire_at: res.data.expire_at ? res.data.expire_at.slice(0, 10) : "",
       expire_days: res.data.expire_days_after_first_use || "",
       max_concurrent_sessions: "",
-      balance: res.data.balance ?? 0,
+      balance_change: "",
+      balance_reason: "",
       telegram_id: res.data.telegram_id ?? "",
       owner_admin_id: res.data.owner_admin_id ?? "",
       purchases_blocked: !!res.data.purchases_blocked,
       purchases_blocked_reason: res.data.purchases_blocked_reason || "",
+      topup_blocked: true,
     });
   });
 
@@ -380,18 +388,26 @@ export default function UserDetail() {
       if (editForm.max_concurrent_sessions !== "") {
         payload.max_concurrent_sessions = Number(editForm.max_concurrent_sessions);
       }
-      if (editForm.balance !== "") {
-        payload.balance = Number(editForm.balance);
-      }
       payload.telegram_id = editForm.telegram_id !== "" ? Number(editForm.telegram_id) : null;
       // قفل خرید - the reason is only meaningful while the lock is on, and
       // the backend clears it on unlock anyway.
       payload.purchases_blocked = !!editForm.purchases_blocked;
       if (editForm.purchases_blocked) {
         payload.purchases_blocked_reason = editForm.purchases_blocked_reason.trim() || null;
+        payload.topup_blocked = !!editForm.topup_blocked;
       }
       if (isSuperadmin) {
         payload.owner_admin_id = editForm.owner_admin_id === "" ? null : Number(editForm.owner_admin_id);
+      }
+      const change = Number(editForm.balance_change || 0);
+      if (change) {
+        if (!editForm.balance_reason.trim()) {
+          setError(t("userDetail.balanceReasonRequired"));
+          return;
+        }
+        await adjustUserWallet(user.id, change, editForm.balance_reason.trim(), adjustKey.current);
+        adjustKey.current = newIdempotencyKey();
+        setEditForm((f) => ({ ...f, balance_change: "", balance_reason: "" }));
       }
       await updateUser(user.id, payload);
       setEditOpen(false);
@@ -1414,11 +1430,25 @@ export default function UserDetail() {
           </div>
 
           <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("userDetail.fieldBalance")}</label>
-            <MoneyInput
-              value={editForm.balance}
-              onChange={(v) => setEditForm({ ...editForm, balance: v })}
-            />
+            <label className="block text-sm text-gray-600 mb-1">
+              {t("userDetail.fieldBalanceChange", { value: formatToman(user?.balance || 0, language) })}
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <MoneyInput
+                allowNegative
+                placeholder={t("userDetail.balanceChangePlaceholder")}
+                value={editForm.balance_change}
+                onChange={(v) => setEditForm({ ...editForm, balance_change: v })}
+              />
+              <input
+                className="input"
+                maxLength={255}
+                placeholder={t("userDetail.balanceReasonPlaceholder")}
+                value={editForm.balance_reason}
+                onChange={(e) => setEditForm({ ...editForm, balance_reason: e.target.value })}
+              />
+            </div>
+            <div className="hint">{t("userDetail.balanceChangeHint")}</div>
           </div>
 
           {isSuperadmin && (
@@ -1537,6 +1567,18 @@ export default function UserDetail() {
                   onChange={(e) => setEditForm({ ...editForm, purchases_blocked_reason: e.target.value })}
                 />
                 <div className="hint">{t("userDetail.blockReasonHint")}</div>
+                <label className="flex items-start gap-2 cursor-pointer mt-3">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={editForm.topup_blocked}
+                    onChange={(e) => setEditForm({ ...editForm, topup_blocked: e.target.checked })}
+                  />
+                  <span>
+                    <span className="text-sm">{t("userDetail.blockTopups")}</span>
+                    <span className="block text-xs text-gray-400 mt-0.5">{t("userDetail.blockTopupsHint")}</span>
+                  </span>
+                </label>
               </div>
             )}
           </div>

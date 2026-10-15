@@ -265,6 +265,21 @@ def _legacy_wallet_charge(db: Session, user_id: int, amount: int):
         raise
 
 
+def _require_approval_for_card_sale(db: Session, payload) -> None:
+    """After the joint activation (P9a, 'required'): a sale paid by card is a
+    receipt approval's sale and must carry its approval. An old bot that
+    sends none is refused before anything (Receipt Void 21: update every
+    remote installation before activating). Wallet-paid and panel sales
+    carry no receipt and are not affected."""
+    if getattr(payload, "approval_uuid", None) or getattr(payload, "payment_method", None) != "card" or (
+            int(getattr(payload, "paid_amount", None) or 0) <= 0):
+        return
+    state = approval_registration.runtime.read_state(db)
+    if approval_registration.runtime.effective_registration_mode(state) in (
+            approval_registration.runtime.REQUIRED, approval_registration.runtime.BLOCKED):
+        raise HTTPException(422, "approval_uuid_required")
+
+
 def _approval_replay(db: Session, payload) -> bool:
     """An approval whose durable operation already exists: its retry runs the
     whole approval path again (_durable_approval - token, execution key,
@@ -1012,6 +1027,7 @@ def create_user(
     durable_create = provisioning_durable.is_durable(db, "create_user")
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
                                                           allow_required=durable_create)
+    _require_approval_for_card_sale(db, payload)
     # A locked customer must not be able to start a fresh account from the
     # same Telegram id and keep buying - that would leave the lock looking
     # enforced while doing nothing at all.
@@ -1173,6 +1189,7 @@ def purchase_package(
     durable_purchase = provisioning_durable.is_durable(db, "purchase")
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
                                                           allow_required=durable_purchase)
+    _require_approval_for_card_sale(db, payload)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     package = bot_resources._get_package_or_403(db, principal, payload.package_id)
     override = (
@@ -1681,6 +1698,7 @@ def renew_service(
     durable_renew = provisioning_durable.is_durable(db, "renew_purchase")
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
                                                           allow_required=durable_renew)
+    _require_approval_for_card_sale(db, payload)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
@@ -1824,55 +1842,64 @@ def set_user_enabled(
 def add_balance(
     username: str, payload: schemas.BotAddBalanceRequest, db: Session = Depends(get_db),
     principal: BotPrincipal = Depends(get_bot_principal),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
-    """Credits (or, with a negative amount, debits) the user's wallet-style
-    balance - used by the sales bot's "افزایش اعتبار" top-up flow (admin
-    approval, positive amount) and the "پرداخت از اعتبار" purchase flow
-    (negative amount, debit).
+    """Changes the customer's wallet, for one stated reason (Receipt Void P7):
 
-    Debits are applied as a single atomic conditional UPDATE (`WHERE
-    balance + amount >= 0`) instead of a Python read-modify-write, so two
-    concurrent/duplicate debit requests (e.g. a double-tapped purchase
-    button) can't both succeed and drive the balance negative - the second
-    one gets a clean "insufficient balance" error instead of silently
-    overdrawing the wallet."""
-    if payload.amount == 0:
-        approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
-    if payload.amount == 0:
-        user = bot_resources._get_user_or_403(db, principal, username, None)
-        db.commit()
-        db.refresh(user)
-        return _user_response(user)
-    if payload.amount < 0:
-        # A wallet-only transaction (design 9.2): become the writer and read
-        # the wallet phase first (L1), then the approval mode INSIDE the same
-        # transaction (L2) so its lock - and on SQLite the writer - is held
-        # to the commit: a switch to 'blocked' cannot pass between the check
-        # and the debit. (The old order checked, rolled back, then wrote.)
-        wallet_service.begin_writer(db)
+      receipt_topup      the bot's "افزایش اعتبار" top-up, after its receipt
+                         was approved: a positive amount, correlated with
+                         its approval (services/receipt_approval_topup.py);
+      manual_adjustment  an admin's own change from the bot's admin menu: a
+                         signed amount with a reason, by the admin whose
+                         Telegram id is given (services/wallet_adjustments.py).
+
+    No source_kind -> 422, for every caller. (The old negative "pay from
+    credit" debit is gone: a wallet purchase is charge_wallet inside its own
+    operation.)"""
+    if payload.approval_uuid:
+        # A blocked approval runtime wins before anything else is looked at.
         approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
-                                                              keep_transaction=True)
+                                                              allow_required=True)
+    if payload.source_kind not in (wallet_service.RECEIPT_TOPUP, wallet_service.MANUAL_ADJUSTMENT):
+        raise HTTPException(422, "source_kind_required")
+    if payload.source_kind == wallet_service.MANUAL_ADJUSTMENT:
+        if payload.approval_uuid or payload.execution_token is not None or payload.payment_card_id is not None:
+            raise HTTPException(422, "manual_adjustment_without_receipt")
         user = bot_resources._get_user_or_403(db, principal, username, None)
-        # Only a TOP-UP is blocked. A negative amount is the wallet being
-        # spent on a purchase, and that purchase is already refused upstream
-        # - but if one ever reaches here, refusing the debit too would be
-        # the wrong way round: it would take the money and give nothing.
-        taken = wallet_service.debit_atomic(db, user.id, -payload.amount, source_kind=wallet_service.UNSPECIFIED)
-        db.commit()
-        if not taken:
-            raise HTTPException(400, "موجودی کیف پول کافی نیست")
-        db.refresh(user)
-    else:
-        # Customer positive credits use the narrow A2 transaction: wallet
-        # phase lock -> approval runtime lock -> approval lock -> user lock;
-        # atomic balance increment and its ledger row commit together.
-        # Reseller credit, payment-card pool writes and the debit path above
-        # deliberately remain outside it.
-        user = receipt_approval_topup.apply(
-            db, principal, username, payload.amount, payload.payment_card_id,
-            payload.approval_uuid, lambda customer: wallet_policy.can_topup(db, customer),
-            payload.execution_token)
+        actor = _adjusting_admin(db, principal, payload.actor_telegram_id)
+        from ..services import wallet_adjustments
+        wallet_adjustments.adjust(db, user.id, payload.amount, actor=actor, reason=payload.reason or "",
+                                  token=x_idempotency_key if isinstance(x_idempotency_key, str) and
+                                  x_idempotency_key.strip() else uuid.uuid4())
+        db.expire_all()
+        return _user_response(db.get(models.User, user.id))
+    if payload.amount <= 0:
+        raise HTTPException(422, "receipt_topup_amount_invalid")
+    # Customer positive credits use the narrow A2 transaction: wallet
+    # phase lock -> approval runtime lock -> approval lock -> user lock;
+    # the credit and its ledger row commit together.
+    user = receipt_approval_topup.apply(
+        db, principal, username, payload.amount, payload.payment_card_id,
+        payload.approval_uuid, lambda customer: wallet_policy.can_topup(db, customer),
+        payload.execution_token)
     return _user_response(user)
+
+
+def _adjusting_admin(db: Session, principal, telegram_id) -> models.AdminUser:
+    """The admin a manual adjustment from the bot is made by: an active
+    admin with that Telegram id, and - for a bot scoped to one admin's tree
+    - inside that tree. A reason and an actor are what the books keep."""
+    if not isinstance(telegram_id, int) or telegram_id <= 0:
+        raise HTTPException(422, "actor_telegram_id_required")
+    actor = db.query(models.AdminUser).filter(models.AdminUser.telegram_id == telegram_id).first()
+    if actor is None or getattr(actor, "is_active", True) is False:
+        raise HTTPException(403, "adjusting_admin_not_found")
+    if principal.is_scoped:
+        owner = db.get(models.AdminUser, principal.owner_admin_id) if principal.owner_admin_id else None
+        owned = hierarchy.owned_admin_ids(db, owner) if owner is not None else set()
+        if owned is not None and actor.id not in owned:
+            raise HTTPException(403, "adjusting_admin_out_of_scope")
+    return actor
 
 
 @router.delete("/users/{username}")

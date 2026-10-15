@@ -209,7 +209,7 @@ def lock(db, request, execution: ApprovalExecution, digest: str):
                                   tenant_scope_key=request.tenant_scope_key)
     if locked.replay_operation_id is not None:
         return locked
-    if locked.wallet_phase != "normal":
+    if locked.wallet_phase not in ("normal", "enforced"):
         raise HTTPException(503, "provisioning_approval_mode_unavailable")
     if locked.effective_mode != locked.registered_under_mode:
         raise ApprovalCancel("approval_mode_changed")

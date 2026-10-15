@@ -23,6 +23,7 @@ phase P9a (section 14.2), so there is nothing to record them against.
 from __future__ import annotations
 
 import datetime as dt
+import re
 import json
 import logging
 from dataclasses import asdict, dataclass
@@ -52,6 +53,7 @@ SNAPSHOT_KEYS = frozenset({
     "q_before", "u_before", "e_before", "rq_before", "rd_before", "rp_before", "pk_before",
     "q_after", "u_after", "e_after", "rq_after", "rd_after", "rp_after", "pk_after",
     "balance_before", "balance_after", "rewards_count", "slot_key",
+    "purchase_event_id", "user_id", "eligibility_reason",            # loyalty_purchase_recorded (P9a)
 })
 
 
@@ -100,6 +102,14 @@ class QuotaRewardEvidence:
     quota_after: int
     before_was_unlimited: bool
     rewards_count: int = 1
+
+
+@dataclass(frozen=True)
+class LoyaltyPurchaseEvidence:
+    """The loyalty_purchase_events row a paid sale wrote (P9a, 14.2)."""
+    purchase_event_id: int
+    user_id: int
+    eligibility_reason: str
 
 
 @dataclass(frozen=True)
@@ -262,6 +272,29 @@ def _project(effect_type: str, effect_key: str, resource, evidence) -> tuple[str
             raise EffectRejected(EVIDENCE_INVALID, "the granted bytes are not a whole number of rewards")
         return resource_type, resource.id, {"target": {"type": resource_type, "id": resource.id},
                                             "bytes": granted}, granted
+    if effect_type == "loyalty_purchase_recorded" and effect_key == "loyalty_purchase":
+        _need(evidence, LoyaltyPurchaseEvidence)
+        return "LoyaltyPurchaseEvent", evidence.purchase_event_id, {
+            "user": _user_binding(evidence.user_id), "eligibility_reason": evidence.eligibility_reason}, 1
+    loyalty_slot = re.fullmatch(r"(credit|quota):loyalty:(\d+):(\d+)", effect_key)
+    if loyalty_slot and effect_type == "wallet_credit_source_created" and loyalty_slot.group(1) == "credit":
+        _need(evidence, WalletCreditEvidence)
+        if evidence.balance_after <= evidence.balance_before or evidence.rewards_count != 1:
+            raise EffectRejected(EVIDENCE_INVALID, "balance must grow, by one reward")
+        amount = evidence.balance_after - evidence.balance_before
+        return "User", resource.id, {"user": _user_binding(resource.id), "epoch_id": int(loyalty_slot.group(2)),
+                                     "slot": int(loyalty_slot.group(3)), "amount": amount}, amount
+    if loyalty_slot and effect_type == "quota_reward_granted" and loyalty_slot.group(1) == "quota":
+        _need(evidence, QuotaRewardEvidence)
+        resource_type = "Purchase" if isinstance(resource, models.Purchase) else "User"
+        if (evidence.target_type, evidence.target_id) != (resource_type, resource.id) or (
+                evidence.quota_after <= evidence.quota_before) or (
+                evidence.before_was_unlimited != (evidence.quota_before == 0)) or evidence.rewards_count != 1:
+            raise EffectRejected(EVIDENCE_INVALID, "loyalty quota evidence invalid")
+        granted = evidence.quota_after - evidence.quota_before
+        return resource_type, resource.id, {"target": {"type": resource_type, "id": resource.id},
+                                            "epoch_id": int(loyalty_slot.group(2)),
+                                            "slot": int(loyalty_slot.group(3)), "bytes": granted}, granted
     raise EffectRejected(NOT_IN_MANIFEST, f"{effect_type}:{effect_key} is not a supported effect yet")
 
 

@@ -131,14 +131,23 @@ def scenario(engine, name):
         user_ops.delete_user_cascade(db, legacy)
         check(name + " old user deleted without invented account", count(rv.wallet_accounts), baseline)
 
-        for phase in ("fencing", "enforced"):
+        # 'enforced' (the lot generation, P9) creates and tombstones accounts
+        # exactly like 'normal'; only 'fencing' stops every wallet writer.
+        db.execute(rv.wallet_runtime_state.update().values(phase="enforced"))
+        db.commit()
+        enforced_user = create("enforced_created")
+        db.commit()
+        check(name + " creation in enforced gets its account",
+              db.execute(select(func.count()).select_from(rv.wallet_accounts).where(
+                  rv.wallet_accounts.c.user_id == enforced_user.id)).scalar_one(), 1)
+        for phase in ("fencing",):
             db.execute(rv.wallet_runtime_state.update().values(phase=phase))
             db.commit()
             try:
                 create("refused_" + phase)
                 check(name + " creation refused " + phase, False)
             except HTTPException as exc:
-                check(name + " creation refused " + phase, (exc.status_code, exc.detail), (503, "wallet_legacy_writer_unavailable"))
+                check(name + " creation refused " + phase, (exc.status_code, exc.detail), (503, "wallet_writer_unavailable"))
             db.rollback()
             with patch.object(user_ops, "deprovision_connection") as remote:
                 try:
@@ -153,7 +162,7 @@ def scenario(engine, name):
         db.commit()
         if engine.dialect.name == "sqlite":
             phase_reads = []
-            real_phase = wallet_accounts.wallet_service.require_legacy_phase
+            real_phase = wallet_accounts.wallet_service.writer_phase
 
             def fence_after_initial_read(session):
                 real_phase(session)
@@ -163,7 +172,7 @@ def scenario(engine, name):
                         other_session.execute(rv.wallet_runtime_state.update().values(phase="fencing"))
                         other_session.commit()
 
-            with patch.object(wallet_accounts.wallet_service, "require_legacy_phase", side_effect=fence_after_initial_read):
+            with patch.object(wallet_accounts.wallet_service, "writer_phase", side_effect=fence_after_initial_read):
                 try:
                     create("phase_race")
                     check(name + " creation rechecks phase under writer lock", False)

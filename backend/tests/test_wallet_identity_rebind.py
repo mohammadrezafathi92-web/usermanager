@@ -123,7 +123,7 @@ def scenario(engine, name):
         db.commit()
         check(name + " settled debt stays with old identity", db.execute(select(rv.wallet_debts.c.customer_identity_id).where(
             rv.wallet_debts.c.id == debt)).scalar_one(), current["customer_identity_id"])
-        for phase in ("fencing", "enforced"):
+        for phase in ("fencing",):          # 'enforced' rebinds like 'normal' (P9; lease rows locked)
             db.execute(rv.wallet_runtime_state.update().values(phase=phase))
             db.commit()
             try:

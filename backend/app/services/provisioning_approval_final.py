@@ -124,7 +124,7 @@ def _frozen_referrers(db, rows):
     return named
 
 
-def _referral(db, record, intent, user, purchase, manifest):
+def _referral(db, record, intent, user, purchase, manifest, approval_uuid=None):
     """Referral rewards exactly as FROZEN in the manifest at registration
     (amounts, the referrer, the quota destination) - never the live panel
     settings or a destination re-resolved now. No referral row in the
@@ -157,8 +157,10 @@ def _referral(db, record, intent, user, purchase, manifest):
         if key.startswith("credit:"):
             target = referrer if key.endswith(":referrer") else user
             before = int(target.balance or 0)
-            wallet_service.adjust_in_session(db, target, int(expected["amount"]),
-                                             source_kind=wallet_service.REFERRAL_REWARD)
+            side = "referrer" if key.endswith(":referrer") else "new_user"
+            wallet_service.credit_reward(db, target, int(expected["amount"]), source_kind=wallet_service.REFERRAL_REWARD,
+                                         source_key=wallet_service.referral_source_key(db, user, side),
+                                         causation_approval_uuid=approval_uuid)
             db.flush()
             record("wallet_credit_source_created", key, target,
                    effects.WalletCreditEvidence(before, int(target.balance or 0)))
@@ -197,7 +199,33 @@ def _card_payment(db, record, intent, approval_uuid, manifest):
     return {"outcome": "applied" if written else "skipped"}
 
 
-def record(db, operation, intent, row, *, user, purchase, connections, entry, credit_entries, renewal_evidence):
+def _loyalty(rec, user, loyalty) -> None:
+    """The payment-time loyalty effects of a receipt-approved sale (P9a):
+    the counted purchase and, when this purchase earned one, the slot's
+    credit and quota reward - exactly the manifest's projected rows."""
+    if not loyalty or loyalty["causation"] != "receipt_approval":
+        return
+    recorded = loyalty["recorded"]
+    rec("loyalty_purchase_recorded", "loyalty_purchase", user,
+        effects.LoyaltyPurchaseEvidence(recorded.purchase_event_id, user.id, "card_paid"))
+    if recorded.slot is None:
+        return
+    key = f"{recorded.slot.epoch_id}:{recorded.slot.slot}"
+    if recorded.credit:
+        rec("wallet_credit_source_created", f"credit:loyalty:{key}", user,
+            effects.WalletCreditEvidence(int(loyalty["credit_before"]), int(loyalty["credit_after"])))
+    if recorded.quota_granted and recorded.quota_target is not None:
+        from . import quota_rewards
+        target = recorded.quota_target
+        after = quota_rewards.quota(target)
+        before = after - recorded.quota_granted
+        kind = "Purchase" if isinstance(target, models.Purchase) else "User"
+        rec("quota_reward_granted", f"quota:loyalty:{key}", target,
+            effects.QuotaRewardEvidence(kind, target.id, before, after, before == 0))
+
+
+def record(db, operation, intent, row, *, user, purchase, connections, entry, credit_entries, renewal_evidence,
+           loyalty=None):
     """Stage every effect, the optional benefits, and approval completion.
     Returns the optional_effects document for the completed operation."""
     approval_uuid = row["approval_uuid"]
@@ -220,10 +248,11 @@ def record(db, operation, intent, row, *, user, purchase, connections, entry, cr
         rec("ledger_sale", "sale", entry)
     for credit in credit_entries:
         rec("ledger_credit_spend", "credit_spend", credit)
+    _loyalty(rec, user, loyalty)
     optional = {}
     for name, outcome in (("card_payment", _card_payment(db, rec, intent, approval_uuid, manifest)),
                           ("discount", _discount(db, rec, intent, user, manifest)),
-                          ("referral", _referral(db, rec, intent, user, purchase, manifest))):
+                          ("referral", _referral(db, rec, intent, user, purchase, manifest, operation.approval_uuid))):
         if outcome is not None:
             optional[name] = outcome
     written = _written(db, approval_uuid)

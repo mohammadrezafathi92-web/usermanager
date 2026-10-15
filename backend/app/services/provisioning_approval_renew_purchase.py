@@ -48,7 +48,7 @@ def finish(db, approval_uuid, execution_version, principal, execution_intent, *,
         if previous.state != "completed" or previous.result_purchase_id != execution_intent.renew_purchase_id:
             raise HTTPException(409, "provisioning_operation_changed")
         return previous, True
-    if locked.wallet_phase != "normal" or locked.effective_mode != "required" or (
+    if locked.wallet_phase not in ("normal", "enforced") or locked.effective_mode != "required" or (
             locked.registered_under_mode != "required"):
         raise HTTPException(503, "provisioning_approval_mode_unavailable")
     approval = db.execute(select(rv.receipt_approvals).where(

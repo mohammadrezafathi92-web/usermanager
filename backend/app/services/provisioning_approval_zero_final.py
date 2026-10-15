@@ -43,7 +43,7 @@ def finish(db, approval_uuid, approval_execution_version, operation_id, version,
     # requires. MariaDB reads are current locking reads, not RR snapshots.
     wallet = db.execute(select(rv.wallet_runtime_state.c.phase, rv.wallet_runtime_state.c.epoch)
         .where(rv.wallet_runtime_state.c.id == 1).with_for_update(read=True)).one_or_none()
-    if wallet is None or wallet.phase != "normal":
+    if wallet is None or wallet.phase not in ("normal", "enforced"):
         raise HTTPException(503, "wallet_phase_unavailable")
     approval_runtime = runtime.read_state(db, lock=True, shared_lock=True)
     if approval_runtime is None or runtime.effective_registration_mode(approval_runtime) != "required":

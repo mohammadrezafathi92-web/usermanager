@@ -168,7 +168,7 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
         raise resource_leases.LeaseProtocolError("business_transaction_not_fenced")
     provisioning_schema.assert_ready()
     receipt_void_schema.assert_ready()
-    wallet_service.require_legacy_phase(db)
+    wallet_service.writer_phase(db)
     epoch = db.execute(select(rv.wallet_runtime_state.c.epoch).where(rv.wallet_runtime_state.c.id == 1)
         .with_for_update(read=True)).scalar_one()
     db.execute(select(rv.receipt_approval_runtime_state.c.id).with_for_update(read=True)).all()

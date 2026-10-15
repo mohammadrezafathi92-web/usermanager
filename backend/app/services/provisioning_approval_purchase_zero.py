@@ -48,7 +48,7 @@ def prepare(db, approval_uuid, execution_version, principal, execution_intent, *
         if previous.state not in ("prepared", "completed"):
             raise HTTPException(409, "provisioning_operation_changed")
         return previous.id, (), True
-    if (locked.wallet_phase != "normal" or locked.effective_mode != "required" or
+    if (locked.wallet_phase not in ("normal", "enforced") or locked.effective_mode != "required" or
             locked.registered_under_mode != "required"):
         raise HTTPException(503, "provisioning_approval_mode_unavailable")
     approval = db.execute(select(rv.receipt_approvals).where(
@@ -144,7 +144,7 @@ def finish(db, approval_uuid, execution_version, operation_id, version, leases,
     resource_leases.begin_business(db)
     wallet = db.execute(select(rv.wallet_runtime_state.c.phase, rv.wallet_runtime_state.c.epoch).where(
         rv.wallet_runtime_state.c.id == 1).with_for_update(read=True)).one_or_none()
-    if wallet is None or wallet.phase != "normal":
+    if wallet is None or wallet.phase not in ("normal", "enforced"):
         raise HTTPException(503, "wallet_phase_unavailable")
     receipt = runtime.read_state(db, lock=True, shared_lock=True)
     if receipt is None or runtime.effective_registration_mode(receipt) != "required":

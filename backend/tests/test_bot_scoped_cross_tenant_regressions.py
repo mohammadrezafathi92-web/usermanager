@@ -228,7 +228,7 @@ check("...and the ledger row really does point at the right card",
 before_entries = db.query(models.LedgerEntry).count()
 resp = client.post(
     f"/api/bot/users/{cust_a.username}/add-balance",
-    json={"amount": 5000, "payment_card_id": card_b.id},
+    json={"amount": 5000, "payment_card_id": card_b.id, "source_kind": "receipt_topup"},
 )
 check("add_balance's own wallet-topup ledger write has the SAME check - a foreign "
       "card_id is refused there too, not just in _record_bot_sale",

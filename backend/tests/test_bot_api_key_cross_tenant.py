@@ -143,7 +143,7 @@ print("=" * 60)
 print("\n--- add_balance: no scope parameter exists in the route signature ---")
 resp = client.post(
     f"/api/bot/users/{b_customer.username}/add-balance",
-    json={"amount": 500000}, headers=HEADERS,
+    json={"amount": 500000, "source_kind": "receipt_topup"}, headers=HEADERS,
 )
 check("credits admin_b's customer's wallet with no ownership check whatsoever", resp.status_code, 200)
 db.refresh(b_customer)

@@ -65,7 +65,7 @@ def _snapshot(db, step_id, version, identity, leases, *, recovery_read, phase):
         raise HTTPException(409, "provisioning_dispatch_transaction_not_fenced")
     provisioning_schema.assert_ready()
     # L1 control rows precede L2 resource leases and L4 operation/step rows.
-    wallet_service.require_legacy_phase(db)
+    wallet_service.writer_phase(db)
     wallet_epoch = db.scalar(select(rv.wallet_runtime_state.c.epoch).where(rv.wallet_runtime_state.c.id == 1)
         .with_for_update(read=True))
     kind = db.scalar(select(mp.ProvisioningOperation.operation_type).join(mp.ProvisioningStep,

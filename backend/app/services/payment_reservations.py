@@ -1,12 +1,17 @@
-"""DB-only payment holds for Lifecycle 8; no live caller or activation yet.
+"""DB-only payment holds for Lifecycle 8.
 
 Caller: short BEGIN IMMEDIATE on SQLite, canonical runtime/lease locks on
 MariaDB, and the operation transaction. Never call these around network I/O.
 No function commits/rolls back. A caller must roll back ANY failure, including
 an INSERT/UNIQUE failure after deduction; retry the whole transaction.
 
-Only pre-cutover legacy_balance/admin_balance are implemented. wallet_lot
-is deliberately refused until the source/lot writer exists.
+The customer's wallet is reserved in the generation of the wallet phase the
+operation started in (its wallet_epoch_at_start is checked on every call, so
+no reservation crosses the cutover): 'normal' -> legacy_balance (a
+conditional UPDATE of User.balance), 'enforced' -> wallet_lot (Receipt Void
+12.3: wallet_service hold / capture / release, the same hold_ref; the
+operation's customer_identity lease is the one revalidated by the caller).
+The reseller's credit is always admin_balance.
 """
 import datetime as dt
 import uuid
@@ -22,7 +27,7 @@ from . import wallet_policy, wallet_service
 def _operation(db, operation_id):
     if not provisioning_schema.is_ready() or not receipt_void_schema.is_ready():
         raise HTTPException(503, "payment_reservation_schema_unavailable")
-    wallet_service.require_legacy_phase(db)
+    db.info["payment_reservation_phase"] = wallet_service.writer_phase(db)
     epoch = db.execute(select(rv.wallet_runtime_state.c.epoch).where(
         rv.wallet_runtime_state.c.id == 1).with_for_update(read=True)).scalar_one()
     operation = db.execute(select(mp.ProvisioningOperation).where(
@@ -34,6 +39,38 @@ def _operation(db, operation_id):
     return operation
 
 
+def _lot_hold(db, operation, user_id, amount, hold_ref):
+    """wallet_lot reserve: a 'held' sale debit with FIFO allocations, keyed
+    by the reservation's hold_ref, provisioning_ref = the operation."""
+    from . import wallet_lots
+    account = wallet_lots.account_of_user(db, user_id)
+    epoch = wallet_lots.require_enforced(db, epoch=operation.wallet_epoch_at_start)
+    operation_id, _ = wallet_lots.operation(
+        db, "wallet_debit", f"{account['id']}:{hold_ref}",
+        payload={"hold_ref": hold_ref, "amount": amount, "provisioning_ref": operation.id},
+        tenant_scope_key=wallet_lots.tenant_of(db, account), epoch=epoch,
+        actor_kind=operation.actor_kind if operation.actor_kind in ("admin", "bot", "system") else "system",
+        actor_id=operation.actor_id)
+    wallet_lots.hold(db, account, amount=amount, hold_ref=hold_ref, operation_id=operation_id,
+                     provisioning_ref=str(operation.id))
+    wallet_lots.complete(db, operation_id, {"hold_ref": hold_ref})
+
+
+def _lot_release(db, row):
+    from . import wallet_lots
+    debit_id = db.execute(select(rv.wallet_debit_events.c.id, rv.wallet_debit_events.c.wallet_account_id).where(
+        rv.wallet_debit_events.c.hold_ref == row.hold_ref)).one_or_none()
+    if debit_id is None:
+        raise HTTPException(409, "payment_reservation_payer_not_found")
+    account = wallet_lots.account(db, debit_id.wallet_account_id)
+    epoch = wallet_lots.require_enforced(db)
+    operation_id, _ = wallet_lots.operation(
+        db, "wallet_refund", f"debit:{debit_id.id}", payload={"hold_ref": row.hold_ref, "release": True},
+        tenant_scope_key=wallet_lots.tenant_of(db, account), epoch=epoch)
+    wallet_lots.release(db, row.hold_ref, operation_id)
+    wallet_lots.complete(db, operation_id, {"released": row.hold_ref})
+
+
 def reserve(db, operation_id, payer_kind, payer_id, amount):
     if payer_kind not in ("customer_wallet", "reseller_credit") or type(amount) is not int or amount <= 0:
         raise HTTPException(422, "invalid_payment_reservation")
@@ -41,7 +78,9 @@ def reserve(db, operation_id, payer_kind, payer_id, amount):
     existing = db.execute(select(mp.PaymentReservation).where(
         mp.PaymentReservation.operation_id == operation.id,
         mp.PaymentReservation.payer_kind == payer_kind).with_for_update().execution_options(populate_existing=True)).scalar_one_or_none()
-    generation = "legacy_balance" if payer_kind == "customer_wallet" else "admin_balance"
+    lots = db.info.get("payment_reservation_phase") == wallet_service.ENFORCED_PHASE
+    generation = ("wallet_lot" if lots else "legacy_balance") if payer_kind == "customer_wallet" else "admin_balance"
+    hold_ref = str(uuid.uuid4())
     if existing is not None:
         actual_id = existing.user_id if payer_kind == "customer_wallet" else existing.admin_id
         if (actual_id, existing.amount, existing.generation) != (payer_id, amount, generation):
@@ -54,7 +93,9 @@ def reserve(db, operation_id, payer_kind, payer_id, amount):
         if payer is None or operation.target_user_id not in (None, payer_id):
             raise HTTPException(409, "payment_reservation_payer_mismatch")
         wallet_policy.can_purchase(db, payer)
-        if not wallet_service.debit_atomic(db, payer_id, amount, source_kind=wallet_service.SALE):
+        if lots:
+            _lot_hold(db, operation, payer_id, amount, hold_ref)
+        elif not wallet_service.debit_atomic(db, payer_id, amount, source_kind=wallet_service.SALE):
             raise HTTPException(400, "موجودی کیف پول کافی نیست")
     else:
         payer = db.execute(select(models.AdminUser).where(models.AdminUser.id == payer_id).with_for_update().execution_options(populate_existing=True)).scalar_one_or_none()
@@ -67,7 +108,7 @@ def reserve(db, operation_id, payer_kind, payer_id, amount):
     row = mp.PaymentReservation(operation_id=operation.id, payer_kind=payer_kind,
         generation=generation, user_id=payer_id if payer_kind == "customer_wallet" else None,
         admin_id=payer_id if payer_kind == "reseller_credit" else None, amount=amount,
-        hold_ref=str(uuid.uuid4()), state="reserved", reserved_at=dt.datetime.utcnow())
+        hold_ref=hold_ref, state="reserved", reserved_at=dt.datetime.utcnow())
     db.add(row)
     db.flush()
     return row
@@ -83,7 +124,9 @@ def _reservation(db, reservation_id):
     operation = _operation(db, operation_id)
     row = db.execute(select(mp.PaymentReservation).where(
         mp.PaymentReservation.id == reservation_id).with_for_update().execution_options(populate_existing=True)).scalar_one()
-    if row.generation not in ("legacy_balance", "admin_balance"):
+    expected = ("wallet_lot" if db.info.get("payment_reservation_phase") == wallet_service.ENFORCED_PHASE
+                else "legacy_balance")
+    if row.generation not in (expected, "admin_balance"):
         raise HTTPException(503, "payment_reservation_generation_unavailable")
     return operation, row
 
@@ -105,6 +148,9 @@ def capture(db, reservation_id, *, sale_ledger_entry_id=None, package=None):
         if entry is None or entry.kind not in accounting.SALE_KINDS or (
             entry.user_id, entry.amount) != (row.user_id, row.amount):
             raise HTTPException(409, "payment_reservation_ledger_mismatch")
+        if row.generation == "wallet_lot":
+            from . import wallet_lots
+            wallet_lots.capture(db, row.hold_ref, entry.id)
     else:
         entry = accounting.record(db, "admin_credit_spend", row.amount,
             admin_id=row.admin_id, actor_admin_id=operation.actor_id if operation.actor_kind == "admin" else row.admin_id,
@@ -144,7 +190,9 @@ def release(db, reservation_id):
     ).values(state="released", released_at=dt.datetime.utcnow(), version=mp.PaymentReservation.version + 1))
     if result.rowcount != 1:
         raise HTTPException(409, "payment_reservation_conflict")
-    if row.payer_kind == "customer_wallet":
+    if row.payer_kind == "customer_wallet" and row.generation == "wallet_lot":
+        _lot_release(db, row)
+    elif row.payer_kind == "customer_wallet":
         if wallet_service.credit_atomic(db, row.user_id, row.amount,
                                        source_kind=wallet_service.RESERVATION_RELEASE) is None:
             raise HTTPException(409, "payment_reservation_payer_not_found")

@@ -501,6 +501,9 @@ class UserUpdate(BaseModel):
     clear_expire_days_trigger: Optional[bool] = None
     status: Optional[UserStatus] = None
     telegram_id: Optional[int] = None
+    # Removed (Receipt Void P7): the wallet is changed only by a signed
+    # adjustment with a reason (POST /api/users/{id}/wallet-adjustments).
+    # Still parsed so an old form that posts it is refused, not ignored.
     balance: Optional[int] = None
     # Combined cap across ALL of this user's openvpn/l2tp connections put
     # together (a real column on User - see models.py for why this isn't
@@ -515,6 +518,9 @@ class UserUpdate(BaseModel):
     # both that and the reason.
     purchases_blocked: Optional[bool] = None
     purchases_blocked_reason: Optional[str] = None
+    # After the wallet cutover only (Receipt Void 12.7): the top-up lock is
+    # separate; omitted, it follows purchases_blocked.
+    topup_blocked: Optional[bool] = None
 
 
 class UserTransferIn(BaseModel):
@@ -1595,8 +1601,20 @@ class BotPurchaseResponse(BaseModel):
     connections: List["BotConnectionInfo"]
 
 
+class WalletAdjustmentRequest(BaseModel):
+    """A manual wallet adjustment (P7): signed tomans, a reason."""
+    amount: int
+    reason: str
+
+
 class BotAddBalanceRequest(BaseModel):
     amount: int  # tomans, can be negative to deduct
+    # Why (Receipt Void P7, mandatory): 'receipt_topup' (an approved top-up
+    # receipt, positive) or 'manual_adjustment' (an admin's own change, with
+    # reason and the admin's Telegram id). Missing -> 422.
+    source_kind: Optional[str] = None
+    reason: Optional[str] = None
+    actor_telegram_id: Optional[int] = None
     # Which card the approved top-up receipt was deposited to - only sent
     # (positive amounts) by the bot's top-up approval flow, for the
     # accounting ledger's wallet_topup row. See services/accounting.py.

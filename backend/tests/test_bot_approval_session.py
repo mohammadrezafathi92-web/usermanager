@@ -20,6 +20,13 @@ from fastapi import HTTPException
 from app import models, models_receipt_void as rv
 from app.database import SessionLocal, engine
 from app.services import auto_approve, receipt_approval_runtime as runtime, receipt_void_schema
+from app.services import receipt_approval_intent as ri
+
+# These checks are about approvals of the user-level renewal shape, which
+# were registered before the one-service rule (owner decision 2026-10-15:
+# a new renewal approval always names one service, ri.normalize_renewal).
+# Such rows still exist and still go through every check below.
+ri.normalize_renewal = lambda db, intent: intent
 from app.telegram_bot import approval_session, panel_bridge, storage
 from app.telegram_bot.config import config
 from app.telegram_bot.handlers import admin_pending

@@ -168,6 +168,12 @@ export const exportUsers = (search = "", extra = {}) =>
 export const fetchUser = (id) => client.get(`/users/${id}`);
 export const createUser = (data) => client.post("/users", data);
 export const updateUser = (id, data) => client.put(`/users/${id}`, data);
+// «تغییر اعتبار» (Receipt Void P7): a signed amount with a reason; the key is
+// one per attempt, so a retry after a lost answer applies it once.
+export const adjustUserWallet = (id, amount, reason, idempotencyKey) =>
+  client.post(`/users/${id}/wallet-adjustments`, { amount, reason }, {
+    headers: { "X-Idempotency-Key": idempotencyKey },
+  });
 export const deleteUser = (id) => client.delete(`/users/${id}`);
 // packageId is what the reset is SOLD as for a reseller (the backend
 // charges it - see admin_billing.require_package_to_grant); a superadmin
@@ -475,6 +481,19 @@ export const fetchProvisioningOrphans = () => client.get("/provisioning/orphans"
 export const fetchApprovalRecoveries = () => client.get("/provisioning/approval-recovery");
 export const decideApprovalRecovery = (uuid, decision, reason) =>
   client.post(`/provisioning/approval-recovery/${uuid}`, { decision, reason }, { _pwForce: true });
+
+// Wallet generation (Receipt Void P9, routers/wallet.py) and the joint
+// activation (P9a) - superadmin only; every change asks for the password.
+export const fetchWalletStatus = () => client.get("/wallet/status");
+export const fetchWalletPreflight = () => client.get("/wallet/preflight");
+export const fetchWalletReconcile = () => client.get("/wallet/reconcile");
+export const walletCutover = () => client.post("/wallet/cutover", {}, { _pwForce: true });
+export const walletRollback = () => client.post("/wallet/rollback", {}, { _pwForce: true });
+export const fetchApprovalRuntime = () => client.get("/accounting/receipt-approvals/runtime-mode");
+export const activateApprovalRuntime = () =>
+  client.post("/accounting/receipt-approvals/runtime-mode/activate", {}, { _pwForce: true });
+export const deactivateApprovalRuntime = () =>
+  client.post("/accounting/receipt-approvals/runtime-mode/deactivate", {}, { _pwForce: true });
 
 // Discount/promo codes (کد تخفیف) - panel-wide, see routers/discount_codes.py.
 export const fetchDiscountCodes = () => client.get("/discount-codes");

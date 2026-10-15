@@ -24,6 +24,12 @@ from app.services import bot_auth, receipt_void_schema
 from app.services import receipt_approval_auto as auto
 from app.services import receipt_approval_intent as ri
 from app.services import receipt_approval_registration as reg
+
+# These checks are about approvals of the user-level renewal shape, which
+# were registered before the one-service rule (owner decision 2026-10-15:
+# a new renewal approval always names one service, ri.normalize_renewal).
+# Such rows still exist and still go through every check below.
+ri.normalize_renewal = lambda db, intent: intent
 from app.services import receipt_approval_runtime as runtime
 
 failures: list[str] = []

@@ -298,6 +298,21 @@ def update_settings(
                                 ("payment_card_switch_threshold", "switch_threshold"))
         if field in data
     }
+    if data.get("ha_enabled") and not row.ha_enabled:
+        # Receipt Void 20.4: HA (a lagging snapshot standby) has no fencing;
+        # the lot wallet and required approvals must never run on it.
+        from ..services import ha_fencing
+        ha_fencing.refuse_enabling(db)
+    # After the joint activation (P9a) a loyalty policy change is a new epoch
+    # (Receipt Void 14.2), never a plain overwrite of the three fields.
+    loyalty_fields = {field: data.pop(field) for field in ("loyalty_purchase_threshold", "loyalty_reward_credit",
+                                                          "loyalty_reward_gb") if field in data}
+    if loyalty_fields:
+        from ..services import loyalty_service
+        if loyalty_service.payment_event_mode(db):
+            loyalty_service.change_policy(db, admin.id, **loyalty_fields)
+        else:
+            data.update(loyalty_fields)
     for k, v in data.items():
         setattr(row, k, v)
     if pool_settings:

@@ -163,6 +163,8 @@ app.include_router(subscription.router)
 app.include_router(accounting_router.router)
 app.include_router(receipt_approvals_router.router)
 app.include_router(receipt_approvals_router.bot_router)
+from .routers import wallet as wallet_router  # noqa: E402
+app.include_router(wallet_router.router)
 app.include_router(provisioning_router.router)
 app.include_router(ads_router.router)
 app.include_router(license_router.router)

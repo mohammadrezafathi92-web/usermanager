@@ -1,6 +1,8 @@
 """RV-60 / RV-65 (Receipt Void design, section 22 "AST gates"): nothing
-outside services/wallet_service.py writes the customer wallet
-(User.balance).
+outside the wallet service writes the customer wallet (User.balance). The
+service has two generations (9.1): services/wallet_service.py (legacy, and
+the door every caller uses) and services/wallet_lots.py (the lot
+generation, whose only User.balance write is the cache, write_cache).
 
 A write is any of:
   - an assignment or augmented assignment to an attribute named `balance`;
@@ -30,6 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 APP = pathlib.Path(__file__).resolve().parent.parent / "app"
 WRITER = "services/wallet_service.py"
+LOT_WRITER = "services/wallet_lots.py"
 
 # (file, function) pairs that write AdminUser.balance - reseller credit.
 RESELLER_WRITERS = {
@@ -126,7 +129,7 @@ def scan(allowed: set) -> tuple[list[str], set]:
     violations, matched = [], set()
     for path in sorted(APP.rglob("*.py")):
         relative = str(path.relative_to(APP))
-        if relative == WRITER:
+        if relative in (WRITER, LOT_WRITER):
             continue
         for function, line, kind in balance_writes(path.read_text(encoding="utf-8")):
             if (relative, function) in allowed:

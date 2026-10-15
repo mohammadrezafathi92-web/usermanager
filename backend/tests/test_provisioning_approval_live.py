@@ -18,6 +18,12 @@ from app.services import provisioning_approval_live as live, provisioning_schema
 from app.services import receipt_approval_intent as ri, receipt_approval_registration as registration
 from app.services import receipt_void_schema, resource_leases
 
+# These checks are about approvals of the user-level renewal shape, which
+# were registered before the one-service rule (owner decision 2026-10-15:
+# a new renewal approval always names one service, ri.normalize_renewal).
+# Such rows still exist and still go through every check below.
+ri.normalize_renewal = lambda db, intent: intent
+
 
 def scenario(engine):
     models.Base.metadata.create_all(engine)

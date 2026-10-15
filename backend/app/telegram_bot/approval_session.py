@@ -20,13 +20,17 @@ from . import storage
 
 logger = logging.getLogger(__name__)
 
-FAIL_CLOSED_CODES = ("receipt_approval_blocked", "required_mode_not_available", "execution_token_not_supported")
+# 'approval_registration_refused:...' is every refusal under 'required' (P9a):
+# the approval stops there, it never runs the legacy path.
+FAIL_CLOSED_CODES = ("receipt_approval_blocked", "required_mode_not_available", "execution_token_not_supported",
+                     "approval_registration_refused")
 
 
 class ApprovalBlocked(RuntimeError):
     """A backend fail-closed decision must never fall back to legacy work."""
 
 LEGACY = {"mode": "off", "approval_uuid": None, "proceed_legacy": True}
+APPROVAL_PROTOCOL_VERSION = 1
 REGISTERED_KINDS = ("new", "renew", "topup")       # 'link' is not a payment
 
 
@@ -52,6 +56,9 @@ def intent_of(pending: dict) -> Optional[dict]:
         "referral_code": pending.get("referral_code") if kind == "new" else None,
         "list_price": price, "connections": connections, "telegram_id": pending.get("telegram_id"),
         "owner_admin_id": pending.get("owner_admin_id"),
+        # This bot speaks the P9a approval protocol (required registration,
+        # one service per renewal, fail-closed refusals).
+        "approval_protocol_version": APPROVAL_PROTOCOL_VERSION,
     }
 
 
@@ -74,6 +81,10 @@ async def begin(pending: dict, *, approved_by_telegram_id: Optional[int] = None,
             return dict(LEGACY)
         if answer.get("shadow_error"):
             logger.info("pending request %s: approval not registered (%s)", pending.get("id"), answer["shadow_error"])
+        if pending.get("kind") == "renew" and answer.get("renew_purchase_id") and not pending.get("renew_purchase_id"):
+            # The panel registered the renewal of the customer's only service:
+            # execute exactly that service (never the whole user).
+            pending["renew_purchase_id"] = answer["renew_purchase_id"]
         return answer
     except Exception as exc:
         detail = str(getattr(exc, "detail", "") or exc)

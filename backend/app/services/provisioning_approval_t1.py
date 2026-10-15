@@ -56,7 +56,7 @@ def prepare(db, approval_uuid, execution_version, principal, execution_intent, *
         identity=identity, ownership_epoch=ownership_epoch, installation_uuid=installation_uuid)
     if locked.replay_operation_id is not None:
         return locked.replay_operation_id, (), True
-    if locked.wallet_phase != "normal":
+    if locked.wallet_phase not in ("normal", "enforced"):
         raise HTTPException(503, "provisioning_approval_mode_unavailable")
     if locked.effective_mode != locked.registered_under_mode:
         raise HTTPException(409, "approval_mode_changed")

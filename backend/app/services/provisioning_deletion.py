@@ -43,7 +43,7 @@ def snapshot(resource_kind, resource_id, connections, *, purchase_ids=None):
 
 def finish(db, operation_id, version, leases):
     # Runtime read precedes resource rows and operation locks.
-    wallet_service.require_legacy_phase(db)
+    wallet_service.writer_phase(db)
     tokens = tuple(leases)
     if any(not isinstance(token, resource_leases.Lease) or not re.fullmatch(
             rf"op:{operation_id}:[1-9][0-9]*", token.owner) for token in tokens):

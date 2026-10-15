@@ -17,12 +17,11 @@ Referral rewards (design 5.3, 14.1) are in the manifest: both credits, and
 each quota reward only when resolve_quota_reward_target finds exactly one
 finite target - never a guessed one.
 
-Loyalty rows are deliberately NOT built here: the frozen design allows them
-only when loyalty_timing_mode is 'payment_event', i.e. after the joint
-activation of phase P9a ("until then loyalty works exactly as today and no
-loyalty row is in the manifest", section 14.2; RV-344). They need the
-policy epochs, the loyalty event ledger and sale_payment_evidence, none of
-which exist before that phase.
+Loyalty rows are built only when loyalty_timing_mode is 'payment_event',
+i.e. after the joint activation of phase P9a ("until then loyalty works
+exactly as today and no loyalty row is in the manifest", section 14.2;
+RV-344): the counted purchase and the one slot it would earn
+(services/loyalty_service.py).
 """
 from __future__ import annotations
 
@@ -188,6 +187,23 @@ def _validate(intent: ApprovalIntent) -> None:
         raise IntentRejected(422, "renew_purchase_not_applicable")
 
 
+def normalize_renewal(db: Session, intent: ApprovalIntent) -> ApprovalIntent:
+    """A renewal is always ONE service (owner decision, 2026-10-15): a renew
+    intent without a service is registered as the renewal of the customer's
+    only service; with none or several it is refused - the bot asks which.
+    A user-level (renew_user) approval is never registered."""
+    if intent.kind != "renew" or intent.renew_purchase_id is not None:
+        return intent
+    user = db.query(models.User).filter(models.User.username == intent.target_username).first()
+    if user is None:
+        return intent                       # resolve_target answers target_user_not_found
+    ids = [row.id for row in db.query(models.Purchase.id).filter(models.Purchase.user_id == user.id).limit(2)]
+    if len(ids) != 1:
+        raise IntentRejected(409, "renew_service_selection_required")
+    from dataclasses import replace
+    return replace(intent, renew_purchase_id=ids[0])
+
+
 def resolve_target(db: Session, principal: bot_auth.BotPrincipal, intent: ApprovalIntent) -> Target:
     _validate(intent)
     claimed_owner = bot_auth.resolve_claimed_owner(db, principal, intent.claimed_owner_admin_id,
@@ -261,6 +277,52 @@ def _connection_rows(db: Session, intent: ApprovalIntent, package: models.Packag
     return rows
 
 
+def _loyalty_quota_binding(db: Session, target: Target, package, has_connections: bool, quota_bytes: int):
+    """Where a loyalty quota reward of THIS sale would land (14.1): the one
+    finite destination after the sale, or None."""
+    if target.shape == "new_user":
+        if has_connections:
+            return PURCHASE_REF if quota_bytes > 0 else None
+        return USER_REF if quota_bytes > 0 else None
+    user = db.get(models.User, target.user_id)
+    existing = db.query(models.Purchase).filter(models.Purchase.user_id == target.user_id).order_by(
+        models.Purchase.id).all()
+    if target.shape == "purchase":
+        return PURCHASE_REF if not existing and quota_bytes > 0 else None
+    from .quota_rewards import resolve_quota_reward_target
+    found = resolve_quota_reward_target(existing, user.total_quota_bytes if user else 0)
+    if found is None:
+        return None
+    return {"type": "Purchase", "id": found[1].id} if found[0] == "Purchase" else {"type": "User", "id": target.user_id}
+
+
+def _loyalty_rows(db: Session, intent: ApprovalIntent, target: Target, package, user_binding, quota_bytes: int,
+                  has_connections: bool) -> list:
+    """Payment-time loyalty (P9a, 14.2), only in 'payment_event': the counted
+    purchase, and the one slot this purchase would earn (credit and/or a
+    finite quota destination). T1 rebuilds this projection under the locks;
+    a different result cancels the approval (the manifest no longer matches)."""
+    from . import loyalty_service
+    if intent.kind not in ("new", "renew") or int(intent.amount or 0) <= 0 or not loyalty_service.payment_event_mode(db):
+        return []
+    state = loyalty_service.runtime_row(db)
+    rows = [ManifestRow("loyalty_purchase_recorded", "loyalty_purchase", REQUIRED,
+                        {"user": user_binding, "eligibility_reason": "card_paid"})]
+    slot = loyalty_service.next_slot(db, target.user_id if target.shape != "new_user" else None,
+                                     int(state["completeness_generation"]), loyalty_service.open_epoch(db))
+    if slot is None:
+        return rows
+    key = f"{slot.epoch_id}:{slot.slot}"
+    if slot.credit_amount > 0:
+        rows.append(ManifestRow("wallet_credit_source_created", f"credit:loyalty:{key}", REQUIRED, {
+            "user": user_binding, "epoch_id": slot.epoch_id, "slot": slot.slot, "amount": slot.credit_amount}))
+    binding = _loyalty_quota_binding(db, target, package, has_connections, quota_bytes) if slot.quota_bytes > 0 else None
+    if binding is not None:
+        rows.append(ManifestRow("quota_reward_granted", f"quota:loyalty:{key}", REQUIRED, {
+            "target": binding, "epoch_id": slot.epoch_id, "slot": slot.slot, "bytes": slot.quota_bytes}))
+    return rows
+
+
 def build_manifest(db: Session, intent: ApprovalIntent, target: Target) -> list[ManifestRow]:
     """The expected effects, sorted by (effect_type, effect_key)."""
     rows: list[ManifestRow] = []
@@ -305,6 +367,10 @@ def build_manifest(db: Session, intent: ApprovalIntent, target: Target) -> list[
             "user": user_binding, "ledger_kind": "sale_new", "amount": intent.amount,
             "payment_card_id": intent.payment_card_id}))
         rows.extend(_referral_rows(db, intent, target, package, bool(connections), quota_bytes))
+
+    if target.shape != "topup":
+        rows.extend(_loyalty_rows(db, intent, target, package, user_binding, quota_bytes,
+                                  any(r.effect_type == "connection_created" for r in rows)))
 
     if package is not None and target.owner_admin_id is not None:
         owner = db.get(models.AdminUser, target.owner_admin_id)

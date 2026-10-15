@@ -1,11 +1,13 @@
-"""What the durable approval path does NOT do before Receipt Void P9/P9a,
-made explicit and fail-closed (not hidden by readiness). Fake runner.
+"""The durable approval path around Receipt Void P9/P9a. Fake runner.
 
-  * loyalty: a 'required' approval writes NO legacy loyalty reward (it would
-    be an effect no manifest describes; P9a's payment-event loyalty owns
-    it); a 'shadow' approval keeps today's legacy loyalty;
-  * the wallet after its cutover ('enforced'): an approval's T1 is refused
-    (503) - the reservations of this phase are legacy-balance ones only.
+  * loyalty: a 'required' approval writes NO legacy loyalty reward (that
+    would be an effect no manifest describes); in 'payment_event' its
+    purchase is counted by the payment-time ledger (P9a) - here with no
+    open epoch, so counted but rewarded nothing; a 'shadow' approval keeps
+    today's legacy loyalty;
+  * the wallet after its cutover ('enforced'): an approval executes (its
+    card sale touches no wallet; the lot generation exists) - before P9
+    this was refused. (Full P9/P9a: tests/test_wallet_lots_p9.py.)
 """
 import datetime as dt
 import os
@@ -114,7 +116,7 @@ def approve(username, mode):
         return outcome, state, user.balance, user.loyalty_rewards_given or 0
 
 
-check("'required' approval with loyalty due: completed, NO legacy loyalty reward (P9a owns it)",
+check("'required' approval with loyalty due: completed, NO legacy loyalty reward (payment-time ledger only)",
       approve("strict", "required"), ("ok", "completed", 0, 0))
 with SessionLocal() as db:
     check("...the purchase itself is still counted (a durable purchase keeps purchase_count)",
@@ -127,8 +129,8 @@ with SessionLocal() as db:
     db.execute(rv.wallet_runtime_state.update().values(phase="enforced"))
     db.commit()
 outcome = approve("later", "shadow")
-check("the wallet after its cutover ('enforced'): the approval's T1 is refused, nothing bought",
-      (outcome[0][0] if isinstance(outcome[0], tuple) else outcome[0], outcome[1]), (503, "registered"))
+check("the wallet after its cutover ('enforced'): the approval executes (P9 lot generation)",
+      (outcome[0], outcome[1]), ("ok", "completed"))
 
 check("no network", _no_network.attempts, [])
 engine.dispose()

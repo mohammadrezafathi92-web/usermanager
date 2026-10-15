@@ -11,6 +11,8 @@ from . import receipt_void_schema
 def refuse_enabling(db) -> None:
     if not receipt_void_schema.is_ready():
         return
+    from . import wallet_service
+    wallet_service.lock_phase_for_change(db)        # serialized with the cutover, held to this commit
     wallet = db.execute(select(rv.wallet_runtime_state.c.phase, rv.wallet_runtime_state.c.external_fencing).where(
         rv.wallet_runtime_state.c.id == 1)).one_or_none()
     approval = db.execute(select(rv.receipt_approval_runtime_state.c.registration_mode,

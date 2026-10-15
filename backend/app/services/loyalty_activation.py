@@ -10,6 +10,10 @@ rollback, 409 with the precondition's code and the list):
   loyalty_cutover_blocked      no User / Purchase with a reserved renewal
   approval_protocol_outdated   every enabled managed remote key reported the protocol
   provisioning_not_ready       p6_ready(), every type durable
+  provisioning_operations_in_flight  no durable operation between T1 and its end
+A T_final holds the approval runtime row shared from its start
+(loyalty_service.pin_mode), so the activation's exclusive lock waits for a
+sale being finalized; the sale's count is then in the baseline.
 Lock order: wallet_runtime_state (shared) -> receipt_approval_runtime_state
 (exclusive). Already active -> 200 without change (no second generation).
 
@@ -88,6 +92,13 @@ def _preconditions(db, wallet, state) -> None:
         mp.ProvisioningTypeMode.mode != "durable"))
     if not ready or legacy:
         _refuse("provisioning_not_ready", {"readiness": readiness, "legacy_types": legacy})
+    inflight = db.execute(select(mp.ProvisioningOperation.id).where(
+        mp.ProvisioningOperation.state.notin_(("completed", "compensated"))).order_by(
+            mp.ProvisioningOperation.id).limit(LIST_LIMIT)).scalars().all()
+    if inflight:
+        # A sale between its T1 and its T_final would straddle the switch:
+        # counted neither in the baseline nor as a payment event.
+        _refuse("provisioning_operations_in_flight", [int(i) for i in inflight])
 
 
 def activate(db, actor_admin_id) -> dict:

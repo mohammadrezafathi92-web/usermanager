@@ -119,6 +119,19 @@ def writer_phase(db: Session) -> str:
     return phase
 
 
+def lock_phase_for_change(db: Session) -> str:
+    """The ONE lock every change that must not cross the cutover takes (HA
+    on, a type back to legacy - Receipt Void 20.3/20.4, 21): the phase row,
+    exclusively (a no-op UPDATE: MariaDB row X lock, SQLite the writer), held
+    to the caller's commit. The cutover takes the same row first, so the two
+    are serialized: whichever commits second sees the other's result."""
+    if not receipt_void_schema.is_ready():
+        return LEGACY_PHASE
+    table = _phase_table()
+    db.execute(table.update().where(table.c.id == receipt_void_schema.SINGLETON_ID).values(version=table.c.version))
+    return db.execute(select(table.c.phase).where(table.c.id == receipt_void_schema.SINGLETON_ID)).scalar()
+
+
 def credit_reward(db: Session, user: models.User, amount: int, *, source_kind: str, source_key: str,
                   causation_approval_uuid: Optional[str] = None) -> int:
     """A loyalty or referral reward credit in the caller's transaction, in
@@ -127,6 +140,7 @@ def credit_reward(db: Session, user: models.User, amount: int, *, source_kind: s
     credit source per reward (Receipt Void 11.1 source keys); a non-positive
     amount is no reward at all. Returns the balance after it."""
     _kind(source_kind, (LOYALTY_REWARD, REFERRAL_REWARD))
+    db.info.pop(LAST_CREDIT_SOURCE, None)
     if writer_phase(db) == LEGACY_PHASE:
         return adjust_in_session(db, user, amount, source_kind=source_kind)
     amount = int(amount)
@@ -144,7 +158,17 @@ def credit_reward(db: Session, user: models.User, amount: int, *, source_kind: s
     source = wallet_lots.credit(db, account, origin_kind=source_kind, source_key=source_key, amount=amount,
                                 operation_id=operation_id, causation_approval_uuid=causation_approval_uuid)
     wallet_lots.complete(db, operation_id, {"wallet_credit_source_id": source})
+    db.info[LAST_CREDIT_SOURCE] = source
     return wallet_lots.available(db, account["id"])
+
+
+# The source the last credit_reward of this session created (lot generation
+# only): an approval's effect is that source, not the balance growth.
+LAST_CREDIT_SOURCE = "wallet_last_credit_source"
+
+
+def take_credit_source(db: Session) -> Optional[int]:
+    return db.info.pop(LAST_CREDIT_SOURCE, None)
 
 
 def referral_source_key(db: Session, referred: models.User, side: str) -> str:

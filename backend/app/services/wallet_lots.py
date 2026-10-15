@@ -404,6 +404,19 @@ def refund(db, debit_id: int, operation_id: int) -> bool:
     return True
 
 
+def credit_evidence(db, source_id: int, user_id: int):
+    """The effect evidence of one applied credit source: its gross amount and
+    how it was applied (debt settlement / lot) - not the balance growth,
+    which is smaller when part of it settled open debt."""
+    from .receipt_approval_effects import CreditSourceEvidence
+    sources, apps = rv.wallet_credit_sources, rv.wallet_credit_applications
+    gross = int(db.execute(select(sources.c.gross_amount).where(sources.c.id == source_id)).scalar_one())
+    applied = dict(db.execute(select(apps.c.application_kind, func.coalesce(func.sum(apps.c.amount), 0)).where(
+        apps.c.wallet_credit_source_id == source_id).group_by(apps.c.application_kind)).all())
+    return CreditSourceEvidence(int(source_id), int(user_id), gross, int(applied.get("debt_settlement", 0)),
+                                int(applied.get("lot", 0)))
+
+
 def open_debt(db, identity_id: int) -> int:
     debt = rv.wallet_debts
     return int(db.execute(select(func.coalesce(func.sum(_remaining_debt_expr()), 0)).where(

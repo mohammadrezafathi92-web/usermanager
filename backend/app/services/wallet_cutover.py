@@ -22,7 +22,13 @@ each case is decided by hand; it is listed, never guessed):
   wallet_phase_not_normal, ha_requires_external_fencing, negative_balances,
   provisioning_not_ready (p6_ready), provisioning_types_not_durable,
   receipt_approval_registration_off (a top-up in the lot generation is a
-  receipt_topup source, which needs its approval), customer_wallet_reservations_open.
+  receipt_topup source, which needs its approval),
+  provisioning_operations_in_flight (any durable operation not yet ended),
+  customer_wallet_reservations_open.
+The cutover holds the phase row exclusively from its first statement; HA
+on and a type back to legacy take the same row first
+(wallet_service.lock_phase_for_change), so neither can cross it.
+rollback() refuses after the joint activation (wallet_rollback_after_activation).
 """
 from __future__ import annotations
 
@@ -70,6 +76,15 @@ def _blockers(db, *, phase_expected="normal") -> tuple[list, dict]:
         # are never deleted, RV-100); a second backfill over them is not
         # designed and is refused rather than guessed.
         blockers.append({"code": "wallet_recutover_unsupported"})
+    inflight = db.execute(select(mp.ProvisioningOperation.id).where(
+        mp.ProvisioningOperation.state.notin_(("completed", "compensated"))).order_by(
+            mp.ProvisioningOperation.id).limit(LIST_LIMIT)).scalars().all()
+    if inflight:
+        # Every durable operation that has not ended - with a customer-wallet
+        # hold, a reseller-credit hold or none - started in the old epoch and
+        # could neither capture nor release after it (12.3, Lifecycle 8): the
+        # cutover waits until each one is completed or compensated.
+        blockers.append({"code": "provisioning_operations_in_flight", "items": [int(i) for i in inflight]})
     open_holds = db.execute(select(func.count()).select_from(mp.PaymentReservation.__table__).where(
         mp.PaymentReservation.payer_kind == "customer_wallet", mp.PaymentReservation.state == "reserved")).scalar_one()
     if open_holds:
@@ -197,6 +212,15 @@ def rollback(db) -> dict:
         state = _lock_state(db)
         if state["phase"] != "enforced":
             raise HTTPException(409, "wallet_phase_not_enforced")
+        # Lock order wallet -> approval runtime (the activation's own order):
+        # after the joint activation (P9a) 'required' and 'payment_event'
+        # depend on the lot wallet - there is no way back to 'normal' then.
+        approval = select(rv.receipt_approval_runtime_state).where(rv.receipt_approval_runtime_state.c.id == 1)
+        if db.get_bind().dialect.name != "sqlite":
+            approval = approval.with_for_update(read=True)
+        approval = db.execute(approval).mappings().one()
+        if approval["registration_mode"] == "required" or approval["loyalty_timing_mode"] == "payment_event":
+            raise HTTPException(409, "wallet_rollback_after_activation")
         used = [name for name in MUTATION_TABLES
                 if db.execute(select(func.count()).select_from(getattr(rv, name))).scalar_one()]
         if used or db.execute(select(func.count()).select_from(rv.wallet_lots).where(

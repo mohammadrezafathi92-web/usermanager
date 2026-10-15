@@ -68,6 +68,7 @@ def _lot_credit(db: Session, user: models.User, amount: int, approval_uuid: Opti
     source = wallet_lots.credit(db, account, origin_kind="receipt_topup", source_key=approval_uuid, amount=amount,
                                 operation_id=operation_id, causation_approval_uuid=approval_uuid)
     wallet_lots.complete(db, operation_id, {"wallet_credit_source_id": source})
+    db.info[wallet_service.LAST_CREDIT_SOURCE] = source
     return wallet_lots.available(db, account["id"])
 
 
@@ -163,8 +164,13 @@ def _credit(db: Session, user: models.User, amount: int, payment_card_id: Option
         entry.approval_uuid = approval_uuid
         db.flush()
         recorder = receipt_approval_effects.ShadowRecorder(db, approval_uuid)
-        recorder.effect("wallet_credit_source_created", "credit:receipt_topup", user,
-                        receipt_approval_effects.WalletCreditEvidence(balance_after - amount, balance_after))
+        source = wallet_service.take_credit_source(db)
+        if source is not None:              # lot generation: the effect is the credit source (part may settle debt)
+            from . import wallet_lots
+            evidence = wallet_lots.credit_evidence(db, source, user.id)
+        else:
+            evidence = receipt_approval_effects.WalletCreditEvidence(balance_after - amount, balance_after)
+        recorder.effect("wallet_credit_source_created", "credit:receipt_topup", user, evidence)
         recorder.effect("ledger_topup", "topup", entry)
     return entry
 

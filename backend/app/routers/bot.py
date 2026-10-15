@@ -265,19 +265,30 @@ def _legacy_wallet_charge(db: Session, user_id: int, amount: int):
         raise
 
 
-def _require_approval_for_card_sale(db: Session, payload) -> None:
-    """After the joint activation (P9a, 'required'): a sale paid by card is a
-    receipt approval's sale and must carry its approval. An old bot that
-    sends none is refused before anything (Receipt Void 21: update every
-    remote installation before activating). Wallet-paid and panel sales
-    carry no receipt and are not affected."""
-    if getattr(payload, "approval_uuid", None) or getattr(payload, "payment_method", None) != "card" or (
-            int(getattr(payload, "paid_amount", None) or 0) <= 0):
+def _require_payment_evidence(db: Session, payload, *, owner_admin_id=None, sale: bool = True) -> None:
+    """After the joint activation (P9a, 'required' - or 'blocked'): a sale
+    with a price is accepted from the bot only with backend-owned payment
+    evidence - its receipt approval, or the customer's wallet charged inside
+    the operation (charge_wallet). Whatever the body says (a payment_method,
+    no payment_method, no paid_amount -> the package's fallback price), a
+    priced sale without one of the two is refused before anything (an old
+    bot, an integration key: update / approve first). A free sale (trial,
+    price 0, 100% discount) and a renewal that sells nothing pass."""
+    if not sale or getattr(payload, "approval_uuid", None):
         return
     state = approval_registration.runtime.read_state(db)
-    if approval_registration.runtime.effective_registration_mode(state) in (
+    if approval_registration.runtime.effective_registration_mode(state) not in (
             approval_registration.runtime.REQUIRED, approval_registration.runtime.BLOCKED):
-        raise HTTPException(422, "approval_uuid_required")
+        return
+    amount = getattr(payload, "paid_amount", None)
+    if amount is None:
+        package = db.get(models.Package, payload.package_id) if getattr(payload, "package_id", None) else None
+        amount = accounting.sale_fallback_price(db, package, owner_admin_id) if package is not None else 0
+    if int(amount or 0) <= 0:
+        return
+    if getattr(payload, "charge_wallet", False) and getattr(payload, "payment_method", None) == "wallet":
+        return
+    raise HTTPException(422, "approval_uuid_required")
 
 
 def _approval_replay(db: Session, payload) -> bool:
@@ -1027,7 +1038,6 @@ def create_user(
     durable_create = provisioning_durable.is_durable(db, "create_user")
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
                                                           allow_required=durable_create)
-    _require_approval_for_card_sale(db, payload)
     # A locked customer must not be able to start a fresh account from the
     # same Telegram id and keep buying - that would leave the lock looking
     # enforced while doing nothing at all.
@@ -1036,6 +1046,7 @@ def create_user(
         # No new legacy account (owner's rule, 2026-10-15): without a package
         # the account has no Purchase. Refused before any write.
         raise HTTPException(400, "package_required")
+    _require_payment_evidence(db, payload, owner_admin_id=owner_admin_id)
     durable_request = None
     if durable_create:
         # Replay first (Lifecycle 13), but only of the SAME request: the whole
@@ -1189,8 +1200,8 @@ def purchase_package(
     durable_purchase = provisioning_durable.is_durable(db, "purchase")
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
                                                           allow_required=durable_purchase)
-    _require_approval_for_card_sale(db, payload)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
+    _require_payment_evidence(db, payload, owner_admin_id=user.owner_admin_id)
     package = bot_resources._get_package_or_403(db, principal, payload.package_id)
     override = (
         [{"node_id": c.node_id, "protocol": c.protocol, "flow": c.flow or ""} for c in payload.connections]
@@ -1698,8 +1709,9 @@ def renew_service(
     durable_renew = provisioning_durable.is_durable(db, "renew_purchase")
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
                                                           allow_required=durable_renew)
-    _require_approval_for_card_sale(db, payload)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
+    _require_payment_evidence(db, payload, owner_admin_id=user.owner_admin_id,
+                              sale=bool(payload.package_id) or payload.paid_amount is not None)
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
@@ -1865,8 +1877,8 @@ def add_balance(
     if payload.source_kind == wallet_service.MANUAL_ADJUSTMENT:
         if payload.approval_uuid or payload.execution_token is not None or payload.payment_card_id is not None:
             raise HTTPException(422, "manual_adjustment_without_receipt")
-        user = bot_resources._get_user_or_403(db, principal, username, None)
         actor = _adjusting_admin(db, principal, payload.actor_telegram_id)
+        user = bot_resources._get_user_or_403(db, principal, username, None)
         from ..services import wallet_adjustments
         wallet_adjustments.adjust(db, user.id, payload.amount, actor=actor, reason=payload.reason or "",
                                   token=x_idempotency_key if isinstance(x_idempotency_key, str) and
@@ -1886,9 +1898,18 @@ def add_balance(
 
 
 def _adjusting_admin(db: Session, principal, telegram_id) -> models.AdminUser:
-    """The admin a manual adjustment from the bot is made by: an active
-    admin with that Telegram id, and - for a bot scoped to one admin's tree
-    - inside that tree. A reason and an actor are what the books keep."""
+    """The admin a manual adjustment from the bot is made by. The Telegram
+    id in the body is only a claim; it is accepted only from a MANAGED bot -
+    the in-process bot or a remote installation's key the panel minted
+    (Receipt Void 6.4, owner decision #13: the managed key is the trusted
+    proxy of the admin's Telegram identity, as for a manual approval). Any
+    other key (an integration key, an old global key) cannot attribute a
+    money change to an admin: 403 before anything. Then an active admin
+    with that Telegram id, and - for a bot scoped to one admin's tree -
+    inside that tree."""
+    from ..services import receipt_approval_intent as approval_intent
+    if not approval_intent.is_managed_principal(principal):
+        raise HTTPException(403, "manual_adjustment_requires_managed_bot")
     if not isinstance(telegram_id, int) or telegram_id <= 0:
         raise HTTPException(422, "actor_telegram_id_required")
     actor = db.query(models.AdminUser).filter(models.AdminUser.telegram_id == telegram_id).first()

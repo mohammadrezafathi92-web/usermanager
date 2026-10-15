@@ -49,7 +49,7 @@ from app.services import provisioning_durable as durable, provisioning_parent_ex
 from app.services import provisioning_readiness, provisioning_schema, receipt_void_schema
 from app.services import receipt_approval_intent as ri, receipt_approval_registration as registration
 from app.services import remote_action as action, user_ops, wallet_accounts, wallet_adjustments
-from app.services import wallet_cutover, wallet_reconcile
+from app.services import wallet_cutover, wallet_lots, wallet_reconcile
 from app.services.provisioning_host import HostIdentity
 
 failures = []
@@ -234,6 +234,39 @@ check("...the source names its approval", (source["origin_kind"], source["causat
       ("receipt_topup", approval.approval_uuid, "applied"))
 
 
+# ---- a credit while the identity owes (a debt from a void, simulated here): the source settles it first
+with SessionLocal() as db:
+    poor = db.query(models.User).filter_by(username="poor").one()
+    account = wallet_lots.account_of_user(db, poor.id)
+    void_op = db.execute(rv.wallet_operations.insert().values(
+        operation_type="void_receipt", business_key=str(uuid.uuid4()), request_hash="0" * 64, tenant_scope_key="shared",
+        actor_kind="system", state="completed", epoch_at_start=1, result_snapshot="{}", attempts=1,
+        created_at=dt.datetime.utcnow(), version=0)).inserted_primary_key[0]
+    scam_lot = db.execute(rv.wallet_lots.insert().values(
+        wallet_account_id=account["id"], source_kind="legacy_baseline", source_key="scam", original_amount=300,
+        available_amount=0, consumed_amount=300, voided_available_amount=0, state="voided",
+        voided_at=dt.datetime.utcnow(), void_operation_id=void_op, created_at=dt.datetime.utcnow(),
+        version=0)).inserted_primary_key[0]
+    db.execute(rv.wallet_debts.insert().values(
+        customer_identity_id=account["customer_identity_id"], wallet_account_id=account["id"],
+        source_wallet_lot_id=scam_lot, source_void_operation_id=void_op, amount=300, adjusted_amount=0,
+        settled_amount=0, state="open", created_at=dt.datetime.utcnow(), version=0))
+    owed = registration.register(db, PRINCIPAL, ri.ApprovalIntent(
+        pending_source_instance_id="p9", pending_local_id=11, kind="topup", target_username="poor", amount=500,
+        list_price=500), approval_mode="manual", approved_by_telegram_id=1000)
+    db.commit()
+before = balance("poor")
+check("a top-up of 500 while 300 is owed: the debt is settled first, the balance grows by 200",
+      (topup(owed.approval_uuid, 500), balance("poor") - before), (before + 200, 200))
+with SessionLocal() as db:
+    effect = db.execute(select(rv.receipt_approval_effects.c.resource_type, rv.receipt_approval_effects.c.delta_value)
+                        .where(rv.receipt_approval_effects.c.approval_uuid == owed.approval_uuid,
+                               rv.receipt_approval_effects.c.effect_type == "wallet_credit_source_created")).one()
+    debt_state = db.execute(select(rv.wallet_debts.c.state, rv.wallet_debts.c.settled_amount)).one()
+check("...its effect is the credit source (500), not the balance growth (200); the debt settled",
+      (tuple(effect), tuple(debt_state)), (("WalletCreditSource", 500), ("settled", 300)))
+
+
 def adjust(name, amount, key=None):
     with SessionLocal() as db:
         user = db.query(models.User).filter_by(username=name).one()
@@ -241,9 +274,10 @@ def adjust(name, amount, key=None):
                                                       reason="goodwill", token=key or uuid.uuid4()))
 
 
-check("manual +200: a manual_adjustment source", (adjust("poor", 200), lots("poor")[-1]), (1700, ("manual_adjustment", 200, "active")))
-check("manual -1600: a captured manual debit, FIFO", (adjust("poor", -1600), lots("poor")),
-      (100, [("receipt_topup", 0, "exhausted"), ("manual_adjustment", 100, "active")]))
+check("manual +200: a manual_adjustment source", (adjust("poor", 200), lots("poor")[-1]), (1900, ("manual_adjustment", 200, "active")))
+check("manual -1800: a captured manual debit, FIFO", (adjust("poor", -1800), lots("poor")),
+      (100, [("receipt_topup", 0, "exhausted"), ("legacy_baseline", 0, "voided"),
+             ("debt_settlement_remainder", 0, "exhausted"), ("manual_adjustment", 100, "active")]))
 check("an overdraft adjustment: 400, nothing changed", (adjust("poor", -101), balance("poor")),
       ((400, "موجودی کیف پول کافی نیست"), 100))
 with SessionLocal() as db:
@@ -309,6 +343,16 @@ with SessionLocal() as db, NO_SHARE:
           code(lambda: bot_router.purchase_package("card", schemas.BotPurchasePackageRequest(
               package_id=SHARED, paid_amount=400, payment_method="card"), db=db, owner_admin_id=None,
               principal=PRINCIPAL)), (422, "approval_uuid_required"))
+with SessionLocal() as db, NO_SHARE:
+    check("...also with no payment_method and no paid_amount (an old bot; the package's price applies): refused",
+          code(lambda: bot_router.purchase_package("card", schemas.BotPurchasePackageRequest(
+              package_id=SHARED), db=db, owner_admin_id=None, principal=PRINCIPAL)), (422, "approval_uuid_required"))
+    check("...and a priced new account without evidence: refused before anything",
+          code(lambda: bot_router.create_user(schemas.BotCreateUserRequest(
+              username="ghost", telegram_id=3999, package_id=SHARED), db=db, principal=PRINCIPAL)),
+          (422, "approval_uuid_required"))
+with SessionLocal() as db:
+    check("...no account was made", db.query(models.User).filter_by(username="ghost").count(), 0)
 with SessionLocal() as db:
     answer = registration.begin(db, PRINCIPAL, ri.ApprovalIntent(
         pending_source_instance_id="p9", pending_local_id=2, kind="new", target_username="card", amount=400,

@@ -168,6 +168,8 @@ def finish(db, operation_id, version, leases, *, require_contracts=False, approv
     wallet_service.writer_phase(db)
     epoch = db.execute(select(rv.wallet_runtime_state.c.epoch).where(
         rv.wallet_runtime_state.c.id == 1).with_for_update(read=True)).scalar_one()
+    from . import loyalty_service
+    loyalty_service.pin_mode(db)         # wallet -> approval runtime, the activation's lock order
     tokens = tuple(leases)
     resource_leases.revalidate(db, tokens)
     operation = transitions._operation(db, operation_id)

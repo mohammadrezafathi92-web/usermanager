@@ -7,7 +7,10 @@ which never carries a receipt approval. What must hold now:
   * a negative amount with an approval (or a card) -> 422, nothing written;
   * a negative manual adjustment needs the admin's Telegram id and a
     reason; with them it takes exactly its amount, once per key;
-  * a receipt top-up cannot be negative.
+  * a receipt top-up cannot be negative;
+  * only a MANAGED bot (in-process, or the panel's remote installation key)
+    may name the adjusting admin; an integration key or an old global key
+    that names the superadmin is refused, nothing is booked.
 SQLite.
 """
 import os
@@ -24,7 +27,9 @@ _no_network.install([])
 
 from fastapi import HTTPException
 
-from app import models, schemas
+from sqlalchemy import select
+
+from app import models, models_receipt_void as rv, schemas
 from app.database import SessionLocal, engine
 from app.routers import bot as bot_router
 from app.services import bot_auth, receipt_void_schema, wallet_accounts
@@ -89,6 +94,49 @@ check("an overdraft is refused and changes nothing",
       (400, 900))
 check("a receipt top-up cannot be negative", call(amount=-1, source_kind="receipt_topup"),
       (422, "receipt_topup_amount_invalid"))
+# ------------------------------------------------------------------ who may name the adjusting admin
+with SessionLocal() as db:
+    owner = models.AdminUser(username="tenant", hashed_password="x", telegram_id=2000)
+    db.add(owner)
+    db.flush()
+    db.query(models.User).filter_by(username="payer").update({"owner_admin_id": owner.id})
+    keys = {kind: models.ApiKey(key=f"k-{kind}", label=kind, key_type=kind,
+                                owner_admin_id=owner.id if kind == bot_auth.KeyType.TENANT_INTEGRATION else None,
+                                scope_enforced=kind == bot_auth.KeyType.TENANT_INTEGRATION,
+                                capabilities=bot_auth.serialize_capabilities(
+                                    [bot_auth.WALLET_WRITE, bot_auth.CUSTOMER_READ])
+                                if kind == bot_auth.KeyType.TENANT_INTEGRATION else None)
+            for kind in (bot_auth.KeyType.TENANT_INTEGRATION, bot_auth.KeyType.LEGACY_GLOBAL,
+                         bot_auth.KeyType.REMOTE_SHARED_BOT)}
+    db.add_all(keys.values())
+    db.commit()
+    principals = {kind: bot_auth.BotPrincipal.from_api_key(db.get(models.ApiKey, key.id)) for kind, key in keys.items()}
+
+
+def by(principal, actor=1000):
+    with SessionLocal() as db:
+        try:
+            return bot_router.add_balance("payer", schemas.BotAddBalanceRequest(
+                amount=-50, source_kind="manual_adjustment", reason="spoof", actor_telegram_id=actor),
+                db=db, principal=principal, x_idempotency_key=str(uuid.uuid4())).balance
+        except HTTPException as exc:
+            return exc.status_code, exc.detail
+
+
+before = balance()
+check("an integration key naming the superadmin as actor: 403, nothing written",
+      (by(principals[bot_auth.KeyType.TENANT_INTEGRATION]), balance()),
+      ((403, "manual_adjustment_requires_managed_bot"), before))
+check("an old global key naming the superadmin as actor: 403, nothing written",
+      (by(principals[bot_auth.KeyType.LEGACY_GLOBAL]), balance()),
+      ((403, "manual_adjustment_requires_managed_bot"), before))
+with SessionLocal() as db:
+    rows = db.execute(select(rv.wallet_operations.c.actor_id).where(
+        rv.wallet_operations.c.operation_type == "wallet_manual_adjustment")).scalars().all()
+check("...no adjustment was booked to anyone by them", len(rows), 1)
+check("the panel's managed remote bot attests the admin: accepted",
+      by(principals[bot_auth.KeyType.REMOTE_SHARED_BOT]), before - 50)
+
 check("no network", _no_network.attempts, [])
 engine.dispose()
 if failures:

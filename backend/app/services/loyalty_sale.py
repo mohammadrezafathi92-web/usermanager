@@ -73,14 +73,13 @@ def record_sale(db, operation, user: models.User, entry, reservations, approval_
             models.User.__table__.c.id == customer.id)).scalar() or 0)
         after = wallet_service.credit_reward(db, customer, amount, source_kind=wallet_service.LOYALTY_REWARD,
                                              source_key=source_key, causation_approval_uuid=approval_uuid)
-        credit_evidence.update(before=before, after=after)
-        return db.execute(select(rv.wallet_credit_sources.c.id).where(
-            rv.wallet_credit_sources.c.origin_kind == "loyalty_reward",
-            rv.wallet_credit_sources.c.source_key == source_key)).scalar()
+        source = wallet_service.take_credit_source(db)
+        credit_evidence.update(before=before, after=after, source=source)
+        return source
 
     recorded = loyalty_service.record_purchase(db, user, entry, evidence_id, causation=causation,
                                                approval_uuid=approval_uuid, debit_id=debit_id, on_credit=on_credit)
     user._loyalty_reward_just_granted = ((recorded.credit, recorded.quota_granted / 1024 ** 3)
                                          if recorded.slot is not None else None)
     return {"recorded": recorded, "causation": causation, "credit_before": credit_evidence.get("before"),
-            "credit_after": credit_evidence.get("after")}
+            "credit_after": credit_evidence.get("after"), "credit_source_id": credit_evidence.get("source")}

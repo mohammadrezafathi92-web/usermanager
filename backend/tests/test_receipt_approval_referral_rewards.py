@@ -431,6 +431,14 @@ check("...a counted purchase projects its user and eligibility",
       fx._project("loyalty_purchase_recorded", "loyalty_purchase", target_user,
                   fx.LoyaltyPurchaseEvidence(41, 7, "card_paid"))[1:3],
       (41, {"user": {"type": "User", "id": 7}, "eligibility_reason": "card_paid"}))
+check("a lot-generation credit (P9) is the source: its gross amount, even when all of it settled debt",
+      fx._project("wallet_credit_source_created", "credit:loyalty:3:2", target_user,
+                  fx.CreditSourceEvidence(55, 7, 300, 300, 0))[:3],
+      ("WalletCreditSource", 55, {"user": {"type": "User", "id": 7}, "epoch_id": 3, "slot": 2, "amount": 300}))
+check("...refused when the applications do not add up, or the source is another user's",
+      [rejected("wallet_credit_source_created", "credit:loyalty:3:2", target_user, e) for e in (
+          fx.CreditSourceEvidence(55, 7, 300, 100, 100), fx.CreditSourceEvidence(55, 8, 300, 0, 300))],
+      ["effect_evidence_invalid"] * 2)
 check("...a slot credit projects its epoch, slot and amount",
       fx._project("wallet_credit_source_created", "credit:loyalty:3:2", target_user, fx.WalletCreditEvidence(10, 60))[2:],
       ({"user": {"type": "User", "id": 7}, "epoch_id": 3, "slot": 2, "amount": 50}, 50))

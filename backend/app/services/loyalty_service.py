@@ -51,7 +51,22 @@ def runtime_row(db, *, lock: bool = False, exclusive: bool = False) -> Optional[
     return dict(row) if row else None
 
 
+_PIN = "loyalty_timing_mode_pin"
+
+
+def pin_mode(db) -> None:
+    """A durable T_final reads the loyalty mode ONCE, with a shared lock held
+    to its commit, and uses that value throughout: the joint activation
+    (exclusive) can then never fall in the middle of a sale - the sale is
+    either all legacy (and in the activation's baseline) or all payment-event."""
+    row = runtime_row(db, lock=True)
+    db.info[_PIN] = (db.get_transaction(), row["loyalty_timing_mode"] if row else None)
+
+
 def payment_event_mode(db) -> bool:
+    pin = db.info.get(_PIN)
+    if pin is not None and pin[0] is not None and pin[0] is db.get_transaction():
+        return pin[1] == PAYMENT_EVENT
     row = runtime_row(db)
     return bool(row) and row["loyalty_timing_mode"] == PAYMENT_EVENT
 

@@ -342,9 +342,8 @@ def change_type_mode(session_factory, admin_id, operation_type, target):
                     from . import provisioning_claims
                     provisioning_claims.backfill_existing_purchases(db, admin_id)
             else:
-                from .. import models_receipt_void as rv
-                if db.execute(select(rv.wallet_runtime_state.c.phase).where(
-                        rv.wallet_runtime_state.c.id == 1)).scalar() != "normal":
+                from . import wallet_service
+                if wallet_service.lock_phase_for_change(db) != "normal":
                     # Receipt Void 21: after the wallet cutover every purchase
                     # path is durable; the legacy writer no longer exists.
                     raise HTTPException(409, "wallet_enforced_requires_durable")

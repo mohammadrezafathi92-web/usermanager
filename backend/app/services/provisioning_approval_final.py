@@ -162,8 +162,13 @@ def _referral(db, record, intent, user, purchase, manifest, approval_uuid=None):
                                          source_key=wallet_service.referral_source_key(db, user, side),
                                          causation_approval_uuid=approval_uuid)
             db.flush()
-            record("wallet_credit_source_created", key, target,
-                   effects.WalletCreditEvidence(before, int(target.balance or 0)))
+            source = wallet_service.take_credit_source(db)
+            if source is not None:            # lot generation: the effect is the credit source
+                from . import wallet_lots
+                evidence = wallet_lots.credit_evidence(db, source, target.id)
+            else:
+                evidence = effects.WalletCreditEvidence(before, int(target.balance or 0))
+            record("wallet_credit_source_created", key, target, evidence)
             continue
         binding = expected["target"]
         if binding == ri.USER_REF:
@@ -212,8 +217,12 @@ def _loyalty(rec, user, loyalty) -> None:
         return
     key = f"{recorded.slot.epoch_id}:{recorded.slot.slot}"
     if recorded.credit:
-        rec("wallet_credit_source_created", f"credit:loyalty:{key}", user,
-            effects.WalletCreditEvidence(int(loyalty["credit_before"]), int(loyalty["credit_after"])))
+        if loyalty.get("credit_source_id") is not None:
+            from . import wallet_lots
+            evidence = wallet_lots.credit_evidence(rec.db, loyalty["credit_source_id"], user.id)
+        else:
+            evidence = effects.WalletCreditEvidence(int(loyalty["credit_before"]), int(loyalty["credit_after"]))
+        rec("wallet_credit_source_created", f"credit:loyalty:{key}", user, evidence)
     if recorded.quota_granted and recorded.quota_target is not None:
         from . import quota_rewards
         target = recorded.quota_target

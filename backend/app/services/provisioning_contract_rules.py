@@ -42,6 +42,12 @@ def contract_statement():
         "JOIN nodes n ON n.id=c.node_id WHERE c.node_id=:node_id AND c.backend=:backend")
 
 
+def node_endpoint_statement():
+    """The legacy runner's read of one node's public endpoint (no secrets)."""
+    fields = ", ".join("n." + field + " AS n_" + field for field in ENDPOINT_FIELDS)
+    return text("SELECT n.id AS n_id, " + fields + " FROM nodes n WHERE n.id=:node_id")
+
+
 def endpoint_fingerprint(row):
     values = {field: row["n_" + field] for field in ENDPOINT_FIELDS}
     if values["mt_use_ssl"] is not None:

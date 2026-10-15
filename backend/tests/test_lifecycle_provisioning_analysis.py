@@ -299,11 +299,17 @@ def _fake_provision_wireguard(db_, user, node, purchase_batch=None, package_name
     return conn
 
 
+# Every account is created with a package now (no new legacy account); the
+# finding below is about the legacy connections loop, which still runs.
+pkg_a = models.Package(name="pkg-a", quota_gb=1, duration_days=30, price=1000, enabled=True)
+db.add(pkg_a)
+db.commit()
 user_ops.provision_wireguard = _fake_provision_wireguard
 try:
     resp = client.post(
         "/api/bot/users",
         json={
+            "package_id": pkg_a.id,
             "username": "phantom_customer",
             "connections": [
                 {"node_id": node_ok.id, "protocol": "wireguard"},
@@ -333,7 +339,8 @@ if phantom_user:
           db.query(models.LedgerEntry).count(), 0)
 
     print("\n--- [A2] the phantom row also makes the failure UNRECOVERABLE by simple retry ---")
-    resp2 = client.post("/api/bot/users", json={"username": "phantom_customer", "connections": []})
+    resp2 = client.post("/api/bot/users", json={"username": "phantom_customer", "connections": [],
+                                                "package_id": pkg_a.id})
     check("retrying with the SAME username is refused - \"username already taken\"", resp2.status_code, 400)
     check("...giving no hint this is the customer's own half-created account",
           "قبلا ثبت شده" in (resp2.json().get("detail") or ""), True)

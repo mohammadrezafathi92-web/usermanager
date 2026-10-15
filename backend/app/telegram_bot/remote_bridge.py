@@ -19,6 +19,12 @@ from typing import Optional
 import requests
 
 
+def _key_header(idempotency_key):
+    """X-Idempotency-Key for a durable operation: the same key on a retry
+    is answered with the same operation (no second service or charge)."""
+    return {"X-Idempotency-Key": idempotency_key} if idempotency_key else None
+
+
 class RemoteBridge:
     def __init__(self, base_url: str, api_key: str, timeout: float = 20.0):
         self.base_url = base_url.rstrip("/")
@@ -32,8 +38,9 @@ class RemoteBridge:
         from .panel_bridge import ApiError  # local import - see module docstring for why
 
         url = f"{kwargs.pop('base_url', self.base_url)}{path}"
+        headers = {**self._headers(), **(kwargs.pop("extra_headers", None) or {})}
         try:
-            resp = requests.request(method, url, headers=self._headers(), timeout=self.timeout, **kwargs)
+            resp = requests.request(method, url, headers=headers, timeout=self.timeout, **kwargs)
         except requests.RequestException as exc:
             raise ApiError(f"اتصال به پنل اصلی برقرار نشد: {exc}") from exc
 
@@ -296,11 +303,12 @@ class RemoteBridge:
     async def purchase_package(
         self, username: str, package_id: int, connections: Optional[list[dict]] = None,
         owner_admin_id: Optional[int] = None, sale_info: Optional[dict] = None,
-        comment: Optional[str] = None,
+        comment: Optional[str] = None, idempotency_key: Optional[str] = None,
     ) -> dict:
         payload = {"package_id": package_id, "connections": connections or [], "comment": comment, **(sale_info or {})}
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
-        return await self._call("POST", f"/users/{username}/purchase-package", json=payload, params=params)
+        return await self._call("POST", f"/users/{username}/purchase-package", json=payload, params=params,
+                                extra_headers=_key_header(idempotency_key))
 
     async def begin_approval(self, intent: dict, mode: str) -> dict:
         """Same as PanelBridge.begin_approval, over HTTP. The endpoint lives
@@ -326,20 +334,22 @@ class RemoteBridge:
     async def renew_service(
         self, username: str, purchase_id: int, add_gb: float = 0, add_days: int = 0,
         reset_usage: bool = False, owner_admin_id: Optional[int] = None,
-        package_id: Optional[int] = None, sale_info: Optional[dict] = None,
+        package_id: Optional[int] = None, sale_info: Optional[dict] = None, idempotency_key: Optional[str] = None,
     ) -> dict:
         payload = {"add_gb": add_gb, "add_days": add_days, "reset_usage": reset_usage, "package_id": package_id, **(sale_info or {})}
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
-        return await self._call("POST", f"/users/{username}/purchases/{purchase_id}/renew", json=payload, params=params)
+        return await self._call("POST", f"/users/{username}/purchases/{purchase_id}/renew", json=payload, params=params,
+                                extra_headers=_key_header(idempotency_key))
 
     async def renew(
         self, username: str, add_gb: float = 0, add_days: int = 0, reset_usage: bool = False,
         owner_admin_id: Optional[int] = None, package_id: Optional[int] = None,
-        sale_info: Optional[dict] = None,
+        sale_info: Optional[dict] = None, idempotency_key: Optional[str] = None,
     ) -> dict:
         payload = {"add_gb": add_gb, "add_days": add_days, "reset_usage": reset_usage, "package_id": package_id, **(sale_info or {})}
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
-        return await self._call("POST", f"/users/{username}/renew", json=payload, params=params)
+        return await self._call("POST", f"/users/{username}/renew", json=payload, params=params,
+                                extra_headers=_key_header(idempotency_key))
 
     async def rename_purchase(self, username: str, purchase_id: int, comment: str, owner_admin_id: Optional[int] = None) -> dict:
         payload = {"comment": comment}

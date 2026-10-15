@@ -140,3 +140,53 @@ def bind_purchase(db, operation_id, purchase_id):
         row.purchase_id = purchase_id
     db.flush()
     return rows
+
+
+def backfill_existing_purchases(db, actor_admin_id=None) -> int:
+    """L6 (5.5): when 'purchase' becomes durable, every EXISTING Purchase of
+    a one_time_per_user package gets its claims, in the caller's mode-switch
+    transaction. One completed bookkeeping operation owns them (operation_id
+    is NOT NULL). Idempotent through the same UNIQUE: an active claim that
+    already exists is kept. Returns how many claims were written. The
+    historical Purchase check in reserve() stays as the first layer."""
+    import datetime as dt
+    import uuid as _uuid
+    from .. import models_receipt_void as rv
+    rows = db.execute(select(models.Purchase, models.User).join(models.User, models.User.id == models.Purchase.user_id)
+        .join(models.Package, models.Package.id == models.Purchase.package_id)
+        .where(models.Package.one_time_per_user.is_(True)).order_by(models.Purchase.id)).all()
+    if not rows:
+        return 0
+    epoch = db.execute(select(rv.wallet_runtime_state.c.epoch).where(rv.wallet_runtime_state.c.id == 1)
+                       .with_for_update(read=True)).scalar_one()
+    now = dt.datetime.utcnow()
+    token = _uuid.uuid4().hex
+    owner = mp.ProvisioningOperation(
+        operation_type="purchase", business_key=f"backfill:one_time_claims:{token}",
+        request_hash=hashlib.sha256(token.encode()).hexdigest(), tenant_scope_key="shared",
+        actor_kind="admin" if actor_admin_id else "system", actor_id=actor_admin_id, intent="{}",
+        state="completed", forward_deadline=now, wallet_epoch_at_start=epoch, completed_at=now)
+    db.add(owner)
+    db.flush()
+    written = 0
+    for purchase, user in rows:
+        values = [dict(claim_kind="user", claim_user_id=user.id, claim_tenant_scope_key=None, claim_telegram_id=None)]
+        if user.telegram_id is not None:
+            values.append(dict(claim_kind="telegram", claim_user_id=None,
+                               claim_tenant_scope_key=wallet_accounts.tenant_scope(db, user.owner_admin_id),
+                               claim_telegram_id=int(user.telegram_id)))
+        for value in values:
+            value["claim_key"] = claim_key(value["claim_kind"], user_id=value["claim_user_id"],
+                tenant_scope_key=value["claim_tenant_scope_key"], telegram_id=value["claim_telegram_id"])
+            exists = db.execute(select(mp.OneTimePackageClaim.id).where(
+                mp.OneTimePackageClaim.package_id == purchase.package_id,
+                mp.OneTimePackageClaim.claim_key == value["claim_key"],
+                mp.OneTimePackageClaim.release_seq == 0).with_for_update()).first()
+            if exists is not None:
+                continue
+            db.add(mp.OneTimePackageClaim(package_id=purchase.package_id, operation_id=owner.id,
+                                          purchase_id=purchase.id, **value))
+            db.flush()
+            written += 1
+    return written
+

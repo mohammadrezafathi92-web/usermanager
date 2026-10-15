@@ -8,6 +8,7 @@ telegram_bot/remote_bridge.py + services/remote_deploy.py) when the admin
 chooses to run the interactive Telegram bot on a second server instead of
 in-process here - same endpoints, same X-API-Key auth, just reached over
 the network instead of in-process."""
+import contextlib
 import datetime as dt
 import logging
 import os
@@ -15,7 +16,7 @@ import time
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -29,7 +30,8 @@ from ..services import reseller_refund
 from ..services import payment_card_events
 from ..services import receipt_approval_effects as approval_effects
 from ..services import receipt_approval_topup
-from ..services import wallet_service, wallet_policy, wallet_identity
+from ..services import provisioning_durable, provisioning_requests
+from ..services import wallet_accounts, wallet_service, wallet_policy, wallet_identity
 from ..services import receipt_approval_registration as approval_registration
 from ..services.bot_auth import (
     BROADCAST,
@@ -179,6 +181,195 @@ def _charge_seller(
     # charge_for_renewal covers both shapes and already exempts superadmins
     # and volume-billed accounts.
     return admin_billing.charge_for_renewal(db, admin, package, add_gb)
+
+
+def _seller_cost(db: Session, user: models.User, package: Optional[models.Package], add_gb: float = 0) -> int:
+    """What _charge_seller would debit, without debiting (the durable path
+    reserves it in T1). Same exemptions: no owner, a trial, a missing admin,
+    a superadmin or a volume-billed account."""
+    if user.owner_admin_id is None or trial.is_trial(package):
+        return 0
+    return admin_billing.renewal_cost(db.get(models.AdminUser, user.owner_admin_id), package, add_gb)
+
+
+def _durable_sale(db: Session, payload, user: models.User, package: Optional[models.Package]):
+    """The sale _record_bot_sale would write, as a frozen snapshot (or None)."""
+    paid = getattr(payload, "paid_amount", None)
+    if paid is None:
+        if package is None:
+            return None
+        paid = accounting.sale_fallback_price(db, package, user.owner_admin_id)
+    return provisioning_requests.sale_snapshot(
+        paid, admin_id=user.owner_admin_id, payment_method=getattr(payload, "payment_method", None),
+        payment_card_id=getattr(payload, "payment_card_id", None),
+        discount_code=getattr(payload, "discount_code", None), discount_amount=getattr(payload, "discount_amount", None))
+
+
+def _create_user_request(db, principal, payload, owner_admin_id, package, idempotency_key):
+    """Lifecycle L7: the new customer, their service and every connection -
+    or nothing; the reseller's credit reserved in T1, captured with the sale."""
+    from types import SimpleNamespace
+    if package is not None:
+        quota_ok = not payload.quota_gb or float(payload.quota_gb) == float(package.quota_gb or 0)
+        days_ok = not payload.expire_days or int(payload.expire_days) == int(package.duration_days or 0)
+        if not (quota_ok and days_ok):
+            # The durable sale is frozen from the package; a different
+            # quota/expiry for the same package is not something to guess at.
+            raise HTTPException(409, "provisioning_package_limits_mismatch")
+    slots = provisioning_requests.package_slots(db, package, [
+        {"node_id": spec.node_id, "protocol": spec.protocol, "flow": spec.flow or ""} for spec in payload.connections])
+    provisioning_requests.authorize_slots(db, slots, resolve_bot_authorization_scope(principal))
+    buyer = SimpleNamespace(owner_admin_id=owner_admin_id)
+    return provisioning_requests.create_user(
+        db, username=payload.username, full_name=payload.full_name, telegram_id=payload.telegram_id,
+        owner_admin_id=owner_admin_id, package=package, quota_gb=payload.quota_gb or 0,
+        expire_days=payload.expire_days or 0, slots=slots, comment=payload.comment,
+        sale=_durable_sale(db, payload, buyer, package), reseller_cost=_seller_cost(db, buyer, package),
+        count_delta=1, created_via="bot", key=provisioning_durable.idempotency_key(idempotency_key))
+
+
+def _wallet_charge_amount(payload) -> int:
+    """What charge_wallet asks the panel to take from the customer's wallet
+    (0: nothing). Only for an unapproved wallet sale with a stated price."""
+    if not getattr(payload, "charge_wallet", False):
+        return 0
+    if payload.payment_method != "wallet" or payload.approval_uuid or payload.paid_amount is None:
+        raise HTTPException(422, "wallet_charge_invalid")
+    return max(0, int(payload.paid_amount))
+
+
+@contextlib.contextmanager
+def _legacy_wallet_charge(db: Session, user_id: int, amount: int):
+    """charge_wallet on a type still 'legacy': the order the bot used to do
+    itself (debit, provision, refund on failure), now on the panel so the
+    caller never holds the money. A durable type reserves it in T1 instead."""
+    if amount <= 0:
+        yield
+        return
+    wallet_service.begin_writer(db)
+    if not wallet_service.debit_atomic(db, user_id, amount, source_kind=wallet_service.SALE):
+        db.rollback()
+        raise HTTPException(400, "موجودی کیف پول کافی نیست")
+    db.commit()
+    try:
+        yield
+    except BaseException:
+        db.rollback()
+        try:
+            wallet_service.begin_writer(db)
+            wallet_service.credit_atomic(db, user_id, amount, source_kind=wallet_service.UNSPECIFIED)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("wallet charge: refund after a failed sale did not commit (user_id=%s)", user_id)
+        raise
+
+
+def _approval_replay(db: Session, payload) -> bool:
+    """An approval whose durable operation already exists: its retry runs the
+    whole approval path again (_durable_approval - token, execution key,
+    tenant, the immutable intent hash and the request hash, all in T1)
+    before the earlier result is returned (Lifecycle 13). Never answered from
+    the operation alone, and before the checks only a NEW operation needs."""
+    if not getattr(payload, "approval_uuid", None):
+        return False
+    from ..services import provisioning_approval_exec as approval_exec
+    return approval_exec.operation_of(db, payload.approval_uuid) is not None
+
+
+def _run_request(db: Session, request, **actor):
+    factory = provisioning_requests.session_factory_for(db)
+    db.rollback()
+    operation = provisioning_durable.run(factory, request, **actor)
+    db.expire_all()
+    return operation
+
+
+def _renewal_response(db: Session, user_id: int, purchase_id: int):
+    user, purchase = db.get(models.User, user_id), db.get(models.Purchase, purchase_id)
+    out = _user_response(user)
+    if purchase is not None and (purchase.reserved_quota_bytes or purchase.reserved_duration_days):
+        out.reserved_quota_gb = (purchase.reserved_quota_bytes / (1024 ** 3)) if purchase.reserved_quota_bytes else None
+        out.reserved_duration_days = purchase.reserved_duration_days
+    return out
+
+
+def _prior_delete(db: Session, principal, kind: str, header, *, resource_id=None, user_id=None, username=None):
+    """A deletion this same caller already made with this key (Lifecycle 13):
+    answered from the operation, before the target lookup that would 404
+    once it is gone. Only the same key holder (actor id) and, for a scoped
+    principal, only its own tenant."""
+    operation = provisioning_requests.prior_delete(db, kind, header, resource_id=resource_id,
+                                                   target_username=username)
+    if operation is None or operation.actor_kind != "bot" or operation.actor_id != principal.key_id or (
+            user_id is not None and operation.target_user_id != user_id) or (
+            principal.is_scoped and operation.tenant_scope_key != wallet_accounts.tenant_scope(
+                db, principal.owner_admin_id)):
+        return None
+    return provisioning_requests.settle(db, operation)
+
+
+def _removed_count(db: Session, operation) -> int:
+    from ..models_provisioning import ProvisioningStep
+    return db.query(ProvisioningStep).filter_by(operation_id=operation.id, direction="remove").count()
+
+
+def _durable_approval(db: Session, principal, payload, operation_type: str, *, package, user=None,
+                      renew_purchase_id=None, full_name=None, comment=None):
+    """A receipt approval's production call on a durable type (Lifecycle
+    7.6): exactly one operation approval:{uuid}:v:{token}; T1 binds the
+    token, the execution key and the frozen manifest, T_final records every
+    effect. Old token -> 409 approval_superseded; no token -> 422."""
+    from ..services import provisioning_approval_exec as approval_exec
+    token = approval_exec.require_token(payload)
+    intent = approval_exec.intent_of(db, payload.approval_uuid, payload, package=package,
+                                     renew_purchase_id=renew_purchase_id)
+    execution = approval_exec.ApprovalExecution(payload.approval_uuid, token, principal, intent)
+    request = approval_exec.build(db, execution, operation_type, user=user, full_name=full_name, comment=comment,
+                                  payment_method=payload.payment_method, discount_amount=payload.discount_amount)
+    factory = provisioning_requests.session_factory_for(db)
+    db.rollback()
+    operation = provisioning_durable.run(factory, request, actor_kind="bot", actor_id=principal.key_id,
+                                         approval=execution)
+    db.expire_all()
+    return operation
+
+
+def _optional_answer(db: Session, principal, payload, effect: str, *, username=None, card_id=None):
+    """The bot's separate apply_referral / redeem_discount / record-payment
+    call for an approval whose durable operation exists: answered from that
+    operation (nothing applied twice); None -> the legacy endpoint runs.
+    Receipt Void 6.5 before anything is disclosed: the CURRENT execution
+    token (none or an old one is refused), the execution key the operation
+    is bound to, the caller's tenant, and the resource the call names
+    (the approval's customer / card)."""
+    if not payload.approval_uuid:
+        return None
+    from ..services import provisioning_approval_exec as approval_exec
+    from ..services import provisioning_finalization as final
+    if not provisioning_durable.provisioning_schema.is_ready():
+        return None
+    # Blocked still wins before anything is looked up (the guard's contract);
+    # 'required' is allowed only for an answer, never for a mutation here.
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
+                                                          allow_required=True)
+    operation = approval_exec.operation_of(db, payload.approval_uuid)
+    if operation is None:
+        return None
+    if payload.execution_token is None:
+        raise HTTPException(422, "approval_execution_token_required")
+    if payload.execution_token != operation.approval_execution_version:
+        raise HTTPException(409, "approval_superseded")
+    if approval_registration.caller_key_instance(db, principal) != operation.execution_key_instance_uuid:
+        raise HTTPException(403, "execution_principal_mismatch")
+    if principal.is_scoped and operation.tenant_scope_key != wallet_accounts.tenant_scope(db, principal.owner_admin_id):
+        raise HTTPException(403, "execution_scope_mismatch")
+    intent = final._intent(operation)
+    if username is not None and username != intent.user.username:
+        raise HTTPException(409, "approval_resource_mismatch")
+    if card_id is not None and (intent.sale is None or intent.sale.payment_card_id != card_id):
+        raise HTTPException(409, "approval_resource_mismatch")
+    return approval_exec.optional_answer(db, payload.approval_uuid, effect)
 
 
 # Phase C (docs/api-key-scope-audit-2026-09-27.md): the old _visibility_filter
@@ -537,6 +728,10 @@ def record_payment_card_use(
     services/payment_cards.py's advance_after_payment for what this does
     ("threshold" mode's auto-switch-to-next-card bookkeeping; a harmless
     no-op for a pool in "manual"/"rotate" mode)."""
+    if _optional_answer(db, principal, payload, "card_payment", card_id=card_id) is not None:
+        bot_resources._get_payment_card_or_403(db, principal, card_id)
+        db.rollback()
+        return {"ok": True}         # recorded in the approval's T_final (Lifecycle 7.6)
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     bot_resources._get_payment_card_or_403(db, principal, card_id)  # authorization only - advance_after_payment re-fetches
     # With a registered approval the pool event carries its uuid and becomes
@@ -812,13 +1007,39 @@ def telegram_user_ids(
 def create_user(
     payload: schemas.BotCreateUserRequest, db: Session = Depends(get_db),
     principal: BotPrincipal = Depends(get_bot_principal),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
-    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
+    durable_create = provisioning_durable.is_durable(db, "create_user")
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
+                                                          allow_required=durable_create)
     # A locked customer must not be able to start a fresh account from the
     # same Telegram id and keep buying - that would leave the lock looking
     # enforced while doing nothing at all.
-    wallet_policy.can_purchase_telegram(db, payload.telegram_id)
     owner_admin_id = resolve_claimed_owner(db, principal, payload.owner_admin_id, endpoint="create_user")
+    if not payload.package_id:
+        # No new legacy account (owner's rule, 2026-10-15): without a package
+        # the account has no Purchase. Refused before any write.
+        raise HTTPException(400, "package_required")
+    durable_request = None
+    if durable_create:
+        # Replay first (Lifecycle 13), but only of the SAME request: the whole
+        # request is built and its hash compared - another package, price,
+        # quota, duration or connections under the same key is a 409. The
+        # checks only a new operation needs (one-time, trial) come after.
+        _new_package = bot_resources._get_package_or_403(db, principal, payload.package_id)
+        if payload.payment_card_id is not None:
+            bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
+        if _approval_replay(db, payload):
+            operation = _durable_approval(db, principal, payload, "create_user", package=_new_package,
+                                          full_name=payload.full_name, comment=payload.comment)
+            return _user_response(db.get(models.User, operation.result_user_id))
+        if not payload.approval_uuid:
+            durable_request = _create_user_request(db, principal, payload, owner_admin_id, _new_package,
+                                                   x_idempotency_key)
+            prior = provisioning_requests.replay(db, durable_request, x_idempotency_key)
+            if prior is not None:
+                return _user_response(db.get(models.User, prior.result_user_id))
+    wallet_policy.can_purchase_telegram(db, payload.telegram_id)
     if payload.package_id:
         _new_package = bot_resources._get_package_or_403(db, principal, payload.package_id)
         _ensure_one_time_package_not_reused(
@@ -835,6 +1056,14 @@ def create_user(
     # real User row committed by the time the request was refused.
     if payload.payment_card_id is not None:
         bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
+    if payload.approval_uuid and durable_create:
+        operation = _durable_approval(db, principal, payload, "create_user",
+                                      package=_new_package if payload.package_id else None,
+                                      full_name=payload.full_name, comment=payload.comment)
+        return _user_response(db.get(models.User, operation.result_user_id))
+    if durable_request is not None:
+        operation = _run_request(db, durable_request, actor_kind="bot")
+        return _user_response(db.get(models.User, operation.result_user_id))
     user = user_ops.create_user_record(
         db, payload.username, payload.full_name, payload.quota_gb, payload.expire_days,
         telegram_id=payload.telegram_id, owner_admin_id=owner_admin_id,
@@ -923,6 +1152,7 @@ def create_user(
 def purchase_package(
     username: str, payload: schemas.BotPurchasePackageRequest, db: Session = Depends(get_db),
     owner_admin_id: Optional[int] = None, principal: BotPrincipal = Depends(get_bot_principal),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """Bot counterpart of routers/users.py's apply_package ("افزودن پکیج") -
     gives an EXISTING customer a NEW, independently-enforced Purchase (its
@@ -940,10 +1170,44 @@ def purchase_package(
     a "plain" package with no admin-defined bundle, where the customer
     picked exactly one node/protocol by hand in the bot's purchase flow
     (see telegram_bot/handlers/customer.py's pick_node/pick_protocol)."""
-    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
+    durable_purchase = provisioning_durable.is_durable(db, "purchase")
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
+                                                          allow_required=durable_purchase)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
-    wallet_policy.can_purchase(db, user)
     package = bot_resources._get_package_or_403(db, principal, payload.package_id)
+    override = (
+        [{"node_id": c.node_id, "protocol": c.protocol, "flow": c.flow or ""} for c in payload.connections]
+        if payload.connections else None
+    )
+
+    def _purchased(operation):
+        return schemas.BotPurchaseResponse(
+            user=_user_response(db.get(models.User, user.id)),
+            connections=[_connection_info(c) for c in provisioning_requests.created_connections(db, operation.id)])
+
+    durable_request = None
+    if durable_purchase:
+        # Replay of the SAME request only (see create_user): built and
+        # compared by hash before the new-operation-only checks below.
+        if payload.payment_card_id is not None:
+            bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
+        if _approval_replay(db, payload):
+            return _purchased(_durable_approval(db, principal, payload, "purchase", package=package, user=user,
+                                                comment=payload.comment))
+        if not payload.approval_uuid:
+            slots = provisioning_requests.package_slots(db, package, override)
+            provisioning_requests.authorize_slots(
+                db, slots, resolve_bot_authorization_scope(principal) if override is not None else
+                provisioning_requests.package_scope(db, package))
+            durable_request = provisioning_requests.purchase(
+                db, user, package, slots=slots, comment=payload.comment,
+                sale=_durable_sale(db, payload, user, package), reseller_cost=_seller_cost(db, user, package),
+                count_delta=1, charge_wallet=_wallet_charge_amount(payload) > 0,
+                key=provisioning_durable.idempotency_key(x_idempotency_key))
+            prior = provisioning_requests.replay(db, durable_request, x_idempotency_key)
+            if prior is not None:
+                return _purchased(prior)
+    wallet_policy.can_purchase(db, user)
     _ensure_one_time_package_not_reused(db, package, user=user, telegram_id=user.telegram_id)
     trial.ensure_allowed(db, package, user=user, telegram_id=user.telegram_id)
     # Same ordering fix as create_user above: authorize payload.
@@ -953,27 +1217,35 @@ def purchase_package(
     # the time the request was refused.
     if payload.payment_card_id is not None:
         bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
-    override = (
-        [{"node_id": c.node_id, "protocol": c.protocol, "flow": c.flow or ""} for c in payload.connections]
-        if payload.connections else None
-    )
-    purchase = user_ops.apply_package_as_purchase(
-        db, user, package, connections_override=override, comment=payload.comment, principal=principal,
-    )
-    reseller_debit = _charge_seller(db, user, package)
-    sale_entry = _record_bot_sale(db, principal, "sale_new", payload, user, package, purchase_id=purchase.id)
-    db.flush()
-    reseller_refund.bind_sale(db, purchase, reseller_debit, package, sale_entry=sale_entry, purchase_count_delta=1)
-    recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)      # no-op without an approval
-    if recorder.active:
+    wallet_charge = _wallet_charge_amount(payload)
+    if payload.approval_uuid and durable_purchase:
+        return _purchased(_durable_approval(db, principal, payload, "purchase", package=package, user=user,
+                                            comment=payload.comment))
+    if durable_request is not None:
+        # Lifecycle L6: every connection or none; the reseller's credit (and
+        # with charge_wallet the customer's wallet) is reserved in T1 and
+        # captured with the sale in T_final.
+        return _purchased(_run_request(db, durable_request, actor_kind="bot"))
+    user_id, package_id = user.id, package.id
+    with _legacy_wallet_charge(db, user_id, wallet_charge):
+        user, package = db.get(models.User, user_id), db.get(models.Package, package_id)
+        purchase = user_ops.apply_package_as_purchase(
+            db, user, package, connections_override=override, comment=payload.comment, principal=principal,
+        )
+        reseller_debit = _charge_seller(db, user, package)
+        sale_entry = _record_bot_sale(db, principal, "sale_new", payload, user, package, purchase_id=purchase.id)
         db.flush()
-        recorder.effect("purchase_created", "purchase", purchase,
-                        approval_effects.PurchaseCreatedEvidence(days=package.duration_days or None))
-        for connection in purchase.connections:
-            recorder.connection(connection)
-        recorder.effect("ledger_sale", "sale", sale_entry)
-        recorder.tag_ledger(sale_entry)
-    db.commit()
+        reseller_refund.bind_sale(db, purchase, reseller_debit, package, sale_entry=sale_entry, purchase_count_delta=1)
+        recorder = approval_effects.ShadowRecorder(db, payload.approval_uuid)      # no-op without an approval
+        if recorder.active:
+            db.flush()
+            recorder.effect("purchase_created", "purchase", purchase,
+                            approval_effects.PurchaseCreatedEvidence(days=package.duration_days or None))
+            for connection in purchase.connections:
+                recorder.connection(connection)
+            recorder.effect("ledger_sale", "sale", sale_entry)
+            recorder.tag_ledger(sale_entry)
+        db.commit()
     db.refresh(user)
     return schemas.BotPurchaseResponse(
         user=_user_response(user),
@@ -994,6 +1266,11 @@ def apply_referral(
     logic lives in services/user_ops.py's apply_referral_code (both the
     referrer and the new user get a gift, per the confirmed design - not
     just the referrer)."""
+    answer = _optional_answer(db, principal, payload, "referral", username=payload.username)
+    if answer is not None:
+        bot_resources._get_user_or_403(db, principal, payload.username, None)
+        db.rollback()
+        return {"ok": answer.get("outcome") == "applied", "reason": answer.get("reason") or ""}
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     user = bot_resources._get_user_or_403(db, principal, payload.username, None)
     # Receipt-approval effects of the rewards that are really applied, written
@@ -1048,6 +1325,14 @@ def redeem_discount(
     atomically consumes the code (bumps used_count, records a
     DiscountCodeRedemption row). See services/user_ops.py's
     redeem_discount_code."""
+    answer = _optional_answer(db, principal, payload, "discount", username=payload.username)
+    if answer is not None:
+        resolve_claimed_owner(db, principal, payload.owner_admin_id, endpoint="redeem_discount")
+        db.rollback()
+        amount = int(answer.get("discount_amount") or 0)
+        return schemas.DiscountValidateResult(valid=answer.get("outcome") == "applied", reason=answer.get("reason"),
+                                              discount_amount=amount,
+                                              final_price=max(0, (payload.package_price or 0) - amount))
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     owner_admin_id = resolve_claimed_owner(db, principal, payload.owner_admin_id, endpoint="redeem_discount")
     discount_evidence: list = []
@@ -1177,9 +1462,21 @@ def link_telegram(
 def add_connection(
     username: str, spec: schemas.BotCreateConnectionSpec, db: Session = Depends(get_db),
     owner_admin_id: Optional[int] = None, principal: BotPrincipal = Depends(get_bot_principal),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
     node = bot_resources._get_node_or_403(db, principal, spec.node_id)
+    if provisioning_durable.is_durable(db, "add_connection"):
+        # Lifecycle L4: the same authorization, then the durable operation
+        # (T1 -> remote step -> T_final); the response body is unchanged.
+        user_ops.authorize_node(db, node, resolve_bot_authorization_scope(principal))
+        request = provisioning_requests.add_connection(
+            db, user, node, spec.protocol, flow=spec.flow or "", purchase_batch=spec.purchase_batch,
+            key=provisioning_durable.idempotency_key(x_idempotency_key))
+        factory = provisioning_requests.session_factory_for(db)
+        db.rollback()
+        operation = provisioning_durable.run(factory, request, actor_kind="bot")
+        return _connection_info(provisioning_requests.created_connections(db, operation.id)[0])
     conn = user_ops.provision_connection(
         db, user, node, spec.protocol, spec.flow or "",
         purchase_batch=spec.purchase_batch, package_name=spec.package_name,
@@ -1247,6 +1544,7 @@ def delete_purchase(
     username: str, purchase_id: int,
     db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
     principal: BotPrincipal = Depends(get_bot_principal),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """Deletes one of the customer's own expired/exhausted services (all of
     its connections, deprovisioned from their nodes, then the Purchase row
@@ -1255,10 +1553,20 @@ def delete_purchase(
     scoped to services that are already unusable (see
     _ensure_deletable_purchase)."""
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
+    if provisioning_durable.is_durable(db, "delete_purchase"):
+        prior = _prior_delete(db, principal, "purchase", x_idempotency_key, resource_id=purchase_id, user_id=user.id)
+        if prior is not None:
+            return {"ok": True, "connections_removed": _removed_count(db, prior), "failed": []}
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
     _ensure_deletable_purchase(purchase)
+    if provisioning_durable.is_durable(db, "delete_purchase"):
+        count = len(purchase.connections)
+        provisioning_requests.run_delete(db, "purchase", purchase.id, user.owner_admin_id, actor_kind="bot",
+                                         actor_id=principal.key_id,
+                                         key=provisioning_durable.idempotency_key(x_idempotency_key))
+        return {"ok": True, "connections_removed": count, "failed": []}
     removed = 0
     failed: list[str] = []
     for conn in list(purchase.connections):
@@ -1279,12 +1587,16 @@ def delete_connection(
     username: str, connection_id: int,
     db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
     principal: BotPrincipal = Depends(get_bot_principal),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """Same self-service delete as delete_purchase above, for a connection
     that predates the Purchase feature (or was added one-at-a-time) and so
     has no purchase_id of its own - governed by the user's own combined
     status instead of a Purchase's (see models.Purchase's docstring)."""
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
+    if provisioning_durable.is_durable(db, "delete_connection") and _prior_delete(
+            db, principal, "connection", x_idempotency_key, resource_id=connection_id, user_id=user.id) is not None:
+        return {"ok": True}
     conn = db.get(models.Connection, connection_id)
     if not conn or conn.user_id != user.id:
         raise HTTPException(404, "کانکشن پیدا نشد")
@@ -1296,6 +1608,11 @@ def delete_connection(
         raise HTTPException(400, "این اتصال بخشی از یک سرویس است - حذف باید از طریق همان سرویس انجام شود")
     if user.status not in (models.UserStatus.expired, models.UserStatus.quota_exceeded):
         raise HTTPException(400, "این سرویس هنوز فعال است - فقط سرویس‌های تمام‌شده یا منقضی قابل حذف هستند")
+    if provisioning_durable.is_durable(db, "delete_connection"):
+        provisioning_requests.run_delete(db, "connection", conn.id, user.owner_admin_id, actor_kind="bot",
+                                         actor_id=principal.key_id,
+                                         key=provisioning_durable.idempotency_key(x_idempotency_key))
+        return {"ok": True}
     user_ops.delete_connection(db, conn)
     return {"ok": True}
 
@@ -1353,6 +1670,7 @@ def renew_service(
     username: str, purchase_id: int, payload: schemas.BotRenewRequest,
     db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
     principal: BotPrincipal = Depends(get_bot_principal),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """Renews ONE specific service: same connections/credentials, the new
     package queued (reserved) behind whatever the service has left and
@@ -1360,9 +1678,10 @@ def renew_service(
     service is already exhausted (see user_ops.renew_purchase). Never
     creates anything new - renewal means CONTINUING the same service, per
     the panel owner's definition (2026-08-09)."""
-    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
+    durable_renew = provisioning_durable.is_durable(db, "renew_purchase")
+    approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
+                                                          allow_required=durable_renew)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
-    wallet_policy.can_purchase(db, user)
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
@@ -1379,15 +1698,41 @@ def renew_service(
     # authorized before it too, not inside _record_bot_sale afterward.
     if payload.payment_card_id is not None:
         bot_resources._get_payment_card_or_403(db, principal, payload.payment_card_id)
+    wallet_charge = _wallet_charge_amount(payload)
+    if durable_renew:
+        # Replay of the SAME request only (see create_user), before the
+        # new-operation-only check (can_purchase) below.
+        if payload.approval_uuid:
+            if not _approval_replay(db, payload):
+                wallet_policy.can_purchase(db, user)
+            _durable_approval(db, principal, payload, "renew_purchase", package=renew_package, user=user,
+                              renew_purchase_id=purchase.id)
+            return _renewal_response(db, user.id, purchase.id)
+        # Lifecycle L5: renewal, reseller (and charge_wallet) reservation+capture and the sale in ONE transaction.
+        sale = _durable_sale(db, payload, user, renew_package) if (payload.package_id or payload.paid_amount is not None) else None
+        request = provisioning_requests.renewal(
+            db, user, purchase=purchase, add_gb=payload.add_gb or 0, add_days=payload.add_days or 0,
+            reset_usage=bool(payload.reset_usage), package=renew_package, sale=sale,
+            reseller_cost=_seller_cost(db, user, renew_package, payload.add_gb or 0), charge_wallet=wallet_charge > 0,
+            key=provisioning_durable.idempotency_key(x_idempotency_key))
+        if provisioning_requests.replay(db, request, x_idempotency_key) is None:
+            wallet_policy.can_purchase(db, user)
+            _run_request(db, request, actor_kind="bot")
+        return _renewal_response(db, user.id, purchase.id)
+    wallet_policy.can_purchase(db, user)
     renewal_evidence: list = []
-    user_ops.renew_purchase(db, purchase, payload.add_gb, payload.add_days, payload.reset_usage,
-                            package_id=payload.package_id, evidence_sink=renewal_evidence)
-    sale_entry = None
-    _charge_seller(db, user, renew_package, payload.add_gb or 0)
-    if payload.package_id or payload.paid_amount is not None:
-        sale_entry = _record_bot_sale(db, principal, "sale_renew", payload, user, renew_package, purchase_id=purchase.id)
-    _record_renewal(db, payload, purchase, renewal_evidence, sale_entry)
-    db.commit()
+    user_id, purchase_id = user.id, purchase.id
+    with _legacy_wallet_charge(db, user_id, wallet_charge):
+        user, purchase = db.get(models.User, user_id), db.get(models.Purchase, purchase_id)
+        renew_package = db.get(models.Package, payload.package_id) if payload.package_id else None
+        user_ops.renew_purchase(db, purchase, payload.add_gb, payload.add_days, payload.reset_usage,
+                                package_id=payload.package_id, evidence_sink=renewal_evidence)
+        sale_entry = None
+        _charge_seller(db, user, renew_package, payload.add_gb or 0)
+        if payload.package_id or payload.paid_amount is not None:
+            sale_entry = _record_bot_sale(db, principal, "sale_renew", payload, user, renew_package, purchase_id=purchase.id)
+        _record_renewal(db, payload, purchase, renewal_evidence, sale_entry)
+        db.commit()
     db.refresh(user)
     db.refresh(purchase)
     out = _user_response(user)
@@ -1406,6 +1751,7 @@ def renew_service(
 def renew(
     username: str, payload: schemas.BotRenewRequest, db: Session = Depends(get_db),
     owner_admin_id: Optional[int] = None, principal: BotPrincipal = Depends(get_bot_principal),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
@@ -1423,6 +1769,7 @@ def renew(
         raise HTTPException(409, "service_selection_required")
     return renew_service(
         username, user.purchases[0].id, payload, db=db, owner_admin_id=owner_admin_id, principal=principal,
+        x_idempotency_key=x_idempotency_key,
     )
 
 
@@ -1441,6 +1788,14 @@ def reset_usage(
         raise HTTPException(409, "service_purchase_required")
     if len(user.purchases) != 1:
         raise HTTPException(409, "service_selection_required")
+    if provisioning_durable.is_durable(db, "renew_purchase"):
+        request = provisioning_requests.renewal(db, user, purchase=user.purchases[0], reset_usage=True,
+                                                key=provisioning_durable.idempotency_key(None))
+        factory = provisioning_requests.session_factory_for(db)
+        db.rollback()
+        provisioning_durable.run(factory, request, actor_kind="bot")
+        db.expire_all()
+        return _user_response(db.get(models.User, user.id))
     user_ops.renew_purchase(db, user.purchases[0], reset_usage=True)
     return _user_response(user)
 
@@ -1481,7 +1836,7 @@ def add_balance(
     button) can't both succeed and drive the balance negative - the second
     one gets a clean "insufficient balance" error instead of silently
     overdrawing the wallet."""
-    if payload.amount <= 0:
+    if payload.amount == 0:
         approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
     if payload.amount == 0:
         user = bot_resources._get_user_or_403(db, principal, username, None)
@@ -1490,8 +1845,13 @@ def add_balance(
         return _user_response(user)
     if payload.amount < 0:
         # A wallet-only transaction (design 9.2): become the writer and read
-        # the wallet phase before anything else.
+        # the wallet phase first (L1), then the approval mode INSIDE the same
+        # transaction (L2) so its lock - and on SQLite the writer - is held
+        # to the commit: a switch to 'blocked' cannot pass between the check
+        # and the debit. (The old order checked, rolled back, then wrote.)
         wallet_service.begin_writer(db)
+        approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
+                                                              keep_transaction=True)
         user = bot_resources._get_user_or_403(db, principal, username, None)
         # Only a TOP-UP is blocked. A negative amount is the wallet being
         # spent on a purchase, and that purchase is already refused upstream
@@ -1520,8 +1880,17 @@ def add_balance(
 def delete_user(
     username: str, db: Session = Depends(get_db), owner_admin_id: Optional[int] = None,
     principal: BotPrincipal = Depends(get_bot_principal),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
+    if provisioning_durable.is_durable(db, "delete_user") and _prior_delete(
+            db, principal, "user", x_idempotency_key, username=username) is not None:
+        return {"ok": True}
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
+    if provisioning_durable.is_durable(db, "delete_user"):
+        provisioning_requests.run_delete(db, "user", user.id, user.owner_admin_id, actor_kind="bot",
+                                         actor_id=principal.key_id, target_username=user.username,
+                                         key=provisioning_durable.idempotency_key(x_idempotency_key))
+        return {"ok": True}
     user_ops.delete_user_cascade(db, user)
     return {"ok": True}
 

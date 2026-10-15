@@ -29,6 +29,7 @@ from .bot_auth import (
 )
 from .mikrotik_client import MikrotikClient, MikrotikError
 from .node_gate import writer_gate
+from . import legacy_remote
 from .xray_client import XrayError, client_for_node
 from .marzneshin_client import sanitize_username as marzneshin_sanitize_username
 from .softether_client import SoftEtherError, client_for_node as softether_client_for_node
@@ -852,7 +853,14 @@ def bulk_delete_users(db: Session, user_ids: list[int], admin: Optional[models.A
         if admin is not None and not hierarchy.can_see_user(admin, owned, user.owner_admin_id):
             continue
         try:
-            delete_user_cascade(db, user)
+            from . import provisioning_durable, provisioning_requests
+            if provisioning_durable.is_durable(db, "delete_user"):
+                # Lifecycle 12: one independent durable deletion per user.
+                provisioning_requests.run_delete(db, "user", user.id, user.owner_admin_id, actor_kind="admin",
+                                                 actor_id=getattr(admin, "id", None),
+                                                 key=provisioning_durable.idempotency_key(None))
+            else:
+                delete_user_cascade(db, user)
             deleted_count += 1
         except HTTPException as exc:
             db.rollback()
@@ -1114,6 +1122,31 @@ def resolve_bulk_purchase_targets(
     return resolved
 
 
+def replace_purchase_with_package_core(db: Session, user: models.User, purchase: models.Purchase,
+                                       package: models.Package, *, reset_usage: bool = False,
+                                       reconciliation_sink: Optional[list] = None) -> models.Purchase:
+    """The panel's bulk "apply package": the service's limits REPLACED by the
+    package's (not queued like a renewal). DB only; the caller reconciles
+    the returned sink after its commit (never for a disabled customer)."""
+    purchase.quota_bytes = gb_to_bytes(package.quota_gb) if package.quota_gb else 0
+    purchase.expire_at = (
+        dt.datetime.utcnow() + dt.timedelta(days=package.duration_days) if package.duration_days else None
+    )
+    purchase.expire_days_after_first_use = None
+    purchase.max_concurrent_sessions = package.max_concurrent_sessions
+    purchase.package_id = package.id
+    user.max_concurrent_sessions = package.max_concurrent_sessions
+    user.package_id = package.id
+    if reset_usage:
+        purchase.used_bytes = 0
+    if purchase.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
+        purchase.status = _resolve_status_after_reset(
+            purchase.quota_bytes, purchase.used_bytes, purchase.expire_at)
+        if user.status != models.UserStatus.disabled and reconciliation_sink is not None:
+            reconciliation_sink.append(purchase)
+    return purchase
+
+
 def bulk_update_users(
     db: Session,
     user_ids: list,
@@ -1158,22 +1191,11 @@ def bulk_update_users(
             if purchase is None or purchase.user_id != user.id:
                 raise HTTPException(409, "service_selection_invalid")
             if package is not None:
-                purchase.quota_bytes = gb_to_bytes(package.quota_gb) if package.quota_gb else 0
-                purchase.expire_at = (
-                    dt.datetime.utcnow() + dt.timedelta(days=package.duration_days) if package.duration_days else None
-                )
-                purchase.expire_days_after_first_use = None
-                purchase.max_concurrent_sessions = package.max_concurrent_sessions
-                purchase.package_id = package.id
-                user.max_concurrent_sessions = package.max_concurrent_sessions
-                user.package_id = package.id
-                if reset_usage:
-                    purchase.used_bytes = 0
-                if purchase.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
-                    purchase.status = _resolve_status_after_reset(
-                        purchase.quota_bytes, purchase.used_bytes, purchase.expire_at)
-                    if user.status != models.UserStatus.disabled:
-                        reconcile_purchase_connections(db, purchase)
+                reconcile = []
+                replace_purchase_with_package_core(db, user, purchase, package, reset_usage=reset_usage,
+                                                   reconciliation_sink=reconcile)
+                for target in reconcile:
+                    reconcile_purchase_connections(db, target)
                 user.purchase_count = (user.purchase_count or 0) + 1
                 _maybe_grant_loyalty_reward(db, user)
             else:
@@ -1322,24 +1344,15 @@ def provision_wireguard(
     peer_name = f"user-{user.username}-{uuid.uuid4().hex[:6]}"
 
     try:
-        with writer_gate(node), MikrotikClient.for_node(node) as mt:
-            mt.ensure_wireguard_interface(node.mt_wireguard_interface, node.mt_endpoint_port or 13231)
-            if subnet_expanded:
-                # The gateway's prefix length just grew (e.g. /24 -> /23) -
-                # ensure_interface_address would skip since an address
-                # already exists, so force-replace it to keep routing/NAT
-                # consistent with the wider pool.
-                mt.set_interface_address(node.mt_wireguard_interface, gateway_with_prefix)
-            else:
-                mt.ensure_interface_address(node.mt_wireguard_interface, gateway_with_prefix)
-            mt.add_peer(
-                node.mt_wireguard_interface,
-                public_key=public_key,
-                allowed_address=client_address,
-                comment=peer_name,
-            )
-            if speed_limit_mbps:
-                mt.upsert_simple_queue(wg_speed_queue_name(peer_name), client_address, speed_limit_mbps)
+        # When the gateway's prefix length just grew (e.g. /24 -> /23)
+        # ensure_interface_address would skip since an address already
+        # exists, so the block force-replaces it (subnet_expanded) to keep
+        # routing/NAT consistent with the wider pool. See legacy_remote_blocks.
+        legacy_remote.run(node, "wg_provision", factory=MikrotikClient.for_node, interface=node.mt_wireguard_interface,
+                          endpoint_port=node.mt_endpoint_port or 13231, subnet_expanded=bool(subnet_expanded),
+                          gateway_with_prefix=gateway_with_prefix, public_key=public_key,
+                          client_address=client_address, peer_name=peer_name,
+                          queue_name=wg_speed_queue_name(peer_name), speed_limit_mbps=speed_limit_mbps)
     except MikrotikError as exc:
         raise HTTPException(400, str(exc))
 
@@ -1494,8 +1507,7 @@ def provision_xray(
 
     email = f"{user.username[:12]}{uuid.uuid4().hex[:4]}@usermanager.local"
     try:
-        with writer_gate(node), client_for_node(node) as xc:
-            client_uuid = xc.add_client(node.xr_inbound_tag, email, flow=flow or "")
+        client_uuid = legacy_remote.run(node, "xray_add", factory=client_for_node, inbound_tag=node.xr_inbound_tag, email=email, flow=flow or "")
     except XrayError as exc:
         raise HTTPException(400, str(exc))
 
@@ -1541,8 +1553,7 @@ def provision_softether(
     username = f"{user.username[:12]}{uuid.uuid4().hex[:4]}"
     password = generate_password()
     try:
-        with writer_gate(node), softether_client_for_node(node) as sc:
-            sc.add_client(username, password)
+        legacy_remote.run(node, "softether_add", factory=softether_client_for_node, username=username, password=password)
     except SoftEtherError as exc:
         raise HTTPException(400, str(exc))
 
@@ -1980,6 +1991,16 @@ def reconcile_purchase_connections(db: Session, purchase: models.Purchase):
         _set_connection_enabled(db, conn, enabled=enabled)
 
 
+def authorize_node(db: Session, node: models.Node, authorization_scope: NodeAuthorizationScope) -> None:
+    """The node must be in the selling scope of whoever sanctioned it (see
+    provision_connection). Shared by the legacy and the durable path."""
+    if not authorization_scope.unrestricted:
+        owner = db.get(models.AdminUser, authorization_scope.admin_id)
+        allowed = hierarchy.selling_scope_node_ids(db, owner) if owner else set()
+        if allowed is not None and node.id not in allowed:
+            raise HTTPException(403, f"سرور «{node.name}» در اختیار این مجموعه نیست")
+
+
 def provision_connection(
     db: Session,
     user: models.User,
@@ -2010,11 +2031,7 @@ def provision_connection(
     CUSTOMER's tenant, not necessarily the authority that chose the node
     (see hierarchy.selling_scope_node_ids's docstring for why those two
     differ for a Seller-owned customer buying a global/superadmin package)."""
-    if not authorization_scope.unrestricted:
-        owner = db.get(models.AdminUser, authorization_scope.admin_id)
-        allowed = hierarchy.selling_scope_node_ids(db, owner) if owner else set()
-        if allowed is not None and node.id not in allowed:
-            raise HTTPException(403, f"سرور «{node.name}» در اختیار این مجموعه نیست")
+    authorize_node(db, node, authorization_scope)
     if protocol == models.ConnectionType.wireguard:
         return provision_wireguard(db, user, node, purchase_batch, package_name, max_concurrent_sessions, speed_limit_mbps)
     if protocol == models.ConnectionType.openvpn:
@@ -2044,31 +2061,28 @@ def deprovision_connection(connection: models.Connection):
     node = connection.node
     try:
         if connection.type == models.ConnectionType.wireguard:
-            with writer_gate(node), MikrotikClient.for_node(node) as mt:
-                peers = mt.list_peers(node.mt_wireguard_interface)
-                match = next((p for p in peers if p.get("comment") == connection.wg_peer_name), None)
-                if match:
-                    mt.remove_peer(match[".id"])
-                else:
-                    # Not necessarily a bug on its own - the peer may
-                    # genuinely already be gone (e.g. manually removed on
-                    # the router). But the DB row is about to be deleted
-                    # regardless, so if it ISN'T already gone (comment
-                    # mismatch, wrong node, etc.) this is exactly how a
-                    # permanently orphaned peer gets left behind on
-                    # MikroTik with nothing pointing back at it anymore -
-                    # logged so it's traceable instead of silent (2026-09
-                    # bug report: "یه عالمه کانکشن‌های وایرگارد بی‌صاحب
-                    # توی میکروتیک هست").
-                    logger.warning(
-                        "deprovision: wireguard peer not found on node %s for connection %s "
-                        "(wg_peer_name=%r) - nothing removed on the router; deleting the DB row anyway",
-                        node.id, connection.id, connection.wg_peer_name,
-                    )
-                # Harmless no-op if this connection never had a speed limit
-                # (see MikrotikClient.remove_simple_queue) - always attempted
-                # so a queue never outlives the peer it was limiting.
-                mt.remove_simple_queue(wg_speed_queue_name(connection.wg_peer_name))
+            # Harmless no-op if this connection never had a speed limit (see
+            # MikrotikClient.remove_simple_queue) - the block always removes
+            # the queue too, so a queue never outlives the peer it limited.
+            removed = legacy_remote.run(node, "wg_remove", factory=MikrotikClient.for_node, interface=node.mt_wireguard_interface,
+                                        peer_name=connection.wg_peer_name,
+                                        queue_name=wg_speed_queue_name(connection.wg_peer_name))
+            if not removed["found"]:
+                # Not necessarily a bug on its own - the peer may
+                # genuinely already be gone (e.g. manually removed on
+                # the router). But the DB row is about to be deleted
+                # regardless, so if it ISN'T already gone (comment
+                # mismatch, wrong node, etc.) this is exactly how a
+                # permanently orphaned peer gets left behind on
+                # MikroTik with nothing pointing back at it anymore -
+                # logged so it's traceable instead of silent (2026-09
+                # bug report: "یه عالمه کانکشن‌های وایرگارد بی‌صاحب
+                # توی میکروتیک هست").
+                logger.warning(
+                    "deprovision: wireguard peer not found on node %s for connection %s "
+                    "(wg_peer_name=%r) - nothing removed on the router; deleting the DB row anyway",
+                    node.id, connection.id, connection.wg_peer_name,
+                )
         elif connection.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp,
                               models.ConnectionType.pptp):
             # Authenticated via RADIUS against this panel's own database -
@@ -2076,11 +2090,10 @@ def deprovision_connection(connection: models.Connection):
             # (done by the caller) is all that's needed.
             pass
         elif connection.type == models.ConnectionType.xray:
-            with writer_gate(node), client_for_node(node) as xc:
-                xc.remove_client(node.xr_inbound_tag, connection.xr_email, connection.xr_uuid)
+            legacy_remote.run(node, "xray_remove", factory=client_for_node, inbound_tag=node.xr_inbound_tag, email=connection.xr_email,
+                              client_uuid=connection.xr_uuid)
         elif connection.type == models.ConnectionType.softether:
-            with writer_gate(node), softether_client_for_node(node) as sc:
-                sc.remove_client(connection.ppp_username)
+            legacy_remote.run(node, "softether_remove", factory=softether_client_for_node, username=connection.ppp_username)
     except (MikrotikError, XrayError, SoftEtherError) as exc:
         raise HTTPException(400, str(exc))
 
@@ -2139,8 +2152,7 @@ def kick_connection(db: Session, connection: models.Connection) -> bool:
     if connection.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp,
                               models.ConnectionType.pptp):
         try:
-            with writer_gate(node), MikrotikClient.for_node(node) as mt:
-                found = mt.kick_ppp_session(connection.ppp_username)
+            found = legacy_remote.run(node, "ppp_kick", factory=MikrotikClient.for_node, username=connection.ppp_username)
         except MikrotikError as exc:
             raise HTTPException(400, str(exc))
         db.query(models.RadiusActiveSession).filter(
@@ -2154,13 +2166,9 @@ def kick_connection(db: Session, connection: models.Connection) -> bool:
         if not connection.online:
             return False
         try:
-            with writer_gate(node), MikrotikClient.for_node(node) as mt:
-                peers = mt.list_peers(node.mt_wireguard_interface)
-                match = next((p for p in peers if p.get("comment") == connection.wg_peer_name), None)
-                if not match:
-                    return False
-                mt.set_peer_disabled(match[".id"], disabled=True)
-                mt.set_peer_disabled(match[".id"], disabled=False)
+            if not legacy_remote.run(node, "wg_bounce", factory=MikrotikClient.for_node, interface=node.mt_wireguard_interface,
+                                     peer_name=connection.wg_peer_name):
+                return False
         except MikrotikError as exc:
             raise HTTPException(400, str(exc))
         connection.online = False
@@ -2171,9 +2179,8 @@ def kick_connection(db: Session, connection: models.Connection) -> bool:
         if not connection.online:
             return False
         try:
-            with writer_gate(node), client_for_node(node) as xc:
-                xc.set_client_enabled(node.xr_inbound_tag, connection.xr_email, connection.xr_uuid, connection.xr_flow or "", False)
-                xc.set_client_enabled(node.xr_inbound_tag, connection.xr_email, connection.xr_uuid, connection.xr_flow or "", True)
+            legacy_remote.run(node, "xray_bounce", factory=client_for_node, inbound_tag=node.xr_inbound_tag, email=connection.xr_email,
+                              client_uuid=connection.xr_uuid, flow=connection.xr_flow or "")
         except XrayError as exc:
             raise HTTPException(400, str(exc))
         connection.online = False
@@ -2184,9 +2191,8 @@ def kick_connection(db: Session, connection: models.Connection) -> bool:
         if not connection.online:
             return False
         try:
-            with writer_gate(node), softether_client_for_node(node) as sc:
-                sc.set_client_enabled(connection.ppp_username, connection.ppp_password, False)
-                sc.set_client_enabled(connection.ppp_username, connection.ppp_password, True)
+            legacy_remote.run(node, "softether_bounce", factory=softether_client_for_node, username=connection.ppp_username,
+                              password=connection.ppp_password)
         except SoftEtherError as exc:
             raise HTTPException(400, str(exc))
         connection.online = False

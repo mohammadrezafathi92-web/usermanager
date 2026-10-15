@@ -88,7 +88,9 @@ class MikrotikClient:
         API port or the API-SSL port depending on node.mt_use_ssl - both are
         independently editable from the panel."""
         port = node.mt_api_ssl_port if node.mt_use_ssl else node.mt_port
-        return cls(node.mt_host, node.mt_username, node.mt_password, port, node.mt_use_ssl)
+        client = cls(node.mt_host, node.mt_username, node.mt_password, port, node.mt_use_ssl)
+        client.bound_node_id = getattr(node, "id", None)  # the node this client may write to (10.7)
+        return client
 
     def connect(self):
         try:
@@ -116,7 +118,9 @@ class MikrotikClient:
                 # (not a general-purpose SSL relaxation).
                 context.set_ciphers("ADH:@SECLEVEL=0")
                 kwargs["ssl_wrapper"] = context.wrap_socket
-            self._api = librouteros.connect(**kwargs)
+            from .transport_guard import RouterosApi
+            # Every command goes through the write guard (Lifecycle 10.7).
+            self._api = RouterosApi(librouteros.connect(**kwargs), self)
         except Exception as exc:  # pragma: no cover - network dependent
             raise MikrotikError(f"اتصال به میکروتیک برقرار نشد: {exc}") from exc
         return self

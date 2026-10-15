@@ -110,7 +110,8 @@ def scenario(engine):
             locks.begin_business(db)
             db.query(mp.ProvisioningOperation).filter_by(id=oid).update(dict(approval_uuid=str(uuid.uuid4()),
                 approval_execution_version=0, approval_key_bound=False))
-            refused("provisioning_approval_integration_unavailable", lambda: final.finish(db, oid, 0, tokens))
+            # An approval operation's T_final needs its approval row locked by the caller.
+            refused("provisioning_approval_unlocked", lambda: final.finish(db, oid, 0, tokens))
             db.rollback()
         # A failure at the very last operation CAS must undo every preceding
         # resource creation, benefit, ledger entry, secret clear and capture.

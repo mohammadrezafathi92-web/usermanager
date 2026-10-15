@@ -640,6 +640,9 @@ class BulkCreateUsersResult(BaseModel):
     created_count: int
     skipped: List[BulkOpSkipped]
     skipped_count: int
+    # Durable members still running (Lifecycle 7.5): they keep their index;
+    # the same token later reports them as created or skipped.
+    in_progress: List[str] = []
 
 
 class BulkUpdateUsersRequest(BaseModel):
@@ -679,6 +682,9 @@ class BulkPurchaseTargetsRequest(BaseModel):
 
 class BulkUpdateUsersResult(BaseModel):
     updated_count: int
+    # Durable bulk renewal (Lifecycle 7.5): the members that did not renew,
+    # each with its reason; every other member is complete.
+    failed: List[dict] = []
 
 
 class BulkDeleteUsersRequest(BaseModel):
@@ -1545,6 +1551,12 @@ class BotCreateUserRequest(BaseModel):
     payment_card_id: Optional[int] = None
     discount_code: Optional[str] = None
     discount_amount: Optional[int] = None
+    # A receipt approval's own terms, sent again with its production call so
+    # the durable path can rebuild the registered intent (its hash is
+    # compared; nothing here is trusted): the code typed at purchase and the
+    # price before any discount.
+    referral_code: Optional[str] = None
+    list_price: Optional[int] = None
 
 
 class BotRenewRequest(BaseModel):
@@ -1565,6 +1577,17 @@ class BotRenewRequest(BaseModel):
     payment_card_id: Optional[int] = None
     discount_code: Optional[str] = None
     discount_amount: Optional[int] = None
+    # A receipt approval's own terms, sent again with its production call so
+    # the durable path can rebuild the registered intent (its hash is
+    # compared; nothing here is trusted): the code typed at purchase and the
+    # price before any discount.
+    referral_code: Optional[str] = None
+    list_price: Optional[int] = None
+    # The panel takes paid_amount from the customer's wallet itself, in the
+    # same operation as the service (payment_method "wallet"); the caller
+    # does not debit first. Without it a wallet sale on a durable type is
+    # refused (the money would have been taken outside the operation).
+    charge_wallet: bool = False
 
 
 class BotPurchaseResponse(BaseModel):
@@ -1702,6 +1725,17 @@ class BotPurchasePackageRequest(BaseModel):
     payment_card_id: Optional[int] = None
     discount_code: Optional[str] = None
     discount_amount: Optional[int] = None
+    # A receipt approval's own terms, sent again with its production call so
+    # the durable path can rebuild the registered intent (its hash is
+    # compared; nothing here is trusted): the code typed at purchase and the
+    # price before any discount.
+    referral_code: Optional[str] = None
+    list_price: Optional[int] = None
+    # The panel takes paid_amount from the customer's wallet itself, in the
+    # same operation as the service (payment_method "wallet"); the caller
+    # does not debit first. Without it a wallet sale on a durable type is
+    # refused (the money would have been taken outside the operation).
+    charge_wallet: bool = False
 
 
 class BotPurchaseResponse(BaseModel):

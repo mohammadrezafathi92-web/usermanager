@@ -59,7 +59,7 @@ def select_due(session_factory, identity, *, installation_uuid, ownership_epoch,
         ready_time = and_(or_(op.next_retry_at.is_(None), op.next_retry_at <= now),
             or_(retry.is_(None), retry <= now))
         due = or_(ready_time, and_(op.state.in_(FORWARD), op.forward_deadline <= now))
-        ids = tuple(db.execute(select(op.id).where(op.id > after_id, op.approval_uuid.is_(None),
+        ids = tuple(db.execute(select(op.id).where(op.id > after_id,
             op.operation_type.in_(kinds), op.state.in_(FORWARD + ("compensating",)),
             ~live_operation_lease, due).order_by(op.id).limit(limit)).scalars())
         # Context manager rolls back the read transaction and releases L1

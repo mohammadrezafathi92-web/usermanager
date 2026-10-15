@@ -741,6 +741,13 @@ def _bootstrap_provisioning_schema() -> None:
     its legacy path."""
     try:
         provisioning_schema.bootstrap(engine, SessionLocal)
+        if provisioning_schema.is_ready():
+            # 5.10: at startup a 'ready' node contract that no longer matches
+            # the adapter version / node configuration / backend is invalidated.
+            from .services import provisioning_contracts
+            with SessionLocal() as db:
+                provisioning_contracts.invalidate_stale(db)
+                db.commit()
     except Exception:  # noqa: BLE001
         logging.exception("provisioning schema bootstrap raised - provisioning stays not-ready")
         try:
@@ -1025,6 +1032,21 @@ def _start_full_services() -> None:
     without a process restart."""
     scheduler.add_job(poll_all, "interval", seconds=settings.poll_interval_seconds, id="poll_all", replace_existing=True)
     scheduler.add_job(cleanup_stale_radius_sessions, "interval", minutes=5, id="cleanup_stale_radius_sessions", replace_existing=True)
+    # Lifecycle 5.12: node_gate counters -> provisioning_gate_stats (best effort).
+    from .services.node_gate import flush_counters as flush_gate_counters
+    scheduler.add_job(flush_gate_counters, "interval", seconds=30, id="flush_gate_counters", replace_existing=True)
+    # Lifecycle 10.5: WireGuard interface-address reconciliation, startup + every 10 min
+    # (it does nothing until at least one operation type is durable).
+    from .services import wireguard_reconciliation, provisioning_host_lifecycle, provisioning_durable
+    # Lifecycle 11.1: the durable worker (no-op until a type is durable and this host owns it).
+    scheduler.add_job(provisioning_durable.recover_due, "interval", seconds=provisioning_durable.RECOVER_SECONDS,
+                      id="provisioning_recover_due", replace_existing=True, max_instances=1, coalesce=True)
+    scheduler.add_job(provisioning_host_lifecycle.heartbeat, "interval",
+                      seconds=provisioning_host_lifecycle.HEARTBEAT_SECONDS, id="provisioning_heartbeat",
+                      replace_existing=True)
+    scheduler.add_job(wireguard_reconciliation.run_once, "interval", minutes=wireguard_reconciliation.RECONCILE_MINUTES,
+                      id="wireguard_reconciliation", replace_existing=True,
+                      next_run_time=__import__("datetime").datetime.now())
     # Once a day - prune RadiusLimitEventLog rows older than
     # RADIUS_LIMIT_EVENT_LOG_KEEP_DAYS (7 by default - "لاگ‌های محدودیت
     # اتصال فقط یک هفته کافیه"). This table had no cleanup at all before -
@@ -1257,6 +1279,12 @@ def on_shutdown():
     if scheduler.running:
         scheduler.shutdown(wait=False)
     telegram_bot_runner.stop_bot(timeout=5)
+    # Lifecycle 10.4: stop/reap runners, then release ownership cleanly (best effort).
+    try:
+        from .services import provisioning_host_lifecycle
+        provisioning_host_lifecycle.shutdown_release()
+    except Exception:  # noqa: BLE001
+        logging.exception("provisioning shutdown release failed")
 
 
 @app.get("/api/health")

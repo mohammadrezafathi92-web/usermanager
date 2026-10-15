@@ -90,6 +90,11 @@ api_key = models.ApiKey(label="third-party integration", key=generate_api_key())
 db.add(api_key)
 db.commit()
 
+# Every account is created with a package now (no new legacy account).
+pkg = models.Package(name="plain", quota_gb=1, duration_days=30, price=100, enabled=True)
+admin_a.balance = admin_b.balance = 10_000            # the package's cost is charged to the owner
+db.add(pkg)
+db.commit()
 app = FastAPI()
 app.include_router(bot_router.router)
 app.dependency_overrides[get_db] = lambda: db
@@ -101,7 +106,7 @@ print("--- REPRODUCTION: one valid key reaches every tenant over real HTTP ---")
 print("=" * 60)
 
 print("\n--- the key can create a user under a tenant it has no relation to ---")
-resp = client.post("/api/bot/users", json={"username": "a_new_cust", "owner_admin_id": admin_a.id}, headers=HEADERS)
+resp = client.post("/api/bot/users", json={"username": "a_new_cust", "owner_admin_id": admin_a.id, "package_id": pkg.id}, headers=HEADERS)
 check("create_user succeeds with an arbitrary caller-chosen owner_admin_id", resp.status_code, 200)
 check("...and the user really landed under admin_a's tree",
       resp.json()["username"] if resp.status_code == 200 else None, "a_new_cust")

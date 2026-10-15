@@ -115,7 +115,8 @@ def scenario(engine):
     operation.approval_execution_version = 1
     operation.approval_key_bound = False
     db.commit()
-    refusal("provisioning_approval_integration_unavailable",
+    # An approval operation's T_comp needs its approval row locked by the caller.
+    refusal("provisioning_approval_unlocked",
             lambda: compensation.finish(db, operation.id, operation.version))
     db.rollback()
     assert reservation.state == "reserved" and db.get(models.User, uid).balance == 80

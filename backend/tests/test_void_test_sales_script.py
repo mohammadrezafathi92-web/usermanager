@@ -141,6 +141,19 @@ check("--execute without --confirm, or with another name: still nothing",
 check("an unknown customer / a silly window", (run("ghost")[0], run("tester", "--days", "400")[0]), (1, 2))
 
 print("--- execute ---")
+print("--- preflight: refused BEFORE any node, backup or commit when the wallet phase / durable deletion forbids it ---")
+from unittest.mock import patch as _patch
+from app.services import provisioning_durable as _durable, wallet_service as _wallet
+with _patch.object(_wallet, "require_legacy_phase", side_effect=_wallet.LegacyWriterUnavailable()):
+    refused_phase = run("tester", "--days", "3", "--execute", "--confirm", "tester")
+with _patch.object(_durable, "is_durable", side_effect=lambda db, kind: kind == "delete_purchase"):
+    refused_durable = run("tester", "--days", "3", "--execute", "--confirm", "tester")
+check("wallet phase not 'normal': exit 3, nothing changed, no node touched, no backup",
+      (refused_phase[0], "wallet is not in phase" in refused_phase[1], snapshot() == before, removed_from_nodes, backups),
+      (3, True, True, [], []))
+check("durable deletion on: exit 3, nothing changed, no node touched, no backup",
+      (refused_durable[0], "durable deletion is on" in refused_durable[1], snapshot() == before, removed_from_nodes, backups),
+      (3, True, True, [], []))
 code_, text = run("tester", "--days", "3", "--execute", "--confirm", "tester")
 after = snapshot()
 check("a backup is taken first", (backups, "backup taken first" in text), (["taken"], True))

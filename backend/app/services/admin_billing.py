@@ -115,6 +115,26 @@ def charge_for_package(db: Session, admin: models.AdminUser, package: models.Pac
     )
 
 
+def package_cost(admin: Optional[models.AdminUser], package: models.Package, units: int = 1) -> int:
+    """What charge_for_package would debit, computed without touching the
+    balance (the durable path reserves it in T1 instead, Lifecycle 8)."""
+    if admin is None or admin.is_superadmin or units <= 0 or admin.billing_mode == "usage":
+        return 0
+    return unit_price(admin, package) * units
+
+
+def renewal_cost(admin: Optional[models.AdminUser], package: Optional[models.Package], add_gb: float) -> int:
+    """What charge_for_renewal would debit, without touching the balance."""
+    if admin is None or admin.is_superadmin or admin.billing_mode == "usage":
+        return 0
+    if package is not None:
+        return package_cost(admin, package, units=1)
+    rate = int(getattr(admin, "wholesale_price_per_gb", 0) or 0)
+    if rate <= 0 or add_gb <= 0:
+        return 0
+    return round(add_gb * rate)
+
+
 def reserve_admin_balance_core(db: Session, admin: models.AdminUser, cost: int) -> bool:
     """Conditional deduction only: no commit and no ledger (Lifecycle 8).
 

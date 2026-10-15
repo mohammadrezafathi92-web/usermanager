@@ -195,11 +195,15 @@ check("...and once the lock is free the same action does run and write its marke
       (Outcome.SUCCEEDED, True))
 
 print("--- only registered actions, by name ---")
-check("four self-tests and six guarded stored forward/compensation actions are registered",
-      sorted(a.value for a in ACTIONS),
-      ["selftest_crash", "selftest_echo", "selftest_environment", "selftest_sleep",
-       "softether_ensure_absent", "softether_ensure_present", "wg_ensure_absent", "wg_ensure_present",
-       "xray_ensure_absent", "xray_ensure_present"])
+check("every action type is registered", sorted(a.value for a in ActionType if a not in ACTIONS), [])
+check("the contract probe runs its own guarded child entry",
+      ACTIONS[ActionType.CONTRACT_PROBE], "app.services.provisioning_child_probe:run")
+check("every legacy-only writer action runs the guarded legacy child entry",
+      {a.value for a, target in ACTIONS.items() if target == "app.services.provisioning_child_legacy:run"},
+      {"mt_push_ikev2", "mt_push_l2tp", "mt_push_pptp", "mt_push_radius", "mt_push_sstp", "ppp_kick_session",
+       "softether_bounce_user", "softether_set_user_enabled", "wg_bounce_peer", "wg_rename_peer",
+       "wg_set_peer_enabled", "wg_set_speed_queue", "xray_bounce_client", "xray_rebuild_clients",
+       "xray_set_client_enabled", "wg_reconcile_interface_address"})
 spawned = []
 real_popen = subprocess.Popen
 
@@ -211,8 +215,11 @@ def counting_popen(*a, **k):
 
 subprocess.Popen = counting_popen
 try:
-    check("an unregistered (real) action is refused",
-          raises(rr.UnregisteredAction, lambda: rr.run_action(dto(ActionType.MT_PUSH_RADIUS, node_id=1))))
+    from unittest.mock import patch as _patch
+    with _patch.dict(ACTIONS):                    # every real action is registered now: unregister one here
+        del ACTIONS[ActionType.CONTRACT_PROBE]
+        check("an unregistered (real) action is refused",
+              raises(rr.UnregisteredAction, lambda: rr.run_action(dto(ActionType.CONTRACT_PROBE, node_id=1))))
     check("...before any process is spawned", spawned, [])
     check("something that is not a DTO is refused", raises(TypeError, lambda: rr.run_action({"action_type": "selftest_echo"})))
     check("...also before any spawn", spawned, [])
@@ -259,8 +266,8 @@ wire = json.loads(orphan.to_wire())
 check("LP-162: another schema_version -> exit 5, action not run",
       (raw_child(me, framed(json.dumps({**wire, "schema_version": 999})))[0], os.path.exists(orphan_marker)), (5, False))
 check("an unknown action_type -> exit 5", raw_child(me, framed(json.dumps({**wire, "action_type": "os_system"})))[0], 5)
-check("a known but UNREGISTERED action_type -> exit 5",
-      raw_child(me, framed(json.dumps({**wire, "action_type": "mt_push_radius", "node_id": 1})))[0], 5)
+# (Every known action type is registered now, so the child's "known but
+# unregistered" refusal has no live case left; unknown names are refused above.)
 check("an extra field -> exit 5", raw_child(me, framed(json.dumps({**wire, "target": "os:system"})))[0], 5)
 check("a DTO fenced for another parent pid -> exit 5",
       raw_child(me, framed(json.dumps({**wire, "fencing": {"expected_parent_pid": me + 1}})))[0], 5)

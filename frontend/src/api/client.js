@@ -463,6 +463,19 @@ export const deleteLicenseKey = () => client.delete("/license/key");
 export const runDbHealthCheck = () => client.get("/db-health/check");
 export const optimizeDatabase = () => client.post("/db-health/optimize");
 
+// Durable provisioning (routers/provisioning.py, Lifecycle 11.5 / 13 / 7.6) -
+// superadmin only; every action asks for the admin's own password.
+export const fetchProvisioningStatus = () => client.get("/provisioning/status");
+export const fetchProvisioningOperation = (id) => client.get(`/provisioning/operations/${id}`);
+export const retryProvisioningOperation = (id, reason) =>
+  client.post(`/provisioning/operations/${id}/retry`, { reason }, { _pwForce: true });
+export const forceProvisioningStep = (id, stepId, reason) =>
+  client.post(`/provisioning/operations/${id}/force-step`, { step_id: stepId, reason }, { _pwForce: true });
+export const fetchProvisioningOrphans = () => client.get("/provisioning/orphans");
+export const fetchApprovalRecoveries = () => client.get("/provisioning/approval-recovery");
+export const decideApprovalRecovery = (uuid, decision, reason) =>
+  client.post(`/provisioning/approval-recovery/${uuid}`, { decision, reason }, { _pwForce: true });
+
 // Discount/promo codes (کد تخفیف) - panel-wide, see routers/discount_codes.py.
 export const fetchDiscountCodes = () => client.get("/discount-codes");
 export const createDiscountCode = (data) => client.post("/discount-codes", data);
@@ -579,9 +592,19 @@ export const deletePackageGroup = (id) => client.delete(`/package-groups/${id}`)
 export const fetchMiniAppHome = (initData) =>
   axios.get("/api/miniapp/home", { headers: { "X-Telegram-InitData": initData } });
 
-// Pay from the wallet - provisions immediately, no approval.
-export const miniAppCheckout = (initData, body) =>
-  axios.post("/api/miniapp/checkout", body, { headers: { "X-Telegram-InitData": initData } });
+// Pay from the wallet - provisions immediately, no approval. `idempotencyKey`
+// is one key per purchase attempt, sent again on every retry of it (a timeout,
+// a second tap): the panel then answers with the same operation instead of a
+// second service and a second wallet debit.
+export const newIdempotencyKey = () =>
+  (window.crypto && window.crypto.randomUUID)
+    ? window.crypto.randomUUID()
+    : "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+        (c ^ (window.crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
+export const miniAppCheckout = (initData, body, idempotencyKey) =>
+  axios.post("/api/miniapp/checkout", body, {
+    headers: { "X-Telegram-InitData": initData, ...(idempotencyKey ? { "X-Idempotency-Key": idempotencyKey } : {}) },
+  });
 
 // Card-to-card - uploads the receipt photo and joins the bot's existing
 // «درخواست‌های در انتظار» queue. multipart, so no explicit Content-Type:

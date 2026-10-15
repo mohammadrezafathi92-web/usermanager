@@ -36,11 +36,15 @@ OFF, SHADOW, REQUIRED, BLOCKED, ENFORCED = "off", "shadow", "required", "blocked
 SHADOW_ERROR_KEY_IDENTITY = "key_identity_not_ready"
 
 # Receipt Void requires every production call carrying an approval UUID to
-# present and validate the current execution token.  A2 does not add that
-# request contract yet, so `required` must remain fail-closed even if an
-# operator or an old database row requests it.  Flip this only in the batch
-# that wires token validation through every approval-carrying endpoint.
-REQUIRED_PREREQUISITES = {"execution_token_validation": False}
+# present and validate the current execution token. P6 wired it through every
+# approval-carrying endpoint: create_user / purchase_package / renew_service
+# (and renew) run only on the durable path under 'required' (T1 binds token,
+# key and manifest; no token -> 422, old token -> 409), every legacy path
+# refuses 'required' (execution_token_not_supported), the bot's separate
+# referral / discount / card calls answer from the durable operation, and a
+# 'required' top-up needs the token too. 'required' itself still cannot be
+# requested before the joint activation (P9a) and p6_ready().
+REQUIRED_PREREQUISITES = {"execution_token_validation": True}
 
 
 class ModeChangeRejected(Exception):
@@ -88,8 +92,27 @@ def effective_registration_mode(state: Optional[dict]) -> str:
     return requested
 
 
+def _check_mutation_mode(db, approval_uuid, execution_token, *, sqlite, locking, allow_required=False):
+    state = read_state(db, lock=locking and not sqlite, shared_lock=locking and not sqlite)
+    if state is None:
+        raise HTTPException(status_code=503, detail="receipt_approval_runtime_unavailable")
+    mode = effective_registration_mode(state)
+    if mode == BLOCKED:
+        raise HTTPException(status_code=503, detail="receipt_approval_blocked")
+    if mode == REQUIRED and not allow_required:
+        raise HTTPException(status_code=503, detail="execution_token_not_supported")
+    if execution_token is not None:
+        from .. import models_receipt_void as rv
+        query = select(rv.receipt_approvals.c.version).where(rv.receipt_approvals.c.approval_uuid == approval_uuid)
+        if locking and not sqlite:
+            query = query.with_for_update(read=True)
+        if db.scalar(query) != execution_token:
+            raise HTTPException(status_code=409, detail="approval_superseded")
+
+
 def guard_approval_mutation(db: Session, approval_uuid: Optional[str],
-                            execution_token: Optional[int] = None) -> None:
+                            execution_token: Optional[int] = None, *, keep_transaction: bool = False,
+                            allow_required: bool = False) -> None:
     """Fail closed before any endpoint lookup/mutation when a correlated
     operation reaches a blocked or not-yet-supported required mode.
 
@@ -115,6 +138,14 @@ def guard_approval_mutation(db: Session, approval_uuid: Optional[str],
         raise HTTPException(status_code=422, detail="approval_execution_token_invalid")
     if not receipt_void_schema.is_ready():
         raise HTTPException(status_code=503, detail="receipt_void_schema_not_ready")
+    if keep_transaction:
+        # The caller already began a short wallet-writer transaction (L1,
+        # wallet_service.begin_writer) and commits it itself: check INSIDE it,
+        # keeping every lock (and on SQLite the writer) until that commit, so
+        # a concurrent switch to 'blocked' cannot slip between check and write.
+        _check_mutation_mode(db, approval_uuid, execution_token, sqlite=db.get_bind().dialect.name == "sqlite",
+                             locking=True, allow_required=allow_required)
+        return
     for attempt in range(1, 4):
         db.rollback()
         try:
@@ -127,7 +158,9 @@ def guard_approval_mutation(db: Session, approval_uuid: Optional[str],
             if mode == BLOCKED:
                 db.rollback()
                 raise HTTPException(status_code=503, detail="receipt_approval_blocked")
-            if mode == REQUIRED:
+            if mode == REQUIRED and not allow_required:
+                # Only the durable path executes under 'required': it binds
+                # the token, key and manifest in T1 (Lifecycle 7.6).
                 db.rollback()
                 raise HTTPException(status_code=503, detail="execution_token_not_supported")
             if execution_token is not None:

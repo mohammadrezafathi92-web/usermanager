@@ -99,7 +99,8 @@ class SuiClient:
             raise XrayError(
                 "برای اتصال به پنل s-ui، آدرس پنل، توکن API و شناسه اینباند لازم است"
             )
-        self.session = requests.Session()
+        from .transport_guard import GuardedSession
+        self.session = GuardedSession(self, "sui")  # write guard, Lifecycle 10.7
         self.session.headers["Token"] = self.api_token
         self.test_connection()
         return self

@@ -17,7 +17,7 @@ from sqlalchemy.pool import NullPool
 from sqlalchemy.sql.elements import TextClause
 
 from .provisioning_dispatch_binding import dispatch_statement
-from .provisioning_contract_rules import contract_statement
+from .provisioning_contract_rules import contract_statement, node_endpoint_statement
 
 READ_RUNTIME = ("SELECT installation_uuid, owner_state, owner_host_id, owner_boot_id, "
     "ownership_epoch, lock_backend, gate_mode, gate_mode_epoch "
@@ -132,7 +132,7 @@ class ChildDatabase:
             raise ChildDatabaseUnavailable("child_database_configuration_invalid") from None
         self._allowed = {READ_RUNTIME, READ_INSTALLATION, READ_SUBNET,
             str(dispatch_statement(self.dialect.name)), str(dispatch_statement(self.dialect.name, deletion=True)),
-            str(contract_statement())}
+            str(contract_statement()), str(node_endpoint_statement())}
         if self.dialect.name in ("mysql", "mariadb"):
             self._allowed.update((ADVISORY_GET, ADVISORY_CHECK, ADVISORY_RELEASE))
         # Also deny through accidental private engine/exec_driver_sql use.

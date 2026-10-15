@@ -226,6 +226,10 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
         # lets the panel record what this approval really did, next to it
         sale_info["approval_uuid"] = session["approval_uuid"]
         sale_info["execution_token"] = session.get("execution_token")
+        # The rest of what was registered (approval_session.intent_of), so a
+        # durable panel can rebuild and verify the registered intent.
+        sale_info["referral_code"] = pending.get("referral_code") if pending["kind"] == "new" else None
+        sale_info["list_price"] = int(pending.get("price") or 0)
     try:
         if pending["kind"] == "new":
             if pending["node_id"]:

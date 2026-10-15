@@ -64,7 +64,9 @@ print("--- the derivation table of 5.5 ---")
 table = [
     ("off", True, "off", None), ("off", False, "off", None),
     ("shadow", True, "shadow", None), ("shadow", False, "shadow", "key_identity_not_ready"),
-    ("required", True, "blocked", None), ("required", False, "blocked", None),
+    # P6 wired execution-token validation through every approval-carrying
+    # endpoint, so a requested 'required' is effective once the keys are ready.
+    ("required", True, "required", None), ("required", False, "blocked", None),
 ]
 check("requested x key readiness -> effective, shadow error",
       [(runtime.effective_registration_mode({"registration_mode": m, "key_identity_ready": r}),
@@ -74,12 +76,14 @@ rate = lambda reg, ready, limit: runtime.effective_auto_rate_limit_mode(
     {"registration_mode": reg, "key_identity_ready": ready, "auto_rate_limit_mode": limit})
 check("auto rate limit: enforced only under an effective 'required'; nothing under 'off'",
       (rate("required", True, "enforced"), rate("required", False, "enforced"), rate("shadow", True, "shadow"),
-       rate("off", True, "shadow")), ("off", "off", "shadow", "off"))
-runtime.REQUIRED_PREREQUISITES["execution_token_validation"] = True
-check("required becomes effective only after the missing execution-token prerequisite is enabled",
-      (runtime.effective_registration_mode({"registration_mode": "required", "key_identity_ready": True}),
-       rate("required", True, "enforced")), ("required", "enforced"))
+       rate("off", True, "shadow")), ("enforced", "off", "shadow", "off"))
+check("the execution-token prerequisite is enabled (P6)", runtime.REQUIRED_PREREQUISITES,
+      {"execution_token_validation": True})
 runtime.REQUIRED_PREREQUISITES["execution_token_validation"] = False
+check("any missing prerequisite still blocks 'required' (never silently relaxed)",
+      (runtime.effective_registration_mode({"registration_mode": "required", "key_identity_ready": True}),
+       rate("required", True, "enforced")), ("blocked", "off"))
+runtime.REQUIRED_PREREQUISITES["execution_token_validation"] = True
 
 print("--- changing the requested mode ---")
 start = runtime.describe(db)

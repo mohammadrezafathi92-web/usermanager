@@ -64,7 +64,8 @@ class HiddifyClient:
             self.base_url = "http://" + self.base_url
         self.api_key = (api_key or "").strip()
         self.timeout = timeout
-        self.session = requests.Session()
+        from .transport_guard import GuardedSession
+        self.session = GuardedSession(self, "hiddify")  # write guard, Lifecycle 10.7
         self.session.headers["User-Agent"] = (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"

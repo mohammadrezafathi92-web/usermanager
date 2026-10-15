@@ -104,13 +104,13 @@ was, _ = refused(lambda: bot_router.add_balance(
 check("cannot top up the wallet", was, True)
 
 was, _ = refused(lambda: bot_router.create_user(
-    schemas.BotCreateUserRequest(username="cust1_second", telegram_id=555001), db=db, principal=_principal))
+    schemas.BotCreateUserRequest(username="cust1_second", telegram_id=555001, package_id=pkg.id), db=db, principal=_principal))
 check("cannot open a second account on the same Telegram id", was, True)
 
 # A different person is unaffected - the lock is on this customer, not on
 # the panel.
 was, _ = refused(lambda: bot_router.create_user(
-    schemas.BotCreateUserRequest(username="somebody_else", telegram_id=999999), db=db, principal=_principal))
+    schemas.BotCreateUserRequest(username="somebody_else", telegram_id=999999, package_id=pkg.id), db=db, principal=_principal))
 check("a different Telegram id can still sign up", was, False)
 
 print("\n--- with no reason typed, a sensible default is shown ---")

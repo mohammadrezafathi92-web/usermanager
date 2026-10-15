@@ -233,57 +233,95 @@ def _broken_factory():
 
 
 ps.bootstrap(engine, Session)
-with ng.node_gate(5, session_factory=_broken_factory) as ctx:
-    check("database down (nothing ever read): the block still runs as 'off'", (ctx.mode, ctx.mode_lock_held), ("off", False))
+ng.reset_cache()
+try:
+    with ng.node_gate(5, session_factory=_broken_factory):
+        cold = "ran"
+except ng.GateNotAvailable:
+    cold = "refused"
+check("database down (nothing ever read): refused - a cold process never assumes 'off'", cold, "refused")
 ng.reset_cache()
 with ng.node_gate(5, session_factory=Session):
     pass                                   # a successful passage: the singleton is now known
 saved_ttl = ng.RUNTIME_CACHE_SECONDS
 ng.RUNTIME_CACHE_SECONDS = 0               # force a (failing) re-read on the next passage
+try:
+    with ng.node_gate(5, session_factory=_broken_factory):
+        unproven = "ran"
+except ng.GateNotAvailable:
+    unproven = "refused"
+check("database down AFTER the singleton was read, NO mode-state file: refused (a missing file proves nothing)",
+      unproven, "refused")
+gate_locks.write_mode_state(INSTALLATION, "0")
+ng._checked_at = None
 with ng.node_gate(5, session_factory=_broken_factory) as ctx:
-    check("database down AFTER the singleton was read: keeps the last good value - 'off', WITH the shared lock",
+    check("...with the file naming the cached epoch: proven current under the shared lock - 'off', WITH the lock",
           (ctx.mode, ctx.mode_lock_held), ("off", True))
+os.remove(gate_locks.mode_state_path(INSTALLATION))
 ng.RUNTIME_CACHE_SECONDS = saved_ttl
 
 print("--- the singleton is not re-read on every passage ---")
 reads = []
-real_read = ng.read_runtime
-ng.read_runtime = lambda factory=None: (reads.append(1), real_read(factory))[1]
+real_read = ng.read_runtime_checked
+ng.read_runtime_checked = lambda factory=None: (reads.append(1), real_read(factory))[1]
 ng.reset_cache()
 for _ in range(50):
     with ng.node_gate(5, session_factory=Session):
         pass
-check("50 passages in a row cost ONE database read", len(reads), 1)
+check("no mode-state file: nothing proves the cache, so every passage reads the singleton", len(reads) >= 50, True)
 reads.clear()
-ng.read_runtime = lambda factory=None: (reads.append(1), None)[1]      # database down from the start
+gate_locks.write_mode_state(INSTALLATION, "0")
 ng.reset_cache()
 for _ in range(50):
-    with ng.node_gate(5, session_factory=Session) as ctx:
+    with ng.node_gate(5, session_factory=Session):
         pass
+check("with the state file naming the epoch: 50 passages in a row cost ONE database read", len(reads), 1)
+os.remove(gate_locks.mode_state_path(INSTALLATION))
+reads.clear()
+ng.read_runtime_checked = lambda factory=None: (reads.append(1), (None, False))[1]   # database down from the start
+ng.reset_cache()
+refused = 0
+for _ in range(50):
+    try:
+        with ng.node_gate(5, session_factory=Session):
+            pass
+    except ng.GateNotAvailable:
+        refused += 1
 check("a failing read is not retried on every passage either (one attempt per cache window)", len(reads), 1)
-ng.read_runtime = real_read
+check("...and every passage of that window is refused (nothing is ever sent on an unread mode)", refused, 50)
+ng.read_runtime_checked = real_read
 ng.reset_cache()
 
 ng.counters.reset()
 changing = gate_locks.FileLock(path).acquire(shared=False, timeout=0)   # a mode change in progress
-baseline_began = time.monotonic()
-for _ in range(20):
+# Design 10.6: "the only moment writers wait is the short exclusive hold of a
+# mode change" - an 'off' writer never runs UNLOCKED past a change.
+entered = []
+
+
+def writer_during_change():
     with ng.node_gate(5, session_factory=Session) as ctx:
-        pass
-blocked_elapsed = time.monotonic() - baseline_began
-check("a mode change holding the lock: the 'off' writer proceeds WITHOUT the lock", ctx.mode_lock_held, False)
-check("...immediately: 20 passages while the lock is held exclusively take well under a second "
-      f"({blocked_elapsed * 1000:.0f} ms)", blocked_elapsed < 1.0)
+        entered.append((time.monotonic(), ctx.mode_lock_held))
+
+
+worker = threading.Thread(target=writer_during_change)
+worker.start()
+time.sleep(0.5)
+check("a mode change holding the lock exclusively: the 'off' writer waits instead of running unlocked", entered, [])
+released_at = time.monotonic()
 changing.release()
-free_began = time.monotonic()
-for _ in range(20):
-    with ng.node_gate(5, session_factory=Session):
-        pass
-free_elapsed = time.monotonic() - free_began
-check("...and no slower than 20 passages with the lock free, give or take scheduling noise "
-      f"({free_elapsed * 1000:.0f} ms)", blocked_elapsed < free_elapsed + 0.5)
-check("...each of the 20 counted as a miss", ng.counters.snapshot()["mode_lock_miss"], 20)
-check("the gate has no wait constant left on the writer path", hasattr(ng, "MODE_LOCK_WAIT_SECONDS"), False)
+worker.join(10)
+check("...and runs WITH the shared lock once the change released it",
+      (len(entered), entered[0][1] if entered else None, entered[0][0] >= released_at if entered else None),
+      (1, True, True))
+check("...which is not a miss", ng.counters.snapshot()["mode_lock_miss"], 0)
+saved_wait = ng.TRANSITION_WAIT_SECONDS
+ng.TRANSITION_WAIT_SECONDS = 0.3
+changing = gate_locks.FileLock(path).acquire(shared=False, timeout=0)
+check("a change that does not end in time: the passage is refused, never run unlocked",
+      raises(ng.GateNotAvailable, lambda: ng.node_gate(5, session_factory=Session).__enter__()))
+changing.release()
+ng.TRANSITION_WAIT_SECONDS = saved_wait
 with FlockSpy() as spy:
     with ng.node_gate(5, session_factory=Session):
         pass
@@ -374,8 +412,8 @@ class _Node:
         self.id = node_id
 
 
-real_default = ng.read_runtime
-ng.read_runtime = lambda factory=None: real_default(Session)     # writer_gate uses the default session factory
+real_default = ng.read_runtime_checked
+ng.read_runtime_checked = lambda factory=None: real_default(Session)     # writer_gate uses the default session factory
 ng.counters.reset()
 with FlockSpy() as spy:
     with ng.writer_gate(_Node(5)) as ctx:
@@ -433,7 +471,7 @@ def _refused():
 
 check("GateNotAvailable is the one thing that DOES stop the block", (raises(ng.GateNotAvailable, _refused), ran), (True, []))
 ng.node_gate = real_node_gate
-ng.read_runtime = real_default
+ng.read_runtime_checked = real_default
 
 print()
 if failures:

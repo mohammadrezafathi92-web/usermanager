@@ -64,19 +64,25 @@ db.commit()
 for a in (admin_a, admin_b):
     hierarchy.rebuild_path(db, a)
 db.commit()
+# Every account is created with a package now (no new legacy account).
+PKG = models.Package(name="plain", quota_gb=1, duration_days=30, price=100, enabled=True)
+admin_a.balance = admin_b.balance = 10_000            # the package's cost is charged to the owner
+db.add(PKG)
+db.commit()
+PKG_ID = PKG.id
 
 print("=" * 60)
 print("--- the SHARED bot (config.bot_owner_admin_id = None) ---")
 print("=" * 60)
 
 config.bot_owner_admin_id = None
-run(panel_bridge.api.create_user("shared_signup"))
+run(panel_bridge.api.create_user("shared_signup", package_id=PKG_ID))
 shared_signup = db.query(models.User).filter(models.User.username == "shared_signup").first()
 check("a plain create_user call with no explicit owner lands unowned (owner_admin_id=None) - "
       "the shared bot's normal, correct behavior",
       shared_signup.owner_admin_id if shared_signup else "MISSING", None)
 
-run(panel_bridge.api.create_user("shared_explicit_a", owner_admin_id=admin_a.id))
+run(panel_bridge.api.create_user("shared_explicit_a", package_id=PKG_ID, owner_admin_id=admin_a.id))
 explicit_a = db.query(models.User).filter(models.User.username == "shared_explicit_a").first()
 check("the SHARED bot can still create a user under ANY admin if the handler code "
       "passes an explicit owner_admin_id - _scope() only fills in a DEFAULT, it "
@@ -89,7 +95,7 @@ print("=" * 60)
 
 config.bot_owner_admin_id = admin_a.id
 try:
-    run(panel_bridge.api.create_user("dedicated_default"))
+    run(panel_bridge.api.create_user("dedicated_default", package_id=PKG_ID))
     dedicated_default = db.query(models.User).filter(models.User.username == "dedicated_default").first()
     check("a dedicated admin bot's plain create_user call (no explicit owner) is "
           "filled in with ITS OWN admin id by _scope() - this is the one place "
@@ -98,7 +104,7 @@ try:
 
     print("\n--- but nothing stops that SAME dedicated bot's code from claiming a "
           "DIFFERENT tenant if it explicitly passes one ---")
-    run(panel_bridge.api.create_user("dedicated_but_claims_b", owner_admin_id=admin_b.id))
+    run(panel_bridge.api.create_user("dedicated_but_claims_b", package_id=PKG_ID, owner_admin_id=admin_b.id))
     crossed = db.query(models.User).filter(models.User.username == "dedicated_but_claims_b").first()
     check("_scope() never overrides an EXPLICIT owner_admin_id, even when the calling "
           "thread's own config identity is a different admin - there is no ceiling, "

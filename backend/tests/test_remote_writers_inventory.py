@@ -164,7 +164,7 @@ check("each site declares exactly the writer methods it calls",
       {key: (sorted(in_code[key]), sorted(registered[key])) for key in set(in_code) & set(registered)
        if in_code[key] != registered[key]},
       {})
-check("thirteen writer functions today", len(registered), 13)
+check("seventeen writer block functions today", len(registered), 17)
 check("no writer call sits at module level", [k for k in in_code if k[1] == "<module>"], [])
 check("every client module that exists is listed as a client module",
       sorted(rw.CLIENT_MODULES - {dotted for dotted, _ in app_modules()}), [])
@@ -180,11 +180,13 @@ check("writer calls inside client modules are the known internal ones only",
           "app.services.threexui_client": ["add_client"],
           "app.services.xray_client": ["add_client", "remove_client", "restart_service", "write_config"],
       })
-check("every adapter exists; only fenced cancellation and private readonly recovery integrate them",
+check("every adapter exists; only fenced cancellation, private readonly recovery and the gated WG reconcile block integrate them",
       (sorted(rw.ADAPTER_MODULES - {dotted for dotted, _ in app_modules()}),
        sorted(dotted for dotted, path in app_modules()
               if dotted not in rw.ADAPTER_MODULES and imports_adapter(path))),
-      ([], ["app.services.provisioning_child_recovery", "app.services.reseller_refund_worker"]))
+      ([], ["app.services.legacy_remote_blocks", "app.services.provisioning_child_recovery",
+            "app.services.reseller_refund_worker"]))
+check("the contract probe is a runner-only adapter module", "app.services.provisioning_child_probe" in rw.ADAPTER_MODULES)
 called_anywhere = set().union(*in_code.values()) | set().union(*client_internal.values())
 check("the three MikroTik writer methods without any caller are exactly the declared ones",
       sorted(rw.WRITER_METHODS - called_anywhere), sorted(rw.UNCALLED_WRITER_METHODS))
@@ -200,7 +202,7 @@ check("23 real action types, 4 self-test ones", (len(real_actions), len(set(Acti
 print("--- A. the registration API is type-safe ---")
 E = rw.WriterRegistryError
 check("a duplicate (module, function) is rejected",
-      raises(E, lambda: rw.register_writer_site("app.services.user_ops", "provision_xray",
+      raises(E, lambda: rw.register_writer_site("app.services.legacy_remote_blocks", "xray_add",
                                                 (ActionType.XRAY_ENSURE_PRESENT,), {"add_client"})))
 check("an action given as a plain string is rejected",
       raises(E, lambda: rw.register_writer_site("app.x", "f", ("wg_ensure_present",), {"add_peer"})))
@@ -215,7 +217,7 @@ check("a module outside the application is rejected",
       raises(E, lambda: rw.register_writer_site("os", "system", (ActionType.WG_ENSURE_PRESENT,), {"add_peer"})))
 check("a function that is not an identifier is rejected",
       raises(E, lambda: rw.register_writer_site("app.x", "f; rm", (ActionType.WG_ENSURE_PRESENT,), {"add_peer"})))
-check("none of the rejected registrations left a trace", len(rw.writer_sites()), 13)
+check("none of the rejected registrations left a trace", len(rw.writer_sites()), 17)
 site = rw.site_for("app.services.user_ops", "provision_wireguard")
 check("a site is immutable", raises(Exception, lambda: setattr(site, "function", "x")))
 
@@ -223,12 +225,35 @@ check("a site is immutable", raises(Exception, lambda: setattr(site, "function",
 print("--- B. every writer goes through writer_gate; nothing else of the new code is used ---")
 loose = {}
 for dotted, path in app_modules():
-    if dotted in rw.CLIENT_MODULES or dotted in rw.ADAPTER_MODULES:
+    if dotted in rw.CLIENT_MODULES or dotted in rw.ADAPTER_MODULES or dotted == rw.BLOCK_MODULE:
         continue
     found = ungated_writer_calls(path)
     if found:
         loose[dotted] = found
 check("no writer call outside a `with writer_gate(...)` block", loose, {})
+# The block module is exempt above ONLY because nothing but the gated
+# dispatcher (inline under writer_passage, or the runner child under its
+# node lock) may call it.
+def _imports_blocks(path):
+    for node in ast.walk(ast.parse(open(path, encoding="utf-8").read())):
+        if isinstance(node, ast.ImportFrom) and (
+                (node.module or "").endswith("legacy_remote_blocks") or
+                any(alias.name == "legacy_remote_blocks" for alias in node.names)):
+            return True
+        if isinstance(node, ast.Import) and any(alias.name.endswith("legacy_remote_blocks") for alias in node.names):
+            return True
+    return False
+
+
+block_importers = sorted(dotted for dotted, path in app_modules() if dotted != rw.BLOCK_MODULE and _imports_blocks(path))
+check("only the gated dispatcher and the runner child use the writer blocks", block_importers,
+      ["app.services.legacy_remote", "app.services.provisioning_child_legacy"])
+import inspect
+from app.services import legacy_remote
+run_source = inspect.getsource(legacy_remote.run)
+check("the dispatcher runs a block only inside writer_passage (gate) or via the runner",
+      ("with node_gate.writer_passage(node) as passage" in run_source and
+       run_source.index("writer_passage") < run_source.index("blocks.BLOCKS[block]")), True)
 
 snippet = "def f(node):\n    with writer_gate(node), C.for_node(node) as mt:\n        mt.add_peer(1)\n    mt.remove_peer(2)\n"
 probe_path = os.path.join(BACKEND_DIR, "tests", "_gate_probe_tmp.py")
@@ -267,6 +292,8 @@ check("legacy writers are gated; private guarded infrastructure has no live dura
        "app.services.provisioning_installation": ["gate_locks"],
     "app.services.provisioning_dispatch_binding": ["gate_locks"],
     "app.services.provisioning_child_guard": ["gate_locks"],
+    # the bulk batch token's lock file (provisioning_requests.bulk_lock), no remote write
+    "app.services.provisioning_requests": ["gate_locks"],
     "app.services.provisioning_runner_results": ["remote_action"],
     "app.services.provisioning_parent_dispatch": ["remote_action"],
     "app.services.provisioning_child_recovery": ["remote_action"],
@@ -274,11 +301,27 @@ check("legacy writers are gated; private guarded infrastructure has no live dura
     "app.services.provisioning_child_absent": ["remote_action"],
     "app.services.provisioning_child_entry": ["gate_locks"],
     "app.services.provisioning_parent_execute": ["remote_action", "remote_runner"],
-       "app.routers.provisioning": ["remote_action.ActionType", "remote_runner_registry.ACTIONS"]})
-check("only six runtime-guarded forward/compensation actions are registered; all other actions remain unavailable",
-      sorted(a.value for a in ACTIONS if not a.value.startswith("selftest_")),
-      ["softether_ensure_absent", "softether_ensure_present", "wg_ensure_absent", "wg_ensure_present",
-       "xray_ensure_absent", "xray_ensure_present"])
+       "app.routers.provisioning": ["remote_action.ActionType", "remote_runner_registry.ACTIONS"],
+       # P6 control plane (runner self-test, mode lock), the 10.7 transport
+       # guard and the 5.12 counter flush job - none dispatches a durable action.
+       "app.main": ["node_gate.flush_counters"],
+       "app.services.provisioning_control": ["gate_locks", "node_gate", "remote_action", "remote_runner"],
+       # 10.7 fence: a send without its own passage takes the shared gate-mode lock.
+       "app.services.transport_guard": ["gate_locks", "node_gate"],
+       # Legacy writers in 'enforced' (10.8): the gated dispatcher and its runner child entry.
+       "app.services.legacy_remote": ["node_gate", "remote_action.ActionType", "remote_action.Outcome",
+                                      "remote_action.RemoteActionDTO", "remote_runner"],
+       "app.services.provisioning_child_legacy": ["gate_locks", "remote_action.Outcome",
+                                                  "remote_action.RemoteActionResult"],
+       # Clean shutdown: refuse new runners, reap live ones (10.4).
+       "app.services.provisioning_host_lifecycle": ["remote_runner"],
+       # Lifecycle 10.10 rotate / fork-reset: the gate-mode lock, the cache
+       # reset and the live-runner count (no remote write).
+       "app.services.provisioning_operator": ["gate_locks", "node_gate", "remote_runner"],
+       # The 5.10 contract probe's runner child entry.
+       "app.services.provisioning_child_probe": ["remote_action.Outcome", "remote_action.RemoteActionResult"]})
+check("every real action type is registered",
+      sorted(a.value for a in ActionType if not a.value.startswith("selftest_") and a not in ACTIONS), [])
 
 # ===========================================================================
 print("--- C. characterization of the existing writers (baseline for later batches) ---")
@@ -479,8 +522,8 @@ live_engine = create_engine(f"sqlite:///{os.path.join(tempfile.mkdtemp(prefix='u
                             connect_args={"check_same_thread": False})
 LiveSession = sessionmaker(bind=live_engine)
 check("provisioning schema bootstraps", ps.bootstrap(live_engine, LiveSession)["ready"], True)
-real_read = node_gate.read_runtime
-node_gate.read_runtime = lambda factory=None: real_read(LiveSession)
+real_read = node_gate.read_runtime_checked
+node_gate.read_runtime_checked = lambda factory=None: real_read(LiveSession)
 node_gate.reset_cache()
 node_gate.counters.reset()
 
@@ -568,7 +611,7 @@ node_gate.node_gate = real_node_gate
 check("a broken gate does not stop a legacy writer: the remote calls still happen",
       names(log), ["list_peers", "remove_simple_queue"])
 check("...and it is counted", node_gate.counters.snapshot()["gate_error"], 1)
-node_gate.read_runtime = real_read
+node_gate.read_runtime_checked = real_read
 db.close()
 
 print()

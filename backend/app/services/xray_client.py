@@ -74,7 +74,8 @@ class XrayClient:
                 pkey=pkey,
                 timeout=self.timeout,
             )
-            self._client = client
+            from .transport_guard import SshTransport
+            self._client = SshTransport(client, self)  # write guard, Lifecycle 10.7
         except Exception as exc:  # pragma: no cover - network dependent
             raise XrayError(f"اتصال SSH به سرور V2Ray برقرار نشد: {exc}") from exc
         return self
@@ -394,6 +395,12 @@ def client_for_node(node):
     and SuiClient are the exceptions that don't implement
     get_link_settings() (see their module docstrings) - callers that use
     that method already guard with hasattr()."""
+    client = _client_for_node(node)
+    client.bound_node_id = getattr(node, "id", None)  # the node this client may write to (10.7)
+    return client
+
+
+def _client_for_node(node):
     panel_mode = getattr(node, "xr_panel_mode", "ssh")
     if panel_mode == "3xui":
         from .threexui_client import ThreeXUIClient

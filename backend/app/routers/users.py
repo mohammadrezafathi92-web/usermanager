@@ -4,7 +4,7 @@ import tempfile
 from contextlib import contextmanager
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from sqlalchemy import func, nullsfirst, nullslast, or_
@@ -16,6 +16,8 @@ from ..services.jalali import fmt_jalali
 from ..deps import get_current_admin, require_confirm_password, require_permission, require_superadmin
 from ..services import user_ops, hierarchy, accounting, admin_billing, usage_stats, wallet_service, wallet_accounts
 from ..services.node_gate import writer_gate
+from ..services import legacy_remote
+from ..services import provisioning_durable, provisioning_requests
 from ..services import reseller_refund
 from ..services import reseller_refund_worker
 from ..services import wallet_identity
@@ -278,6 +280,7 @@ def bulk_create_users(
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
     _perm=_may_bulk,
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     # Validated here, BEFORE any wallet charge below - user_ops.bulk_create_users
     # re-checks this too, but doing it only there meant an invalid count
@@ -295,10 +298,20 @@ def bulk_create_users(
     # (not just hidden in the UI - see Users.jsx) since a direct API call
     # could otherwise skip the cooperation-price wallet charge entirely by
     # never going through _charge_admin_for_package below.
-    if not admin.is_superadmin and not payload.package_id:
+    if not payload.package_id:
+        # No new legacy account (owner's rule): bulk creation needs a package too.
         raise HTTPException(400, "ساخت کاربر بدون پکیج مجاز نیست - یک پکیج انتخاب کنید")
 
     package = None
+    if provisioning_durable.is_durable(db, "create_user"):
+        # Lifecycle 7.5: N independent operations, each reserving its own
+        # credit - no batch charge, no batch refund.
+        package = _get_scoped_package(db, admin, payload.package_id) if payload.package_id else None
+        return provisioning_requests.bulk_create(
+            db, admin, prefix=payload.prefix, count=payload.count, package=package, quota_gb=payload.quota_gb,
+            expire_days=payload.expire_days, notes=payload.notes, connections=payload.connections,
+            batch_token=provisioning_durable.idempotency_key(x_idempotency_key),
+            before_new=(lambda: admin_billing.ensure_volume_available(admin)) if package is not None else None)
     if payload.package_id:
         package = _get_scoped_package(db, admin, payload.package_id)
         admin_billing.ensure_volume_available(admin)
@@ -352,6 +365,7 @@ def bulk_update_users(
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
     _perm=_may_bulk,
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     package = None
     if payload.package_id:
@@ -378,6 +392,17 @@ def bulk_update_users(
         admin_billing.require_package_to_grant(admin, package)
         admin_billing.ensure_volume_available(admin)
 
+    if financial and provisioning_durable.is_durable(db, "renew_purchase"):
+        # Lifecycle 7.5: one independent renew_purchase per service, each
+        # reserving and capturing its own credit - no batch charge/refund.
+        result = provisioning_requests.bulk_renew(
+            db, admin, targets, package=package, add_gb=payload.add_gb or 0, add_days=payload.add_days or 0,
+            reset_usage=bool(payload.reset_usage), batch_token=provisioning_durable.idempotency_key(x_idempotency_key))
+        if payload.status is not None or payload.max_concurrent_sessions is not None:
+            db.expire_all()
+            user_ops.bulk_update_users(db, user_ids=payload.user_ids, status=payload.status,
+                                       max_concurrent_sessions=payload.max_concurrent_sessions, admin=admin)
+        return result
     units = len(targets) if targets is not None else len(payload.user_ids or [])
     if units and not admin.is_superadmin and admin.billing_mode != "usage":
         if package is not None:
@@ -455,14 +480,25 @@ def create_user(
     payload: schemas.UserCreate,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
- _perm=_may_create):
-    if db.query(models.User).filter(models.User.username == payload.username).first():
+ _perm=_may_create, x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key")):
+    def _username_taken():
+        return db.query(models.User).filter(models.User.username == payload.username).first() is not None
+
+    durable_create = bool(payload.package_id) and provisioning_durable.is_durable(db, "create_user")
+    # On the durable path a retry of a creation that SUCCEEDED finds the
+    # account it made: the replay below comes first, the "name taken" check
+    # only for a new request.
+    if not durable_create and _username_taken():
         raise HTTPException(400, "این نام کاربری قبلا ثبت شده است")
 
     # Non-superadmins must always build from a package - enforced here too
     # (not just hidden in the UI - see Users.jsx) since a direct API call
     # could otherwise skip the cooperation-price wallet charge entirely.
-    if not admin.is_superadmin and not payload.package_id:
+    if not payload.package_id:
+        # Owner's rule (2026-10-15): no new legacy account. An account built
+        # without a package has no Purchase - the shared user-level pool -
+        # so it is refused for everyone, the superadmin included, before any
+        # write.
         raise HTTPException(400, "ساخت کاربر بدون پکیج مجاز نیست - یک پکیج انتخاب کنید")
 
     # A superadmin may hand a new user to ANY admin's group. A level-2 Admin
@@ -482,6 +518,35 @@ def create_user(
     data = payload.model_dump(exclude={"package_id", "owner_admin_id"})
     data["owner_admin_id"] = owner_admin_id
     package = None
+    if durable_create:
+        # Lifecycle L7: user, service and every bundled connection - or
+        # nothing; the acting admin's credit reserved in T1 (no charge-then-
+        # refund window), captured with the panel sale in T_final.
+        from types import SimpleNamespace
+        package = _get_scoped_package(db, admin, payload.package_id)
+        slots = provisioning_requests.package_slots(db, package)
+        provisioning_requests.authorize_slots(db, slots, provisioning_requests.package_scope(db, package))
+        request = provisioning_requests.create_user(
+            db, username=payload.username, full_name=payload.full_name, notes=payload.notes,
+            telegram_id=payload.telegram_id, owner_admin_id=owner_admin_id, package=package, slots=slots,
+            sale=provisioning_requests.panel_sale(db, SimpleNamespace(owner_admin_id=owner_admin_id), package, admin.id),
+            reseller_cost=admin_billing.package_cost(admin, package, units=1), reseller_admin_id=admin.id,
+            key=provisioning_durable.idempotency_key(x_idempotency_key))
+        # The same key with the same request: the account it made. With
+        # another request (another name, package, owner...) a 409.
+        prior = provisioning_requests.replay(db, request, x_idempotency_key, actor=("admin", admin.id))
+        if prior is not None:
+            return db.get(models.User, prior.result_user_id)
+        if _username_taken():
+            raise HTTPException(400, "این نام کاربری قبلا ثبت شده است")
+        admin_billing.ensure_volume_available(admin)
+        factory = provisioning_requests.session_factory_for(db)
+        db.rollback()
+        operation = provisioning_durable.run(factory, request, actor_kind="admin", actor_id=admin.id)
+        db.expire_all()
+        return db.get(models.User, operation.result_user_id)
+    if provisioning_durable.username_claimed(db, payload.username):
+        raise HTTPException(400, "این نام کاربری قبلا ثبت شده است")
     if payload.package_id:
         package = _get_scoped_package(db, admin, payload.package_id)
         # A volume-billed reseller with an empty pool is refused here - see
@@ -780,6 +845,21 @@ def update_user(
         elif target is not None and not db.get(models.AdminUser, target):
             raise HTTPException(400, "ادمین مقصد پیدا نشد")
 
+    # The wallet has one writer (services/wallet_service.py). The form posts
+    # the field back on every save; only a real change is a wallet write.
+    # Committed on its own, after the checks above and before anything below
+    # may contact a node (status change -> reconcile): see
+    # wallet_service.overwrite_committed. This request's read transaction is
+    # then ended and the customer read again, so nothing below writes over a
+    # snapshot older than that commit (MariaDB snapshot isolation, 1020).
+    if "balance" in data:
+        new_balance = data.pop("balance")
+        if new_balance != user.balance:
+            wallet_service.overwrite_committed(db.get_bind(), user.id, new_balance,
+                                               source_kind=wallet_service.MANUAL_ADJUSTMENT)
+            db.rollback()
+            user = _get_owned_user(db, admin, user_id)
+
     # NOTE: telegram_id is intentionally allowed on more than one User - a
     # single Telegram account can have several separate panel accounts (a
     # customer who bought more than once ended up with more than one
@@ -816,13 +896,6 @@ def update_user(
             user.purchases_blocked_reason = None
             data.pop("purchases_blocked_reason", None)
         user.purchases_blocked = now_blocked
-
-    # The wallet has one writer (services/wallet_service.py). The form posts
-    # the field back on every save; only a real change is a wallet write.
-    if "balance" in data:
-        new_balance = data.pop("balance")
-        if new_balance != user.balance:
-            wallet_service.overwrite(db, user, new_balance, source_kind=wallet_service.MANUAL_ADJUSTMENT)
 
     identity_fields = {key: data.pop(key) for key in ("telegram_id", "owner_admin_id") if key in data}
     identity_operation = None
@@ -901,6 +974,24 @@ def reset_usage_targets(
     }
 
 
+def _durable_panel_renewal(db, admin, user, purchase, package, *, add_gb=0, add_days=0, reset_usage=False,
+                           keep_package=False, key=None, as_package_charge=False):
+    """One durable renew_purchase from the panel (Lifecycle 7.4). The acting
+    admin pays, exactly as charge_for_renewal / charge_for_package would."""
+    cost = (admin_billing.package_cost(admin, package, units=1) if package is not None else 0) if as_package_charge \
+        else admin_billing.renewal_cost(admin, package, add_gb or 0)
+    request = provisioning_requests.renewal(
+        db, user, purchase=purchase, add_gb=add_gb or 0, add_days=add_days or 0, reset_usage=bool(reset_usage),
+        package=package, sale=provisioning_requests.panel_sale(db, user, package, admin.id),
+        reseller_cost=cost, reseller_admin_id=admin.id, keep_package=keep_package,
+        key=provisioning_durable.idempotency_key(key))
+    factory = provisioning_requests.session_factory_for(db)
+    db.rollback()
+    provisioning_durable.run(factory, request, actor_kind="admin", actor_id=admin.id)
+    db.expire_all()
+    return db.get(models.Purchase, purchase.id)
+
+
 @router.post("/{user_id}/reset-usage", response_model=schemas.UserOut)
 def reset_usage(
     user_id: int,
@@ -924,6 +1015,10 @@ def reset_usage(
     package = _get_scoped_package(db, admin, payload.package_id) if payload.package_id else None
     admin_billing.require_package_to_grant(admin, package)
     admin_billing.ensure_volume_available(admin)
+    if provisioning_durable.is_durable(db, "renew_purchase"):
+        _durable_panel_renewal(db, admin, user, purchase, package, reset_usage=True, keep_package=True,
+                               key=None, as_package_charge=True)
+        return db.get(models.User, user.id)
     if package is not None:
         admin_billing.charge_for_package(db, admin, package, units=1)
         accounting.record_panel_sale(db, "sale_renew", user, package, purchase_id=purchase.id, actor_admin_id=admin.id)
@@ -936,9 +1031,29 @@ def reset_usage(
     return user
 
 
+def _prior_delete(db, admin, kind, header, *, resource_id, user_id=None):
+    """The deletion this same admin already made with this key (Lifecycle
+    13), answered before the target lookup that would 404 once it is gone."""
+    operation = provisioning_requests.prior_delete(db, kind, header, resource_id=resource_id)
+    if operation is None or operation.actor_kind != "admin" or operation.actor_id != admin.id or (
+            user_id is not None and operation.target_user_id != user_id):
+        return None
+    return provisioning_requests.settle(db, operation)
+
+
 @router.delete("/{user_id}")
-def delete_user(user_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password), _perm=_may_delete_users):
+def delete_user(user_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password), _perm=_may_delete_users,
+                x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key")):
+    if provisioning_durable.is_durable(db, "delete_user") and _prior_delete(
+            db, admin, "user", x_idempotency_key, resource_id=user_id) is not None:
+        return {"ok": True}
     user = _get_owned_user(db, admin, user_id)
+    if provisioning_durable.is_durable(db, "delete_user"):
+        # Lifecycle L8 / 12: disabled and purchase-blocked first, every
+        # connection removed by identity, the rows deleted only at the end.
+        provisioning_requests.run_delete(db, "user", user.id, user.owner_admin_id, actor_kind="admin",
+                                         actor_id=admin.id, key=provisioning_durable.idempotency_key(x_idempotency_key))
+        return {"ok": True}
     user_ops.delete_user_cascade(db, user)
     return {"ok": True}
 
@@ -961,6 +1076,26 @@ def _get_user_and_node(
     if allowed is not None and node.id not in allowed:
         raise HTTPException(400, "نود پیدا نشد")
     return user, node
+
+
+def _manual_connection(db, admin, user, node, protocol, purchase_id, legacy, *, max_concurrent_sessions=1, flow=""):
+    """A connection added by hand from the panel: the durable add_connection
+    (Lifecycle L4) when that type is durable, today's provisioning otherwise.
+    The node was already authorized by _get_user_and_node."""
+    if provisioning_durable.is_durable(db, "add_connection"):
+        if purchase_id is not None:
+            purchase = db.get(models.Purchase, purchase_id)
+            if purchase is None or purchase.user_id != user.id:
+                raise HTTPException(404, "سرویس مقصد پیدا نشد")
+        request = provisioning_requests.add_connection(
+            db, user, node, protocol, flow=flow, max_concurrent_sessions=max_concurrent_sessions or 1,
+            purchase_id=purchase_id, key=provisioning_durable.idempotency_key(None))
+        factory = provisioning_requests.session_factory_for(db)
+        db.rollback()
+        operation = provisioning_durable.run(factory, request, actor_kind="admin", actor_id=admin.id)
+        return provisioning_requests.created_connections(db, operation.id)[0]
+    with _connection_purchase(db, user, purchase_id):
+        return legacy()
 
 
 @contextmanager
@@ -987,8 +1122,9 @@ def add_wireguard_connection(
     admin: models.AdminUser = Depends(get_current_admin),
  _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
-    with _connection_purchase(db, user, payload.purchase_id):
-        return user_ops.provision_wireguard(db, user, node, max_concurrent_sessions=payload.max_concurrent_sessions)
+    return _manual_connection(db, admin, user, node, "wireguard", payload.purchase_id,
+                              lambda: user_ops.provision_wireguard(db, user, node, max_concurrent_sessions=payload.max_concurrent_sessions),
+                              max_concurrent_sessions=payload.max_concurrent_sessions, flow="")
 
 
 @router.post("/{user_id}/connections/openvpn", response_model=schemas.ConnectionOut)
@@ -999,8 +1135,9 @@ def add_openvpn_connection(
     admin: models.AdminUser = Depends(get_current_admin),
  _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
-    with _connection_purchase(db, user, payload.purchase_id):
-        return user_ops.provision_openvpn(db, user, node, payload.max_concurrent_sessions)
+    return _manual_connection(db, admin, user, node, "openvpn", payload.purchase_id,
+                              lambda: user_ops.provision_openvpn(db, user, node, payload.max_concurrent_sessions),
+                              max_concurrent_sessions=payload.max_concurrent_sessions, flow="")
 
 
 @router.post("/{user_id}/connections/l2tp", response_model=schemas.ConnectionOut)
@@ -1011,8 +1148,9 @@ def add_l2tp_connection(
     admin: models.AdminUser = Depends(get_current_admin),
  _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
-    with _connection_purchase(db, user, payload.purchase_id):
-        return user_ops.provision_l2tp(db, user, node, payload.max_concurrent_sessions)
+    return _manual_connection(db, admin, user, node, "l2tp", payload.purchase_id,
+                              lambda: user_ops.provision_l2tp(db, user, node, payload.max_concurrent_sessions),
+                              max_concurrent_sessions=payload.max_concurrent_sessions, flow="")
 
 
 @router.post("/{user_id}/connections/ikev2", response_model=schemas.ConnectionOut)
@@ -1023,8 +1161,9 @@ def add_ikev2_connection(
     admin: models.AdminUser = Depends(get_current_admin),
  _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
-    with _connection_purchase(db, user, payload.purchase_id):
-        return user_ops.provision_ikev2(db, user, node, payload.max_concurrent_sessions)
+    return _manual_connection(db, admin, user, node, "ikev2", payload.purchase_id,
+                              lambda: user_ops.provision_ikev2(db, user, node, payload.max_concurrent_sessions),
+                              max_concurrent_sessions=payload.max_concurrent_sessions, flow="")
 
 
 @router.post("/{user_id}/connections/pptp", response_model=schemas.ConnectionOut)
@@ -1039,8 +1178,9 @@ def add_pptp_connection(
     appears - the credentials handed to the customer carry the warning
     too."""
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
-    with _connection_purchase(db, user, payload.purchase_id):
-        return user_ops.provision_pptp(db, user, node, payload.max_concurrent_sessions)
+    return _manual_connection(db, admin, user, node, "pptp", payload.purchase_id,
+                              lambda: user_ops.provision_pptp(db, user, node, payload.max_concurrent_sessions),
+                              max_concurrent_sessions=payload.max_concurrent_sessions, flow="")
 
 
 @router.post("/{user_id}/connections/sstp", response_model=schemas.ConnectionOut)
@@ -1051,8 +1191,9 @@ def add_sstp_connection(
     admin: models.AdminUser = Depends(get_current_admin),
  _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
-    with _connection_purchase(db, user, payload.purchase_id):
-        return user_ops.provision_sstp(db, user, node, payload.max_concurrent_sessions)
+    return _manual_connection(db, admin, user, node, "sstp", payload.purchase_id,
+                              lambda: user_ops.provision_sstp(db, user, node, payload.max_concurrent_sessions),
+                              max_concurrent_sessions=payload.max_concurrent_sessions, flow="")
 
 
 @router.post("/{user_id}/connections/xray", response_model=schemas.ConnectionOut)
@@ -1063,8 +1204,9 @@ def add_xray_connection(
     admin: models.AdminUser = Depends(get_current_admin),
  _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
-    with _connection_purchase(db, user, payload.purchase_id):
-        return user_ops.provision_xray(db, user, node, payload.flow or "")
+    return _manual_connection(db, admin, user, node, "xray", payload.purchase_id,
+                              lambda: user_ops.provision_xray(db, user, node, payload.flow or ""),
+                              max_concurrent_sessions=1, flow=payload.flow or "")
 
 
 @router.post("/{user_id}/connections/softether", response_model=schemas.ConnectionOut)
@@ -1075,8 +1217,9 @@ def add_softether_connection(
     admin: models.AdminUser = Depends(get_current_admin),
  _perm=_may_manage_connections):
     user, node = _get_user_and_node(db, admin, user_id, payload.node_id)
-    with _connection_purchase(db, user, payload.purchase_id):
-        return user_ops.provision_softether(db, user, node)
+    return _manual_connection(db, admin, user, node, "softether", payload.purchase_id,
+                              lambda: user_ops.provision_softether(db, user, node),
+                              max_concurrent_sessions=1, flow="")
 
 
 @router.post("/{user_id}/apply-package", response_model=schemas.UserOut)
@@ -1086,6 +1229,7 @@ def apply_package(
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
     _perm=_may_spend,
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """Gives an EXISTING user a package's bundled services - "افزودن پکیج"
     next to "افزودن اتصال" on UserDetail.jsx. Works whether the user
@@ -1111,6 +1255,21 @@ def apply_package(
     package = _get_scoped_package(db, admin, payload.package_id)
 
     admin_billing.ensure_volume_available(admin)
+    if provisioning_durable.is_durable(db, "purchase"):
+        # Lifecycle L6: all connections or none; the acting admin's credit is
+        # reserved in T1 and captured with the panel sale in T_final - no
+        # charge-then-refund window.
+        slots = provisioning_requests.package_slots(db, package)
+        provisioning_requests.authorize_slots(db, slots, provisioning_requests.package_scope(db, package))
+        request = provisioning_requests.purchase(
+            db, user, package, slots=slots, sale=provisioning_requests.panel_sale(db, user, package, admin.id),
+            reseller_cost=admin_billing.package_cost(admin, package, units=1), reseller_admin_id=admin.id,
+            count_delta=1, key=provisioning_durable.idempotency_key(x_idempotency_key))
+        factory = provisioning_requests.session_factory_for(db)
+        db.rollback()
+        provisioning_durable.run(factory, request, actor_kind="admin", actor_id=admin.id)
+        db.expire_all()
+        return db.get(models.User, user.id)
     reseller_debit = admin_billing.charge_for_package(db, admin, package, units=1)
     # Same refund-on-failure guarantee as create_user's package path above -
     # without it, a provisioning failure here (node unreachable, VPN API
@@ -1147,6 +1306,9 @@ def reset_purchase_usage(
     package = _get_scoped_package(db, admin, payload.package_id) if payload.package_id else None
     admin_billing.require_package_to_grant(admin, package)
     admin_billing.ensure_volume_available(admin)
+    if provisioning_durable.is_durable(db, "renew_purchase"):
+        return _durable_panel_renewal(db, admin, user, purchase, package, reset_usage=True, keep_package=True,
+                                      key=None, as_package_charge=True)
     if package is not None:
         admin_billing.charge_for_package(db, admin, package, units=1)
         accounting.record_panel_sale(
@@ -1171,6 +1333,7 @@ def renew_purchase_endpoint(
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
     _perm=_may_spend,
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """Renews/extends ONE independent purchase - the per-purchase
     counterpart to the user-level renew action, without touching anything
@@ -1185,6 +1348,12 @@ def renew_purchase_endpoint(
     # See admin_billing.require_package_to_grant.
     admin_billing.require_package_to_grant(admin, package)
     admin_billing.ensure_volume_available(admin)
+    if provisioning_durable.is_durable(db, "renew_purchase"):
+        # Lifecycle L5: the acting admin's credit reserved and captured, the
+        # renewal and the panel sale - one transaction.
+        return _durable_panel_renewal(db, admin, user, purchase, package, add_gb=payload.add_gb,
+                                      add_days=payload.add_days, reset_usage=payload.reset_usage,
+                                      key=x_idempotency_key)
     # Charged BEFORE the renewal is applied, so an admin who cannot afford
     # it gets a refusal instead of a renewed service and a debt.
     admin_billing.charge_for_renewal(db, admin, package, payload.add_gb)
@@ -1256,6 +1425,7 @@ def delete_purchase(
     # paid-for service is a deletion, and it was already gated this way.
     # manage_connections covers adding/removing individual connections.
     _perm=_may_delete_users,
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """Deletes ONE of a customer's services: its connections are removed
     from the real nodes first (user_ops.delete_connection deprovisions each
@@ -1265,9 +1435,22 @@ def delete_purchase(
     Password-confirmed like every other delete in the panel (see
     deps.require_confirm_password)."""
     user = _get_owned_user(db, admin, user_id)
+    if provisioning_durable.is_durable(db, "delete_purchase"):
+        prior = _prior_delete(db, admin, "purchase", x_idempotency_key, resource_id=purchase_id, user_id=user.id)
+        if prior is not None:
+            from ..models_provisioning import ProvisioningStep
+            return {"ok": True, "failed": [], "connections_removed": db.query(ProvisioningStep).filter_by(
+                operation_id=prior.id, direction="remove").count()}
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
+    if provisioning_durable.is_durable(db, "delete_purchase"):
+        count = len(purchase.connections)
+        provisioning_requests.run_delete(db, "purchase", purchase.id, user.owner_admin_id, actor_kind="admin",
+                                         actor_id=admin.id, key=provisioning_durable.idempotency_key(x_idempotency_key))
+        # All-or-nothing: either every connection is gone, or the request
+        # failed above and nothing was deleted.
+        return {"ok": True, "connections_removed": count, "failed": []}
 
     removed = 0
     failed: list[str] = []
@@ -1370,8 +1553,8 @@ def update_connection(
     )
     if renamed:
         try:
-            with writer_gate(conn.node), user_ops.MikrotikClient.for_node(conn.node) as mt:
-                mt.rename_peer(conn.node.mt_wireguard_interface, old_peer_name, new_peer_name)
+            legacy_remote.run(conn.node, "wg_rename", factory=user_ops.MikrotikClient.for_node, interface=conn.node.mt_wireguard_interface,
+                              old_name=old_peer_name, new_name=new_peer_name)
         except user_ops.MikrotikError as exc:
             raise HTTPException(400, str(exc))
 
@@ -1390,15 +1573,10 @@ def update_connection(
         effective_peer_name = new_peer_name if renamed else old_peer_name
         effective_limit = data.get("speed_limit_mbps", conn.speed_limit_mbps) or None
         try:
-            with writer_gate(conn.node), user_ops.MikrotikClient.for_node(conn.node) as mt:
-                if renamed:
-                    mt.remove_simple_queue(user_ops.wg_speed_queue_name(old_peer_name))
-                if effective_limit:
-                    mt.upsert_simple_queue(
-                        user_ops.wg_speed_queue_name(effective_peer_name), conn.wg_client_address, effective_limit
-                    )
-                else:
-                    mt.remove_simple_queue(user_ops.wg_speed_queue_name(effective_peer_name))
+            legacy_remote.run(conn.node, "wg_queue_sync", factory=user_ops.MikrotikClient.for_node, renamed=bool(renamed),
+                              old_queue=user_ops.wg_speed_queue_name(old_peer_name),
+                              new_queue=user_ops.wg_speed_queue_name(effective_peer_name),
+                              address=conn.wg_client_address, limit=effective_limit)
         except user_ops.MikrotikError as exc:
             raise HTTPException(400, str(exc))
 
@@ -1436,6 +1614,9 @@ def unban_connection(
     who lifted it or when. Idempotent: safe to call even if the connection
     isn't currently banned (e.g. the admin clicks it just to be sure)."""
     user = _get_owned_user(db, admin, user_id)
+    if provisioning_durable.is_durable(db, "delete_connection") and _prior_delete(
+            db, admin, "connection", x_idempotency_key, resource_id=connection_id, user_id=user.id) is not None:
+        return {"ok": True}
     conn = db.get(models.Connection, connection_id)
     if not conn or conn.user_id != user_id:
         raise HTTPException(404, "کانکشن پیدا نشد")
@@ -1484,6 +1665,9 @@ def kick_connection_endpoint(
     not a ban. Use the existing "غیرفعال" toggle instead if the intent is
     to actually keep them cut off."""
     user = _get_owned_user(db, admin, user_id)
+    if provisioning_durable.is_durable(db, "delete_connection") and _prior_delete(
+            db, admin, "connection", x_idempotency_key, resource_id=connection_id, user_id=user.id) is not None:
+        return {"ok": True}
     conn = db.get(models.Connection, connection_id)
     if not conn or conn.user_id != user_id:
         raise HTTPException(404, "کانکشن پیدا نشد")
@@ -1497,11 +1681,19 @@ def delete_connection(
     user_id: int,
     connection_id: int,
     db: Session = Depends(get_db),
-    admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password), _perm=_may_manage_connections):
-    _get_owned_user(db, admin, user_id)
+    admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password), _perm=_may_manage_connections,
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key")):
+    user = _get_owned_user(db, admin, user_id)
+    if provisioning_durable.is_durable(db, "delete_connection") and _prior_delete(
+            db, admin, "connection", x_idempotency_key, resource_id=connection_id, user_id=user.id) is not None:
+        return {"ok": True}
     conn = db.get(models.Connection, connection_id)
     if not conn or conn.user_id != user_id:
         raise HTTPException(404, "کانکشن پیدا نشد")
+    if provisioning_durable.is_durable(db, "delete_connection"):
+        provisioning_requests.run_delete(db, "connection", conn.id, user.owner_admin_id, actor_kind="admin",
+                                         actor_id=admin.id, key=provisioning_durable.idempotency_key(x_idempotency_key))
+        return {"ok": True}
     user_ops.delete_connection(db, conn)
     return {"ok": True}
 

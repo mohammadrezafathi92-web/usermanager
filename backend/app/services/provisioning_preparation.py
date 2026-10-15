@@ -25,6 +25,11 @@ from .marzneshin_client import sanitize_username
 from .provisioning_host import HostIdentity, validate_snapshot
 
 
+# Lifecycle 18 decision 2: how long an operation may roll forward before it
+# is compensated.
+FORWARD_DEADLINE_MINUTES = 10
+
+
 class Slot(final._Snapshot):
     slot_key: StrictStr
     node_id: StrictInt
@@ -105,6 +110,11 @@ class Prepared:
     replay: bool = False
 
 
+def transitions_operation(db, operation_id):
+    return db.execute(select(mp.ProvisioningOperation).where(mp.ProvisioningOperation.id == operation_id)
+        .with_for_update().execution_options(populate_existing=True)).scalar_one()
+
+
 def _stage(db, operation, slot, node, backend):
     name = operation.username_claim or final._intent(operation).user.username
     attributes = dict(operation_id=operation.id, slot_key=slot.slot_key, direction="create",
@@ -138,7 +148,18 @@ def _stage(db, operation, slot, node, backend):
     return attributes
 
 
-def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_kind="system", actor_id=None):
+def request_digest(request) -> str:
+    """The request_hash of a Preparation: the same request is the same hash."""
+    canonical = json.dumps(request.dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_kind="system", actor_id=None,
+            approval=None):
+    """T1. With `approval` (provisioning_approval_exec.ApprovalExecution) it
+    is the approval's T1 too: binding before the leases, live preflight after
+    them, registered -> mutating in the same commit (Lifecycle 7.6)."""
+    from . import provisioning_approval_exec as approval_exec
     if not isinstance(request, Preparation) or not isinstance(identity, HostIdentity):
         raise HTTPException(422, "provisioning_request_invalid")
     if actor_kind not in mp.ACTOR_KINDS or (actor_id is not None and (type(actor_id) is not int or actor_id <= 0)):
@@ -165,8 +186,15 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
     panel = db.get(models.PanelSettings, 1)
     if panel is not None and panel.ha_enabled:
         raise HTTPException(503, "provisioning_ha_unsupported")
-    canonical = json.dumps(request.dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    digest = hashlib.sha256(canonical.encode()).hexdigest()
+    digest = request_digest(request)
+    locked = None
+    if approval is not None:
+        locked = approval_exec.lock(db, request, approval, digest)
+        if locked.replay_operation_id is not None:
+            previous = transitions_operation(db, locked.replay_operation_id)
+            return Prepared(previous, replay=True)
+    elif request.business_key.startswith("approval:"):
+        raise HTTPException(422, "provisioning_request_invalid")
     previous = db.execute(select(mp.ProvisioningOperation).where(
         mp.ProvisioningOperation.operation_type == request.operation_type,
         mp.ProvisioningOperation.business_key == request.business_key).with_for_update()
@@ -182,15 +210,25 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
         raise HTTPException(422, "provisioning_request_invalid")
     intent = request.intent.copy(deep=True)
     kind = request.operation_type
+    # An approved new customer carries the package's limits on the user row
+    # (its manifest's user_created); everywhere else the package carries them.
+    user_limits = approval is not None and kind == "create_user" and intent.package is not None and (
+        (intent.quota_bytes, intent.duration_days) == (intent.package.quota_bytes, intent.package.duration_days))
+    if (approval is None) != (intent.approval is None):
+        raise HTTPException(422, "provisioning_request_invalid")
     if (intent.purchase_id is not None and kind not in ("add_connection", "renew_purchase")) or (
             kind == "renew_purchase" and intent.purchase_id is None) or (
             kind == "purchase" and intent.package is None) or (
-            kind == "create_user" and intent.package and (intent.quota_bytes or intent.duration_days)) or (
+            kind == "create_user" and intent.package and (intent.quota_bytes or intent.duration_days)
+            and not user_limits) or (
             kind == "add_connection" and (intent.package or intent.sale)) or (
             kind != "create_user" and request.target_user_id is None):
         raise HTTPException(422, "provisioning_request_invalid")
     for payer in request.payers:
-        if intent.sale is None or (payer.kind == "customer_wallet" and (
+        # A reseller may be charged without a customer sale (a raw-gigabyte
+        # renewal at the account's per-GB rate books cost, not revenue -
+        # admin_billing.charge_for_renewal); a customer wallet only for a sale.
+        if (payer.kind == "customer_wallet" and intent.sale is None) or (payer.kind == "customer_wallet" and (
                 kind == "create_user" or payer.id != request.target_user_id or
                 intent.sale.payment_method != "wallet" or payer.amount != intent.sale.amount)):
             raise HTTPException(422, "provisioning_payment_invalid")
@@ -212,6 +250,8 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
         if request.target_user_id is not None or wallet_accounts.tenant_scope(db, intent.user.owner_admin_id) != request.tenant_scope_key:
             raise HTTPException(409, "provisioning_target_changed")
         if db.query(models.User.id).filter_by(username=intent.user.username).first():
+            if approval is not None:
+                raise approval_exec.ApprovalCancel("username_taken")      # a T1 precondition (7.6)
             raise HTTPException(409, "provisioning_username_taken")
         wallet_policy.can_purchase_telegram(db, intent.user.telegram_id)
         customer = db.execute(select(rv.customer_identities.c.id).where(
@@ -227,11 +267,16 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
         wallet_policy.can_purchase(db, user)
         customer = db.execute(select(rv.wallet_accounts.c.customer_identity_id).where(
             rv.wallet_accounts.c.user_id == user.id, rv.wallet_accounts.c.tombstoned_at.is_(None))).scalar_one()
+    approval_columns = {}
+    if approval is not None:
+        approval_columns = dict(approval_uuid=approval.approval_uuid, approval_execution_version=approval.version,
+                                approval_key_bound=locked.key_instance_uuid is not None,
+                                execution_key_instance_uuid=locked.key_instance_uuid)
     operation = mp.ProvisioningOperation(operation_type=request.operation_type, business_key=request.business_key,
         request_hash=digest, tenant_scope_key=request.tenant_scope_key, actor_kind=actor_kind, actor_id=actor_id,
         intent=intent.json(), target_user_id=request.target_user_id, wallet_epoch_at_start=epoch, state="prepared",
         username_claim=intent.user.username if request.operation_type == "create_user" else None,
-        forward_deadline=dt.datetime.utcnow() + dt.timedelta(minutes=5))
+        forward_deadline=dt.datetime.utcnow() + dt.timedelta(minutes=FORWARD_DEADLINE_MINUTES), **approval_columns)
     db.add(operation)
     db.flush()
     resource_keys = {f"provisioning_op:{operation.id}"}
@@ -240,6 +285,8 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
     resource_keys.update(f"node:{node.id}:wg_pool" for node, backend in nodes.values() if backend == "mikrotik_wg")
     tokens = tuple(resource_leases.acquire(db, key, f"op:{operation.id}:1") for key in sorted(resource_keys))
     resource_leases.revalidate(db, tokens)
+    if approval is not None:
+        approval_exec.preflight(db, locked, approval, tokens, request)
     # Preflight reads above do not lock target rows before resource leases.
     # Re-read targets after fencing, before any benefit, claim or payment.
     if request.target_user_id is not None:
@@ -280,7 +327,10 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
                 count=max(1, slot.max_concurrent_sessions or 1))
     for payer in request.payers:
         payment_reservations.reserve(db, operation.id, payer.kind, payer.id, payer.amount)
+    if approval is not None:
+        approval_exec.mark_mutating(db, approval)
     if renewing:
-        final.finish(db, operation.id, operation.version, tokens)
+        final.finish(db, operation.id, operation.version, tokens,
+                     approval_row=approval_exec.lock_for(db, operation.id) if approval is not None else None)
     db.flush()
     return Prepared(operation, tokens)

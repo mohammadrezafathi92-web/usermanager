@@ -214,6 +214,10 @@ def _run_once(db: Session, principal, username: str, amount: int, payment_card_i
     strict = row["registered_under_mode"] == "required"
     if strict and not all(registration.runtime.REQUIRED_PREREQUISITES.values()):
         raise HTTPException(status_code=409, detail="execution_token_not_supported")
+    if strict and execution_token is None:
+        # Under 'required' every approval-carrying call presents the current
+        # execution token (Receipt Void 5.1); none -> refused before any write.
+        raise HTTPException(status_code=422, detail="approval_execution_token_required")
 
     # A matching customer+amount already credited by this approval dominates
     # a rotated key/card retry: do not pay twice, but keep the mismatch visible.

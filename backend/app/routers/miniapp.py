@@ -534,33 +534,32 @@ def checkout(
     payload: CheckoutRequest,
     visitor: dict = Depends(current_visitor),
     db: Session = Depends(get_db),
+    x_idempotency_key: str | None = Header(None, alias="X-Idempotency-Key"),
 ):
     """Pay from the wallet. Refuses rather than half-succeeds.
 
-    The order - debit first, provision second - is copied from
-    customer.py's pay_with_balance and matters for the same reason: a
-    failure after provisioning would be a free service, while a failure
-    after the debit is recoverable, and is recovered (the refund below).
+    The panel takes the money itself (charge_wallet), in the same operation
+    as the service: on a durable type it is reserved with the service and
+    captured or released with it (Lifecycle 8); on a legacy type the bot
+    endpoint debits, provisions and refunds a failure. This handler never
+    holds the money between two requests.
+
+    X-Idempotency-Key (one per purchase attempt, sent again on every retry
+    by the page) reaches the durable operation: a retry after a lost answer
+    or a second tap gets the same operation - no second service, no second
+    debit (Lifecycle 13).
     """
     owner = visitor["owner_admin_id"]
+    key = x_idempotency_key if isinstance(x_idempotency_key, str) else None
+    from ..services import provisioning_requests, wallet_accounts
     principal = build_internal_principal_for_owner(db, owner)
     pkg = _package_or_404(db, owner, payload.package_id)
     renewing = payload.renew_purchase_id is not None
-    if not renewing:
-        _require_bundled(pkg)  # a renewal creates no connection, so needs no bundle
-    price = _price_of(pkg)
 
-    account = _own_account(db, visitor, payload.account)
-
-    # A free plan - the trial - is the one case where "you have no account"
-    # is not a reason to refuse. The whole point of a sample is to reach
-    # someone who has not signed up yet, and sending them back to the bot
-    # to do it there would make the shop the long way round.
-    #
-    # Created through routers/bot.py's create_user, the same single choke
-    # point the bot's own signup uses, so the trial's rules, the purchase
-    # lock and the referral hook all apply exactly as they do in chat.
-    if account is None and price == 0 and not renewing:
+    def _trial():
+        # Created through routers/bot.py's create_user, the same single choke
+        # point the bot's own signup uses, so the trial's rules, the purchase
+        # lock and the referral hook all apply exactly as they do in chat.
         created = bot_router.create_user(
             schemas.BotCreateUserRequest(
                 username=f"tg{visitor['telegram_id']}",
@@ -580,6 +579,7 @@ def checkout(
             ),
             db=db,
             principal=principal,
+            x_idempotency_key=key,
         )
         return {
             "status": "done",
@@ -587,54 +587,69 @@ def checkout(
             "connections": [c.model_dump() for c in created.connections],
         }
 
+    if key and not renewing and provisioning_requests.prior_operation(
+            db, "create_user", wallet_accounts.tenant_scope(db, owner), key) is not None:
+        # A free trial that already created the account under this key: the
+        # retry finds that account now, but it is still the SAME request -
+        # sent again through create_user, whose replay compares the whole
+        # request (package, visitor, connections) with the operation's hash
+        # and answers 409 for anything else.
+        return _trial()
+    if not renewing:
+        _require_bundled(pkg)  # a renewal creates no connection, so needs no bundle
+    price = _price_of(pkg)
+
+    account = _own_account(db, visitor, payload.account)
+
+    # A free plan - the trial - is the one case where "you have no account"
+    # is not a reason to refuse. The whole point of a sample is to reach
+    # someone who has not signed up yet, and sending them back to the bot
+    # to do it there would make the shop the long way round.
+    if account is None and price == 0 and not renewing:
+        return _trial()
+
     if account is None:
         raise HTTPException(400, "هنوز حسابی ندارید - اولین خرید را از داخل ربات انجام دهید.")
-    if (account.balance or 0) < price:
-        raise HTTPException(400, "موجودی کیف پول کافی نیست.")
+    # No balance pre-check here: the charge itself is the atomic check
+    # (reservation / conditional debit), and a retry of a purchase that
+    # already took the money must reach its operation, not be refused for
+    # the balance that purchase spent.
 
     if renewing:
         _own_purchase_or_404(db, owner, account.username, payload.renew_purchase_id)
 
-    bot_router.add_balance(account.username, schemas.BotAddBalanceRequest(amount=-price), db=db, principal=principal)
-    try:
-        if renewing:
-            renewed = bot_router.renew_service(
-                account.username,
-                payload.renew_purchase_id,
-                schemas.BotRenewRequest(
-                    add_gb=float(getattr(pkg, "quota_gb", 0) or 0),
-                    add_days=int(getattr(pkg, "duration_days", 0) or 0),
-                    package_id=pkg.id,
-                    paid_amount=price,
-                    payment_method="wallet",
-                ),
-                db=db,
-                owner_admin_id=owner,
-                principal=principal,
-            )
-        else:
-            result = bot_router.purchase_package(
-                account.username,
-                schemas.BotPurchasePackageRequest(
-                    package_id=pkg.id,
-                    comment=payload.comment or None,
-                    paid_amount=price,
-                    payment_method="wallet",
-                ),
-                db=db,
-                owner_admin_id=owner,
-                principal=principal,
-            )
-    except Exception:
-        # Put the money back. Without this the customer is charged for a
-        # service that was never created, and finds out by comparing a
-        # balance they were not watching.
-        logger.exception("miniapp: purchase failed after debit - refunding %s", account.username)
-        try:
-            bot_router.add_balance(account.username, schemas.BotAddBalanceRequest(amount=price), db=db, principal=principal)
-        except Exception:
-            logger.exception("miniapp: REFUND FAILED for %s (%s tomans)", account.username, price)
-        raise
+    if renewing:
+        renewed = bot_router.renew_service(
+            account.username,
+            payload.renew_purchase_id,
+            schemas.BotRenewRequest(
+                add_gb=float(getattr(pkg, "quota_gb", 0) or 0),
+                add_days=int(getattr(pkg, "duration_days", 0) or 0),
+                package_id=pkg.id,
+                paid_amount=price,
+                payment_method="wallet",
+                charge_wallet=True,
+            ),
+            db=db,
+            owner_admin_id=owner,
+            principal=principal,
+            x_idempotency_key=key,
+        )
+    else:
+        result = bot_router.purchase_package(
+            account.username,
+            schemas.BotPurchasePackageRequest(
+                package_id=pkg.id,
+                comment=payload.comment or None,
+                paid_amount=price,
+                payment_method="wallet",
+                charge_wallet=True,
+            ),
+            db=db,
+            owner_admin_id=owner,
+            principal=principal,
+            x_idempotency_key=key,
+        )
 
     if renewing:
         _notify_owner_of_sale(db, owner, account.username, pkg, price, label="تمدید جدید")

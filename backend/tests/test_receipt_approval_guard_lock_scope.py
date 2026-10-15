@@ -127,7 +127,7 @@ with tempfile.TemporaryDirectory(prefix="guard_lock_") as folder:
             switch = Session()
             switch.execute(rv.receipt_approval_runtime_state.update().where(
                 rv.receipt_approval_runtime_state.c.id == 1).values(
-                    registration_mode="required", loyalty_timing_mode="payment_event", completeness_generation=1))
+                    registration_mode="required", key_identity_ready=False, key_identity_failure="duplicate_uuid", loyalty_timing_mode="payment_event", completeness_generation=1))
             switch.commit()
             switch.close()
 

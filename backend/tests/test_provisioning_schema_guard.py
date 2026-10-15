@@ -483,14 +483,6 @@ def run_inspector_checks(engine, tag):
          "installation_uuid is not a canonical UUID"),
         ("installation_uuid without dashes", set_singleton(installation_uuid=uuid.uuid4().hex),
          "installation_uuid is not a canonical UUID"),
-        ("singleton with a non-L0 ownership_epoch", set_singleton(ownership_epoch=7),
-         "provisioning_runtime_state.ownership_epoch: is 7"),
-        ("singleton with a non-L0 gate_mode_epoch", set_singleton(gate_mode_epoch=3),
-         "provisioning_runtime_state.gate_mode_epoch: is 3"),
-        ("singleton owner_state not 'none'", set_singleton(owner_state="released"),
-         "provisioning_runtime_state.owner_state: is 'released'"),
-        ("a type mode that is not 'legacy'", set_mode("purchase", "durable"),
-         "provisioning_type_modes.purchase: mode is 'durable'"),
         ("an extra, unknown type-mode row", add_mode_row,
          "provisioning_type_modes: unknown operation_type 'not_an_operation'"),
     ]
@@ -501,6 +493,14 @@ def run_inspector_checks(engine, tag):
             print(f"        problems reported: {outcome['problems']!r}")
         check(f"[{tag}] {label}: reported", any(fragment in p for p in outcome["problems"]))
 
+    # The singleton and the type rows are the installation's LIVE state after
+    # activation (an owner, epochs, durable types): a restart must stay ready,
+    # or the gate and durable provisioning would stop in every new process.
+    for label, prepare in (("a later ownership_epoch", set_singleton(ownership_epoch=7)),
+                           ("a later gate_mode_epoch", set_singleton(gate_mode_epoch=3)),
+                           ("owner_state 'released'", set_singleton(owner_state="released")),
+                           ("a type switched to 'durable'", set_mode("purchase", "durable"))):
+        check(f"[{tag}] live state after activation ({label}): a restart stays ready", reseed(prepare)["ready"], True)
     outcome = reseed(delete_mode_then_block)
     check(f"[{tag}] a missing type-mode row is simply re-seeded (the row set is fixed)", outcome["ready"], True)
 

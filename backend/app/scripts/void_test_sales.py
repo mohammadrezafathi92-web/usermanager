@@ -100,7 +100,30 @@ def show(user: models.User, plan: dict, days: int, delete_user: bool) -> None:
     print(f"  account itself: {'DELETED' if delete_user else 'kept'}")
 
 
+def preflight(db) -> str | None:
+    """Why this script must not run now, or None. Checked BEFORE any node is
+    contacted and before any commit: the legacy wallet writer is allowed only
+    in wallet phase 'normal', and once a deletion type is durable a deletion
+    outside the durable machine (Lifecycle 12) is not allowed either."""
+    from fastapi import HTTPException
+    from ..services import provisioning_durable
+    try:
+        wallet_service.require_legacy_phase(db)
+    except HTTPException:
+        return "the wallet is not in phase 'normal' (legacy writer unavailable)"
+    durable = [kind for kind in ("delete_connection", "delete_purchase", "delete_user")
+               if provisioning_durable.is_durable(db, kind)]
+    db.rollback()
+    if durable:
+        return "durable deletion is on (" + ", ".join(durable) + "): use the panel's delete instead"
+    return None
+
+
 def execute(db, user: models.User, plan: dict, delete_user: bool) -> int:
+    reason = preflight(db)
+    if reason:
+        print(f"\nNOTHING was changed: {reason}")
+        return 3
     kept = 0
     kept_ids: set[int] = set()
     for purchase in plan["purchases"]:
@@ -185,6 +208,10 @@ def main(argv: list[str]) -> int:
         if args.confirm != user.username:
             print("\nNOTHING was changed: --confirm must repeat the username exactly")
             return 2
+        reason = preflight(db)
+        if reason:
+            print(f"\nNOTHING was changed: {reason}")
+            return 3
         path = backup.create_backup()
         print(f"\nbackup taken first: {path.name}")
         return execute(db, user, plan, args.delete_user)

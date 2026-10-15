@@ -497,6 +497,21 @@ def finalize(db: Session, principal: bot_auth.BotPrincipal, approval_uuid: str, 
         raise RegistrationRejected(404, "approval_not_found")
     if caller_key_instance(db, principal) != row["execution_key_instance_uuid"]:
         raise RegistrationRejected(403, "execution_principal_mismatch")
+    from . import provisioning_schema
+    if provisioning_schema.is_ready():
+        from .. import models_provisioning as mp
+        durable = db.execute(select(mp.ProvisioningOperation.id, mp.ProvisioningOperation.state).where(
+            mp.ProvisioningOperation.approval_uuid == approval_uuid,
+            mp.ProvisioningOperation.approval_execution_version == row["version"])).first()
+        if durable is not None:
+            # A durable operation writes completed / failed itself (T_final,
+            # T_comp); the bot's finalize only reads the real state back
+            # (Lifecycle 7.6, interpretation point 1) - never 'failed' while
+            # the operation may still complete.
+            count = db.execute(select(func.count(effects.c.id)).where(
+                effects.c.approval_uuid == approval_uuid)).scalar_one()
+            return {"state": row["state"], "effect_count": int(count), "missing_effects": [],
+                    "unexpected_effects": [], "operation_id": int(durable.id), "operation_state": durable.state}
     manifest = db.execute(select(expected.c.effect_type, expected.c.effect_key, expected.c.requirement)
                           .where(expected.c.approval_uuid == approval_uuid)).all()
     written = {(r[0], r[1]) for r in db.execute(

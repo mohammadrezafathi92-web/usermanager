@@ -105,8 +105,13 @@ with patch.object(database, "SessionLocal", Broken()):
           write_with(MikrotikClient.for_node(node_obj())), ("refused", []))
 node_gate._cached_runtime = node_gate.GateRuntime(INSTALLATION, "off", 0)
 with patch.object(database, "SessionLocal", Broken()):
-    check("1. a process that already saw 'off': unreadable now keeps acting on 'off'",
+    check("1. a process that already saw 'off', NO mode-state file: unreadable now is refused (nothing proven)",
+          write_with(MikrotikClient.for_node(node_obj())), ("refused", []))
+gate_locks.write_mode_state(INSTALLATION, "0")
+with patch.object(database, "SessionLocal", Broken()):
+    check("1. ...with the state file naming the cached epoch: proven, it keeps acting on 'off'",
           write_with(MikrotikClient.for_node(node_obj()))[0], "sent")
+os.remove(gate_locks.mode_state_path(INSTALLATION))
 node_gate.reset_cache()
 
 

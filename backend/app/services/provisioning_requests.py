@@ -212,7 +212,7 @@ def package_scope(db, package):
 def create_user(db, *, username, full_name=None, notes=None, telegram_id=None, owner_admin_id=None, package=None,
                 quota_gb=0, expire_days=0, slots=(), comment=None, sale=None, reseller_cost=0,
                 reseller_admin_id=None, count_delta=0, created_via=None, key: str,
-                business_key: str | None = None) -> preparation.Preparation:
+                business_key: str | None = None, batch_fingerprint: str | None = None) -> preparation.Preparation:
     """A brand-new customer, optionally with a package and connections (7.5).
     With a package the service's limits come from the frozen package."""
     tenant = wallet_accounts.tenant_scope(db, owner_admin_id)
@@ -226,17 +226,17 @@ def create_user(db, *, username, full_name=None, notes=None, telegram_id=None, o
             purchase_batch=batch_of(business_key) if slots else None,
             quota_bytes=0 if package is not None else int(round((quota_gb or 0) * GB)),
             duration_days=0 if package is not None else int(expire_days or 0),
-            reseller_count_delta=count_delta, created_via=created_via),
+            reseller_count_delta=count_delta, created_via=created_via, batch_fingerprint=batch_fingerprint),
         slots=list(slots),
         payers=payers(reseller_admin_id=reseller_admin_id if reseller_admin_id is not None else owner_admin_id,
                       reseller_cost=reseller_cost))
 
 
 def bulk_fingerprint(*, prefix, count, package, quota_gb, expire_days, notes, connections) -> str:
-    """What one bulk request asked for. The batch token of the frozen key
-    bulk:{batch_token}:{index} is "{caller's token}.{fingerprint}": the same
-    caller token with another prefix, count, package, notes, quota, duration
-    or connections is another request (bulk_members: 409)."""
+    """What one bulk request asked for, frozen into every member's intent
+    (and so its request_hash) under the frozen key bulk:{batch_token}:{index}:
+    the same token with another prefix, count, package, notes, quota,
+    duration or connections is another request (bulk_members: 409)."""
     import hashlib
     import json
     asked = dict(prefix=prefix, count=int(count), package_id=getattr(package, "id", None),
@@ -249,40 +249,79 @@ def bulk_fingerprint(*, prefix, count, package, quota_gb, expire_days, notes, co
 
 def bulk_members(db, admin, batch_token: str, fingerprint: str) -> list:
     """The operations an earlier request with this batch token made - only
-    if they are THIS admin's, in this admin's tenant, for THIS request; any
-    other is a 409 before anything is resumed, reported or created."""
+    if they are THIS admin's, in this admin's tenant, for THIS request (the
+    fingerprint frozen in each member's intent); any other is a 409 before
+    anything is resumed, reported or created. Called under bulk_lock."""
     from fastapi import HTTPException
     from sqlalchemy import select
     from .. import models_provisioning as mp
     rows = db.execute(select(mp.ProvisioningOperation).where(
         mp.ProvisioningOperation.operation_type == "create_user",
-        mp.ProvisioningOperation.business_key.like(f"bulk:{batch_token}.%"))).scalars().all()
+        mp.ProvisioningOperation.business_key.like(f"bulk:{batch_token}:%"))
+        .execution_options(populate_existing=True)).scalars().all()
     tenant = wallet_accounts.tenant_scope(db, admin.id)
     for row in rows:
-        if row.actor_kind != "admin" or row.actor_id != admin.id or row.tenant_scope_key != tenant:
-            raise HTTPException(409, "provisioning_request_changed")
-        if not row.business_key.startswith(f"bulk:{batch_token}.{fingerprint}:"):
+        if row.actor_kind != "admin" or row.actor_id != admin.id or row.tenant_scope_key != tenant or (
+                final._intent(row).batch_fingerprint != fingerprint):
             raise HTTPException(409, "provisioning_request_changed")
     return rows
+
+
+BULK_LOCK_WAIT_SECONDS = 60.0
+
+
+def bulk_lock(db, batch_token: str):
+    """The batch token's ownership, taken before anything is read or created
+    and held for the whole batch: two requests with the same token never run
+    side by side, so the second one sees the first one's members (and their
+    fingerprint) and is answered or refused - never a second batch. A lock
+    file of the installation: durable operations only ever run on the host
+    that owns it (T1 checks the ownership). Fail-closed if it cannot be used."""
+    import hashlib
+    import os
+    from fastapi import HTTPException
+    from .. import models_provisioning as mp
+    from . import gate_locks
+    installation = db.get(mp.ProvisioningRuntimeState, 1).installation_uuid
+    # No transaction is held while waiting, and the members are then read in
+    # a NEW one: a snapshot from before the wait would not show the batch
+    # the other request just made (MariaDB REPEATABLE READ).
+    db.rollback()
+    bucket = hashlib.sha256(batch_token.encode()).hexdigest()[:2]
+    lock = gate_locks.FileLock(os.path.join(gate_locks.installation_dir(installation), f"bulk-{bucket}.lock"))
+    try:
+        return lock.acquire(shared=False, timeout=BULK_LOCK_WAIT_SECONDS)
+    except gate_locks.LockTimeout:
+        raise HTTPException(409, {"error": "operation_in_progress", "state": "bulk_batch"}) from None
+    except (gate_locks.LockUnavailable, ValueError):
+        raise HTTPException(503, "bulk_lock_unavailable") from None
 
 
 def bulk_create(db, admin, *, prefix, count, package=None, quota_gb=0, expire_days=None, notes=None,
                 connections=None, batch_token: str, before_new=None) -> dict:
     """Panel bulk creation as N independent create_user operations (7.5):
-    business key bulk:{batch_token}:{index} (batch token: bulk_fingerprint); every member that succeeds is
+    business key bulk:{batch_token}:{index}; every member that succeeds is
     complete (its own reservation captured), every one that fails left
     nothing. No batch charge and no batch refund. Same result shape and the
     same name skipping as the legacy bulk_create_users. The same token again
     resumes/reports its members only for the same admin, tenant and request
     (bulk_members); anything else is a 409."""
-    from types import SimpleNamespace
-    from fastapi import HTTPException
-    from . import accounting, admin_billing, provisioning_durable, user_ops
-    created, skipped, pending = [], [], []
     fingerprint = bulk_fingerprint(prefix=prefix, count=count, package=package, quota_gb=quota_gb,
                                    expire_days=expire_days, notes=notes, connections=connections)
-    if not bulk_members(db, admin, batch_token, fingerprint) and before_new is not None:
-        before_new()                               # checks only a NEW batch needs
+    with bulk_lock(db, batch_token):
+        if not bulk_members(db, admin, batch_token, fingerprint) and before_new is not None:
+            before_new()                           # checks only a NEW batch needs
+        return _bulk_members_run(db, admin, prefix=prefix, count=count, package=package, quota_gb=quota_gb,
+                                 expire_days=expire_days, notes=notes, connections=connections,
+                                 batch_token=batch_token, fingerprint=fingerprint)
+
+
+def _bulk_members_run(db, admin, *, prefix, count, package, quota_gb, expire_days, notes, connections,
+                      batch_token, fingerprint) -> dict:
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from . import admin_billing, provisioning_durable, user_ops
+    created, skipped, pending = [], [], []
     if package is not None:
         slots = package_slots(db, package)
         authorize_slots(db, slots, package_scope(db, package))
@@ -307,7 +346,7 @@ def bulk_create(db, admin, *, prefix, count, package=None, quota_gb=0, expire_da
         username = f"{prefix}{index}"
         member = index
         index += 1
-        business_key = f"bulk:{batch_token}.{fingerprint}:{member}"
+        business_key = f"bulk:{batch_token}:{member}"
         previous = existing_operation(db, "create_user", business_key)
         if previous is not None:
             # A retry of the same batch token: this index IS that member -
@@ -338,7 +377,7 @@ def bulk_create(db, admin, *, prefix, count, package=None, quota_gb=0, expire_da
             quota_gb=0 if package else (quota_gb or 0), expire_days=0 if package else (expire_days or 0),
             slots=slots, sale=panel_sale(db, buyer, package, admin.id),
             reseller_cost=admin_billing.package_cost(admin, package, units=1) if package is not None else 0,
-            reseller_admin_id=admin.id, key="", business_key=business_key)
+            reseller_admin_id=admin.id, key="", business_key=business_key, batch_fingerprint=fingerprint)
         db.rollback()
         try:
             provisioning_durable.run(factory, request, actor_kind="admin", actor_id=admin.id)

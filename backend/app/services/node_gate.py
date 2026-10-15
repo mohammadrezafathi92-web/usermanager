@@ -161,9 +161,9 @@ ENFORCED_SUPPORTED = True
 RUNTIME_CACHE_SECONDS = 5.0
 # The last value this process READ SUCCESSFULLY, and when it last tried. A
 # cached value is only ever ACTED ON when it is proven current: under the
-# shared gate-mode lock, with the mode-state file naming its epoch (a change
-# writes "changing" before its commit and the new epoch after it, both under
-# the exclusive lock). Anything else - a miss of the lock, an epoch that
+# shared gate-mode lock, with the mode-state file present and naming its
+# epoch - a missing file proves nothing. (A change writes "changing" before
+# its commit and the new epoch after it, both under the exclusive lock.) Anything else - a miss of the lock, an epoch that
 # moved, a change waited through - needs a fresh successful read, and a
 # failed read then REFUSES the passage, in every mode including 'off': a
 # cached 'off' can never let a write past a change committed meanwhile by
@@ -356,10 +356,10 @@ def node_gate(node_id: int, *, session_factory: Optional[Callable] = None,
             # persisted mode only when it is that epoch. Without the lock (a
             # miss), or after waiting through a change, only a fresh read
             # may decide - and if it fails nothing is sent.
+            # A missing state file proves NOTHING (it may have been removed
+            # after a change): only a fresh, successful read decides then.
             state = gate_locks.read_mode_state(runtime.installation_uuid) if mode_lock is not None else None
-            if mode_lock is not None and state is None:
-                state = "0"               # no change was ever made through this lock directory
-            stale = _cached_runtime is None or state != str(runtime.gate_mode_epoch)
+            stale = _cached_runtime is None or state is None or state != str(runtime.gate_mode_epoch)
             if (mode_lock is None and not verified) or (mode_lock is not None and stale):
                 fresh, ok = refresh()
                 if not ok:

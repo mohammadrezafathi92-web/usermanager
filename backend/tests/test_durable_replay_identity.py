@@ -13,7 +13,9 @@ no network.
     customer untouched (no false {ok: true});
   * panel bulk create: the same batch token with another count, prefix or
     notes -> 409; another admin's (tenant's) retry of a half-finished batch
-    -> 409, nothing resumed or created for it; the owner then finishes it.
+    -> 409, nothing resumed or created for it; the owner then finishes it;
+    two requests AT ONCE with the same token and different prefixes: one
+    batch, one set of charges, the other request 409.
 """
 import datetime as dt
 import os
@@ -24,6 +26,7 @@ from unittest.mock import patch
 
 DIRECTORY = tempfile.mkdtemp(prefix="um-replay-identity-")
 os.environ["DATABASE_URL"] = "sqlite:///" + os.path.join(DIRECTORY, "t.db")
+os.environ["UM_LOCK_DIR"] = os.path.join(DIRECTORY, "locks")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _no_network
@@ -294,7 +297,7 @@ def bulk(token, admin_id=RESELLER, runner=ok_runner, prefix="bk", count=2, notes
 def members(token):
     with SessionLocal() as db:
         return sorted((op.business_key.rsplit(":", 1)[1], op.state) for op in db.query(mp.ProvisioningOperation)
-                      .filter(mp.ProvisioningOperation.business_key.like(f"bulk:{token}.%")))
+                      .filter(mp.ProvisioningOperation.business_key.like(f"bulk:{token}:%")))
 
 
 token = str(uuid.uuid4())
@@ -314,6 +317,44 @@ with SessionLocal() as db:                 # the unfinished member's step become
 done = bulk(token)
 check("the owner's identical retry finishes exactly that batch", (done["created_count"], done["in_progress"],
       [state for _, state in members(token)]), (2, [], ["completed", "completed"]))
+
+# ------------------------------------------------------------------ bulk: two requests at once, same token
+import threading
+import time
+
+
+def slow_runner(dto):
+    time.sleep(0.2)                               # widens the window between the two requests
+    return ok_runner(dto)
+
+
+def unpatched_bulk(token, prefix, gate, out):
+    gate.wait()
+    with SessionLocal() as db:
+        admin = db.get(models.AdminUser, RESELLER)
+        out[prefix] = code(lambda: users_router.bulk_create_users(schemas.BulkCreateUsersRequest(
+            prefix=prefix, count=2, package_id=P), db=db, admin=admin, _perm=None, x_idempotency_key=token))
+
+
+token, gate, out = str(uuid.uuid4()), threading.Barrier(2), {}
+before = counts()
+with patch.object(execute.remote_runner, "run_action", side_effect=slow_runner), NO_SHARE:
+    threads = [threading.Thread(target=unpatched_bulk, args=(token, prefix, gate, out)) for prefix in ("ca", "cb")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(120)
+winners = sorted(prefix for prefix, result in out.items() if isinstance(result, dict))
+losers = sorted(result for result in out.values() if not isinstance(result, dict))
+with SessionLocal() as db:
+    ops = db.query(mp.ProvisioningOperation).filter(mp.ProvisioningOperation.business_key.like(f"bulk:{token}:%")).all()
+    names = sorted(name for (name,) in db.query(models.User.username).filter(models.User.username.in_(
+        ["ca1", "ca2", "cb1", "cb2"])))
+    cost = 300                                   # P's cooperation price, per member
+check("two requests at once with the same token, different prefixes: exactly one batch",
+      (len(winners), losers, len(ops)), (1, [(409, "provisioning_request_changed")], 2))
+check("...only the winner's two customers exist", names, [f"{winners[0]}1", f"{winners[0]}2"] if winners else None)
+check("...and one set of charges: two members, two reservations captured", before[3] - counts()[3], 2 * cost)
 
 check("no network", _no_network.attempts, [])
 engine.dispose()

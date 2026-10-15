@@ -23,6 +23,7 @@ from unittest.mock import patch
 
 DIRECTORY = tempfile.mkdtemp(prefix="um-durable-retry-")
 os.environ["DATABASE_URL"] = "sqlite:///" + os.path.join(DIRECTORY, "t.db")
+os.environ["UM_LOCK_DIR"] = os.path.join(DIRECTORY, "locks")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _no_network
@@ -189,7 +190,7 @@ def bulk(runner):
 first_run = bulk(second_member_hangs)
 with SessionLocal() as db:
     keys_after_first = sorted(op.business_key for op in db.query(mp.ProvisioningOperation).filter(
-        mp.ProvisioningOperation.business_key.like(f"bulk:{token}.%")))
+        mp.ProvisioningOperation.business_key.like(f"bulk:{token}:%")))
     balance_after_first = db.get(models.AdminUser, RESELLER).balance     # all three reserved in their T1
 with SessionLocal() as db:                 # the unfinished member's step becomes due again
     db.query(mp.ProvisioningStep).update({"next_retry_at": None})
@@ -198,9 +199,9 @@ with SessionLocal() as db:                 # the unfinished member's step become
 second_run = bulk(ok_runner)
 with SessionLocal() as db:
     keys_after_second = sorted(op.business_key for op in db.query(mp.ProvisioningOperation).filter(
-        mp.ProvisioningOperation.business_key.like(f"bulk:{token}.%")))
+        mp.ProvisioningOperation.business_key.like(f"bulk:{token}:%")))
     states = sorted(op.state for op in db.query(mp.ProvisioningOperation).filter(
-        mp.ProvisioningOperation.business_key.like(f"bulk:{token}.%")))
+        mp.ProvisioningOperation.business_key.like(f"bulk:{token}:%")))
 check("first run: one member left unfinished, reported in progress and NOT replaced by another index",
       (unfinished["done"], first_run["in_progress"], sorted(first_run["created"]), len(keys_after_first)),
       (True, ["bulk2"], ["bulk1", "bulk3"], 3))

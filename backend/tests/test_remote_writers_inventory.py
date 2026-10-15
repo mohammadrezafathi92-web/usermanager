@@ -292,6 +292,8 @@ check("legacy writers are gated; private guarded infrastructure has no live dura
        "app.services.provisioning_installation": ["gate_locks"],
     "app.services.provisioning_dispatch_binding": ["gate_locks"],
     "app.services.provisioning_child_guard": ["gate_locks"],
+    # the bulk batch token's lock file (provisioning_requests.bulk_lock), no remote write
+    "app.services.provisioning_requests": ["gate_locks"],
     "app.services.provisioning_runner_results": ["remote_action"],
     "app.services.provisioning_parent_dispatch": ["remote_action"],
     "app.services.provisioning_child_recovery": ["remote_action"],

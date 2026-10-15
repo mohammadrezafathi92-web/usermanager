@@ -245,10 +245,19 @@ with ng.node_gate(5, session_factory=Session):
     pass                                   # a successful passage: the singleton is now known
 saved_ttl = ng.RUNTIME_CACHE_SECONDS
 ng.RUNTIME_CACHE_SECONDS = 0               # force a (failing) re-read on the next passage
+try:
+    with ng.node_gate(5, session_factory=_broken_factory):
+        unproven = "ran"
+except ng.GateNotAvailable:
+    unproven = "refused"
+check("database down AFTER the singleton was read, NO mode-state file: refused (a missing file proves nothing)",
+      unproven, "refused")
+gate_locks.write_mode_state(INSTALLATION, "0")
+ng._checked_at = None
 with ng.node_gate(5, session_factory=_broken_factory) as ctx:
-    check("database down AFTER the singleton was read: the cache is proven current by the shared lock and the "
-          "mode-state epoch - 'off', WITH the shared lock",
+    check("...with the file naming the cached epoch: proven current under the shared lock - 'off', WITH the lock",
           (ctx.mode, ctx.mode_lock_held), ("off", True))
+os.remove(gate_locks.mode_state_path(INSTALLATION))
 ng.RUNTIME_CACHE_SECONDS = saved_ttl
 
 print("--- the singleton is not re-read on every passage ---")
@@ -259,7 +268,15 @@ ng.reset_cache()
 for _ in range(50):
     with ng.node_gate(5, session_factory=Session):
         pass
-check("50 passages in a row cost ONE database read", len(reads), 1)
+check("no mode-state file: nothing proves the cache, so every passage reads the singleton", len(reads) >= 50, True)
+reads.clear()
+gate_locks.write_mode_state(INSTALLATION, "0")
+ng.reset_cache()
+for _ in range(50):
+    with ng.node_gate(5, session_factory=Session):
+        pass
+check("with the state file naming the epoch: 50 passages in a row cost ONE database read", len(reads), 1)
+os.remove(gate_locks.mode_state_path(INSTALLATION))
 reads.clear()
 ng.read_runtime_checked = lambda factory=None: (reads.append(1), (None, False))[1]   # database down from the start
 ng.reset_cache()

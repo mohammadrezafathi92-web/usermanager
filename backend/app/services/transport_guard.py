@@ -175,8 +175,9 @@ def permit(node_id: Optional[int], backend: str):
             # names the epoch of the last committed change ("changing" while
             # one is being committed). Only that exact epoch proves the
             # runtime seen earlier is still the persisted one.
+            # A missing state file proves nothing: then the write is refused.
             state = gate_locks.read_mode_state(runtime.installation_uuid)
-            if (state if state is not None else "0") == str(runtime.gate_mode_epoch):
+            if state is not None and state == str(runtime.gate_mode_epoch):
                 mode = runtime.gate_mode
         if hold is None and mode not in (None, node_gate.MODE_OFF):
             raise GateViolation("no gate-mode lock outside 'off'; a remote write is not allowed")

@@ -5,8 +5,10 @@ The scenario: this process has the mode 'off' cached; ANOTHER process
 commits a change to 'enforced' (and releases the gate-mode lock); then the
 database read fails here. Both node_gate and transport_guard must refuse -
 nothing sent. The cached value is used only when the mode-state file proves
-it current under the shared lock (no change since); a cold process, or one
-whose lock file is unusable, refuses on a failed read.
+it current under the shared lock (no change since); a MISSING state file
+proves nothing (never "epoch 0"), so a cold process, a removed state file
+(even after a change elsewhere to 'enforced') or an unusable lock file
+refuses on a failed read.
 """
 import contextlib
 import datetime as dt
@@ -131,12 +133,22 @@ def scenario(label, engine, lock_dir, url):
               ("entered:off", "off"))
         node_gate._checked_at = None              # the next passage must try a (failing) read
 
-    # ---------------------------------------------------------------- no change: the cache is proven
+    state_file = gate_locks.mode_state_path(installation, lock_dir)
+
+    # ---------------------------------------------------------------- no change: proven only by the file
+    cache_off()
+    check(L + "no change was ever made: there is no mode-state file", os.path.exists(state_file), False)
+    with down():
+        check(L + "database down, no state file: node_gate refuses (a missing file is never epoch 0)",
+              passage(), "refused")
+        node_gate._checked_at = None
+        check(L + "...transport_guard refuses, nothing sent", write(), "refused")
+    gate_locks.write_mode_state(installation, "0", lock_dir)
     cache_off()
     with down():
-        check(L + "database down, NO change since: node_gate acts on the proven cached 'off'",
+        check(L + "database down, the state file names the cached epoch: node_gate acts on the proven 'off'",
               passage(), "entered:off")
-        check(L + "...transport_guard too (the mode-state file names the cached epoch)", write(), "sent")
+        check(L + "...transport_guard too", write(), "sent")
 
     # ---------------------------------------------------------------- another process: off -> enforced
     cache_off()
@@ -149,6 +161,13 @@ def scenario(label, engine, lock_dir, url):
         check(L + "database down after that change: node_gate refuses (the epoch moved)", passage(), "refused")
         node_gate._checked_at = None
         check(L + "...an uninstrumented write is refused, nothing sent", write(), "refused")
+    os.remove(state_file)                         # the state file is gone after that change
+    with down():
+        node_gate._checked_at = None
+        check(L + "cache off/epoch 0, 'enforced' committed elsewhere, state file removed, database down: "
+              "node_gate refuses", passage(), "refused")
+        node_gate._checked_at = None
+        check(L + "...transport_guard refuses, nothing sent", write(), "refused")
     with Factory() as db:
         check(L + "the persisted mode really is 'enforced'", db.get(mp.ProvisioningRuntimeState, 1).gate_mode,
               "enforced")

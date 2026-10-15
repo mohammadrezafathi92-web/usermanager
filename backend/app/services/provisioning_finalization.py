@@ -115,6 +115,10 @@ class FinalIntent(_Snapshot):
     # REPLACES the service's limits, the purchase is counted and loyalty
     # applies, and a disabled customer's connections stay as they are.
     bulk: StrictBool = False
+    # Panel bulk creation: what the WHOLE batch asked for
+    # (provisioning_requests.bulk_fingerprint), so every member's hash and
+    # persisted intent bind the batch token to that one request.
+    batch_fingerprint: StrictStr | None = None
 
     @validator("node_fingerprints")
     def fingerprints(cls, value):

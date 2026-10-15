@@ -102,7 +102,8 @@ def _frozen_referrers(db, rows):
     """The referrer every frozen referrer row names: the credit row's
     referrer_user_id and the quota row's binding (a User, or the Purchase of
     that user). An empty set: no referrer row at all (only the new
-    customer's own rewards). None: a binding whose owner cannot be told."""
+    customer's own rewards) - refused before T1 (provisioning_approval_exec
+    .build) and never linked here. None: a binding whose owner cannot be told."""
     named = set()
     credit = rows.get("credit:referral_reward:referrer")
     if credit is not None:
@@ -144,7 +145,7 @@ def _referral(db, record, intent, user, purchase, manifest):
     referrer = db.query(models.User).filter(models.User.referral_code == terms.referral_code,
                                             models.User.id != user.id).with_for_update().first()
     frozen = _frozen_referrers(db, rows)
-    if referrer is None or frozen is None or (frozen and frozen != {referrer.id}):
+    if referrer is None or not frozen or frozen != {referrer.id}:
         # The code's owner now is not the one every frozen referrer binding
         # names (credit or quota-only): never link one person while the
         # frozen reward goes to another.

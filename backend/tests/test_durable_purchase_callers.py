@@ -25,6 +25,7 @@ from unittest.mock import patch
 
 DIRECTORY = tempfile.mkdtemp(prefix="um-durable-purchase-")
 os.environ["DATABASE_URL"] = "sqlite:///" + os.path.join(DIRECTORY, "t.db")
+os.environ["UM_LOCK_DIR"] = os.path.join(DIRECTORY, "locks")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _no_network

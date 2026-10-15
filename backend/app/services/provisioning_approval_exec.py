@@ -129,6 +129,13 @@ def build(db, execution: ApprovalExecution, operation_type: str, *, user=None, f
         # current service model refuses (routers/bot.py renew); never guessed.
         raise HTTPException(409, "approval_shape_not_executable")
     rows = {(r.effect_type, r.effect_key): r for r in _manifest(db, execution.approval_uuid)}
+    referral = {key for (_kind, key) in rows if key.startswith(("credit:referral_reward:", "quota:referral:"))}
+    if referral and not referral & {"credit:referral_reward:referrer", "quota:referral:referrer"}:
+        # Only the new customer's own referral reward is frozen: the manifest
+        # names no referrer, so T_final could not prove whom to link (the
+        # code may change owner meanwhile). Refused before any write; the
+        # approval stays registered for a human decision.
+        raise HTTPException(409, "referral_referrer_not_frozen")
     package = db.get(models.Package, execution.intent.package_id) if execution.intent.package_id else None
     if package is None:
         raise HTTPException(409, "manifest_precondition_failed")

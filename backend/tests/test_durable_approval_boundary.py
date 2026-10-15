@@ -16,7 +16,9 @@ Void 6.5, 5.3). Fake runner; no network.
   * a volume-only referrer reward: the referrer is frozen by its quota
     binding; a code that changed owner between T1 and T_final links nobody
     else (the new owner is never linked while the frozen reward is due to
-    the first), and an unchanged code links and rewards the frozen one.
+    the first), and an unchanged code links and rewards the frozen one;
+  * a manifest whose referral rows reward only the new customer (no
+    referrer frozen): refused fail-closed before any write.
 """
 import datetime as dt
 import os
@@ -286,6 +288,33 @@ before = quotas("volref2")
 frozen, linked = volume_signup(4, "volnew2", 1502, "VOL2", ok_runner)
 check("volume-only reward, code unchanged: the frozen referrer is linked and gets exactly 1 GB",
       (linked, quotas("volref2")[0] - before[0]), (VOLREF2, GB))
+
+# ------------------------------------------------------------------ only the new customer's reward: no frozen referrer
+with SessionLocal() as db:
+    row = db.get(models.PanelSettings, 1)
+    row.referral_referrer_reward_credit, row.referral_referrer_reward_gb = 0, 0
+    row.referral_new_user_reward_credit, row.referral_new_user_reward_gb = 30, 0
+    db.commit()
+    ops_before = db.query(mp.ProvisioningOperation).count()
+uuid_c, token_c = register(ri.ApprovalIntent(pending_source_instance_id="b", pending_local_id=5, kind="new",
+                                             target_username="lonely", amount=1000, package_id=PACKAGE,
+                                             referral_code="VOL2", list_price=1000, claimed_telegram_id=1503))
+with SessionLocal() as db:
+    frozen = sorted(r.effect_key for r in db.execute(select(rv.receipt_approval_expected_effects.c.effect_key).where(
+        rv.receipt_approval_expected_effects.c.approval_uuid == uuid_c)) if "referral" in r.effect_key)
+with SessionLocal() as db, NO_SHARE, patch.object(execute.remote_runner, "run_action", side_effect=ok_runner):
+    refused = code(lambda: bot_router.create_user(schemas.BotCreateUserRequest(
+        username="lonely", telegram_id=1503, package_id=PACKAGE, connections=[schemas.BotCreateConnectionSpec(
+            node_id=NODE, protocol="wireguard")], paid_amount=1000, payment_method="card", approval_uuid=uuid_c,
+        execution_token=token_c, referral_code="VOL2", list_price=1000), db=db, principal=INTERNAL))
+with SessionLocal() as db:
+    state = db.execute(select(rv.receipt_approvals.c.state).where(rv.receipt_approvals.c.approval_uuid == uuid_c)).scalar()
+    check("manifest with ONLY the new customer's referral reward (no referrer frozen)",
+          frozen, ["credit:referral_reward:new_user"])
+    check("...the durable execution is refused fail-closed before any write",
+          (refused, db.query(models.User).filter_by(username="lonely").count(),
+           db.query(mp.ProvisioningOperation).count() - ops_before, state),
+          ((409, "referral_referrer_not_frozen"), 0, 0, "registered"))
 
 check("no network", _no_network.attempts, [])
 engine.dispose()

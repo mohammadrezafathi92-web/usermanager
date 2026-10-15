@@ -119,7 +119,6 @@ def _slot_order(key):
 def build(db, execution: ApprovalExecution, operation_type: str, *, user=None, full_name=None, comment=None,
           payment_method=None, discount_amount=None):
     """The trusted Preparation of one approval, from its frozen manifest."""
-    import uuid as _uuid
     from . import provisioning_finalization as final, provisioning_preparation as preparation
     from . import provisioning_requests as requests
     row = _approval(db, execution.approval_uuid)
@@ -165,7 +164,7 @@ def build(db, execution: ApprovalExecution, operation_type: str, *, user=None, f
             user=final.UserSnapshot(username=expected["username"], full_name=full_name,
                                     telegram_id=expected["telegram_id"], owner_admin_id=expected["owner_admin_id"]),
             package=requests.package_snapshot(package), sale=sale, comment=comment,
-            purchase_batch=_uuid.uuid4().hex if slots else None,
+            purchase_batch=requests.batch_of(common["business_key"]) if slots else None,
             # The new customer carries the package's limits on the user row
             # (what the manifest's user_created describes, as the legacy
             # approval path does); a Purchase exists only with connections.
@@ -176,7 +175,7 @@ def build(db, execution: ApprovalExecution, operation_type: str, *, user=None, f
         raise HTTPException(409, "approval_intent_changed")
     if operation_type == "purchase":
         intent = final.FinalIntent(user=requests.user_snapshot(user), package=requests.package_snapshot(package),
-                                   sale=sale, comment=comment, purchase_batch=_uuid.uuid4().hex,
+                                   sale=sale, comment=comment, purchase_batch=requests.batch_of(common["business_key"]),
                                    reseller_count_delta=1, approval=terms)
         return preparation.Preparation(operation_type="purchase", target_user_id=user.id, intent=intent,
                                        slots=slots, **common)

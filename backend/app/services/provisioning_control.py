@@ -191,9 +191,17 @@ def status_runtime(session_factory):
 
 # ------------------------------------------------------------------ gate mode (10.6)
 def _stat_totals(db):
-    node_gate.flush_counters()                 # this process's own pending counts first
-    row = db.execute(select(func.coalesce(func.sum(mp.ProvisioningGateStat.writer_not_instrumented_count), 0),
-                            func.coalesce(func.sum(mp.ProvisioningGateStat.mode_lock_miss_count), 0))).one()
+    """The two blocker counters, every process's committed counts included.
+    This process's pending counts are flushed first - a flush that fails
+    stops the change - and the totals are read in a NEW transaction: the
+    caller's transaction may already hold a snapshot (MariaDB repeatable
+    read, SQLite WAL) older than that flush or than another process's."""
+    from sqlalchemy.orm import sessionmaker
+    if not node_gate.flush_counters():
+        raise HTTPException(409, "gate_counters_not_persisted")
+    with sessionmaker(bind=db.get_bind(), autoflush=False)() as fresh:
+        row = fresh.execute(select(func.coalesce(func.sum(mp.ProvisioningGateStat.writer_not_instrumented_count), 0),
+                                   func.coalesce(func.sum(mp.ProvisioningGateStat.mode_lock_miss_count), 0))).one()
     return int(row[0]), int(row[1])
 
 

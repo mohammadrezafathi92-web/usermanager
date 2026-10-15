@@ -266,24 +266,34 @@ ng.reset_cache()
 
 ng.counters.reset()
 changing = gate_locks.FileLock(path).acquire(shared=False, timeout=0)   # a mode change in progress
-baseline_began = time.monotonic()
-for _ in range(20):
+# Design 10.6: "the only moment writers wait is the short exclusive hold of a
+# mode change" - an 'off' writer never runs UNLOCKED past a change.
+entered = []
+
+
+def writer_during_change():
     with ng.node_gate(5, session_factory=Session) as ctx:
-        pass
-blocked_elapsed = time.monotonic() - baseline_began
-check("a mode change holding the lock: the 'off' writer proceeds WITHOUT the lock", ctx.mode_lock_held, False)
-check("...immediately: 20 passages while the lock is held exclusively take well under a second "
-      f"({blocked_elapsed * 1000:.0f} ms)", blocked_elapsed < 1.0)
+        entered.append((time.monotonic(), ctx.mode_lock_held))
+
+
+worker = threading.Thread(target=writer_during_change)
+worker.start()
+time.sleep(0.5)
+check("a mode change holding the lock exclusively: the 'off' writer waits instead of running unlocked", entered, [])
+released_at = time.monotonic()
 changing.release()
-free_began = time.monotonic()
-for _ in range(20):
-    with ng.node_gate(5, session_factory=Session):
-        pass
-free_elapsed = time.monotonic() - free_began
-check("...and no slower than 20 passages with the lock free, give or take scheduling noise "
-      f"({free_elapsed * 1000:.0f} ms)", blocked_elapsed < free_elapsed + 0.5)
-check("...each of the 20 counted as a miss", ng.counters.snapshot()["mode_lock_miss"], 20)
-check("the gate has no wait constant left on the writer path", hasattr(ng, "MODE_LOCK_WAIT_SECONDS"), False)
+worker.join(10)
+check("...and runs WITH the shared lock once the change released it",
+      (len(entered), entered[0][1] if entered else None, entered[0][0] >= released_at if entered else None),
+      (1, True, True))
+check("...which is not a miss", ng.counters.snapshot()["mode_lock_miss"], 0)
+saved_wait = ng.TRANSITION_WAIT_SECONDS
+ng.TRANSITION_WAIT_SECONDS = 0.3
+changing = gate_locks.FileLock(path).acquire(shared=False, timeout=0)
+check("a change that does not end in time: the passage is refused, never run unlocked",
+      raises(ng.GateNotAvailable, lambda: ng.node_gate(5, session_factory=Session).__enter__()))
+changing.release()
+ng.TRANSITION_WAIT_SECONDS = saved_wait
 with FlockSpy() as spy:
     with ng.node_gate(5, session_factory=Session):
         pass

@@ -16,6 +16,22 @@ from . import provisioning_finalization as final, provisioning_preparation as pr
 from . import wallet_accounts
 
 
+def batch_of(business_key: str) -> str:
+    """The purchase_batch of an operation's connections, derived from its
+    business key: a retry of the same request is the same request (its hash
+    matches), so it finds the same operation instead of a 409 or a second one."""
+    import hashlib
+    return hashlib.sha256(("purchase_batch|" + business_key).encode()).hexdigest()[:32]
+
+
+def existing_operation(db, operation_type: str, business_key: str):
+    from sqlalchemy import select
+    from .. import models_provisioning as mp
+    return db.execute(select(mp.ProvisioningOperation).where(
+        mp.ProvisioningOperation.operation_type == operation_type,
+        mp.ProvisioningOperation.business_key == business_key)).scalar_one_or_none()
+
+
 def session_factory_for(db):
     """Short sessions on the SAME database as the caller's request."""
     return sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False)
@@ -168,14 +184,14 @@ def purchase(db, user: models.User, package, *, slots, comment=None, sale=None, 
              key: str) -> preparation.Preparation:
     """An existing customer buys a new, independent service (purchase);
     charge_wallet as in renewal()."""
-    import uuid as _uuid
     tenant = wallet_accounts.tenant_scope(db, user.owner_admin_id)
     wallet = charge_wallet and sale is not None and sale.payment_method == "wallet" and sale.amount > 0
+    business_key = f"req:{tenant}:{key}"
     return preparation.Preparation(
-        operation_type="purchase", business_key=f"req:{tenant}:{key}", tenant_scope_key=tenant,
+        operation_type="purchase", business_key=business_key, tenant_scope_key=tenant,
         target_user_id=user.id,
         intent=final.FinalIntent(user=user_snapshot(user), package=package_snapshot(package), sale=sale,
-                                 comment=comment, purchase_batch=_uuid.uuid4().hex,
+                                 comment=comment, purchase_batch=batch_of(business_key),
                                  reseller_count_delta=count_delta),
         slots=slots,
         payers=payers(reseller_admin_id=reseller_admin_id if reseller_admin_id is not None else user.owner_admin_id,
@@ -198,15 +214,15 @@ def create_user(db, *, username, full_name=None, notes=None, telegram_id=None, o
                 business_key: str | None = None) -> preparation.Preparation:
     """A brand-new customer, optionally with a package and connections (7.5).
     With a package the service's limits come from the frozen package."""
-    import uuid as _uuid
     tenant = wallet_accounts.tenant_scope(db, owner_admin_id)
+    business_key = business_key or f"req:{tenant}:{key}"
     return preparation.Preparation(
-        operation_type="create_user", business_key=business_key or f"req:{tenant}:{key}", tenant_scope_key=tenant,
+        operation_type="create_user", business_key=business_key, tenant_scope_key=tenant,
         intent=final.FinalIntent(
             user=final.UserSnapshot(username=username, full_name=full_name, notes=notes, telegram_id=telegram_id,
                                     owner_admin_id=owner_admin_id),
             package=package_snapshot(package), sale=sale, comment=comment,
-            purchase_batch=_uuid.uuid4().hex if slots else None,
+            purchase_batch=batch_of(business_key) if slots else None,
             quota_bytes=0 if package is not None else int(round((quota_gb or 0) * GB)),
             duration_days=0 if package is not None else int(expire_days or 0),
             reseller_count_delta=count_delta, created_via=created_via),
@@ -245,6 +261,24 @@ def bulk_create(db, admin, *, prefix, count, package=None, quota_gb=0, expire_da
         username = f"{prefix}{index}"
         member = index
         index += 1
+        business_key = f"bulk:{batch_token}:{member}"
+        previous = existing_operation(db, "create_user", business_key)
+        if previous is not None:
+            # A retry of the same batch token: this index IS that member -
+            # resumed or reported, never replaced by a new name or charged again.
+            username = final._intent(previous).user.username
+            if previous.state == "compensated":
+                skipped.append({"name": username, "reason": previous.error_code or "provisioning_failed"})
+                continue
+            db.rollback()
+            try:
+                if previous.state != "completed":
+                    provisioning_durable.resume(factory, previous.id)
+                created.append(username)
+            except HTTPException as exc:
+                detail = exc.detail.get("error") if isinstance(exc.detail, dict) else exc.detail
+                skipped.append({"name": username, "reason": str(detail)})
+            continue
         if db.query(models.User.id).filter(models.User.username == username).first() or (
                 provisioning_durable.username_claimed(db, username)):
             skipped.append({"name": username, "reason": "این نام کاربری قبلا وجود دارد"})
@@ -255,7 +289,7 @@ def bulk_create(db, admin, *, prefix, count, package=None, quota_gb=0, expire_da
             quota_gb=0 if package else (quota_gb or 0), expire_days=0 if package else (expire_days or 0),
             slots=slots, sale=panel_sale(db, buyer, package, admin.id),
             reseller_cost=admin_billing.package_cost(admin, package, units=1) if package is not None else 0,
-            reseller_admin_id=admin.id, key="", business_key=f"bulk:{batch_token}:{member}")
+            reseller_admin_id=admin.id, key="", business_key=business_key)
         db.rollback()
         try:
             provisioning_durable.run(factory, request, actor_kind="admin", actor_id=admin.id)

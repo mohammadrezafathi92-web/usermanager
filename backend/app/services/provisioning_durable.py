@@ -193,6 +193,24 @@ def run(session_factory, request, *, actor_kind="system", actor_id=None, budget=
                    lambda op_id: worker.resume_one(session_factory, op_id, identity, **owner))
 
 
+def resume(session_factory, operation_id: int, *, budget=None):
+    """Advance an EXISTING create/delete operation from the request thread
+    (no T1: a retry that found its operation by business key). Same result
+    contract as run()."""
+    from . import provisioning_deletion_worker as deletion_worker
+    from . import provisioning_operation_worker as operation_worker
+    budget = REQUEST_BUDGET_SECONDS if budget is None else budget
+    identity, owner = _owner(session_factory)
+    with session_factory() as db:
+        operation = db.get(mp.ProvisioningOperation, operation_id)
+        if operation is None:
+            raise HTTPException(404, "provisioning_operation_not_found")
+        deleting = operation.operation_type.startswith("delete_")
+    worker = deletion_worker if deleting else operation_worker
+    return _finish(session_factory, operation_id, time.monotonic() + budget,
+                   lambda op_id: worker.resume_one(session_factory, op_id, identity, **owner))
+
+
 def recover_due(session_factory=None, *, max_operations: int = 50) -> int:
     """Background worker pass. Returns how many operations it advanced."""
     if session_factory is None:

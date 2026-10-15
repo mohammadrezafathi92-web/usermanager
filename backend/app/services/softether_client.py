@@ -114,7 +114,10 @@ class SoftEtherClient:
     # ------------------------------------------------------------------
     def _call(self, method: str, params: Optional[dict] = None) -> dict:
         from .transport_guard import softether_call
-        softether_call(self, method)  # write guard before any byte (Lifecycle 10.7)
+        with softether_call(self, method):  # write guard + gate fence around the send (Lifecycle 10.7)
+            return self._call_unguarded(method, params)
+
+    def _call_unguarded(self, method: str, params: Optional[dict] = None) -> dict:
         self._id += 1
         body = {
             "jsonrpc": "2.0",

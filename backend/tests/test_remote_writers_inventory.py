@@ -304,7 +304,8 @@ check("legacy writers are gated; private guarded infrastructure has no live dura
        # guard and the 5.12 counter flush job - none dispatches a durable action.
        "app.main": ["node_gate.flush_counters"],
        "app.services.provisioning_control": ["gate_locks", "node_gate", "remote_action", "remote_runner"],
-       "app.services.transport_guard": ["node_gate"],
+       # 10.7 fence: a send without its own passage takes the shared gate-mode lock.
+       "app.services.transport_guard": ["gate_locks", "node_gate"],
        # Legacy writers in 'enforced' (10.8): the gated dispatcher and its runner child entry.
        "app.services.legacy_remote": ["node_gate", "remote_action.ActionType", "remote_action.Outcome",
                                       "remote_action.RemoteActionDTO", "remote_runner"],

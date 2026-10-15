@@ -302,12 +302,36 @@ def read_runtime_checked(session_factory: Optional[Callable] = None):
         return None, False
 
 
+# A passage that finds the gate-mode lock held EXCLUSIVELY (a mode change is
+# being committed) waits for it this long instead of running without it,
+# then reads the mode again: a writer can never slip past a change unlocked.
+TRANSITION_WAIT_SECONDS = 60.0
+
+
+class _ModeChangeTimeout(Exception):
+    pass
+
+
 def _try_shared_mode_lock(installation_uuid: str) -> Optional[gate_locks.FileLock]:
+    """The shared gate-mode lock, or None when the lock file cannot be used
+    at all (a miss). A change in progress is WAITED for; if it does not end
+    in time the passage is refused (_ModeChangeTimeout), never run unlocked."""
     lock = gate_locks.FileLock(gate_locks.mode_lock_path(installation_uuid))
     try:
         return lock.acquire(shared=True, timeout=0)
-    except (gate_locks.LockUnavailable, gate_locks.LockTimeout, ValueError):
+    except gate_locks.LockTimeout:
+        pass
+    except (gate_locks.LockUnavailable, ValueError):
         return None
+    lock = gate_locks.FileLock(gate_locks.mode_lock_path(installation_uuid))
+    try:
+        held = lock.acquire(shared=True, timeout=TRANSITION_WAIT_SECONDS)
+    except gate_locks.LockTimeout:
+        raise _ModeChangeTimeout() from None
+    except (gate_locks.LockUnavailable, ValueError):
+        return None
+    reset_cache()                                 # the mode may have just changed
+    return held
 
 
 @contextlib.contextmanager
@@ -332,7 +356,15 @@ def node_gate(node_id: int, *, session_factory: Optional[Callable] = None,
         if fresh is not None:
             _cached_runtime = fresh
     runtime = _cached_runtime
-    mode_lock = _try_shared_mode_lock(runtime.installation_uuid) if runtime is not None else None
+    try:
+        mode_lock = _try_shared_mode_lock(runtime.installation_uuid) if runtime is not None else None
+    except _ModeChangeTimeout:
+        raise GateNotAvailable("a gate-mode change is still in progress") from None
+    if mode_lock is not None and _cached_runtime is None:
+        fresh = read_runtime(session_factory)     # waited through a change: read the new mode
+        _checked_at = time.monotonic()
+        if fresh is not None:
+            _cached_runtime = runtime = fresh
     node_lock: Optional[gate_locks.FileLock] = None
     try:
         if runtime is not None and runtime.gate_mode != MODE_OFF or mode_lock is not None:
@@ -368,6 +400,10 @@ def node_gate(node_id: int, *, session_factory: Optional[Callable] = None,
             if mode == MODE_SHADOW:
                 raise GateNotAvailable("shared gate-mode lock unavailable in 'shadow'")
             counters.add("mode_lock_miss")
+            # Persisted now, not on the 30 s flush: it blocks the next gate
+            # change, which may run in another process. Best effort in 'off'
+            # (each remote write is fenced in transport_guard regardless).
+            flush_counters(session_factory)
 
         if mode == MODE_SHADOW:
             candidate = gate_locks.FileLock(gate_locks.node_lock_path(runtime.installation_uuid, node_id))

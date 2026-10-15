@@ -657,9 +657,13 @@ def _is_canonical_uuid(value) -> bool:
 
 
 def validate_seed(db) -> list[str]:
-    """The fixed rows must be exactly what L0 writes: one singleton with a
-    canonical uuid and inert values, and exactly the eight 'legacy' type
-    rows. Anything extra, missing or different is a problem."""
+    """The fixed rows: one singleton with a canonical uuid, and exactly the
+    eight type rows. A row that was just seeded holds L0's inert values; a
+    row that already existed is the installation's LIVE state (an owner, a
+    gate mode, durable types) and is checked only for its shape - the
+    database CHECK constraints keep its values coherent. Pinning the inert
+    values here would make every restart after activation 'not ready' and
+    stop the gate and durable provisioning in that process."""
     problems: list[str] = []
     rows = db.query(mp.ProvisioningRuntimeState).all()
     if len(rows) != 1 or rows[0].id != RUNTIME_STATE_ID:
@@ -671,11 +675,8 @@ def validate_seed(db) -> list[str]:
         row = rows[0]
         if not _is_canonical_uuid(row.installation_uuid):
             problems.append("provisioning_runtime_state: installation_uuid is not a canonical UUID")
-        for column, expected in RUNTIME_STATE_L0_VALUES.items():
-            if getattr(row, column) != expected:
-                problems.append(
-                    f"provisioning_runtime_state.{column}: is {getattr(row, column)!r}, expected {expected!r}"
-                )
+        if row.gate_mode not in ("off", "shadow", "enforced") or row.owner_state not in mp.OWNER_STATES:
+            problems.append("provisioning_runtime_state: gate_mode/owner_state outside the design's values")
         if row.version is None or row.version < 0:
             problems.append("provisioning_runtime_state.version: is not a non-negative integer")
 
@@ -684,8 +685,9 @@ def validate_seed(db) -> list[str]:
         row = modes.get(operation_type)
         if row is None:
             problems.append(f"provisioning_type_modes: row for {operation_type} is missing")
-        elif row.mode != "legacy":
-            problems.append(f"provisioning_type_modes.{operation_type}: mode is {row.mode!r}, expected 'legacy'")
+        elif row.mode not in ("legacy", "durable"):
+            problems.append(f"provisioning_type_modes.{operation_type}: mode is {row.mode!r}, "
+                            "expected 'legacy' or 'durable'")
     for unknown in sorted(set(modes) - set(mp.OPERATION_TYPES)):
         problems.append(f"provisioning_type_modes: unknown operation_type {unknown!r}")
     return problems

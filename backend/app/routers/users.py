@@ -307,12 +307,11 @@ def bulk_create_users(
         # Lifecycle 7.5: N independent operations, each reserving its own
         # credit - no batch charge, no batch refund.
         package = _get_scoped_package(db, admin, payload.package_id) if payload.package_id else None
-        if package is not None:
-            admin_billing.ensure_volume_available(admin)
         return provisioning_requests.bulk_create(
             db, admin, prefix=payload.prefix, count=payload.count, package=package, quota_gb=payload.quota_gb,
             expire_days=payload.expire_days, notes=payload.notes, connections=payload.connections,
-            batch_token=provisioning_durable.idempotency_key(x_idempotency_key))
+            batch_token=provisioning_durable.idempotency_key(x_idempotency_key),
+            before_new=(lambda: admin_billing.ensure_volume_available(admin)) if package is not None else None)
     if payload.package_id:
         package = _get_scoped_package(db, admin, payload.package_id)
         admin_billing.ensure_volume_available(admin)
@@ -482,7 +481,14 @@ def create_user(
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
  _perm=_may_create, x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key")):
-    if db.query(models.User).filter(models.User.username == payload.username).first():
+    def _username_taken():
+        return db.query(models.User).filter(models.User.username == payload.username).first() is not None
+
+    durable_create = bool(payload.package_id) and provisioning_durable.is_durable(db, "create_user")
+    # On the durable path a retry of a creation that SUCCEEDED finds the
+    # account it made: the replay below comes first, the "name taken" check
+    # only for a new request.
+    if not durable_create and _username_taken():
         raise HTTPException(400, "این نام کاربری قبلا ثبت شده است")
 
     # Non-superadmins must always build from a package - enforced here too
@@ -512,13 +518,12 @@ def create_user(
     data = payload.model_dump(exclude={"package_id", "owner_admin_id"})
     data["owner_admin_id"] = owner_admin_id
     package = None
-    if payload.package_id and provisioning_durable.is_durable(db, "create_user"):
+    if durable_create:
         # Lifecycle L7: user, service and every bundled connection - or
         # nothing; the acting admin's credit reserved in T1 (no charge-then-
         # refund window), captured with the panel sale in T_final.
         from types import SimpleNamespace
         package = _get_scoped_package(db, admin, payload.package_id)
-        admin_billing.ensure_volume_available(admin)
         slots = provisioning_requests.package_slots(db, package)
         provisioning_requests.authorize_slots(db, slots, provisioning_requests.package_scope(db, package))
         request = provisioning_requests.create_user(
@@ -527,6 +532,14 @@ def create_user(
             sale=provisioning_requests.panel_sale(db, SimpleNamespace(owner_admin_id=owner_admin_id), package, admin.id),
             reseller_cost=admin_billing.package_cost(admin, package, units=1), reseller_admin_id=admin.id,
             key=provisioning_durable.idempotency_key(x_idempotency_key))
+        # The same key with the same request: the account it made. With
+        # another request (another name, package, owner...) a 409.
+        prior = provisioning_requests.replay(db, request, x_idempotency_key, actor=("admin", admin.id))
+        if prior is not None:
+            return db.get(models.User, prior.result_user_id)
+        if _username_taken():
+            raise HTTPException(400, "این نام کاربری قبلا ثبت شده است")
+        admin_billing.ensure_volume_available(admin)
         factory = provisioning_requests.session_factory_for(db)
         db.rollback()
         operation = provisioning_durable.run(factory, request, actor_kind="admin", actor_id=admin.id)

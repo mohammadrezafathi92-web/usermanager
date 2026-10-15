@@ -89,11 +89,15 @@ def write_mode_state(installation_uuid: str, value: str, base_dir: Optional[str]
 
 
 def read_mode_state(installation_uuid: str, base_dir: Optional[str] = None) -> Optional[str]:
+    """None only when no change ever wrote the file; a file that exists but
+    cannot be read is MODE_STATE_CHANGING (it proves nothing)."""
     try:
         with open(mode_state_path(installation_uuid, base_dir), "r", encoding="ascii") as handle:
             return handle.read(32).strip()
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return None
+    except (OSError, ValueError):
+        return MODE_STATE_CHANGING
 
 
 def node_lock_path(installation_uuid: str, node_id: int, base_dir: Optional[str] = None) -> str:

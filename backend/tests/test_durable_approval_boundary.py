@@ -12,7 +12,11 @@ Void 6.5, 5.3). Fake runner; no network.
     key -> 403; a scoped bot of another tenant -> 403; another card or
     customer than the approval's -> 409 - nothing disclosed or applied;
   * an existing customer buying with a referral code and zero rewards (no
-    referral row in the manifest): the referral link is NOT written.
+    referral row in the manifest): the referral link is NOT written;
+  * a volume-only referrer reward: the referrer is frozen by its quota
+    binding; a code that changed owner between T1 and T_final links nobody
+    else (the new owner is never linked while the frozen reward is due to
+    the first), and an unchanged code links and rewards the frozen one.
 """
 import datetime as dt
 import os
@@ -225,6 +229,63 @@ with SessionLocal() as db:
     state = db.execute(select(rv.receipt_approvals.c.state).where(rv.receipt_approvals.c.approval_uuid == uuid_b)).scalar()
     check("existing customer, referral code, zero rewards: no referral row, so the link is NOT written",
           (oldie.referred_by_id, oldie.referral_reward_granted, state), (None, False, "completed"))
+
+# ------------------------------------------------------------------ volume-only referral: the referrer is frozen too
+GB = 1024 ** 3
+with SessionLocal() as db:
+    row = db.get(models.PanelSettings, 1)
+    row.referral_referrer_reward_gb, row.referral_new_user_reward_gb = 1, 0      # credits are 0 since above
+    for name, tg, quota in (("volref", 1401, 10 * GB), ("thief", 1402, 10 * GB), ("volref2", 1403, 10 * GB)):
+        user = wallet_accounts.create_user_with_wallet(db, username=name, telegram_id=tg)
+        user.total_quota_bytes = quota
+        user.referral_code = {"volref": "VOL1", "volref2": "VOL2"}.get(name)
+    db.commit()
+
+
+def quotas(*names):
+    with SessionLocal() as db:
+        return tuple(int(db.query(models.User).filter_by(username=n).one().total_quota_bytes) for n in names)
+
+
+def volume_signup(local_id, username, tg, referral_code, runner):
+    approval_uuid, token = register(ri.ApprovalIntent(
+        pending_source_instance_id="b", pending_local_id=local_id, kind="new", target_username=username,
+        amount=1000, package_id=PACKAGE, referral_code=referral_code, list_price=1000, claimed_telegram_id=tg))
+    with SessionLocal() as db:
+        frozen = [r.effect_key for r in db.execute(select(rv.receipt_approval_expected_effects.c.effect_key).where(
+            rv.receipt_approval_expected_effects.c.approval_uuid == approval_uuid))]
+    with SessionLocal() as db, NO_SHARE, patch.object(execute.remote_runner, "run_action", side_effect=runner):
+        code(lambda: bot_router.create_user(schemas.BotCreateUserRequest(
+            username=username, telegram_id=tg, package_id=PACKAGE, connections=[schemas.BotCreateConnectionSpec(
+                node_id=NODE, protocol="wireguard")], paid_amount=1000, payment_method="card",
+            approval_uuid=approval_uuid, execution_token=token, referral_code=referral_code, list_price=1000),
+            db=db, principal=INTERNAL))
+    with SessionLocal() as db:
+        user = db.query(models.User).filter_by(username=username).one_or_none()
+        return frozen, (user.referred_by_id if user else "no user")
+
+
+def code_moves_mid_flight(dto):
+    with SessionLocal() as db:                    # between T1 and T_final the code changes owner
+        db.query(models.User).filter_by(username="volref").update({"referral_code": None})
+        db.query(models.User).filter_by(username="thief").update({"referral_code": "VOL1"})
+        db.commit()
+    return ok_runner(dto)
+
+
+with SessionLocal() as db:
+    VOLREF, THIEF, VOLREF2 = (db.query(models.User).filter_by(username=n).one().id for n in ("volref", "thief", "volref2"))
+before = quotas("volref", "thief")
+frozen, linked = volume_signup(3, "volnew", 1501, "VOL1", code_moves_mid_flight)
+check("volume-only reward: the manifest freezes the referrer's quota binding (no credit row)",
+      ("quota:referral:referrer" in frozen, "credit:referral_reward:referrer" in frozen), (True, False))
+check("the code changed owner between T1 and T_final: the new owner is NOT linked", linked != THIEF, True)
+check("...and neither the new owner nor the frozen referrer got a reward under that changed identity",
+      quotas("volref", "thief"), before)
+before = quotas("volref2")
+frozen, linked = volume_signup(4, "volnew2", 1502, "VOL2", ok_runner)
+check("volume-only reward, code unchanged: the frozen referrer is linked and gets exactly 1 GB",
+      (linked, quotas("volref2")[0] - before[0]), (VOLREF2, GB))
 
 check("no network", _no_network.attempts, [])
 engine.dispose()

@@ -60,11 +60,12 @@ def add_connection(db, user: models.User, node: models.Node, protocol, *, flow: 
                                 speed_limit_mbps=speed_limit_mbps)])
 
 
-def delete(db, resource_kind: str, resource_id: int, owner_admin_id: int | None, *, key: str):
+def delete(db, resource_kind: str, resource_id: int, owner_admin_id: int | None, *, key: str,
+           target_username: str | None = None):
     tenant = wallet_accounts.tenant_scope(db, owner_admin_id)
     return delete_preparation.DeleteRequest(resource_kind=resource_kind, resource_id=resource_id,
                                             business_key=f"delete:{resource_kind}:{resource_id}:{key}",
-                                            tenant_scope_key=tenant)
+                                            tenant_scope_key=tenant, target_username=target_username)
 
 
 def created_connections(db, operation_id: int) -> list:
@@ -78,12 +79,12 @@ def created_connections(db, operation_id: int) -> list:
 
 
 def run_delete(db, resource_kind: str, resource_id: int, owner_admin_id, *, key: str, actor_kind: str,
-               actor_id=None):
+               actor_id=None, target_username: str | None = None):
     """delete_connection / delete_purchase / delete_user through the durable
     machine (Lifecycle 12): T1 disables the scope, each connection is removed
     by identity, T_final deletes the rows only when every one is gone."""
     from . import provisioning_durable
-    request = delete(db, resource_kind, resource_id, owner_admin_id, key=key)
+    request = delete(db, resource_kind, resource_id, owner_admin_id, key=key, target_username=target_username)
     factory = session_factory_for(db)
     db.rollback()
     return provisioning_durable.run(factory, request, actor_kind=actor_kind, actor_id=actor_id)
@@ -231,17 +232,57 @@ def create_user(db, *, username, full_name=None, notes=None, telegram_id=None, o
                       reseller_cost=reseller_cost))
 
 
+def bulk_fingerprint(*, prefix, count, package, quota_gb, expire_days, notes, connections) -> str:
+    """What one bulk request asked for. The batch token of the frozen key
+    bulk:{batch_token}:{index} is "{caller's token}.{fingerprint}": the same
+    caller token with another prefix, count, package, notes, quota, duration
+    or connections is another request (bulk_members: 409)."""
+    import hashlib
+    import json
+    asked = dict(prefix=prefix, count=int(count), package_id=getattr(package, "id", None),
+                 quota_gb=float(quota_gb or 0), expire_days=int(expire_days or 0), notes=notes or None,
+                 connections=[[int(spec.node_id), protocol_value(spec.protocol),
+                               int(getattr(spec, "max_concurrent_sessions", 1) or 1)] for spec in (connections or [])])
+    canonical = json.dumps(asked, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:24]
+
+
+def bulk_members(db, admin, batch_token: str, fingerprint: str) -> list:
+    """The operations an earlier request with this batch token made - only
+    if they are THIS admin's, in this admin's tenant, for THIS request; any
+    other is a 409 before anything is resumed, reported or created."""
+    from fastapi import HTTPException
+    from sqlalchemy import select
+    from .. import models_provisioning as mp
+    rows = db.execute(select(mp.ProvisioningOperation).where(
+        mp.ProvisioningOperation.operation_type == "create_user",
+        mp.ProvisioningOperation.business_key.like(f"bulk:{batch_token}.%"))).scalars().all()
+    tenant = wallet_accounts.tenant_scope(db, admin.id)
+    for row in rows:
+        if row.actor_kind != "admin" or row.actor_id != admin.id or row.tenant_scope_key != tenant:
+            raise HTTPException(409, "provisioning_request_changed")
+        if not row.business_key.startswith(f"bulk:{batch_token}.{fingerprint}:"):
+            raise HTTPException(409, "provisioning_request_changed")
+    return rows
+
+
 def bulk_create(db, admin, *, prefix, count, package=None, quota_gb=0, expire_days=None, notes=None,
-                connections=None, batch_token: str) -> dict:
+                connections=None, batch_token: str, before_new=None) -> dict:
     """Panel bulk creation as N independent create_user operations (7.5):
-    business key bulk:{batch_token}:{index}; every member that succeeds is
+    business key bulk:{batch_token}:{index} (batch token: bulk_fingerprint); every member that succeeds is
     complete (its own reservation captured), every one that fails left
     nothing. No batch charge and no batch refund. Same result shape and the
-    same name skipping as the legacy bulk_create_users."""
+    same name skipping as the legacy bulk_create_users. The same token again
+    resumes/reports its members only for the same admin, tenant and request
+    (bulk_members); anything else is a 409."""
     from types import SimpleNamespace
     from fastapi import HTTPException
     from . import accounting, admin_billing, provisioning_durable, user_ops
     created, skipped, pending = [], [], []
+    fingerprint = bulk_fingerprint(prefix=prefix, count=count, package=package, quota_gb=quota_gb,
+                                   expire_days=expire_days, notes=notes, connections=connections)
+    if not bulk_members(db, admin, batch_token, fingerprint) and before_new is not None:
+        before_new()                               # checks only a NEW batch needs
     if package is not None:
         slots = package_slots(db, package)
         authorize_slots(db, slots, package_scope(db, package))
@@ -266,7 +307,7 @@ def bulk_create(db, admin, *, prefix, count, package=None, quota_gb=0, expire_da
         username = f"{prefix}{index}"
         member = index
         index += 1
-        business_key = f"bulk:{batch_token}:{member}"
+        business_key = f"bulk:{batch_token}.{fingerprint}:{member}"
         previous = existing_operation(db, "create_user", business_key)
         if previous is not None:
             # A retry of the same batch token: this index IS that member -
@@ -363,11 +404,14 @@ def prior_operation(db, operation_type: str, tenant_scope_key: str, request_head
     return existing_operation(db, operation_type, f"req:{tenant_scope_key}:{key}")
 
 
-def prior_delete(db, resource_kind: str, request_header, *, resource_id=None):
+def prior_delete(db, resource_kind: str, request_header, *, resource_id=None, target_username=None):
     """The deletion an earlier request with the same key made. With the
-    resource id (path endpoints) the business key is exact; the bot's
-    delete-by-username has no id left after the deletion, so the key is
-    matched by its suffix - the caller then checks tenant and target."""
+    resource id (path endpoints) the business key is exact. The bot's
+    delete-by-username has no id left after the deletion: the key is matched
+    by its suffix and the earlier request's hash recomputed with THIS
+    request's name - the same key for another customer is a 409, never the
+    earlier {ok: true}. The caller then checks actor and tenant."""
+    from fastapi import HTTPException
     from sqlalchemy import select
     from .. import models_provisioning as mp
     key = header_key(request_header)
@@ -376,10 +420,39 @@ def prior_delete(db, resource_kind: str, request_header, *, resource_id=None):
     query = select(mp.ProvisioningOperation).where(mp.ProvisioningOperation.operation_type == f"delete_{resource_kind}")
     if resource_id is not None:
         query = query.where(mp.ProvisioningOperation.business_key == f"delete:{resource_kind}:{resource_id}:{key}")
-    else:
-        query = query.where(mp.ProvisioningOperation.business_key.like(f"delete:{resource_kind}:%:{key}"))
-    rows = db.execute(query).scalars().all()
-    return rows[0] if len(rows) == 1 else None
+        return db.execute(query).scalar_one_or_none()
+    rows = db.execute(query.where(mp.ProvisioningOperation.business_key.like(
+        f"delete:{resource_kind}:%:{key}"))).scalars().all()
+    if not rows:
+        return None
+    for row in rows:
+        same = delete_preparation.DeleteRequest(
+            resource_kind=resource_kind, resource_id=row.target_user_id or 1, business_key=row.business_key,
+            tenant_scope_key=row.tenant_scope_key, target_username=target_username)
+        if row.target_user_id is not None and delete_preparation.request_digest(same) == row.request_hash:
+            return row
+    raise HTTPException(409, "provisioning_request_changed")
+
+
+def replay(db, request, request_header, *, actor=None):
+    """The operation an earlier request with the same key made for THIS
+    request (Lifecycle 5.1, 13), checked against the whole request before its
+    result is returned: the same business key with another request - another
+    package, price, target, quota, duration or connections - is a 409, never
+    the earlier result. None: no key, or no earlier operation (a new request,
+    whose own preflights run next). actor=(kind, id): the earlier operation
+    must also be that actor's, checked before anything is resumed."""
+    from fastapi import HTTPException
+    if header_key(request_header) is None:
+        return None
+    previous = existing_operation(db, request.operation_type, request.business_key)
+    if previous is None:
+        return None
+    if previous.request_hash != preparation.request_digest(request) or (
+            previous.tenant_scope_key != request.tenant_scope_key) or (
+            actor is not None and (previous.actor_kind, previous.actor_id) != actor):
+        raise HTTPException(409, "provisioning_request_changed")
+    return settle(db, previous)
 
 
 def settle(db, operation):

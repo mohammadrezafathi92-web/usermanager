@@ -233,35 +233,46 @@ def _broken_factory():
 
 
 ps.bootstrap(engine, Session)
-with ng.node_gate(5, session_factory=_broken_factory) as ctx:
-    check("database down (nothing ever read): the block still runs as 'off'", (ctx.mode, ctx.mode_lock_held), ("off", False))
+ng.reset_cache()
+try:
+    with ng.node_gate(5, session_factory=_broken_factory):
+        cold = "ran"
+except ng.GateNotAvailable:
+    cold = "refused"
+check("database down (nothing ever read): refused - a cold process never assumes 'off'", cold, "refused")
 ng.reset_cache()
 with ng.node_gate(5, session_factory=Session):
     pass                                   # a successful passage: the singleton is now known
 saved_ttl = ng.RUNTIME_CACHE_SECONDS
 ng.RUNTIME_CACHE_SECONDS = 0               # force a (failing) re-read on the next passage
 with ng.node_gate(5, session_factory=_broken_factory) as ctx:
-    check("database down AFTER the singleton was read: keeps the last good value - 'off', WITH the shared lock",
+    check("database down AFTER the singleton was read: the cache is proven current by the shared lock and the "
+          "mode-state epoch - 'off', WITH the shared lock",
           (ctx.mode, ctx.mode_lock_held), ("off", True))
 ng.RUNTIME_CACHE_SECONDS = saved_ttl
 
 print("--- the singleton is not re-read on every passage ---")
 reads = []
-real_read = ng.read_runtime
-ng.read_runtime = lambda factory=None: (reads.append(1), real_read(factory))[1]
+real_read = ng.read_runtime_checked
+ng.read_runtime_checked = lambda factory=None: (reads.append(1), real_read(factory))[1]
 ng.reset_cache()
 for _ in range(50):
     with ng.node_gate(5, session_factory=Session):
         pass
 check("50 passages in a row cost ONE database read", len(reads), 1)
 reads.clear()
-ng.read_runtime = lambda factory=None: (reads.append(1), None)[1]      # database down from the start
+ng.read_runtime_checked = lambda factory=None: (reads.append(1), (None, False))[1]   # database down from the start
 ng.reset_cache()
+refused = 0
 for _ in range(50):
-    with ng.node_gate(5, session_factory=Session) as ctx:
-        pass
+    try:
+        with ng.node_gate(5, session_factory=Session):
+            pass
+    except ng.GateNotAvailable:
+        refused += 1
 check("a failing read is not retried on every passage either (one attempt per cache window)", len(reads), 1)
-ng.read_runtime = real_read
+check("...and every passage of that window is refused (nothing is ever sent on an unread mode)", refused, 50)
+ng.read_runtime_checked = real_read
 ng.reset_cache()
 
 ng.counters.reset()
@@ -384,8 +395,8 @@ class _Node:
         self.id = node_id
 
 
-real_default = ng.read_runtime
-ng.read_runtime = lambda factory=None: real_default(Session)     # writer_gate uses the default session factory
+real_default = ng.read_runtime_checked
+ng.read_runtime_checked = lambda factory=None: real_default(Session)     # writer_gate uses the default session factory
 ng.counters.reset()
 with FlockSpy() as spy:
     with ng.writer_gate(_Node(5)) as ctx:
@@ -443,7 +454,7 @@ def _refused():
 
 check("GateNotAvailable is the one thing that DOES stop the block", (raises(ng.GateNotAvailable, _refused), ran), (True, []))
 ng.node_gate = real_node_gate
-ng.read_runtime = real_default
+ng.read_runtime_checked = real_default
 
 print()
 if failures:

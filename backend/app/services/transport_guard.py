@@ -71,10 +71,9 @@ def _fresh_mode() -> Optional[str]:
     """The persisted gate mode, read now (no cache).
 
     None only when the read SUCCEEDED and found no gate at all (provisioning
-    schema not set up, no persisted strict mode). A failed read is
-    UNREADABLE unless this process has already seen a mode - never weaker
-    than that one; a cold process that cannot read the mode does not get to
-    assume 'off'."""
+    schema not set up, no persisted strict mode). A failed read is always
+    UNREADABLE: no cached mode stands in for it here (permit() alone may
+    use one, and only when the mode-state file proves it current)."""
     from . import node_gate
     try:
         runtime, ok = node_gate.read_runtime_checked()
@@ -82,10 +81,7 @@ def _fresh_mode() -> Optional[str]:
         return node_gate.MODE_ENFORCED            # an unverified strict gate never relaxes
     if runtime is not None:
         return runtime.gate_mode
-    if ok:
-        return None
-    cached = node_gate._cached_runtime
-    return cached.gate_mode if cached is not None else UNREADABLE
+    return None if ok else UNREADABLE
 
 
 def _node(owner) -> Optional[int]:
@@ -155,10 +151,16 @@ def permit(node_id: Optional[int], backend: str):
         runtime, ok = node_gate.read_runtime_checked()
     except node_gate.GateNotAvailable:
         raise GateViolation("an unverified strict gate; a remote write is not allowed") from None
-    if runtime is None:
-        _decide(_fresh_mode() if not ok else None, node_id)
+    if runtime is None and ok:
+        _decide(None, node_id)                    # the read worked: there is no gate
         yield
         return
+    if runtime is None:
+        # The read failed. Only a mode this process saw before can be used,
+        # and only once the mode-state file proves it current (below).
+        runtime = node_gate._cached_runtime
+        if runtime is None:
+            raise GateViolation("the gate mode cannot be read; a remote write is not allowed")
     hold = gate_locks.FileLock(gate_locks.mode_lock_path(runtime.installation_uuid))
     try:
         hold.acquire(shared=True, timeout=TRANSITION_WAIT_SECONDS)
@@ -168,6 +170,14 @@ def permit(node_id: Optional[int], backend: str):
         hold = None
     try:
         mode = _fresh_mode()
+        if mode == UNREADABLE and hold is not None:
+            # Under the shared lock the mode cannot change; the state file
+            # names the epoch of the last committed change ("changing" while
+            # one is being committed). Only that exact epoch proves the
+            # runtime seen earlier is still the persisted one.
+            state = gate_locks.read_mode_state(runtime.installation_uuid)
+            if (state if state is not None else "0") == str(runtime.gate_mode_epoch):
+                mode = runtime.gate_mode
         if hold is None and mode not in (None, node_gate.MODE_OFF):
             raise GateViolation("no gate-mode lock outside 'off'; a remote write is not allowed")
         _decide(mode, node_id)

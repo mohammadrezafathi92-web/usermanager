@@ -29,6 +29,10 @@ class DeleteRequest(_Snapshot):
     resource_id: StrictInt
     business_key: StrictStr
     tenant_scope_key: StrictStr
+    # The bot deletes a customer BY NAME: the name is part of the request (its
+    # hash), so a retry with the same key proves it names the same customer
+    # even after the row is gone (provisioning_requests.prior_delete).
+    target_username: StrictStr | None = None
 
     @validator("resource_kind")
     def kind(cls, value):
@@ -103,6 +107,10 @@ class PreparedDeletion:
     replay: bool = False
 
 
+def request_digest(request) -> str:
+    return hashlib.sha256(json.dumps(request.dict(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_kind="system", actor_id=None):
     if not isinstance(request, DeleteRequest) or not isinstance(identity, HostIdentity) or (
             actor_kind not in mp.ACTOR_KINDS or actor_id is not None and (type(actor_id) is not int or actor_id <= 0)):
@@ -131,7 +139,7 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
     panel = db.get(models.PanelSettings, 1)
     if panel is not None and panel.ha_enabled:
         raise HTTPException(503, "provisioning_ha_unsupported")
-    digest = hashlib.sha256(json.dumps(request.dict(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    digest = request_digest(request)
     previous = db.execute(select(mp.ProvisioningOperation).where(mp.ProvisioningOperation.operation_type == kind,
         mp.ProvisioningOperation.business_key == request.business_key).with_for_update()
         .execution_options(populate_existing=True)).scalar_one_or_none()
@@ -140,6 +148,9 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
             raise HTTPException(409, "provisioning_request_changed")
         return PreparedDeletion(previous, replay=True)
     user, connections, purchases, customer = _scope(db, request, lock=False)
+    if request.target_username is not None and (request.resource_kind != "user" or
+                                                user.username != request.target_username):
+        raise HTTPException(409, "provisioning_request_changed")
     uid, selected = user.id, tuple(row.id for row in connections)
     operation = mp.ProvisioningOperation(operation_type=kind, business_key=request.business_key, request_hash=digest,
         tenant_scope_key=request.tenant_scope_key, actor_kind=actor_kind, actor_id=actor_id, target_user_id=uid,

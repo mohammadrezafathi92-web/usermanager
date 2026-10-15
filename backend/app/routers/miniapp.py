@@ -552,35 +552,14 @@ def checkout(
     owner = visitor["owner_admin_id"]
     key = x_idempotency_key if isinstance(x_idempotency_key, str) else None
     from ..services import provisioning_requests, wallet_accounts
-    if key:
-        # A free trial that already created the account under this key: the
-        # retry finds that account now, but it is still the SAME request.
-        trial_account = provisioning_requests.prior_operation(
-            db, "create_user", wallet_accounts.tenant_scope(db, owner), key)
-        if trial_account is not None:
-            created = db.get(models.User, trial_account.result_user_id) if trial_account.state == "completed" else None
-            if created is None or created.telegram_id != visitor["telegram_id"]:
-                raise HTTPException(409, "provisioning_request_changed")
-            return {"status": "done", "message": "سرویس تست شما فعال شد. در «سرویس‌های من» ببینیدش.",
-                    "connections": [bot_router._connection_info(c).model_dump() for c in created.connections]}
     principal = build_internal_principal_for_owner(db, owner)
     pkg = _package_or_404(db, owner, payload.package_id)
     renewing = payload.renew_purchase_id is not None
-    if not renewing:
-        _require_bundled(pkg)  # a renewal creates no connection, so needs no bundle
-    price = _price_of(pkg)
 
-    account = _own_account(db, visitor, payload.account)
-
-    # A free plan - the trial - is the one case where "you have no account"
-    # is not a reason to refuse. The whole point of a sample is to reach
-    # someone who has not signed up yet, and sending them back to the bot
-    # to do it there would make the shop the long way round.
-    #
-    # Created through routers/bot.py's create_user, the same single choke
-    # point the bot's own signup uses, so the trial's rules, the purchase
-    # lock and the referral hook all apply exactly as they do in chat.
-    if account is None and price == 0 and not renewing:
+    def _trial():
+        # Created through routers/bot.py's create_user, the same single choke
+        # point the bot's own signup uses, so the trial's rules, the purchase
+        # lock and the referral hook all apply exactly as they do in chat.
         created = bot_router.create_user(
             schemas.BotCreateUserRequest(
                 username=f"tg{visitor['telegram_id']}",
@@ -607,6 +586,27 @@ def checkout(
             "message": "سرویس تست شما فعال شد. در «سرویس‌های من» ببینیدش.",
             "connections": [c.model_dump() for c in created.connections],
         }
+
+    if key and not renewing and provisioning_requests.prior_operation(
+            db, "create_user", wallet_accounts.tenant_scope(db, owner), key) is not None:
+        # A free trial that already created the account under this key: the
+        # retry finds that account now, but it is still the SAME request -
+        # sent again through create_user, whose replay compares the whole
+        # request (package, visitor, connections) with the operation's hash
+        # and answers 409 for anything else.
+        return _trial()
+    if not renewing:
+        _require_bundled(pkg)  # a renewal creates no connection, so needs no bundle
+    price = _price_of(pkg)
+
+    account = _own_account(db, visitor, payload.account)
+
+    # A free plan - the trial - is the one case where "you have no account"
+    # is not a reason to refuse. The whole point of a sample is to reach
+    # someone who has not signed up yet, and sending them back to the bot
+    # to do it there would make the shop the long way round.
+    if account is None and price == 0 and not renewing:
+        return _trial()
 
     if account is None:
         raise HTTPException(400, "هنوز حسابی ندارید - اولین خرید را از داخل ربات انجام دهید.")

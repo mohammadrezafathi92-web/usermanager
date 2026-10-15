@@ -11,13 +11,14 @@ What the gate does in each mode:
 
   off       takes the SHARED gate-mode lock for the duration of the block
             and nothing else: no node lock, no GET_LOCK, no runner, no
-            ownership check, no wait on other writers, no error. Two
-            writers on the same node run concurrently exactly as today.
-            The lock is tried ONCE, without waiting. If it cannot be taken
-            (lock directory missing/unwritable, schema not ready, a mode
-            change holding it exclusively at that instant) the writer
-            proceeds immediately without it - 'off' must never delay or
-            fail a request - and the miss is counted.
+            ownership check, no wait on other writers. Two writers on the
+            same node run concurrently exactly as today. A mode change
+            holding the lock exclusively is waited for (never run past
+            unlocked). If the lock file cannot be used at all the writer
+            proceeds without it on a FRESH read of 'off', and the miss is
+            counted. A mode that cannot be read - or a cached one the
+            mode-state file does not prove current - refuses the passage
+            (GateNotAvailable): never a stale 'off'.
   shadow    additionally TRIES the node's exclusive lock without waiting.
             Got it -> holds it to the end. Did not -> proceeds anyway and
             counts contention. Measurement only; never a guarantee.
@@ -159,14 +160,17 @@ ENFORCED_SUPPORTED = True
 # for this window (a writer may act on a mode up to this old).
 RUNTIME_CACHE_SECONDS = 5.0
 # The last value this process READ SUCCESSFULLY, and when it last tried. A
-# failed read (database down, schema check failed) keeps the previous good
-# value instead of replacing it: the gate then goes on acting on the last
-# mode it really saw - so "could not read" can never quietly relax a
-# stricter mode back to 'off' - and it does not hammer a struggling
-# database with a retry on every passage either. Only a process that has
-# never read the singleton at all treats "unreadable" as 'off'.
+# cached value is only ever ACTED ON when it is proven current: under the
+# shared gate-mode lock, with the mode-state file naming its epoch (a change
+# writes "changing" before its commit and the new epoch after it, both under
+# the exclusive lock). Anything else - a miss of the lock, an epoch that
+# moved, a change waited through - needs a fresh successful read, and a
+# failed read then REFUSES the passage, in every mode including 'off': a
+# cached 'off' can never let a write past a change committed meanwhile by
+# another process. A failed read is retried at most once per cache window.
 _cached_runtime: Optional[GateRuntime] = None
 _checked_at: Optional[float] = None
+_last_read_ok: bool = True
 
 
 def flush_counters(session_factory: Optional[Callable] = None) -> bool:
@@ -221,8 +225,8 @@ def flush_counters(session_factory: Optional[Callable] = None) -> bool:
 def reset_cache() -> None:
     """Forgets what this process knows about the singleton (tests; and
     whatever later changes the gate mode or the installation uuid)."""
-    global _cached_runtime, _checked_at
-    _cached_runtime, _checked_at = None, None
+    global _cached_runtime, _checked_at, _last_read_ok
+    _cached_runtime, _checked_at, _last_read_ok = None, None, True
 
 
 _current: contextvars.ContextVar[Optional[ShadowGateContext]] = contextvars.ContextVar("node_gate_context", default=None)
@@ -234,39 +238,10 @@ def current_context() -> Optional[ShadowGateContext]:
 
 
 def read_runtime(session_factory: Optional[Callable] = None) -> Optional[GateRuntime]:
-    """Reads the singleton. None when it cannot be trusted or read at all:
-    the provisioning schema is not verified in this process, the row is
-    missing, or the database errored. An unverified schema with a readable
-    persisted non-off mode raises GateNotAvailable instead of granting off."""
-    try:
-        from .. import models_provisioning as mp
-        from . import provisioning_schema
-
-        if session_factory is None:
-            from ..database import SessionLocal as session_factory  # noqa: N813
-        db = session_factory()
-        try:
-            if not provisioning_schema.is_ready():
-                # A cold process has no cached mode. Failed schema validation
-                # must not turn an existing strict gate into an initial 'off'.
-                # This minimal read grants NOTHING: it only vetoes fail-open.
-                from sqlalchemy import select
-                mode = db.execute(select(mp.ProvisioningRuntimeState.gate_mode).where(
-                    mp.ProvisioningRuntimeState.id == provisioning_schema.RUNTIME_STATE_ID)).scalar_one_or_none()
-                if mode is not None and mode != MODE_OFF:
-                    raise GateNotAvailable("unverified schema with a persisted non-off gate")
-                return None
-            row = db.get(mp.ProvisioningRuntimeState, provisioning_schema.RUNTIME_STATE_ID)
-            if row is None:
-                return None
-            return GateRuntime(row.installation_uuid, row.gate_mode, int(row.gate_mode_epoch))
-        finally:
-            db.close()
-    except GateNotAvailable:
-        raise
-    except Exception:  # noqa: BLE001
-        logger.exception("node_gate: could not read provisioning_runtime_state")
-        return None
+    """The singleton, or None when there is no gate OR the read failed (use
+    read_runtime_checked to tell the two apart). An unverified schema with a
+    readable persisted non-off mode raises GateNotAvailable."""
+    return read_runtime_checked(session_factory)[0]
 
 
 def read_runtime_checked(session_factory: Optional[Callable] = None):
@@ -344,43 +319,52 @@ def node_gate(node_id: int, *, session_factory: Optional[Callable] = None,
     if type(node_id) is not int or node_id <= 0:
         raise ValueError("node_gate needs the id of a saved node")
 
-    # The mode comes from the (briefly cached) singleton, then the shared
-    # mode lock is tried once. Making a mode CHANGE safe against writers
-    # that are already running is the transition batch's job (it takes the
-    # lock exclusively); nothing can change the mode yet.
-    global _cached_runtime, _checked_at
-    now = time.monotonic()
-    if _checked_at is None or now - _checked_at >= RUNTIME_CACHE_SECONDS:
-        fresh = read_runtime(session_factory)
-        _checked_at = now
+    # The mode comes from the (briefly cached) singleton; the shared
+    # mode lock is then taken (a change in progress is waited for). The
+    # cache is trusted only when proven current under that lock (see
+    # _cached_runtime); otherwise the singleton is read now, and a read that
+    # fails refuses the passage instead of acting on a stale mode.
+    global _cached_runtime, _checked_at, _last_read_ok
+
+    def refresh():
+        global _cached_runtime, _checked_at, _last_read_ok
+        fresh, ok = read_runtime_checked(session_factory)
+        _checked_at, _last_read_ok = time.monotonic(), ok
         if fresh is not None:
             _cached_runtime = fresh
-    runtime = _cached_runtime
+        return fresh, ok
+
+    now = time.monotonic()
+    runtime, verified = _cached_runtime, False
+    if _checked_at is None or now - _checked_at >= RUNTIME_CACHE_SECONDS:
+        fresh, ok = refresh()
+        if ok:
+            runtime, verified = fresh, True
+    elif _cached_runtime is None and _last_read_ok:
+        verified = True                           # read in this window: there is no gate
+    if runtime is None and not verified:
+        raise GateNotAvailable("the gate mode cannot be read; a remote write is not allowed")
     try:
         mode_lock = _try_shared_mode_lock(runtime.installation_uuid) if runtime is not None else None
     except _ModeChangeTimeout:
         raise GateNotAvailable("a gate-mode change is still in progress") from None
-    if mode_lock is not None and _cached_runtime is None:
-        fresh = read_runtime(session_factory)     # waited through a change: read the new mode
-        _checked_at = time.monotonic()
-        if fresh is not None:
-            _cached_runtime = runtime = fresh
     node_lock: Optional[gate_locks.FileLock] = None
     try:
-        if runtime is not None and runtime.gate_mode != MODE_OFF or mode_lock is not None:
-            # The cache may be up to RUNTIME_CACHE_SECONDS old. Under the
-            # shared lock the mode cannot change, and the state file names
-            # the epoch persisted by the last change: if the cache is not
-            # that epoch, read the singleton now. Without the lock (a miss)
-            # only a fresh read may decide that the mode really is 'off'.
+        if runtime is not None:
+            # Under the shared lock the mode cannot change, and the state file
+            # names the epoch persisted by the last change: the cache is the
+            # persisted mode only when it is that epoch. Without the lock (a
+            # miss), or after waiting through a change, only a fresh read
+            # may decide - and if it fails nothing is sent.
             state = gate_locks.read_mode_state(runtime.installation_uuid) if mode_lock is not None else None
             if mode_lock is not None and state is None:
                 state = "0"               # no change was ever made through this lock directory
-            if mode_lock is None or state != str(runtime.gate_mode_epoch):
-                fresh = read_runtime(session_factory)
-                _checked_at = time.monotonic()
-                if fresh is not None:
-                    _cached_runtime = runtime = fresh
+            stale = _cached_runtime is None or state != str(runtime.gate_mode_epoch)
+            if (mode_lock is None and not verified) or (mode_lock is not None and stale):
+                fresh, ok = refresh()
+                if not ok:
+                    raise GateNotAvailable("the gate mode cannot be verified; a remote write is not allowed")
+                runtime = fresh
         mode = runtime.gate_mode if runtime is not None else MODE_OFF
         epoch = runtime.gate_mode_epoch if runtime is not None else 0
 

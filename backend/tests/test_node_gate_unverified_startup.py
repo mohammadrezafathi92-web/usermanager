@@ -26,9 +26,9 @@ def scenario(engine):
     identity = dict(lock_backend="flock", lock_verified_at=dt.datetime.utcnow(),
         owner_state="active", owner_host_id="a" * 64, owner_boot_id=str(uuid.uuid4()),
         owner_claimed_at=dt.datetime.utcnow(), owner_heartbeat_at=dt.datetime.utcnow())
-    read = gate.read_runtime
+    read = gate.read_runtime_checked
     try:
-        with patch.object(gate, "read_runtime", side_effect=lambda factory=None: read(Factory)):
+        with patch.object(gate, "read_runtime_checked", side_effect=lambda factory=None: read(Factory)):
             for mode in ("enforced", "shadow", "off"):
                 for name, value in identity.items():
                     setattr(row, name, value)
@@ -47,7 +47,7 @@ def scenario(engine):
             # A cached stricter mode is retained when even the raw state is unreadable.
             gate._cached_runtime = gate.GateRuntime(str(uuid.uuid4()), "enforced", 1)
             gate._checked_at = None
-            with patch.object(gate, "read_runtime", return_value=None):
+            with patch.object(gate, "read_runtime_checked", return_value=(None, False)):
                 try:
                     with gate.writer_gate(SimpleNamespace(id=1)):
                         raise AssertionError("unreadable cached strict gate bypassed")

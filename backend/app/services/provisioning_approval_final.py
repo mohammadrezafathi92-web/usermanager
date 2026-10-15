@@ -98,6 +98,31 @@ def _discount(db, record, intent, user, manifest):
     return {"outcome": "applied", "reason": None, "discount_amount": int(amount)}
 
 
+def _frozen_referrers(db, rows):
+    """The referrer every frozen referrer row names: the credit row's
+    referrer_user_id and the quota row's binding (a User, or the Purchase of
+    that user). An empty set: no referrer row at all (only the new
+    customer's own rewards). None: a binding whose owner cannot be told."""
+    named = set()
+    credit = rows.get("credit:referral_reward:referrer")
+    if credit is not None:
+        named.add(int(credit["referrer_user_id"]))
+    quota = rows.get("quota:referral:referrer")
+    if quota is not None:
+        binding = quota["target"]
+        if not isinstance(binding, dict) or binding.get("type") not in ("User", "Purchase"):
+            return None
+        if binding["type"] == "User":
+            named.add(int(binding["id"]))
+        else:
+            owner = db.execute(select(models.Purchase.user_id).where(
+                models.Purchase.id == binding["id"]).with_for_update()).scalar_one_or_none()
+            if owner is None:
+                return None
+            named.add(int(owner))
+    return named
+
+
 def _referral(db, record, intent, user, purchase, manifest):
     """Referral rewards exactly as FROZEN in the manifest at registration
     (amounts, the referrer, the quota destination) - never the live panel
@@ -118,8 +143,11 @@ def _referral(db, record, intent, user, purchase, manifest):
         return {"outcome": "skipped", "reason": "already_referred"}
     referrer = db.query(models.User).filter(models.User.referral_code == terms.referral_code,
                                             models.User.id != user.id).with_for_update().first()
-    frozen_referrer = (rows.get("credit:referral_reward:referrer") or {}).get("referrer_user_id")
-    if referrer is None or (frozen_referrer is not None and referrer.id != frozen_referrer):
+    frozen = _frozen_referrers(db, rows)
+    if referrer is None or frozen is None or (frozen and frozen != {referrer.id}):
+        # The code's owner now is not the one every frozen referrer binding
+        # names (credit or quota-only): never link one person while the
+        # frozen reward goes to another.
         return {"outcome": "skipped", "reason": "referrer_changed"}
     user.referred_by_id = referrer.id
     user.referral_reward_granted = True

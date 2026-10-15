@@ -148,6 +148,12 @@ def _stage(db, operation, slot, node, backend):
     return attributes
 
 
+def request_digest(request) -> str:
+    """The request_hash of a Preparation: the same request is the same hash."""
+    canonical = json.dumps(request.dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_kind="system", actor_id=None,
             approval=None):
     """T1. With `approval` (provisioning_approval_exec.ApprovalExecution) it
@@ -180,8 +186,7 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
     panel = db.get(models.PanelSettings, 1)
     if panel is not None and panel.ha_enabled:
         raise HTTPException(503, "provisioning_ha_unsupported")
-    canonical = json.dumps(request.dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    digest = hashlib.sha256(canonical.encode()).hexdigest()
+    digest = request_digest(request)
     locked = None
     if approval is not None:
         locked = approval_exec.lock(db, request, approval, digest)

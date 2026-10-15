@@ -520,8 +520,8 @@ live_engine = create_engine(f"sqlite:///{os.path.join(tempfile.mkdtemp(prefix='u
                             connect_args={"check_same_thread": False})
 LiveSession = sessionmaker(bind=live_engine)
 check("provisioning schema bootstraps", ps.bootstrap(live_engine, LiveSession)["ready"], True)
-real_read = node_gate.read_runtime
-node_gate.read_runtime = lambda factory=None: real_read(LiveSession)
+real_read = node_gate.read_runtime_checked
+node_gate.read_runtime_checked = lambda factory=None: real_read(LiveSession)
 node_gate.reset_cache()
 node_gate.counters.reset()
 
@@ -609,7 +609,7 @@ node_gate.node_gate = real_node_gate
 check("a broken gate does not stop a legacy writer: the remote calls still happen",
       names(log), ["list_peers", "remove_simple_queue"])
 check("...and it is counted", node_gate.counters.snapshot()["gate_error"], 1)
-node_gate.read_runtime = real_read
+node_gate.read_runtime_checked = real_read
 db.close()
 
 print()

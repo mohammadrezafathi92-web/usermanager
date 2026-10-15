@@ -124,8 +124,9 @@ check("no owner_admin_id is read from the query or body",
       "owner_admin_id: " in src.split("def current_visitor")[0], False)
 check("every scope comes from the verified visitor",
       src.count('visitor["owner_admin_id"]') >= 1, True)
-check("the only header consulted is the signed blob",
-      src.count("Header(") , 1)
+check("the only header that identifies anyone is the signed blob; the other is the purchase attempt's "
+      "idempotency key, which only finds the visitor's own earlier operation",
+      (src.count("Header("), 'Header(None, alias="X-Idempotency-Key")' in src), (2, True))
 
 print("\n--- it reuses the bot's own answers rather than a second copy ---")
 # A price or a hidden package that is right in the bot must be right here,

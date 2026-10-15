@@ -298,7 +298,8 @@ def bulk_create_users(
     # (not just hidden in the UI - see Users.jsx) since a direct API call
     # could otherwise skip the cooperation-price wallet charge entirely by
     # never going through _charge_admin_for_package below.
-    if not admin.is_superadmin and not payload.package_id:
+    if not payload.package_id:
+        # No new legacy account (owner's rule): bulk creation needs a package too.
         raise HTTPException(400, "ساخت کاربر بدون پکیج مجاز نیست - یک پکیج انتخاب کنید")
 
     package = None
@@ -487,7 +488,11 @@ def create_user(
     # Non-superadmins must always build from a package - enforced here too
     # (not just hidden in the UI - see Users.jsx) since a direct API call
     # could otherwise skip the cooperation-price wallet charge entirely.
-    if not admin.is_superadmin and not payload.package_id:
+    if not payload.package_id:
+        # Owner's rule (2026-10-15): no new legacy account. An account built
+        # without a package has no Purchase - the shared user-level pool -
+        # so it is refused for everyone, the superadmin included, before any
+        # write.
         raise HTTPException(400, "ساخت کاربر بدون پکیج مجاز نیست - یک پکیج انتخاب کنید")
 
     # A superadmin may hand a new user to ANY admin's group. A level-2 Admin
@@ -1013,9 +1018,22 @@ def reset_usage(
     return user
 
 
+def _prior_delete(db, admin, kind, header, *, resource_id, user_id=None):
+    """The deletion this same admin already made with this key (Lifecycle
+    13), answered before the target lookup that would 404 once it is gone."""
+    operation = provisioning_requests.prior_delete(db, kind, header, resource_id=resource_id)
+    if operation is None or operation.actor_kind != "admin" or operation.actor_id != admin.id or (
+            user_id is not None and operation.target_user_id != user_id):
+        return None
+    return provisioning_requests.settle(db, operation)
+
+
 @router.delete("/{user_id}")
 def delete_user(user_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password), _perm=_may_delete_users,
                 x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key")):
+    if provisioning_durable.is_durable(db, "delete_user") and _prior_delete(
+            db, admin, "user", x_idempotency_key, resource_id=user_id) is not None:
+        return {"ok": True}
     user = _get_owned_user(db, admin, user_id)
     if provisioning_durable.is_durable(db, "delete_user"):
         # Lifecycle L8 / 12: disabled and purchase-blocked first, every
@@ -1404,6 +1422,12 @@ def delete_purchase(
     Password-confirmed like every other delete in the panel (see
     deps.require_confirm_password)."""
     user = _get_owned_user(db, admin, user_id)
+    if provisioning_durable.is_durable(db, "delete_purchase"):
+        prior = _prior_delete(db, admin, "purchase", x_idempotency_key, resource_id=purchase_id, user_id=user.id)
+        if prior is not None:
+            from ..models_provisioning import ProvisioningStep
+            return {"ok": True, "failed": [], "connections_removed": db.query(ProvisioningStep).filter_by(
+                operation_id=prior.id, direction="remove").count()}
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
@@ -1577,6 +1601,9 @@ def unban_connection(
     who lifted it or when. Idempotent: safe to call even if the connection
     isn't currently banned (e.g. the admin clicks it just to be sure)."""
     user = _get_owned_user(db, admin, user_id)
+    if provisioning_durable.is_durable(db, "delete_connection") and _prior_delete(
+            db, admin, "connection", x_idempotency_key, resource_id=connection_id, user_id=user.id) is not None:
+        return {"ok": True}
     conn = db.get(models.Connection, connection_id)
     if not conn or conn.user_id != user_id:
         raise HTTPException(404, "کانکشن پیدا نشد")
@@ -1625,6 +1652,9 @@ def kick_connection_endpoint(
     not a ban. Use the existing "غیرفعال" toggle instead if the intent is
     to actually keep them cut off."""
     user = _get_owned_user(db, admin, user_id)
+    if provisioning_durable.is_durable(db, "delete_connection") and _prior_delete(
+            db, admin, "connection", x_idempotency_key, resource_id=connection_id, user_id=user.id) is not None:
+        return {"ok": True}
     conn = db.get(models.Connection, connection_id)
     if not conn or conn.user_id != user_id:
         raise HTTPException(404, "کانکشن پیدا نشد")
@@ -1641,6 +1671,9 @@ def delete_connection(
     admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password), _perm=_may_manage_connections,
     x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key")):
     user = _get_owned_user(db, admin, user_id)
+    if provisioning_durable.is_durable(db, "delete_connection") and _prior_delete(
+            db, admin, "connection", x_idempotency_key, resource_id=connection_id, user_id=user.id) is not None:
+        return {"ok": True}
     conn = db.get(models.Connection, connection_id)
     if not conn or conn.user_id != user_id:
         raise HTTPException(404, "کانکشن پیدا نشد")

@@ -4,7 +4,7 @@ import {
   Copy, ShoppingBag, Plus, RefreshCw, Clock,
 } from "lucide-react";
 import {
-  fetchMiniAppHome, miniAppCheckout, miniAppCheckoutReceipt, miniAppTopupReceipt,
+  fetchMiniAppHome, miniAppCheckout, miniAppCheckoutReceipt, miniAppTopupReceipt, newIdempotencyKey,
 } from "../api/client.js";
 import { formatBytes, formatToman } from "../utils.js";
 
@@ -770,6 +770,9 @@ function CheckoutSheet({ pkg, wallet, account, payment, initData, renew, onClose
   const [error, setError] = useState("");
   const [file, setFile] = useState(null);
   const fileInput = useRef(null);
+  // One key for this purchase attempt: every retry of it (a timeout, a second
+  // tap) is answered with the same operation - no second service or debit.
+  const attemptKey = useRef(newIdempotencyKey());
   const price = pkg.price || 0;
   const canPayFromWallet = wallet >= price && Boolean(account);
 
@@ -781,7 +784,7 @@ function CheckoutSheet({ pkg, wallet, account, payment, initData, renew, onClose
     try {
       const res = await miniAppCheckout(initData, {
         package_id: pkg.id, account, renew_purchase_id: renew?.id,
-      });
+      }, attemptKey.current);
       onDone(res.data.message, res.data.status);
     } catch (err) {
       fail(err);
@@ -1118,6 +1121,9 @@ export default function MiniApp() {
     load(credential);
   }, [settled, webApp, initData]);
 
+  // One key per free plan claimed in this session (a retry is the same claim).
+  const claimKeys = useRef({});
+
   /**
    * Buying, and the case where there is nothing to buy.
    *
@@ -1132,7 +1138,7 @@ export default function MiniApp() {
       return;
     }
     setClaiming(pkg.id);
-    miniAppCheckout(initData || webApp?.initData || "", { package_id: pkg.id })
+    miniAppCheckout(initData || webApp?.initData || "", { package_id: pkg.id }, claimKeys.current[pkg.id] ||= newIdempotencyKey())
       .then((res) => {
         notify(res.data.message);
         load(initData || webApp?.initData || "");

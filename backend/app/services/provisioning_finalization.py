@@ -342,7 +342,12 @@ def finish(db, operation_id, version, leases, *, require_contracts=False, approv
         connections.append((step.slot_key, provisioning_records.build_connection_core(
             db, step.id, step.version, user_id=user.id,
             purchase_id=purchase.id if purchase else None, purchase_batch=intent.purchase_batch)))
-    if operation.operation_type in ("create_user", "purchase"):
+    # Legacy loyalty is an effect no manifest describes. Under 'required' the
+    # runtime is in loyalty_timing_mode 'payment_event' (Receipt Void P9a,
+    # not built yet): granting it here would be an unrecorded effect, so it
+    # is not granted - P9a's loyalty writer owns it.
+    strict_approval = approved and approval_row.get("registered_under_mode") == "required"
+    if operation.operation_type in ("create_user", "purchase") and not strict_approval:
         user_ops._maybe_grant_loyalty_reward(db, user)
     entry = None
     if intent.sale:

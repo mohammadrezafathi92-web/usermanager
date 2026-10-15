@@ -497,7 +497,7 @@ class PanelBridge:
     async def purchase_package(
         self, username: str, package_id: int, connections: Optional[list[dict]] = None,
         owner_admin_id: Optional[int] = None, sale_info: Optional[dict] = None,
-        comment: Optional[str] = None,
+        comment: Optional[str] = None, idempotency_key: Optional[str] = None,
     ) -> dict:
         payload = schemas.BotPurchasePackageRequest(
             package_id=package_id,
@@ -505,7 +505,8 @@ class PanelBridge:
             comment=comment,
             **(sale_info or {}),
         )
-        return _dump(await _call(bot_router.purchase_package, username, payload, owner_admin_id=_scope(owner_admin_id)))
+        return _dump(await _call(bot_router.purchase_package, username, payload, owner_admin_id=_scope(owner_admin_id),
+                                 x_idempotency_key=idempotency_key))
 
     async def begin_approval(self, intent: dict, mode: str) -> dict:
         """Registers the approval of one pending request with the panel
@@ -541,7 +542,7 @@ class PanelBridge:
     async def renew_service(
         self, username: str, purchase_id: int, add_gb: float = 0, add_days: int = 0,
         reset_usage: bool = False, owner_admin_id: Optional[int] = None,
-        package_id: Optional[int] = None, sale_info: Optional[dict] = None,
+        package_id: Optional[int] = None, sale_info: Optional[dict] = None, idempotency_key: Optional[str] = None,
     ) -> dict:
         """Renews ONE specific service (same connections/credentials, new
         package queued behind what's left) - see routers/bot.py's
@@ -550,7 +551,8 @@ class PanelBridge:
             add_gb=add_gb, add_days=add_days, reset_usage=reset_usage, package_id=package_id,
             **(sale_info or {}),
         )
-        return _dump(await _call(bot_router.renew_service, username, purchase_id, payload, owner_admin_id=_scope(owner_admin_id)))
+        return _dump(await _call(bot_router.renew_service, username, purchase_id, payload,
+                                 owner_admin_id=_scope(owner_admin_id), x_idempotency_key=idempotency_key))
 
     async def rename_purchase(self, username: str, purchase_id: int, comment: str, owner_admin_id: Optional[int] = None) -> dict:
         """Sets/changes what "👤 اکانت من" shows for ONE service - see
@@ -573,13 +575,14 @@ class PanelBridge:
     async def renew(
         self, username: str, add_gb: float = 0, add_days: int = 0, reset_usage: bool = False,
         owner_admin_id: Optional[int] = None, package_id: Optional[int] = None,
-        sale_info: Optional[dict] = None,
+        sale_info: Optional[dict] = None, idempotency_key: Optional[str] = None,
     ) -> dict:
         payload = schemas.BotRenewRequest(
             add_gb=add_gb, add_days=add_days, reset_usage=reset_usage, package_id=package_id,
             **(sale_info or {}),
         )
-        return _dump(await _call(bot_router.renew, username, payload, owner_admin_id=_scope(owner_admin_id)))
+        return _dump(await _call(bot_router.renew, username, payload, owner_admin_id=_scope(owner_admin_id),
+                                 x_idempotency_key=idempotency_key))
 
     async def reset_usage(self, username: str, owner_admin_id: Optional[int] = None) -> dict:
         return _dump(await _call(bot_router.reset_usage, username, owner_admin_id=_scope(owner_admin_id)))

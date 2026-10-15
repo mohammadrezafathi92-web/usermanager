@@ -98,25 +98,60 @@ def _discount(db, record, intent, user, manifest):
     return {"outcome": "applied", "reason": None, "discount_amount": int(amount)}
 
 
-def _referral(db, record, intent, user, manifest):
-    from . import user_ops
+def _referral(db, record, intent, user, purchase, manifest):
+    """Referral rewards exactly as FROZEN in the manifest at registration
+    (amounts, the referrer, the quota destination) - never the live panel
+    settings or a destination re-resolved now. No referral row in the
+    manifest (a code that named nobody, the customer's own code, zero
+    rewards, an existing customer): nothing at all is written - not even
+    the referral link. A row that cannot be applied as frozen is simply not
+    recorded: 'required' then rolls T_final back, 'shadow' opens a recovery."""
+    from . import quota_rewards, wallet_service
     terms = intent.approval
     if not terms.referral_code:
         return None
-    rows = [key for kind, key in manifest if key.startswith(("credit:referral_reward:", "quota:referral:"))]
-    settings_row = db.get(models.PanelSettings, 1)
-    rewards = settings_row is not None and any((
-        settings_row.referral_referrer_reward_credit, settings_row.referral_new_user_reward_credit,
-        settings_row.referral_referrer_reward_gb, settings_row.referral_new_user_reward_gb))
-    if not rows and rewards:
-        # The manifest froze no reward (no referrer, or the customer's own
-        # code): applying now would grant what nobody expected.
-        return {"outcome": "skipped", "reason": "کد دعوت نامعتبر است"}
-    sink: list = []
-    ok, reason = user_ops.apply_referral_code_core(db, user, terms.referral_code, sink)
-    for effect_type, effect_key, resource, evidence in sink:
-        record(effect_type, effect_key, resource, evidence)
-    return {"outcome": "applied" if ok else "skipped", "reason": reason or None}
+    rows = {key: row.expected for (kind, key), row in manifest.items()
+            if key.startswith(("credit:referral_reward:", "quota:referral:"))}
+    if not rows:
+        return {"outcome": "skipped", "reason": "not_in_manifest"}
+    if user.referred_by_id or user.referral_reward_granted:
+        return {"outcome": "skipped", "reason": "already_referred"}
+    referrer = db.query(models.User).filter(models.User.referral_code == terms.referral_code,
+                                            models.User.id != user.id).with_for_update().first()
+    frozen_referrer = (rows.get("credit:referral_reward:referrer") or {}).get("referrer_user_id")
+    if referrer is None or (frozen_referrer is not None and referrer.id != frozen_referrer):
+        return {"outcome": "skipped", "reason": "referrer_changed"}
+    user.referred_by_id = referrer.id
+    user.referral_reward_granted = True
+    for key in sorted(rows):
+        expected = rows[key]
+        if key.startswith("credit:"):
+            target = referrer if key.endswith(":referrer") else user
+            before = int(target.balance or 0)
+            wallet_service.adjust_in_session(db, target, int(expected["amount"]),
+                                             source_kind=wallet_service.REFERRAL_REWARD)
+            db.flush()
+            record("wallet_credit_source_created", key, target,
+                   effects.WalletCreditEvidence(before, int(target.balance or 0)))
+            continue
+        binding = expected["target"]
+        if binding == ri.USER_REF:
+            target = user
+        elif binding == ri.PURCHASE_REF:
+            target = purchase
+        else:
+            model = models.Purchase if binding["type"] == "Purchase" else models.User
+            target = db.execute(select(model).where(model.id == binding["id"]).with_for_update()).scalar_one_or_none()
+        if target is None:
+            continue
+        before = quota_rewards.quota(target)
+        if quota_rewards.grant(target, int(expected["bytes"])) <= 0:
+            continue                                  # unlimited or gone: the frozen reward cannot be applied
+        db.flush()
+        kind = "Purchase" if isinstance(target, models.Purchase) else "User"
+        record("quota_reward_granted", key, target,
+               effects.QuotaRewardEvidence(kind, target.id, before, quota_rewards.quota(target), False))
+    return {"outcome": "applied", "reason": None}
 
 
 def _card_payment(db, record, intent, approval_uuid, manifest):
@@ -159,7 +194,7 @@ def record(db, operation, intent, row, *, user, purchase, connections, entry, cr
     optional = {}
     for name, outcome in (("card_payment", _card_payment(db, rec, intent, approval_uuid, manifest)),
                           ("discount", _discount(db, rec, intent, user, manifest)),
-                          ("referral", _referral(db, rec, intent, user, manifest))):
+                          ("referral", _referral(db, rec, intent, user, purchase, manifest))):
         if outcome is not None:
             optional[name] = outcome
     written = _written(db, approval_uuid)

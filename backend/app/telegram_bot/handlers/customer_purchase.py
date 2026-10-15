@@ -398,6 +398,7 @@ async def _give_free_package(target, state: FSMContext, pkg: dict, account) -> N
 
 
 async def _show_payment_screen(target, state: FSMContext) -> None:
+    await state.update_data(pay_key=None)        # a new payment screen is a new purchase attempt
     try:
         payment = await api.get_payment_info()
     except ApiError as exc:
@@ -528,6 +529,14 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
         await call.answer("خطا: این بسته چیزی برای تمدید ندارد", show_alert=True)
         return
     sale_info = {**_sale_info(data, final_price, "wallet"), "charge_wallet": True}
+    # One key per payment screen, kept in the conversation state: a second
+    # tap or a retry after a lost answer reaches the SAME durable operation -
+    # no second service and no second debit (Lifecycle 13).
+    pay_key = data.get("pay_key")
+    if not pay_key:
+        import uuid as _uuid
+        pay_key = str(_uuid.uuid4())
+        await state.update_data(pay_key=pay_key)
 
     # Collects only the connection(s) actually created by THIS purchase, so
     # the message below sends just those - not every connection the
@@ -563,7 +572,7 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
             result = await api.purchase_package(
                 target_username, pkg["id"], connections=connections_override,
                 sale_info=sale_info,
-                comment=data.get("comment"),
+                comment=data.get("comment"), idempotency_key=pay_key,
             )
             new_connections = result["connections"]
         elif add_gb or add_days:
@@ -575,12 +584,12 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
                 await api.renew_service(
                     target_username, data["renew_purchase_id"],
                     add_gb=add_gb, add_days=add_days, package_id=pkg.get("id"),
-                    sale_info=sale_info,
+                    sale_info=sale_info, idempotency_key=pay_key,
                 )
             else:
                 await api.renew(
                     target_username, add_gb=add_gb, add_days=add_days, package_id=pkg.get("id"),
-                    sale_info=sale_info,
+                    sale_info=sale_info, idempotency_key=pay_key,
                 )
         user = await api.get_user(target_username)
     except ApiError as exc:

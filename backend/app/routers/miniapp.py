@@ -534,6 +534,7 @@ def checkout(
     payload: CheckoutRequest,
     visitor: dict = Depends(current_visitor),
     db: Session = Depends(get_db),
+    x_idempotency_key: str | None = Header(None, alias="X-Idempotency-Key"),
 ):
     """Pay from the wallet. Refuses rather than half-succeeds.
 
@@ -542,8 +543,26 @@ def checkout(
     captured or released with it (Lifecycle 8); on a legacy type the bot
     endpoint debits, provisions and refunds a failure. This handler never
     holds the money between two requests.
+
+    X-Idempotency-Key (one per purchase attempt, sent again on every retry
+    by the page) reaches the durable operation: a retry after a lost answer
+    or a second tap gets the same operation - no second service, no second
+    debit (Lifecycle 13).
     """
     owner = visitor["owner_admin_id"]
+    key = x_idempotency_key if isinstance(x_idempotency_key, str) else None
+    from ..services import provisioning_requests, wallet_accounts
+    if key:
+        # A free trial that already created the account under this key: the
+        # retry finds that account now, but it is still the SAME request.
+        trial_account = provisioning_requests.prior_operation(
+            db, "create_user", wallet_accounts.tenant_scope(db, owner), key)
+        if trial_account is not None:
+            created = db.get(models.User, trial_account.result_user_id) if trial_account.state == "completed" else None
+            if created is None or created.telegram_id != visitor["telegram_id"]:
+                raise HTTPException(409, "provisioning_request_changed")
+            return {"status": "done", "message": "سرویس تست شما فعال شد. در «سرویس‌های من» ببینیدش.",
+                    "connections": [bot_router._connection_info(c).model_dump() for c in created.connections]}
     principal = build_internal_principal_for_owner(db, owner)
     pkg = _package_or_404(db, owner, payload.package_id)
     renewing = payload.renew_purchase_id is not None
@@ -581,6 +600,7 @@ def checkout(
             ),
             db=db,
             principal=principal,
+            x_idempotency_key=key,
         )
         return {
             "status": "done",
@@ -590,8 +610,10 @@ def checkout(
 
     if account is None:
         raise HTTPException(400, "هنوز حسابی ندارید - اولین خرید را از داخل ربات انجام دهید.")
-    if (account.balance or 0) < price:
-        raise HTTPException(400, "موجودی کیف پول کافی نیست.")
+    # No balance pre-check here: the charge itself is the atomic check
+    # (reservation / conditional debit), and a retry of a purchase that
+    # already took the money must reach its operation, not be refused for
+    # the balance that purchase spent.
 
     if renewing:
         _own_purchase_or_404(db, owner, account.username, payload.renew_purchase_id)
@@ -611,6 +633,7 @@ def checkout(
             db=db,
             owner_admin_id=owner,
             principal=principal,
+            x_idempotency_key=key,
         )
     else:
         result = bot_router.purchase_package(
@@ -625,6 +648,7 @@ def checkout(
             db=db,
             owner_admin_id=owner,
             principal=principal,
+            x_idempotency_key=key,
         )
 
     if renewing:

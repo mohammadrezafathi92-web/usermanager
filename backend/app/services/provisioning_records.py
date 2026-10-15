@@ -25,6 +25,11 @@ def build_connection_core(db, step_id, version, *, user_id, purchase_id=None, pu
         raise HTTPException(409, "provisioning_step_transition_invalid")
     if purchase_id is None:
         raise HTTPException(409, "purchase_required_for_connection")
+    # The locking re-reads below refresh the rows from the database
+    # (populate_existing): this transaction's own pending changes - the
+    # purchase count, the new service's limits - are flushed first, or the
+    # re-read would silently drop them.
+    db.flush()
     user = _locked(db, models.User, user_id)
     if user is None:
         raise HTTPException(409, "target_user_missing")

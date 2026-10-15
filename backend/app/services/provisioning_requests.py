@@ -241,7 +241,7 @@ def bulk_create(db, admin, *, prefix, count, package=None, quota_gb=0, expire_da
     from types import SimpleNamespace
     from fastapi import HTTPException
     from . import accounting, admin_billing, provisioning_durable, user_ops
-    created, skipped = [], []
+    created, skipped, pending = [], [], []
     if package is not None:
         slots = package_slots(db, package)
         authorize_slots(db, slots, package_scope(db, package))
@@ -256,7 +256,12 @@ def bulk_create(db, admin, *, prefix, count, package=None, quota_gb=0, expire_da
         authorize_slots(db, slots, scope)
     factory = session_factory_for(db)
     index, attempts, cap = 1, 0, count * 5 + 20
-    while len(created) < count and attempts < cap:
+    def unfinished(exc):
+        return exc.status_code == 409 and isinstance(exc.detail, dict) and exc.detail.get("error") == "operation_in_progress"
+
+    # A member still in progress keeps its place: it may yet complete, so no
+    # other index is created (and charged) in its stead.
+    while len(created) + len(pending) < count and attempts < cap:
         attempts += 1
         username = f"{prefix}{index}"
         member = index
@@ -276,6 +281,9 @@ def bulk_create(db, admin, *, prefix, count, package=None, quota_gb=0, expire_da
                     provisioning_durable.resume(factory, previous.id)
                 created.append(username)
             except HTTPException as exc:
+                if unfinished(exc):
+                    pending.append(username)
+                    continue
                 detail = exc.detail.get("error") if isinstance(exc.detail, dict) else exc.detail
                 skipped.append({"name": username, "reason": str(detail)})
             continue
@@ -295,11 +303,15 @@ def bulk_create(db, admin, *, prefix, count, package=None, quota_gb=0, expire_da
             provisioning_durable.run(factory, request, actor_kind="admin", actor_id=admin.id)
             created.append(username)
         except HTTPException as exc:
+            if unfinished(exc):
+                pending.append(username)
+                continue
             detail = exc.detail.get("error") if isinstance(exc.detail, dict) else exc.detail
             skipped.append({"name": username, "reason": str(detail)})
             if exc.status_code == 400 and "اعتبار" in str(detail):
                 break                              # the reseller's credit ran out: the rest would fail the same way
-    return {"created": created, "created_count": len(created), "skipped": skipped, "skipped_count": len(skipped)}
+    return {"created": created, "created_count": len(created), "skipped": skipped, "skipped_count": len(skipped),
+            "in_progress": pending}
 
 
 def bulk_renew(db, admin, targets, *, package=None, add_gb=0, add_days=0, reset_usage=False,
@@ -328,3 +340,60 @@ def bulk_renew(db, admin, targets, *, package=None, add_gb=0, add_days=0, reset_
                            "reason": exc.detail if isinstance(exc.detail, str) else exc.detail.get("error")})
     return {"updated_count": updated, "failed": failed}
 
+
+
+# ------------------------------------------------------------------ replay before preflight (Lifecycle 13)
+def header_key(request_header):
+    """The caller's own idempotency key, or None (no header: every request is
+    new, as today - there is nothing to replay)."""
+    from . import provisioning_durable
+    if not isinstance(request_header, str) or not request_header.strip():
+        return None
+    return provisioning_durable.idempotency_key(request_header)
+
+
+def prior_operation(db, operation_type: str, tenant_scope_key: str, request_header):
+    """The operation an earlier request with the same key already made, in
+    this tenant - found BEFORE any check that only a NEW operation needs
+    (one-time/trial package, target existence): a retry of a completed
+    request is answered with its result, never refused by its own effect."""
+    key = header_key(request_header)
+    if key is None:
+        return None
+    return existing_operation(db, operation_type, f"req:{tenant_scope_key}:{key}")
+
+
+def prior_delete(db, resource_kind: str, request_header, *, resource_id=None):
+    """The deletion an earlier request with the same key made. With the
+    resource id (path endpoints) the business key is exact; the bot's
+    delete-by-username has no id left after the deletion, so the key is
+    matched by its suffix - the caller then checks tenant and target."""
+    from sqlalchemy import select
+    from .. import models_provisioning as mp
+    key = header_key(request_header)
+    if key is None:
+        return None
+    query = select(mp.ProvisioningOperation).where(mp.ProvisioningOperation.operation_type == f"delete_{resource_kind}")
+    if resource_id is not None:
+        query = query.where(mp.ProvisioningOperation.business_key == f"delete:{resource_kind}:{resource_id}:{key}")
+    else:
+        query = query.where(mp.ProvisioningOperation.business_key.like(f"delete:{resource_kind}:%:{key}"))
+    rows = db.execute(query).scalars().all()
+    return rows[0] if len(rows) == 1 else None
+
+
+def settle(db, operation):
+    """The result of a replayed operation: completed as it is; an unfinished
+    one advanced from this request (same budget and answers as run())."""
+    from fastapi import HTTPException
+    from . import provisioning_durable
+    if operation.state == "completed":
+        return operation
+    if operation.state == "compensated":
+        raise HTTPException(400, {"error": operation.error_code or "provisioning_failed", "operation_id": operation.id})
+    factory = session_factory_for(db)
+    operation_id = operation.id
+    db.rollback()
+    result = provisioning_durable.resume(factory, operation_id)
+    db.expire_all()
+    return result

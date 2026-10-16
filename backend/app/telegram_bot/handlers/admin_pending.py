@@ -364,6 +364,7 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
                 payment_card_id=pending.get("payment_card_id"),
                 approval_uuid=session.get("approval_uuid"),
                 execution_token=session.get("execution_token"),
+                source_kind="receipt_topup",
             )
             customer_msg = (
                 f"✅ پرداخت شما تایید شد و {pending['price']:,} تومان به اعتبار حساب «{pending['target_username']}» اضافه شد.\n"

@@ -48,7 +48,7 @@ def allocate(db, step_id, version, leases, count=1):
     if type(count) is not int or not 1 <= count <= 65533:
         raise HTTPException(422, "wg_pool_count_invalid")
     receipt_void_schema.assert_ready()
-    wallet_service.require_legacy_phase(db)
+    wallet_service.writer_phase(db)
     epoch = db.execute(select(rv.wallet_runtime_state.c.epoch).where(
         rv.wallet_runtime_state.c.id == 1).with_for_update(read=True)).scalar_one()
     tokens = tuple(leases)

@@ -1,3 +1,5 @@
+import uuid
+
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -592,7 +594,13 @@ async def admin_balance_amount(message: Message, state: FSMContext, acting_scope
         await message.answer("مبلغ نمی‌تواند صفر باشد.")
         return
     try:
-        user = await api.add_balance(username, amount)
+        # One key per attempt (kept in the FSM until it succeeds): a resend
+        # after a lost answer applies the adjustment once (Receipt Void P7).
+        key = data.get("adjust_key") or str(uuid.uuid4())
+        await state.update_data(adjust_key=key)
+        user = await api.add_balance(username, amount, source_kind="manual_adjustment",
+                                     reason="تغییر اعتبار از ربات", actor_telegram_id=message.from_user.id,
+                                     idempotency_key=key)
     except ApiError as exc:
         await message.answer(f"خطا: {exc}", reply_markup=home_kb())
         await state.clear()

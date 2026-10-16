@@ -54,7 +54,7 @@ def build(blocked=False, reason=None):
     models.Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
 
-    admin = models.AdminUser(username="su", hashed_password="x", is_superadmin=True)
+    admin = models.AdminUser(username="su", hashed_password="x", is_superadmin=True, telegram_id=990001)
     pkg = models.Package(name="۵۰ گیگ", quota_gb=50, price=90_000, enabled=True)
     db.add_all([admin, pkg])
     db.commit()
@@ -100,7 +100,7 @@ was, _ = refused(lambda: bot_router.renew(
 check("cannot renew", was, True)
 
 was, _ = refused(lambda: bot_router.add_balance(
-    "cust1", schemas.BotAddBalanceRequest(amount=50_000), db=db, principal=_principal))
+    "cust1", schemas.BotAddBalanceRequest(amount=50_000, source_kind="receipt_topup"), db=db, principal=_principal))
 check("cannot top up the wallet", was, True)
 
 was, _ = refused(lambda: bot_router.create_user(
@@ -138,7 +138,9 @@ check("...carrying the reason", me.purchases_blocked_reason, REASON)
 # but if a debit ever arrives it must not be blocked, or the customer
 # would pay and get nothing.
 was, _ = refused(lambda: bot_router.add_balance(
-    "cust1", schemas.BotAddBalanceRequest(amount=-1000), db=db, principal=_principal))
+    "cust1", schemas.BotAddBalanceRequest(amount=-1000, source_kind="manual_adjustment", reason="r",
+                                          actor_telegram_id=990001), db=db, principal=_principal,
+    x_idempotency_key="00000000-0000-4000-8000-0000000000aa"))
 check("a wallet DEBIT is not blocked (never take money for nothing)", was, False)
 
 print("\n--- nothing in the enforcement path may read the flag ---")
@@ -187,7 +189,7 @@ print("\n--- an untouched customer behaves exactly as before ---")
 db, admin, pkg, user = build(blocked=False)
 check("default is unlocked", bool(user.purchases_blocked), False)
 was, _ = refused(lambda: bot_router.add_balance(
-    "cust1", schemas.BotAddBalanceRequest(amount=50_000), db=db, principal=_principal))
+    "cust1", schemas.BotAddBalanceRequest(amount=50_000, source_kind="receipt_topup"), db=db, principal=_principal))
 check("can top up", was, False)
 was, _ = refused(lambda: bot_router.purchase_package(
     "cust1", schemas.BotPurchasePackageRequest(package_id=pkg.id), db=db, principal=_principal))

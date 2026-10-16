@@ -1,8 +1,9 @@
-"""P5 normal-generation identity changes; no financial cutover or commits.
+"""Identity changes of a wallet account (rebind, Receipt Void 10.3); no commits.
 
 User fields, account binding and audit operation belong to one caller
-transaction. The full fenced financial lock protocol remains a P8/P9
-prerequisite; this writer refuses every non-normal generation.
+transaction. Both generations: in 'enforced' the two identities' lease rows
+are locked in id order (12.1) and an identity with open debt cannot be left
+(409). 'fencing' refuses.
 """
 import datetime as dt
 import hashlib
@@ -27,7 +28,7 @@ def _begin(db):
         raw = db.connection().connection.driver_connection
         if not raw.in_transaction:
             db.execute(text("BEGIN IMMEDIATE"))
-    wallet_service.require_legacy_phase(db)
+    return wallet_service.writer_phase(db)
 
 
 def change(db, user, *, telegram_id=_UNSET, owner_admin_id=_UNSET,
@@ -76,7 +77,7 @@ def _change(db, user, *, telegram_id, owner_admin_id, actor_kind, actor_id, toke
         wallet_service.require_legacy_phase(db)
         user.telegram_id, user.owner_admin_id = new_tg, new_owner
         return None  # old users require the separate P9 backfill
-    _begin(db)
+    phase = _begin(db)
     scope = wallet_accounts.tenant_scope(db, new_owner)
     key = f"tg:{new_tg}" if new_tg is not None else f"private:{account['lineage_key']}"
     payload = json.dumps(dict(user_id=user.id, telegram_id=new_tg, owner_admin_id=new_owner,
@@ -103,6 +104,11 @@ def _change(db, user, *, telegram_id, owner_admin_id, actor_kind, actor_id, toke
         target = wallet_accounts._identity(db, lineage=account["lineage_key"],
                                            telegram_id=new_tg, owner_admin_id=new_owner)
     source = account["customer_identity_id"]
+    if phase == wallet_service.ENFORCED_PHASE:
+        # Lot generation (12.1): both identities' lease rows, in id order.
+        from . import wallet_lots
+        for identity_id in sorted({source, target}):
+            wallet_lots.fence_identity(db, identity_id)
     for identity_id in sorted({source, target}):
         db.execute(select(rv.customer_identities.c.id).where(
             rv.customer_identities.c.id == identity_id).with_for_update()).scalar_one()

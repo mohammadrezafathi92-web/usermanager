@@ -25,7 +25,7 @@ def select_due(session_factory, identity, *, installation_uuid, ownership_epoch,
         raise HTTPException(422, "provisioning_worker_invalid")
     with session_factory() as db:
         provisioning_schema.assert_ready()
-        wallet_service.require_legacy_phase(db)
+        wallet_service.writer_phase(db)
         kinds = tuple(db.execute(select(mp.ProvisioningTypeMode.operation_type).where(
             mp.ProvisioningTypeMode.operation_type.in_(worker.KINDS),
             mp.ProvisioningTypeMode.mode == "durable")

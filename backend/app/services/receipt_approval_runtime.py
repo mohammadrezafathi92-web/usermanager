@@ -219,6 +219,7 @@ def describe(db: Session) -> dict:
         "key_identity_failure": state["key_identity_failure"] if state else "schema_not_ready",
         "key_identity_failed_at": state["key_identity_failed_at"] if state else None,
         "completeness_generation": state["completeness_generation"] if state else 0,
+        "loyalty_timing_mode": state["loyalty_timing_mode"] if state else "legacy_activation",
     }
 
 

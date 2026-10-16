@@ -375,10 +375,15 @@ class RemoteBridge:
         return await self._call("POST", f"/users/{username}/set-enabled", params=params)
 
     async def add_balance(self, username: str, amount: int, payment_card_id: Optional[int] = None,
-                          approval_uuid: Optional[str] = None, execution_token: Optional[int] = None) -> dict:
+                          approval_uuid: Optional[str] = None, execution_token: Optional[int] = None, *,
+                          source_kind: Optional[str] = None, reason: Optional[str] = None,
+                          actor_telegram_id: Optional[int] = None, idempotency_key: Optional[str] = None) -> dict:
         return await self._call("POST", f"/users/{username}/add-balance",
                                 json={"amount": amount, "payment_card_id": payment_card_id,
-                                      "approval_uuid": approval_uuid, "execution_token": execution_token})
+                                      "approval_uuid": approval_uuid, "execution_token": execution_token,
+                                      "source_kind": source_kind, "reason": reason,
+                                      "actor_telegram_id": actor_telegram_id},
+                                extra_headers=_key_header(idempotency_key))
 
     async def delete_user(self, username: str, owner_admin_id: Optional[int] = None) -> None:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}

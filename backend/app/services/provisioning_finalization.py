@@ -165,9 +165,11 @@ def finish(db, operation_id, version, leases, *, require_contracts=False, approv
     checked here and its effects are recorded in this same transaction."""
     from . import provisioning_approval_exec as approval_exec, provisioning_approval_final as approval_final
     receipt_void_schema.assert_ready()
-    wallet_service.require_legacy_phase(db)
+    wallet_service.writer_phase(db)
     epoch = db.execute(select(rv.wallet_runtime_state.c.epoch).where(
         rv.wallet_runtime_state.c.id == 1).with_for_update(read=True)).scalar_one()
+    from . import loyalty_service
+    loyalty_service.pin_mode(db)         # wallet -> approval runtime, the activation's lock order
     tokens = tuple(leases)
     resource_leases.revalidate(db, tokens)
     operation = transitions._operation(db, operation_id)
@@ -321,7 +323,7 @@ def finish(db, operation_id, version, leases, *, require_contracts=False, approv
             if user.status == models.UserStatus.disabled:
                 reconcile.clear()
         if package is not None or intent.quota_bytes or intent.duration_days:
-            user.purchase_count = (user.purchase_count or 0) + 1
+            user_ops._count_legacy_purchase(db, user)
             user_ops._maybe_grant_loyalty_reward(db, user)
     elif renewal:
         core = user_ops.renew_purchase_core if purchase is not None else user_ops.renew_user_core
@@ -347,9 +349,9 @@ def finish(db, operation_id, version, leases, *, require_contracts=False, approv
             db, step.id, step.version, user_id=user.id,
             purchase_id=purchase.id if purchase else None, purchase_batch=intent.purchase_batch)))
     # Legacy loyalty is an effect no manifest describes. Under 'required' the
-    # runtime is in loyalty_timing_mode 'payment_event' (Receipt Void P9a,
-    # not built yet): granting it here would be an unrecorded effect, so it
-    # is not granted - P9a's loyalty writer owns it.
+    # runtime is in loyalty_timing_mode 'payment_event' (Receipt Void P9a):
+    # loyalty is then counted at payment by loyalty_sale below (and the
+    # legacy grant is a no-op in that mode anyway).
     strict_approval = approved and approval_row.get("registered_under_mode") == "required"
     if operation.operation_type in ("create_user", "purchase") and not strict_approval:
         user_ops._maybe_grant_loyalty_reward(db, user)
@@ -380,6 +382,9 @@ def finish(db, operation_id, version, leases, *, require_contracts=False, approv
             reseller_refund.bind_sale(db, purchase, debit, _locked(db, models.Package, package.id),
                                       sale_entry=entry, purchase_count_delta=intent.reseller_count_delta)
             db.flush()
+    # Payment-time loyalty (Receipt Void P9a), same transaction as the sale.
+    from . import loyalty_sale
+    loyalty = loyalty_sale.record_sale(db, operation, user, entry, reservations, approval_row if approved else None)
     optional = None
     if approved:
         credits = []
@@ -389,7 +394,7 @@ def finish(db, operation_id, version, leases, *, require_contracts=False, approv
                 credits.append(db.get(models.LedgerEntry, reservation.capture_ledger_entry_id))
         optional = approval_final.record(db, operation, intent, approval_row, user=user, purchase=purchase,
                                          connections=connections, entry=entry, credit_entries=credits,
-                                         renewal_evidence=renewal_evidence)
+                                         renewal_evidence=renewal_evidence, loyalty=loyalty)
         db.flush()
     transitions._write_operation(db, operation, "completed", result_user_id=user.id,
         result_purchase_id=purchase.id if purchase else None, sale_ledger_entry_id=entry.id if entry else None,

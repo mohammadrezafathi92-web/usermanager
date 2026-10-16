@@ -165,7 +165,7 @@ def scenario(engine):
             due.select_due(Factory, host, **expected)
             raise AssertionError("wallet fencing accepted")
         except HTTPException as error:
-            assert error.detail == "wallet_legacy_writer_unavailable"
+            assert error.detail == "wallet_writer_unavailable"
         with Factory() as db:
             db.execute(rv.wallet_runtime_state.update().values(phase="normal"))
             db.commit()

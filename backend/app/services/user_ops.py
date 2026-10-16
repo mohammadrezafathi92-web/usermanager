@@ -150,6 +150,22 @@ def _generate_referral_code(db: Session) -> str:
     return uuid.uuid4().hex[:12].upper()
 
 
+def _payment_event_loyalty(db: Session) -> bool:
+    """After the joint activation (Receipt Void P9a) loyalty is counted only
+    at payment, by services/loyalty_service.py; nothing here counts it."""
+    from . import loyalty_service
+    return loyalty_service.payment_event_mode(db)
+
+
+def _count_legacy_purchase(db: Session, user: models.User) -> None:
+    """Today's purchase counter (+1 per real purchase or renewal). In the
+    payment-event generation the counter is a cache of the loyalty events
+    and is not advanced here (a reserved renewal's activation counts nothing)."""
+    if _payment_event_loyalty(db):
+        return
+    user.purchase_count = (user.purchase_count or 0) + 1
+
+
 def _maybe_grant_loyalty_reward(db: Session, user: models.User) -> None:
     """Called right after user.purchase_count is incremented (new purchase
     or renewal - see create_user_record/renew_user/bulk_update_users) -
@@ -168,6 +184,8 @@ def _maybe_grant_loyalty_reward(db: Session, user: models.User) -> None:
     so routers/bot.py's _user_response can surface a one-time "you just got
     a loyalty reward!" notice to the bot without needing a whole separate
     table/endpoint to track "has this reward been shown yet"."""
+    if _payment_event_loyalty(db):
+        return
     settings_row = db.get(models.PanelSettings, 1)
     threshold = settings_row.loyalty_purchase_threshold if settings_row else None
     if not threshold or threshold <= 0:
@@ -180,7 +198,13 @@ def _maybe_grant_loyalty_reward(db: Session, user: models.User) -> None:
     credit = (settings_row.loyalty_reward_credit or 0) * rewards_to_grant
     gb = (settings_row.loyalty_reward_gb or 0) * rewards_to_grant
     if credit:
-        wallet_service.adjust_in_session(db, user, credit, source_kind=wallet_service.LOYALTY_REWARD)
+        # One reward, one credit (Receipt Void 11.1: loyalty:{user}:{ordinal},
+        # ordinal = loyalty_rewards_given after that reward). The legacy
+        # generation adds the same total as before.
+        for ordinal in range(already + 1, due + 1):
+            wallet_service.credit_reward(db, user, settings_row.loyalty_reward_credit or 0,
+                                         source_kind=wallet_service.LOYALTY_REWARD,
+                                         source_key=f"loyalty:{user.id}:{ordinal}")
     if gb:
         applied = quota_rewards.grant(quota_rewards.destination(db, user), gb_to_bytes(gb))
         gb = applied / 1024 ** 3
@@ -309,10 +333,12 @@ def apply_referral_code_core(db: Session, user: models.User, referral_code: str,
                   "new_balance": int(user.balance or 0),
                   "new_quota": quota_rewards.quota(new_target) if new_target is not None else 0}
         if ref_credit:
-            wallet_service.adjust_in_session(db, referrer, ref_credit, source_kind=wallet_service.REFERRAL_REWARD)
+            wallet_service.credit_reward(db, referrer, ref_credit, source_kind=wallet_service.REFERRAL_REWARD,
+                                         source_key=wallet_service.referral_source_key(db, user, "referrer"))
         quota_rewards.grant(ref_target, gb_to_bytes(ref_gb))
         if new_credit:
-            wallet_service.adjust_in_session(db, user, new_credit, source_kind=wallet_service.REFERRAL_REWARD)
+            wallet_service.credit_reward(db, user, new_credit, source_kind=wallet_service.REFERRAL_REWARD,
+                                         source_key=wallet_service.referral_source_key(db, user, "new_user"))
         quota_rewards.grant(new_target, gb_to_bytes(new_gb))
         _referral_evidence(evidence_sink, referrer, user, before, ref_target, new_target)
     return True, ""
@@ -627,7 +653,7 @@ def renew_user_core(
         # Only a REAL renewal (actual quota/time added) counts toward
         # loyalty progress - a bare package re-tag or a reset-usage-only
         # call shouldn't silently advance it. See _maybe_grant_loyalty_reward.
-        user.purchase_count = (user.purchase_count or 0) + 1
+        _count_legacy_purchase(db, user)
         if grant_loyalty:
             _maybe_grant_loyalty_reward(db, user)
     return user
@@ -674,7 +700,7 @@ def _maybe_activate_reserved_renewal(db: Session, user: models.User) -> bool:
         # without this the customer's PPP login would be let back in while
         # their Xray/other connections stay deleted/disabled from before.
         reconcile_user_connections(db, user)
-    user.purchase_count = (user.purchase_count or 0) + 1
+    _count_legacy_purchase(db, user)
     _maybe_grant_loyalty_reward(db, user)
     return True
 
@@ -1196,7 +1222,7 @@ def bulk_update_users(
                                                    reconciliation_sink=reconcile)
                 for target in reconcile:
                     reconcile_purchase_connections(db, target)
-                user.purchase_count = (user.purchase_count or 0) + 1
+                _count_legacy_purchase(db, user)
                 _maybe_grant_loyalty_reward(db, user)
             else:
                 reconcile = []
@@ -1206,7 +1232,7 @@ def bulk_update_users(
                     if user.status != models.UserStatus.disabled:
                         reconcile_purchase_connections(db, target)
                 if add_gb or add_days:
-                    user.purchase_count = (user.purchase_count or 0) + 1
+                    _count_legacy_purchase(db, user)
                     _maybe_grant_loyalty_reward(db, user)
         if status is not None:
             # On independent services, user.status is the account-wide
@@ -1755,7 +1781,7 @@ Durable T_final uses this core in its one transaction and never calls remote.
     db.add(purchase)
     db.flush()
     if count_purchase:
-        user.purchase_count = (user.purchase_count or 0) + 1
+        _count_legacy_purchase(db, user)
     if grant_loyalty:
         _maybe_grant_loyalty_reward(db, user)
     return purchase
@@ -1870,7 +1896,7 @@ def apply_package_as_purchase(
         reasons = "، ".join(skip_reasons) or "دلیل نامشخص"
         raise HTTPException(400, f"هیچ‌کدام از سرویس‌های پکیج قابل ساخت نبودند: {reasons}")
 
-    user.purchase_count = (user.purchase_count or 0) + 1
+    _count_legacy_purchase(db, user)
     _maybe_grant_loyalty_reward(db, user)
     db.commit()
     db.refresh(purchase)

@@ -23,6 +23,7 @@ phase P9a (section 14.2), so there is nothing to record them against.
 from __future__ import annotations
 
 import datetime as dt
+import re
 import json
 import logging
 from dataclasses import asdict, dataclass
@@ -52,6 +53,8 @@ SNAPSHOT_KEYS = frozenset({
     "q_before", "u_before", "e_before", "rq_before", "rd_before", "rp_before", "pk_before",
     "q_after", "u_after", "e_after", "rq_after", "rd_after", "rp_after", "pk_after",
     "balance_before", "balance_after", "rewards_count", "slot_key",
+    "purchase_event_id", "user_id", "eligibility_reason",            # loyalty_purchase_recorded (P9a)
+    "source_id", "gross_amount", "settled_amount", "lot_amount",     # a lot-generation credit source (P9)
 })
 
 
@@ -93,6 +96,19 @@ class WalletCreditEvidence:
 
 
 @dataclass(frozen=True)
+class CreditSourceEvidence:
+    """A credit in the lot generation (Receipt Void P9, 11.1, 12.2): the
+    wallet_credit_source itself and how it was applied - part may have
+    settled the identity's open debt, so the spendable balance can grow by
+    less than the credit (or not at all). The effect is the source."""
+    source_id: int
+    user_id: int
+    gross_amount: int
+    settled_amount: int
+    lot_amount: int
+
+
+@dataclass(frozen=True)
 class QuotaRewardEvidence:
     target_type: str                 # 'User' | 'Purchase' - the resource the reward was really written to
     target_id: int
@@ -100,6 +116,14 @@ class QuotaRewardEvidence:
     quota_after: int
     before_was_unlimited: bool
     rewards_count: int = 1
+
+
+@dataclass(frozen=True)
+class LoyaltyPurchaseEvidence:
+    """The loyalty_purchase_events row a paid sale wrote (P9a, 14.2)."""
+    purchase_event_id: int
+    user_id: int
+    eligibility_reason: str
 
 
 @dataclass(frozen=True)
@@ -170,6 +194,21 @@ def _need(evidence, kind) -> None:
         raise EffectRejected(EVIDENCE_INVALID, f"expected {kind.__name__ if kind is not type(None) else 'no evidence'}")
 
 
+def _credit_amount(evidence, resource) -> tuple[str, int, int, int]:
+    """(resource_type, resource_id, user_id, amount) of a credit effect:
+    the balance growth before the cutover, the source's gross amount after
+    it (whatever share of it settled debt)."""
+    if type(evidence) is CreditSourceEvidence:
+        if evidence.gross_amount <= 0 or evidence.settled_amount < 0 or evidence.lot_amount < 0 or (
+                evidence.settled_amount + evidence.lot_amount != evidence.gross_amount) or evidence.user_id != resource.id:
+            raise EffectRejected(EVIDENCE_INVALID, "credit source evidence is not one applied credit of this user")
+        return "WalletCreditSource", evidence.source_id, resource.id, evidence.gross_amount
+    _need(evidence, WalletCreditEvidence)
+    if evidence.balance_after <= evidence.balance_before or evidence.rewards_count != 1:
+        raise EffectRejected(EVIDENCE_INVALID, "balance must grow, by one credit")
+    return "User", resource.id, resource.id, evidence.balance_after - evidence.balance_before
+
+
 def _project(effect_type: str, effect_key: str, resource, evidence) -> tuple[str, int, dict, Optional[int]]:
     """(resource_type, resource_id, actual projection, delta_value)."""
     if effect_type == "user_created":
@@ -230,24 +269,18 @@ def _project(effect_type: str, effect_key: str, resource, evidence) -> tuple[str
             "user": _user_binding(resource.user_id), "code_id": resource.code_id,
             "discount_amount": int(resource.discount_amount or 0)}, int(resource.discount_amount or 0)
     if effect_type == "wallet_credit_source_created" and effect_key == "credit:receipt_topup":
-        # Before the wallet cutover there is no source row yet: the resource
-        # is the credited User and the amount comes from the evidence.
-        _need(evidence, WalletCreditEvidence)
-        if evidence.balance_after <= evidence.balance_before or evidence.rewards_count != 1:
-            raise EffectRejected(EVIDENCE_INVALID, "balance must grow, by one credit")
-        amount = evidence.balance_after - evidence.balance_before
-        return "User", resource.id, {"user_id": resource.id, "amount": amount}, amount
+        # Before the wallet cutover there is no source row: the resource is
+        # the credited User and the amount its balance growth. After it the
+        # resource is the credit source (CreditSourceEvidence).
+        kind, ident, user_id, amount = _credit_amount(evidence, resource)
+        return kind, ident, {"user_id": user_id, "amount": amount}, amount
     if effect_type == "wallet_credit_source_created" and effect_key.startswith("credit:referral_reward:"):
-        # Same as above: before the wallet cutover the resource is the credited User.
-        _need(evidence, WalletCreditEvidence)
-        if evidence.balance_after <= evidence.balance_before or evidence.rewards_count != 1:
-            raise EffectRejected(EVIDENCE_INVALID, "balance must grow, by one reward")
-        amount = evidence.balance_after - evidence.balance_before
+        kind, ident, user_id, amount = _credit_amount(evidence, resource)
         if effect_key == "credit:referral_reward:referrer":
-            return "User", resource.id, {"referrer_user_id": resource.id, "referrer_username": resource.username,
-                                         "amount": amount}, amount
+            return kind, ident, {"referrer_user_id": user_id, "referrer_username": resource.username,
+                                 "amount": amount}, amount
         if effect_key == "credit:referral_reward:new_user":
-            return "User", resource.id, {"user": _user_binding(resource.id), "amount": amount}, amount
+            return kind, ident, {"user": _user_binding(user_id), "amount": amount}, amount
     if effect_type == "quota_reward_granted" and effect_key in ("quota:referral:referrer", "quota:referral:new_user"):
         _need(evidence, QuotaRewardEvidence)
         resource_type = "Purchase" if isinstance(resource, models.Purchase) else "User"
@@ -262,6 +295,26 @@ def _project(effect_type: str, effect_key: str, resource, evidence) -> tuple[str
             raise EffectRejected(EVIDENCE_INVALID, "the granted bytes are not a whole number of rewards")
         return resource_type, resource.id, {"target": {"type": resource_type, "id": resource.id},
                                             "bytes": granted}, granted
+    if effect_type == "loyalty_purchase_recorded" and effect_key == "loyalty_purchase":
+        _need(evidence, LoyaltyPurchaseEvidence)
+        return "LoyaltyPurchaseEvent", evidence.purchase_event_id, {
+            "user": _user_binding(evidence.user_id), "eligibility_reason": evidence.eligibility_reason}, 1
+    loyalty_slot = re.fullmatch(r"(credit|quota):loyalty:(\d+):(\d+)", effect_key)
+    if loyalty_slot and effect_type == "wallet_credit_source_created" and loyalty_slot.group(1) == "credit":
+        kind, ident, user_id, amount = _credit_amount(evidence, resource)
+        return kind, ident, {"user": _user_binding(user_id), "epoch_id": int(loyalty_slot.group(2)),
+                             "slot": int(loyalty_slot.group(3)), "amount": amount}, amount
+    if loyalty_slot and effect_type == "quota_reward_granted" and loyalty_slot.group(1) == "quota":
+        _need(evidence, QuotaRewardEvidence)
+        resource_type = "Purchase" if isinstance(resource, models.Purchase) else "User"
+        if (evidence.target_type, evidence.target_id) != (resource_type, resource.id) or (
+                evidence.quota_after <= evidence.quota_before) or (
+                evidence.before_was_unlimited != (evidence.quota_before == 0)) or evidence.rewards_count != 1:
+            raise EffectRejected(EVIDENCE_INVALID, "loyalty quota evidence invalid")
+        granted = evidence.quota_after - evidence.quota_before
+        return resource_type, resource.id, {"target": {"type": resource_type, "id": resource.id},
+                                            "epoch_id": int(loyalty_slot.group(2)),
+                                            "slot": int(loyalty_slot.group(3)), "bytes": granted}, granted
     raise EffectRejected(NOT_IN_MANIFEST, f"{effect_type}:{effect_key} is not a supported effect yet")
 
 

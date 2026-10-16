@@ -3,10 +3,12 @@ customer wallet (User.balance), and the phase rule of design 9.1-9.3.
 
 What must hold:
   - in phase 'normal' every former writer does exactly what it did: top-up,
-    wallet debit, loyalty reward, both referral rewards, the panel's edit;
-  - in any other phase ('fencing', 'enforced') every one of them is refused
-    with 503 wallet_legacy_writer_unavailable and the balance, the ledger
-    and the reward flags are untouched;
+    wallet debit (now an admin's manual adjustment, P7), loyalty reward,
+    both referral rewards, the panel's change (now a signed adjustment with
+    a reason; the edit form's absolute balance is refused);
+  - in 'fencing' every one of them is refused (503) and the balance, the
+    ledger and the reward flags are untouched; the legacy service functions
+    themselves refuse 'enforced' too (the lot generation, tests/test_wallet_lots.py);
   - a phase change waits for a writer that is in flight, that writer's
     credit commits, and the next writer sees the new phase (9.3);
   - two debits that together exceed the balance: exactly one succeeds;
@@ -66,6 +68,7 @@ def refusal(call):
 
 
 REFUSED = (503, "wallet_legacy_writer_unavailable")
+FENCED = (503, "wallet_writer_unavailable")
 
 
 def scenario(label: str, engine) -> None:
@@ -124,7 +127,12 @@ def scenario(label: str, engine) -> None:
         session.close()
 
     def add_balance(username, amount, own=None):
-        response = (own or client).post(f"/api/bot/users/{username}/add-balance", headers=headers, json={"amount": amount})
+        """P7: a positive amount is a receipt top-up, a negative one an admin's
+        manual adjustment (reason + the admin's Telegram id)."""
+        body = {"amount": amount, "source_kind": "receipt_topup"} if amount > 0 else {
+            "amount": amount, "source_kind": "manual_adjustment", "reason": "test", "actor_telegram_id": 1000}
+        sent = dict(headers, **({"X-Idempotency-Key": str(__import__("uuid").uuid4())} if amount < 0 else {}))
+        response = (own or client).post(f"/api/bot/users/{username}/add-balance", headers=sent, json=body)
         return response.status_code, (response.json().get("detail") if response.status_code != 200 else None)
 
     def loyalty(username):
@@ -143,6 +151,18 @@ def scenario(label: str, engine) -> None:
         try:
             user = session.query(models.User).filter_by(username=username).one()
             return user_ops.apply_referral_code(session, user, "WCODE")[0]
+        finally:
+            session.rollback()
+            session.close()
+
+    def panel_adjust(username, delta):
+        from app.services import wallet_adjustments
+        import uuid as _uuid
+        session = Session()
+        try:
+            user = session.query(models.User).filter_by(username=username).one()
+            return wallet_adjustments.adjust(session, user.id, delta, actor=session.get(models.AdminUser, admin_id),
+                                             reason="test", token=_uuid.uuid4())
         finally:
             session.rollback()
             session.close()
@@ -171,19 +191,22 @@ def scenario(label: str, engine) -> None:
     after_referral = state()["users"]
     check(L + "referral credits both sides", (after_referral["referrer"][0], after_referral["invited"][:2]),
           (3000, (1000, True)))
-    panel_edit("edited", balance=12_345)
-    check(L + "the panel's edit sets the balance", balance("edited"), 12_345)
+    panel_adjust("edited", 12_345)
+    check(L + "the panel's adjustment changes the balance", balance("edited"), 12_345)
+    check(L + "the edit form's absolute balance is refused (P7)",
+          refusal(lambda: panel_edit("edited", balance=1)), (422, "wallet_adjustment_required"))
 
     # ------------------------------------------------------------------ any other phase: refused, untouched
     for phase in ("fencing", "enforced"):
         print(f"--- {label}: phase {phase} - the legacy writer is refused everywhere ---")
         set_phase(phase)
         before = state()
-        check(L + f"{phase}: top-up refused", add_balance("topup", AMOUNT), REFUSED)
-        check(L + f"{phase}: debit refused", add_balance("topup", -1), REFUSED)
-        check(L + f"{phase}: loyalty reward refused", refusal(lambda: loyalty("loyal")), REFUSED)
-        check(L + f"{phase}: referral refused", refusal(lambda: referral("edited")), REFUSED)
-        check(L + f"{phase}: the panel's balance edit refused", refusal(lambda: panel_edit("edited", balance=1)), REFUSED)
+        if phase == "fencing":
+            check(L + f"{phase}: top-up refused", add_balance("topup", AMOUNT), FENCED)
+            check(L + f"{phase}: debit refused", add_balance("topup", -1), FENCED)
+            check(L + f"{phase}: loyalty reward refused", refusal(lambda: loyalty("loyal")), FENCED)
+            check(L + f"{phase}: referral refused", refusal(lambda: referral("edited")), FENCED)
+            check(L + f"{phase}: the panel's adjustment refused", refusal(lambda: panel_adjust("edited", 1)), FENCED)
         check(L + f"{phase}: nothing changed - no balance, ledger row, referral link or loyalty count", state(), before)
         check(L + f"{phase}: a panel save that does not change the balance is not a wallet write",
               refusal(lambda: panel_edit("edited", balance=12_345, comment="note")), ("returned", None))
@@ -211,14 +234,8 @@ def scenario(label: str, engine) -> None:
     with patch.object(user_ops, "reconcile_user_connections", side_effect=remote_then_cutover):
         result = refusal(lambda: panel_edit("edited", balance=777, status=models.UserStatus.disabled))
     set_phase("normal")
-    check(L + "balance + status edit: the balance was already committed when the node was contacted",
-          (seen_by_remote, result[0], balance("edited")), ([777], "returned", 777))
-    set_phase("fencing")
-    with patch.object(user_ops, "reconcile_user_connections", side_effect=AssertionError("node contacted")) as remote:
-        result = refusal(lambda: panel_edit("edited", balance=1, status=models.UserStatus.active))
-    set_phase("normal")
-    check(L + "phase not normal at the start: refused before any remote call, nothing changed",
-          (result, balance("edited")), (REFUSED, 777))
+    check(L + "balance + status edit (P7): refused before any node is contacted, nothing changed",
+          (seen_by_remote, result, balance("edited")), ([], (422, "wallet_adjustment_required"), 12_345))
 
     # ------------------------------------------------------------------ 9.3: a phase change waits for the writer in flight
     print(f"--- {label}: a phase change waits for a writer in flight; the next writer sees the new phase ---")
@@ -244,7 +261,7 @@ def scenario(label: str, engine) -> None:
     changer.join(30)
     check(L + "it goes through once the writer commits", (changed.is_set(), problems), (True, []))
     check(L + "the writer's credit was committed under the old phase", balance("inflight"), AMOUNT)
-    check(L + "the next writer sees the new phase", add_balance("inflight", 1), REFUSED)
+    check(L + "the next writer sees the new phase", add_balance("inflight", 1), FENCED)
     set_phase("normal")
 
     # ------------------------------------------------------------------ SQLite: a reward written mid-transaction

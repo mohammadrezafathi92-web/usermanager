@@ -9,6 +9,7 @@ import inspect
 import os
 import sys
 import tempfile
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATABASE_URL", "sqlite://")
@@ -224,8 +225,11 @@ print("--- discount ---")
 code = models.DiscountCode(code="OFF10", kind="percent", value=10)
 db.add(code)
 db.commit()
+# A renewal always names its one service (owner decision 2026-10-15: no
+# user-level renewal approval is ever registered).
 intent7 = ri.ApprovalIntent(pending_source_instance_id="inst", pending_local_id=7, kind="renew", target_username="newbie",
-                            amount=900, package_id=package.id, discount_code="OFF10", list_price=1000, claimed_telegram_id=999)
+                            amount=900, package_id=package.id, renew_purchase_id=target_purchase.id,
+                            discount_code="OFF10", list_price=1000, claimed_telegram_id=999)
 uuid7 = reg.begin(db, internal, intent7, approval_mode="manual", approved_by_telegram_id=1000)["approval_uuid"]
 result = bot_router.redeem_discount(schemas.DiscountRedeemRequest(code="OFF10", username="newbie", package_price=1000,
                                                                  approval_uuid=uuid7), db=db, principal=internal)
@@ -241,7 +245,8 @@ intent5 = ri.ApprovalIntent(pending_source_instance_id="inst", pending_local_id=
                             amount=5000, payment_card_id=card.id, claimed_telegram_id=999)
 uuid5 = reg.begin(db, internal, intent5, approval_mode="manual", approved_by_telegram_id=1000)["approval_uuid"]
 balance = db.query(models.User).filter_by(username="newbie").one().balance or 0
-bot_router.add_balance("newbie", schemas.BotAddBalanceRequest(amount=5000, payment_card_id=card.id, approval_uuid=uuid5),
+bot_router.add_balance("newbie", schemas.BotAddBalanceRequest(amount=5000, payment_card_id=card.id, approval_uuid=uuid5,
+                                                        source_kind="receipt_topup"),
                        db=db, principal=internal)
 bot_router.record_payment_card_use(card.id, schemas.BotRecordCardPaymentRequest(amount=5000, approval_uuid=uuid5),
                                    db=db, principal=internal)
@@ -281,7 +286,9 @@ check("the request that lost the race answers ok and changes nothing; event logg
        payment_card_events.lock_pool(db, None, create_as=None), db.get(models.PaymentCard, card.id).accumulated_amount),
       ({"ok": True}, ["payment_recorded"], "event_logged", 5000))
 db.rollback()
-bot_router.add_balance("newbie", schemas.BotAddBalanceRequest(amount=-100), db=db, principal=internal)
+bot_router.add_balance("newbie", schemas.BotAddBalanceRequest(amount=-100, source_kind="manual_adjustment", reason="r",
+                                                            actor_telegram_id=1000), db=db, principal=internal,
+                       x_idempotency_key=str(uuid.uuid4()))
 bot_router.record_payment_card_use(card.id, schemas.BotRecordCardPaymentRequest(amount=1), db=db, principal=internal)
 check("a wallet debit and a card payment without an approval behave as before",
       (db.query(models.User).filter_by(username="newbie").one().balance - balance, db.get(models.PaymentCard, card.id).accumulated_amount),
@@ -313,7 +320,7 @@ check("a top-up with all three effects completes (the optional discount row neve
       (approvals_router.finalize_approval(db, internal, uuid5)["state"], approvals_router.finalize_approval(db, internal, uuid7)["state"]),
       ("completed", "mutating"))
 intent8 = ri.ApprovalIntent(pending_source_instance_id="inst", pending_local_id=8, kind="renew", target_username="newbie",
-                            amount=1, package_id=package.id, claimed_telegram_id=999)
+                            amount=1, package_id=package.id, renew_purchase_id=target_purchase.id, claimed_telegram_id=999)
 uuid8 = reg.begin(db, internal, intent8, approval_mode="manual", approved_by_telegram_id=1000)["approval_uuid"]
 check("no effect and the bot reports a failure -> failed; registering the same pending again retries it in place",
       (approvals_router.finalize_approval(db, internal, uuid8, failed=True)["state"],

@@ -2,8 +2,10 @@
 
 This is deliberately limited to User.balance credits made by the bot
 add-balance endpoint. Reseller balances, card-pool counters and debits do
-not pass through this module. P9 replaces this legacy guard with the
-wallet-credit-source unique key from the frozen Receipt Void design.
+not pass through this module. In the 'enforced' wallet phase (P9) the
+credit is a receipt_topup credit source keyed by the approval (its unique
+key is then the idempotency guard); a top-up with no matching approval is
+refused there.
 """
 from __future__ import annotations
 
@@ -41,8 +43,33 @@ def _start(db: Session) -> bool:
     return False
 
 
-def _lock_wallet_phase(db: Session, sqlite: bool) -> None:
-    wallet_service.require_legacy_phase(db)
+def _lock_wallet_phase(db: Session, sqlite: bool) -> str:
+    """L1: the phase decides the generation (legacy 'normal' / lots 'enforced')."""
+    phase = wallet_service.writer_phase(db)
+    db.info["wallet_topup_phase"] = phase
+    return phase
+
+
+def _lot_credit(db: Session, user: models.User, amount: int, approval_uuid: Optional[str]) -> int:
+    """'enforced': a receipt top-up is one wallet_credit_source of origin
+    receipt_topup caused by its approval (11.1, 12.2). There is no credit
+    without an origin in this generation: a top-up not tied to a matching
+    approval is refused, never booked as anonymous money."""
+    from . import wallet_lots
+    if not approval_uuid:
+        raise HTTPException(status_code=422, detail="topup_requires_approval")
+    account = wallet_lots.account_of_user(db, user.id)
+    wallet_lots.fence_identity(db, account["customer_identity_id"])
+    epoch = wallet_lots.require_enforced(db)
+    operation_id, _ = wallet_lots.operation(
+        db, "wallet_credit_apply", f"{account['id']}:receipt_topup:{approval_uuid}",
+        payload={"origin": "receipt_topup", "approval_uuid": approval_uuid, "amount": amount},
+        tenant_scope_key=wallet_lots.tenant_of(db, account), epoch=epoch, actor_kind="bot")
+    source = wallet_lots.credit(db, account, origin_kind="receipt_topup", source_key=approval_uuid, amount=amount,
+                                operation_id=operation_id, causation_approval_uuid=approval_uuid)
+    wallet_lots.complete(db, operation_id, {"wallet_credit_source_id": source})
+    db.info[wallet_service.LAST_CREDIT_SOURCE] = source
+    return wallet_lots.available(db, account["id"])
 
 
 def _lock_approval_mode(db: Session):
@@ -122,9 +149,12 @@ def _credit(db: Session, user: models.User, amount: int, payment_card_id: Option
         # Record the state transition before the financial mutation, but in
         # the same transaction. Shadow effect failures remain best-effort.
         receipt_approval_effects.ShadowRecorder(db, approval_uuid).begin()
-    balance_after = wallet_service.credit_atomic(
-        db, user.id, amount, phase_checked=True,
-        source_kind=wallet_service.RECEIPT_TOPUP if matched_approval else wallet_service.UNSPECIFIED)
+    if db.info.get("wallet_topup_phase") == wallet_service.ENFORCED_PHASE:
+        balance_after = _lot_credit(db, user, amount, approval_uuid if matched_approval else None)
+    else:
+        balance_after = wallet_service.credit_atomic(
+            db, user.id, amount, phase_checked=True,
+            source_kind=wallet_service.RECEIPT_TOPUP if matched_approval else wallet_service.UNSPECIFIED)
     if balance_after is None:
         raise HTTPException(status_code=404, detail="کاربر پیدا نشد")
     entry = accounting.record(db, "wallet_topup", amount, user=user,
@@ -134,8 +164,13 @@ def _credit(db: Session, user: models.User, amount: int, payment_card_id: Option
         entry.approval_uuid = approval_uuid
         db.flush()
         recorder = receipt_approval_effects.ShadowRecorder(db, approval_uuid)
-        recorder.effect("wallet_credit_source_created", "credit:receipt_topup", user,
-                        receipt_approval_effects.WalletCreditEvidence(balance_after - amount, balance_after))
+        source = wallet_service.take_credit_source(db)
+        if source is not None:              # lot generation: the effect is the credit source (part may settle debt)
+            from . import wallet_lots
+            evidence = wallet_lots.credit_evidence(db, source, user.id)
+        else:
+            evidence = receipt_approval_effects.WalletCreditEvidence(balance_after - amount, balance_after)
+        recorder.effect("wallet_credit_source_created", "credit:receipt_topup", user, evidence)
         recorder.effect("ledger_topup", "topup", entry)
     return entry
 

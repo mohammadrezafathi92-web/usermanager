@@ -180,7 +180,8 @@ def scenario(label: str, engine) -> None:
 
     def top_up(client, username, approval_uuid, amount=AMOUNT, payment_card_id=card_id):
         response = client.post(f"/api/bot/users/{username}/add-balance", headers=headers,
-                               json={"amount": amount, "payment_card_id": payment_card_id, "approval_uuid": approval_uuid})
+                               json={"amount": amount, "payment_card_id": payment_card_id, "approval_uuid": approval_uuid,
+                                     "source_kind": "receipt_topup"})
         is_json = response.headers.get("content-type", "").startswith("application/json")
         return response.status_code, (response.json().get("balance") if is_json else None)
 
@@ -411,7 +412,7 @@ def scenario(label: str, engine) -> None:
     guard.commit()
     guard.close()
     blocked = client.post("/api/bot/users/buyer_plain/add-balance", headers=headers, json={
-        "amount": AMOUNT, "payment_card_id": card_id, "approval_uuid": str(uuid.uuid4())})
+        "amount": AMOUNT, "payment_card_id": card_id, "approval_uuid": str(uuid.uuid4()), "source_kind": "receipt_topup"})
     after_blocked = money("buyer_plain")
     check(L + "required is blocked until execution-token support exists",
           (blocked.status_code, blocked.json().get("detail")), (503, "receipt_approval_blocked"))
@@ -420,7 +421,7 @@ def scenario(label: str, engine) -> None:
           (before_blocked["balance"], before_blocked["ledger_rows"]))
     blocked_missing_user_topup = client.post(
         "/api/bot/users/blocked_missing_user/add-balance", headers=headers,
-        json={"amount": AMOUNT, "payment_card_id": card_id, "approval_uuid": uuid_seq})
+        json={"amount": AMOUNT, "payment_card_id": card_id, "approval_uuid": uuid_seq, "source_kind": "receipt_topup"})
     check(L + "blocked mode is returned before looking up the top-up target",
           (blocked_missing_user_topup.status_code, blocked_missing_user_topup.json().get("detail")),
           (503, "receipt_approval_blocked"))
@@ -476,7 +477,8 @@ def scenario(label: str, engine) -> None:
 
     # ------------------------------------------------------------------ control
     print(f"--- {label}: control - top-ups with NO approval are separate top-ups ---")
-    plain = [client.post("/api/bot/users/buyer_plain/add-balance", headers=headers, json={"amount": AMOUNT}).status_code
+    plain = [client.post("/api/bot/users/buyer_plain/add-balance", headers=headers,
+                         json={"amount": AMOUNT, "source_kind": "receipt_topup"}).status_code
              for _ in range(2)]
     plain_money = money("buyer_plain")
     check(L + "two top-ups without an approval are both credited (nothing identifies them as one)",

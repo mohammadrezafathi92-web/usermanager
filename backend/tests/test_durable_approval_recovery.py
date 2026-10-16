@@ -239,7 +239,7 @@ check("R3 crash before T_final's commit: nothing of T_final committed (the step 
       ("crashed", "provisioning", "mutating", 0))
 check("R3 ...the worker completes it later: approval completed with its effects, one service",
       (state(u3)["operation"], state(u3)["approval"], state(u3)["effects"], purchases("plain1")),
-      ("completed", "completed", 3, (1, 1)))
+      ("completed", "completed", 4, (1, 1)))          # + the counted purchase ('payment_event', P9a)
 
 # ------------------------------------------------------------------ R4 key revoked after T1 -> continue
 def revoke_then_succeed(dto):
@@ -283,7 +283,7 @@ recover()
 s4 = state(u4)
 check("R4 superadmin continue: T_final with the recovery in place of the key -> completed, recovery closed",
       (decision["decision"], s4["operation"], s4["approval"], s4["effects"], s4["recovery"], purchases("plain2")),
-      ("continue", "completed", "completed", 3, ("completed", ROOT), (1, 1)))
+      ("continue", "completed", "completed", 4, ("completed", ROOT), (1, 1)))
 
 # ------------------------------------------------------------------ R5 key revoked -> cancel
 with SessionLocal() as db:

@@ -1,36 +1,40 @@
-"""P5a finding 1: an approval-carrying wallet debit keeps the approval-mode
-lock (and on SQLite the writer) from its check until its commit.
+"""P5a finding 1's subject - an approval-carrying wallet DEBIT - no longer
+exists (Receipt Void P7): the bot's add-balance takes a stated reason
+(source_kind), and a negative amount is only an admin's manual adjustment,
+which never carries a receipt approval. What must hold now:
 
-A debit with an approval_uuid is paused between the mode check and the
-debit; meanwhile another session switches the receipt-approval mode to
-'required' (effectively 'blocked'). The switch must WAIT for the debit's
-commit - it can never land between the check and the write. A debit that
-starts after the switch is refused. SQLite always; real MariaDB in CI.
+  * no source_kind -> 422 for every caller, nothing written;
+  * a negative amount with an approval (or a card) -> 422, nothing written;
+  * a negative manual adjustment needs the admin's Telegram id, a reason
+    and the caller's X-Idempotency-Key (none -> 422, nothing written); it
+    takes exactly its amount, once per key - a resend after a lost answer
+    changes nothing;
+  * a receipt top-up cannot be negative;
+  * only a MANAGED bot (in-process, or the panel's remote installation key)
+    may name the adjusting admin; an integration key or an old global key
+    that names the superadmin is refused, nothing is booked.
+SQLite.
 """
-import contextlib
 import os
 import sys
 import tempfile
-import threading
-import time
 import uuid
-from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-os.environ.setdefault("DATABASE_URL", "sqlite://")
-import _mariadb_scratch as scratch
+DIRECTORY = tempfile.mkdtemp(prefix="um-debit-p7-")
+os.environ["DATABASE_URL"] = "sqlite:///" + os.path.join(DIRECTORY, "t.db")
 import _no_network
-_no_network.install([os.environ.get("MARIADB_TEST_URL", "").strip()])
+_no_network.install([])
 
 from fastapi import HTTPException
-from sqlalchemy import create_engine, event
-from sqlalchemy.orm import sessionmaker
+
+from sqlalchemy import select
 
 from app import models, models_receipt_void as rv, schemas
+from app.database import SessionLocal, engine
 from app.routers import bot as bot_router
-from app.services import bot_auth, receipt_void_schema, wallet_accounts, wallet_service
-from app.services import receipt_approval_runtime as runtime
+from app.services import bot_auth, receipt_void_schema, wallet_accounts
 
 failures = []
 
@@ -43,96 +47,105 @@ def check(label, got, expected=True):
         print(f"FAIL  {label}\n        got:      {got!r}\n        expected: {expected!r}")
 
 
-def scenario(label, engine):
-    L = f"[{label}] "
-    models.Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-    check(L + "schema ready", receipt_void_schema.bootstrap(engine, Session)["ready"])
-    with Session() as db:
-        db.add(models.PanelSettings(id=1))
-        wallet_accounts.create_user_with_wallet(db, username="payer", telegram_id=5, balance=1000)
-        db.commit()
-        runtime.set_requested_mode(db, registration_mode="shadow")
-        db.commit()
-    principal = bot_auth.BotPrincipal.internal(None, scope_enforced=False)
-    inside, release = threading.Event(), threading.Event()
-    real_debit = wallet_service.debit_atomic
+models.Base.metadata.create_all(engine)
+check("schema ready", receipt_void_schema.bootstrap(engine, SessionLocal)["ready"], True)
+with SessionLocal() as db:
+    db.add(models.AdminUser(username="root", hashed_password="x", is_superadmin=True, telegram_id=1000))
+    wallet_accounts.create_user_with_wallet(db, username="payer", telegram_id=501, balance=1000)
+    db.commit()
+PRINCIPAL = bot_auth.BotPrincipal.internal(None, scope_enforced=False)
 
-    def paused_debit(*args, **kwargs):
-        inside.set()
-        release.wait(15)
-        return real_debit(*args, **kwargs)
 
-    results, order = {}, []
-
-    def debit():
-        with Session() as db, patch.object(wallet_service, "debit_atomic", side_effect=paused_debit):
-            # Recorded at the debit's COMMIT, while its locks are still held:
-            # a switch that waited for them can only finish after this.
-            event.listen(db, "before_commit", lambda _session: order.append("debit_committed"))
-            try:
-                bot_router.add_balance("payer", schemas.BotAddBalanceRequest(amount=-100, approval_uuid=str(uuid.uuid4())),
-                                       db=db, principal=principal)
-                results["debit"] = "ok"
-            except HTTPException as exc:
-                results["debit"] = exc.detail
-
-    def switch():
-        with Session() as db:
-            db.execute(rv.receipt_approval_runtime_state.update().where(rv.receipt_approval_runtime_state.c.id == 1)
-                       .values(registration_mode="required", key_identity_ready=False, key_identity_failure="duplicate_uuid", loyalty_timing_mode="payment_event",
-                               completeness_generation=1))
-            db.commit()
-        order.append("mode_switched")
-
-    worker = threading.Thread(target=debit)
-    worker.start()
-    check(L + "the debit reached its write after the mode check", inside.wait(15))
-    switcher = threading.Thread(target=switch)
-    switcher.start()
-    time.sleep(1.0)
-    waited = not order
-    release.set()
-    worker.join(30)
-    switcher.join(30)
-    check(L + "the mode switch waited while the checked debit was in flight", waited, True)
-    check(L + "the debit committed first, then the switch", (results.get("debit"), order),
-          ("ok", ["debit_committed", "mode_switched"]))
-    with Session() as db:
-        check(L + "the debit took exactly its amount", db.query(models.User).filter_by(username="payer").one().balance, 900)
+def call(key=None, **body):
+    if key is None and body.get("source_kind") == "manual_adjustment":
+        key = str(uuid.uuid4())            # a fresh attempt; key="" is "no key at all"
+    with SessionLocal() as db:
         try:
-            bot_router.add_balance("payer", schemas.BotAddBalanceRequest(amount=-100, approval_uuid=str(uuid.uuid4())),
-                                   db=db, principal=principal)
-            after = "ok"
+            return bot_router.add_balance("payer", schemas.BotAddBalanceRequest(**body), db=db, principal=PRINCIPAL,
+                                          x_idempotency_key=key).balance
         except HTTPException as exc:
-            after = exc.detail
-    check(L + "a debit that starts after the switch is refused", after, "receipt_approval_blocked")
+            return exc.status_code, exc.detail
 
 
-with contextlib.ExitStack() as cleanup:
-    folder = cleanup.enter_context(tempfile.TemporaryDirectory(prefix="debit_lock_"))
-    sqlite = create_engine(f"sqlite:///{folder}/t.db", connect_args={"check_same_thread": False})
-    cleanup.callback(sqlite.dispose)
+def balance():
+    with SessionLocal() as db:
+        return db.query(models.User).filter_by(username="payer").one().balance
 
-    @event.listens_for(sqlite, "connect")
-    def _pragmas(dbapi_connection, _record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=15000")
-        cursor.close()
 
-    scenario("sqlite", sqlite)
-    url = os.environ.get("MARIADB_TEST_URL", "").strip()
-    if url:
-        maria = scratch.claim(url)
-        cleanup.callback(scratch.release, maria)
-        scenario("mariadb", maria)
-    elif os.environ.get("CI"):
-        check("CI must provide MARIADB_TEST_URL (real MariaDB is mandatory in CI, never skipped)", False)
-    else:
-        print("SKIP  real MariaDB execution (MARIADB_TEST_URL not set, not in CI)")
+check("no source_kind: 422, nothing written", (call(amount=-100), balance()), ((422, "source_kind_required"), 1000))
+check("a negative amount carrying an approval: 422, nothing written",
+      (call(amount=-100, source_kind="manual_adjustment", reason="r", actor_telegram_id=1000,
+            approval_uuid=str(uuid.uuid4())), balance()), ((422, "manual_adjustment_without_receipt"), 1000))
+check("a manual adjustment without the admin: 422",
+      call(amount=-100, source_kind="manual_adjustment", reason="r"), (422, "actor_telegram_id_required"))
+check("...by a Telegram id that is no admin: 403",
+      call(amount=-100, source_kind="manual_adjustment", reason="r", actor_telegram_id=4242),
+      (403, "adjusting_admin_not_found"))
+check("...without a reason: 422",
+      call(amount=-100, source_kind="manual_adjustment", actor_telegram_id=1000),
+      (422, "wallet_adjustment_reason_required"))
+check("a manual adjustment with no X-Idempotency-Key: 422 before anything, nothing written",
+      (call("", amount=-100, source_kind="manual_adjustment", reason="r", actor_telegram_id=1000), balance()),
+      ((422, "idempotency_key_required"), 1000))
+key = str(uuid.uuid4())
+check("a manual debit by the admin with a reason takes exactly its amount",
+      call(key, amount=-100, source_kind="manual_adjustment", reason="r", actor_telegram_id=1000), 900)
+check("...its answer lost, the bot resends the same key: applied once",
+      (call(key, amount=-100, source_kind="manual_adjustment", reason="r", actor_telegram_id=1000), balance()),
+      (900, 900))
+check("...the same key with another amount: 409",
+      call(key, amount=-200, source_kind="manual_adjustment", reason="r", actor_telegram_id=1000),
+      (409, "wallet_request_changed"))
+check("an overdraft is refused and changes nothing",
+      (call(amount=-5000, source_kind="manual_adjustment", reason="r", actor_telegram_id=1000)[0], balance()),
+      (400, 900))
+check("a receipt top-up cannot be negative", call(amount=-1, source_kind="receipt_topup"),
+      (422, "receipt_topup_amount_invalid"))
+# ------------------------------------------------------------------ who may name the adjusting admin
+with SessionLocal() as db:
+    owner = models.AdminUser(username="tenant", hashed_password="x", telegram_id=2000)
+    db.add(owner)
+    db.flush()
+    db.query(models.User).filter_by(username="payer").update({"owner_admin_id": owner.id})
+    keys = {kind: models.ApiKey(key=f"k-{kind}", label=kind, key_type=kind,
+                                owner_admin_id=owner.id if kind == bot_auth.KeyType.TENANT_INTEGRATION else None,
+                                scope_enforced=kind == bot_auth.KeyType.TENANT_INTEGRATION,
+                                capabilities=bot_auth.serialize_capabilities(
+                                    [bot_auth.WALLET_WRITE, bot_auth.CUSTOMER_READ])
+                                if kind == bot_auth.KeyType.TENANT_INTEGRATION else None)
+            for kind in (bot_auth.KeyType.TENANT_INTEGRATION, bot_auth.KeyType.LEGACY_GLOBAL,
+                         bot_auth.KeyType.REMOTE_SHARED_BOT)}
+    db.add_all(keys.values())
+    db.commit()
+    principals = {kind: bot_auth.BotPrincipal.from_api_key(db.get(models.ApiKey, key.id)) for kind, key in keys.items()}
+
+
+def by(principal, actor=1000):
+    with SessionLocal() as db:
+        try:
+            return bot_router.add_balance("payer", schemas.BotAddBalanceRequest(
+                amount=-50, source_kind="manual_adjustment", reason="spoof", actor_telegram_id=actor),
+                db=db, principal=principal, x_idempotency_key=str(uuid.uuid4())).balance
+        except HTTPException as exc:
+            return exc.status_code, exc.detail
+
+
+before = balance()
+check("an integration key naming the superadmin as actor: 403, nothing written",
+      (by(principals[bot_auth.KeyType.TENANT_INTEGRATION]), balance()),
+      ((403, "manual_adjustment_requires_managed_bot"), before))
+check("an old global key naming the superadmin as actor: 403, nothing written",
+      (by(principals[bot_auth.KeyType.LEGACY_GLOBAL]), balance()),
+      ((403, "manual_adjustment_requires_managed_bot"), before))
+with SessionLocal() as db:
+    rows = db.execute(select(rv.wallet_operations.c.actor_id).where(
+        rv.wallet_operations.c.operation_type == "wallet_manual_adjustment")).scalars().all()
+check("...no adjustment was booked to anyone by them", len(rows), 1)
+check("the panel's managed remote bot attests the admin: accepted",
+      by(principals[bot_auth.KeyType.REMOTE_SHARED_BOT]), before - 50)
 
 check("no network", _no_network.attempts, [])
+engine.dispose()
 if failures:
     print(f"{len(failures)} FAILED")
     sys.exit(1)

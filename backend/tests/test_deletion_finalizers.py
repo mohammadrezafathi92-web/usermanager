@@ -59,7 +59,7 @@ def scenario(engine):
         log_ids, limit_ids = [r.id for r in logs], [r.id for r in limits]
         ledger_id, redemption_id = ledger.id, redemption.id
         account_id = db.execute(select(rv.wallet_accounts.c.id).where(rv.wallet_accounts.c.user_id == uid)).scalar_one()
-        for phase in ("fencing", "enforced"):
+        for phase in ("fencing",):          # 'enforced' (P9) finalizes like 'normal'
             db.execute(rv.wallet_runtime_state.update().values(phase=phase))
             db.commit()
             try:

@@ -806,6 +806,45 @@ def _refuse_free_grant(data: dict, user: models.User) -> None:
             raise HTTPException(400, _GRANT_REFUSAL)
 
 
+def _sync_topup_lock(db, user, topup_blocked, purchases_blocked) -> None:
+    """After the wallet cutover (Receipt Void 12.7) the purchase lock and the
+    top-up lock are separate: the account's topup_blocked follows the form's
+    own choice, and by default the purchase lock (an admin's manual lock
+    keeps its old meaning). Before the cutover the purchase lock already
+    blocks top-ups and nothing is written here."""
+    from sqlalchemy import select
+    from ..services import receipt_void_schema
+    from .. import models_receipt_void as rv
+    if not receipt_void_schema.is_ready() or db.execute(select(rv.wallet_runtime_state.c.phase).where(
+            rv.wallet_runtime_state.c.id == 1)).scalar() != "enforced":
+        return
+    value = bool(topup_blocked) if topup_blocked is not None else bool(purchases_blocked)
+    db.execute(rv.wallet_accounts.update().where(
+        rv.wallet_accounts.c.user_id == user.id, rv.wallet_accounts.c.tombstoned_at.is_(None)).values(
+            topup_blocked=value, topup_blocked_reason=(user.purchases_blocked_reason or None) if value else None,
+            version=rv.wallet_accounts.c.version + 1))
+
+
+@router.post("/{user_id}/wallet-adjustments", response_model=schemas.UserOut)
+def adjust_wallet(
+    user_id: int,
+    payload: schemas.WalletAdjustmentRequest,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+    _perm=_may_edit,
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
+):
+    """«تغییر اعتبار»: a signed manual adjustment with a reason (P7). The
+    X-Idempotency-Key (one per attempt) is mandatory: a retry applies it once."""
+    from ..services import wallet_adjustments
+    user = _get_owned_user(db, admin, user_id)
+    if not x_idempotency_key:
+        raise HTTPException(422, "idempotency_key_required")
+    wallet_adjustments.adjust(db, user.id, payload.amount, actor=admin, reason=payload.reason,
+                              token=x_idempotency_key)
+    return _get_owned_user(db, admin, user_id)
+
+
 @router.put("/{user_id}", response_model=schemas.UserOut)
 def update_user(
     user_id: int,
@@ -853,12 +892,10 @@ def update_user(
     # then ended and the customer read again, so nothing below writes over a
     # snapshot older than that commit (MariaDB snapshot isolation, 1020).
     if "balance" in data:
-        new_balance = data.pop("balance")
-        if new_balance != user.balance:
-            wallet_service.overwrite_committed(db.get_bind(), user.id, new_balance,
-                                               source_kind=wallet_service.MANUAL_ADJUSTMENT)
-            db.rollback()
-            user = _get_owned_user(db, admin, user_id)
+        # Receipt Void P7: no absolute balance from the edit form any more;
+        # an unchanged value (an old form posting the field back) is ignored.
+        if data.pop("balance") != user.balance:
+            raise HTTPException(422, "wallet_adjustment_required")
 
     # NOTE: telegram_id is intentionally allowed on more than one User - a
     # single Telegram account can have several separate panel accounts (a
@@ -896,6 +933,9 @@ def update_user(
             user.purchases_blocked_reason = None
             data.pop("purchases_blocked_reason", None)
         user.purchases_blocked = now_blocked
+        _sync_topup_lock(db, user, data.pop("topup_blocked", None), now_blocked)
+    elif "topup_blocked" in data:
+        _sync_topup_lock(db, user, data.pop("topup_blocked"), None)
 
     identity_fields = {key: data.pop(key) for key in ("telegram_id", "owner_admin_id") if key in data}
     identity_operation = None

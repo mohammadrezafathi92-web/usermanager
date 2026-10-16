@@ -6,6 +6,7 @@ import TelegramTunnelCard from "../components/TelegramTunnelCard.jsx";
 import LicenseCard from "../components/LicenseCard.jsx";
 import DbHealthCard from "../components/DbHealthCard.jsx";
 import ProvisioningCard from "../components/ProvisioningCard.jsx";
+import WalletCard from "../components/WalletCard.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import PanelTlsCard from "../components/PanelTlsCard.jsx";
@@ -1887,6 +1888,7 @@ export default function Settings() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <DbHealthCard t={t} language={language} />
       <ProvisioningCard t={t} language={language} />
+      <WalletCard t={t} />
       <div className="card">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">

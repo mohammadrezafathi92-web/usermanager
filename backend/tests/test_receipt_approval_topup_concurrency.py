@@ -22,6 +22,7 @@ import pathlib
 import sys
 import tempfile
 import threading
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -127,10 +128,12 @@ def scenario(label: str, engine) -> None:
         return response.json().get("approval_uuid")
 
     def add(username, amount, approval_uuid=None):
-        body = {"amount": amount}
+        body = {"amount": amount, "source_kind": "receipt_topup"} if amount > 0 else {
+            "amount": amount, "source_kind": "manual_adjustment", "reason": "test", "actor_telegram_id": 1000}
         if approval_uuid:
             body.update(payment_card_id=card_id, approval_uuid=approval_uuid)
-        return lambda own: own.post(f"/api/bot/users/{username}/add-balance", headers=headers, json=body).status_code
+        sent = dict(headers, **({"X-Idempotency-Key": str(uuid.uuid4())} if amount < 0 else {}))
+        return lambda own: own.post(f"/api/bot/users/{username}/add-balance", headers=sent, json=body).status_code
 
     # ------------------------------------------------------------------ two different approvals, one customer
     first, second = register("two_approvals", 1), register("two_approvals", 2)
@@ -190,7 +193,7 @@ def scenario(label: str, engine) -> None:
     session.close()
     before = money("two_approvals")
     refused = client.post("/api/bot/users/two_approvals/add-balance", headers=headers, json={
-        "amount": AMOUNT + 1, "payment_card_id": card_id, "approval_uuid": used})
+        "amount": AMOUNT + 1, "payment_card_id": card_id, "approval_uuid": used, "source_kind": "receipt_topup"})
     session = Session()
     events = sorted(r.error_code for r in session.execute(select(rv.receipt_approval_shadow_events).where(
         rv.receipt_approval_shadow_events.c.approval_uuid == used)))

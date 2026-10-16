@@ -26,7 +26,7 @@ KINDS = ("create_user", "purchase", "add_connection")
 
 def _control(db, operation_id, identity, expected):
     provisioning_schema.assert_ready()
-    wallet_service.require_legacy_phase(db)
+    wallet_service.writer_phase(db)
     kind = db.scalar(select(mp.ProvisioningOperation.operation_type).where(mp.ProvisioningOperation.id == operation_id))
     if kind not in KINDS:
         raise HTTPException(409, "provisioning_worker_operation_unavailable")
@@ -168,6 +168,8 @@ def tick(session_factory, operation_id, identity, tokens, *, installation_uuid, 
         with session_factory() as db:
             leases.begin_business(db)
             runtime = _control(db, operation_id, identity, expected)  # L1 before any L2/L4 locking.
+            from . import loyalty_service
+            loyalty_service.pin_mode(db)         # receipt runtime (shared, to the commit) before the approval row
             approval_row = approval_exec.lock_for(db, operation_id)   # then the approval row, before L2.
             leases.revalidate(db, tokens)
             if len({token.owner for token in tokens}) != 1 or not any(

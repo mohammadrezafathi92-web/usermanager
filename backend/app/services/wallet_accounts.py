@@ -78,7 +78,7 @@ def create_user_with_wallet(db, **attributes):
 def _create_user_with_wallet(db, **attributes):
     ready = receipt_void_schema.is_ready()
     if ready:
-        wallet_service.require_legacy_phase(db)
+        wallet_service.writer_phase(db)
     user = models.User(**attributes)
     db.add(user)
     db.flush()
@@ -86,7 +86,7 @@ def _create_user_with_wallet(db, **attributes):
         if db.get_bind().dialect.name == "sqlite":
             # The first read did not hold SQLite's writer lock. Revalidate
             # after the User INSERT acquired it, before account creation.
-            wallet_service.require_legacy_phase(db)
+            wallet_service.writer_phase(db)
         lineage = str(uuid.uuid4())
         identity = _identity(db, lineage=lineage, telegram_id=user.telegram_id,
                              owner_admin_id=user.owner_admin_id)
@@ -101,7 +101,7 @@ def _create_user_with_wallet(db, **attributes):
 
 def require_legacy_lifecycle(db):
     if receipt_void_schema.is_ready():
-        wallet_service.require_legacy_phase(db)
+        wallet_service.writer_phase(db)
 
 
 def require_no_provisioning_payment_hold(db, user_id=None, *, admin_id=None):
@@ -147,7 +147,7 @@ def tombstone_user_account(db, user, *, account_id):
     """
     if not receipt_void_schema.is_ready():
         return
-    wallet_service.require_legacy_phase(db)
+    wallet_service.writer_phase(db)
     account = rv.wallet_accounts
     if account_id is None:
         current = db.execute(select(account.c.id).where(account.c.user_id == user.id)).scalar_one_or_none()

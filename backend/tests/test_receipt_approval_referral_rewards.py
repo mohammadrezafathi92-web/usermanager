@@ -422,11 +422,26 @@ check("a reward onto an unlimited quota is VALID evidence of what happened (it i
 check("credit: refused when the balance did not grow or more than one reward is claimed",
       [rejected("wallet_credit_source_created", "credit:referral_reward:referrer", target_user, e)
        for e in (fx.WalletCreditEvidence(5, 5), fx.WalletCreditEvidence(5, 9, 2), None)], ["effect_evidence_invalid"] * 3)
-check("no loyalty effect can be recorded at all before P9a",
+check("a loyalty effect (P9a) is recorded only with its typed evidence",
       [rejected(t, k, target_user, None) for t, k in (("loyalty_purchase_recorded", "loyalty_purchase"),
                                                        ("wallet_credit_source_created", "credit:loyalty:1:1"),
                                                        ("quota_reward_granted", "quota:loyalty:1:1"))],
-      ["effect_not_in_manifest"] * 3)
+      ["effect_evidence_invalid"] * 3)
+check("...a counted purchase projects its user and eligibility",
+      fx._project("loyalty_purchase_recorded", "loyalty_purchase", target_user,
+                  fx.LoyaltyPurchaseEvidence(41, 7, "card_paid"))[1:3],
+      (41, {"user": {"type": "User", "id": 7}, "eligibility_reason": "card_paid"}))
+check("a lot-generation credit (P9) is the source: its gross amount, even when all of it settled debt",
+      fx._project("wallet_credit_source_created", "credit:loyalty:3:2", target_user,
+                  fx.CreditSourceEvidence(55, 7, 300, 300, 0))[:3],
+      ("WalletCreditSource", 55, {"user": {"type": "User", "id": 7}, "epoch_id": 3, "slot": 2, "amount": 300}))
+check("...refused when the applications do not add up, or the source is another user's",
+      [rejected("wallet_credit_source_created", "credit:loyalty:3:2", target_user, e) for e in (
+          fx.CreditSourceEvidence(55, 7, 300, 100, 100), fx.CreditSourceEvidence(55, 8, 300, 0, 300))],
+      ["effect_evidence_invalid"] * 2)
+check("...a slot credit projects its epoch, slot and amount",
+      fx._project("wallet_credit_source_created", "credit:loyalty:3:2", target_user, fx.WalletCreditEvidence(10, 60))[2:],
+      ({"user": {"type": "User", "id": 7}, "epoch_id": 3, "slot": 2, "amount": 50}, 50))
 check("the snapshot of a quota reward keeps before/after and drops nothing sensitive",
       sorted(fx._snapshot("User", 7, {"bytes": 4}, good)), ["before_was_unlimited", "id", "quota_after", "quota_before", "rewards_count"])
 check("the evidence is built inside user_ops (the service that did the mutation), the endpoint only passes it on",

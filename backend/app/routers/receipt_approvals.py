@@ -52,6 +52,30 @@ def recheck_runtime_mode(db: Session = Depends(get_db)):
     return runtime.describe(db)
 
 
+@router.post("/runtime-mode/activate")
+def activate_runtime_mode(db: Session = Depends(get_db), admin=Depends(require_superadmin),
+                          _confirm=Depends(require_confirm_password)):
+    """The joint activation of P9a: 'required' + loyalty 'payment_event' in
+    one transaction (Receipt Void 5.5). Readiness is computed fresh first."""
+    from ..services import loyalty_activation
+    if not receipt_void_schema.is_ready():
+        raise HTTPException(status_code=503, detail="receipt_void_schema_not_ready")
+    receipt_void_schema.compute_key_identity(engine, SessionLocal)
+    result = loyalty_activation.activate(db, admin.id)
+    return {**result, "runtime": runtime.describe(db)}
+
+
+@router.post("/runtime-mode/deactivate")
+def deactivate_runtime_mode(db: Session = Depends(get_db), _confirm=Depends(require_confirm_password)):
+    """Back to shadow / legacy loyalty - only before this generation's first
+    approval or loyalty purchase (otherwise 409 activation_irreversible)."""
+    from ..services import loyalty_activation
+    if not receipt_void_schema.is_ready():
+        raise HTTPException(status_code=503, detail="receipt_void_schema_not_ready")
+    result = loyalty_activation.deactivate(db)
+    return {**result, "runtime": runtime.describe(db)}
+
+
 # ---------------------------------------------------------------- registration (bots)
 # Called by the sales bots (X-API-Key, or in-process), never by a panel
 # admin session - hence a router of its own with no superadmin dependency.
@@ -90,6 +114,9 @@ class ApprovalIntentIn(BaseModel):
     owner_admin_id: Optional[int] = None
     approved_by_telegram_id: Optional[int] = None      # manual only
     local_decision: Optional[str] = None               # auto only: the bot's own verdict, logged, never trusted
+    # The approval protocol the calling bot speaks (Receipt Void 5.5); an old
+    # bot sends none, and its key then keeps the joint activation blocked.
+    approval_protocol_version: Optional[int] = None
 
     def to_intent(self) -> intents.ApprovalIntent:
         return intents.ApprovalIntent(
@@ -112,6 +139,7 @@ def begin_approval(db: Session, principal: bot_auth.BotPrincipal, payload: Appro
     try:
         return registration.begin(
             db, principal, payload.to_intent(), approval_mode=approval_mode,
+            protocol_version=payload.approval_protocol_version,
             approved_by_telegram_id=payload.approved_by_telegram_id if approval_mode == registration.MANUAL else None,
             local_decision=payload.local_decision if approval_mode == registration.AUTO else None)
     except registration.RegistrationRejected as exc:

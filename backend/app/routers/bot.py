@@ -265,6 +265,32 @@ def _legacy_wallet_charge(db: Session, user_id: int, amount: int):
         raise
 
 
+def _require_payment_evidence(db: Session, payload, *, owner_admin_id=None, sale: bool = True) -> None:
+    """After the joint activation (P9a, 'required' - or 'blocked'): a sale
+    with a price is accepted from the bot only with backend-owned payment
+    evidence - its receipt approval, or the customer's wallet charged inside
+    the operation (charge_wallet). Whatever the body says (a payment_method,
+    no payment_method, no paid_amount -> the package's fallback price), a
+    priced sale without one of the two is refused before anything (an old
+    bot, an integration key: update / approve first). A free sale (trial,
+    price 0, 100% discount) and a renewal that sells nothing pass."""
+    if not sale or getattr(payload, "approval_uuid", None):
+        return
+    state = approval_registration.runtime.read_state(db)
+    if approval_registration.runtime.effective_registration_mode(state) not in (
+            approval_registration.runtime.REQUIRED, approval_registration.runtime.BLOCKED):
+        return
+    amount = getattr(payload, "paid_amount", None)
+    if amount is None:
+        package = db.get(models.Package, payload.package_id) if getattr(payload, "package_id", None) else None
+        amount = accounting.sale_fallback_price(db, package, owner_admin_id) if package is not None else 0
+    if int(amount or 0) <= 0:
+        return
+    if getattr(payload, "charge_wallet", False) and getattr(payload, "payment_method", None) == "wallet":
+        return
+    raise HTTPException(422, "approval_uuid_required")
+
+
 def _approval_replay(db: Session, payload) -> bool:
     """An approval whose durable operation already exists: its retry runs the
     whole approval path again (_durable_approval - token, execution key,
@@ -1020,6 +1046,7 @@ def create_user(
         # No new legacy account (owner's rule, 2026-10-15): without a package
         # the account has no Purchase. Refused before any write.
         raise HTTPException(400, "package_required")
+    _require_payment_evidence(db, payload, owner_admin_id=owner_admin_id)
     durable_request = None
     if durable_create:
         # Replay first (Lifecycle 13), but only of the SAME request: the whole
@@ -1174,6 +1201,7 @@ def purchase_package(
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
                                                           allow_required=durable_purchase)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
+    _require_payment_evidence(db, payload, owner_admin_id=user.owner_admin_id)
     package = bot_resources._get_package_or_403(db, principal, payload.package_id)
     override = (
         [{"node_id": c.node_id, "protocol": c.protocol, "flow": c.flow or ""} for c in payload.connections]
@@ -1682,6 +1710,8 @@ def renew_service(
     approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
                                                           allow_required=durable_renew)
     user = bot_resources._get_user_or_403(db, principal, username, owner_admin_id)
+    _require_payment_evidence(db, payload, owner_admin_id=user.owner_admin_id,
+                              sale=bool(payload.package_id) or payload.paid_amount is not None)
     purchase = db.get(models.Purchase, purchase_id)
     if not purchase or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
@@ -1824,55 +1854,76 @@ def set_user_enabled(
 def add_balance(
     username: str, payload: schemas.BotAddBalanceRequest, db: Session = Depends(get_db),
     principal: BotPrincipal = Depends(get_bot_principal),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
-    """Credits (or, with a negative amount, debits) the user's wallet-style
-    balance - used by the sales bot's "افزایش اعتبار" top-up flow (admin
-    approval, positive amount) and the "پرداخت از اعتبار" purchase flow
-    (negative amount, debit).
+    """Changes the customer's wallet, for one stated reason (Receipt Void P7):
 
-    Debits are applied as a single atomic conditional UPDATE (`WHERE
-    balance + amount >= 0`) instead of a Python read-modify-write, so two
-    concurrent/duplicate debit requests (e.g. a double-tapped purchase
-    button) can't both succeed and drive the balance negative - the second
-    one gets a clean "insufficient balance" error instead of silently
-    overdrawing the wallet."""
-    if payload.amount == 0:
-        approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token)
-    if payload.amount == 0:
-        user = bot_resources._get_user_or_403(db, principal, username, None)
-        db.commit()
-        db.refresh(user)
-        return _user_response(user)
-    if payload.amount < 0:
-        # A wallet-only transaction (design 9.2): become the writer and read
-        # the wallet phase first (L1), then the approval mode INSIDE the same
-        # transaction (L2) so its lock - and on SQLite the writer - is held
-        # to the commit: a switch to 'blocked' cannot pass between the check
-        # and the debit. (The old order checked, rolled back, then wrote.)
-        wallet_service.begin_writer(db)
+      receipt_topup      the bot's "افزایش اعتبار" top-up, after its receipt
+                         was approved: a positive amount, correlated with
+                         its approval (services/receipt_approval_topup.py);
+      manual_adjustment  an admin's own change from the bot's admin menu: a
+                         signed amount with a reason, by the admin whose
+                         Telegram id is given (services/wallet_adjustments.py).
+
+    No source_kind -> 422, for every caller. (The old negative "pay from
+    credit" debit is gone: a wallet purchase is charge_wallet inside its own
+    operation.)"""
+    if payload.approval_uuid:
+        # A blocked approval runtime wins before anything else is looked at.
         approval_registration.runtime.guard_approval_mutation(db, payload.approval_uuid, payload.execution_token,
-                                                              keep_transaction=True)
+                                                              allow_required=True)
+    if payload.source_kind not in (wallet_service.RECEIPT_TOPUP, wallet_service.MANUAL_ADJUSTMENT):
+        raise HTTPException(422, "source_kind_required")
+    if payload.source_kind == wallet_service.MANUAL_ADJUSTMENT:
+        if payload.approval_uuid or payload.execution_token is not None or payload.payment_card_id is not None:
+            raise HTTPException(422, "manual_adjustment_without_receipt")
+        # A money change is applied once per attempt: the caller's own stable
+        # key is mandatory (a retry after a lost answer is then a replay).
+        if not isinstance(x_idempotency_key, str) or not x_idempotency_key.strip():
+            raise HTTPException(422, "idempotency_key_required")
+        actor = _adjusting_admin(db, principal, payload.actor_telegram_id)
         user = bot_resources._get_user_or_403(db, principal, username, None)
-        # Only a TOP-UP is blocked. A negative amount is the wallet being
-        # spent on a purchase, and that purchase is already refused upstream
-        # - but if one ever reaches here, refusing the debit too would be
-        # the wrong way round: it would take the money and give nothing.
-        taken = wallet_service.debit_atomic(db, user.id, -payload.amount, source_kind=wallet_service.UNSPECIFIED)
-        db.commit()
-        if not taken:
-            raise HTTPException(400, "موجودی کیف پول کافی نیست")
-        db.refresh(user)
-    else:
-        # Customer positive credits use the narrow A2 transaction: wallet
-        # phase lock -> approval runtime lock -> approval lock -> user lock;
-        # atomic balance increment and its ledger row commit together.
-        # Reseller credit, payment-card pool writes and the debit path above
-        # deliberately remain outside it.
-        user = receipt_approval_topup.apply(
-            db, principal, username, payload.amount, payload.payment_card_id,
-            payload.approval_uuid, lambda customer: wallet_policy.can_topup(db, customer),
-            payload.execution_token)
+        from ..services import wallet_adjustments
+        wallet_adjustments.adjust(db, user.id, payload.amount, actor=actor, reason=payload.reason or "",
+                                  token=x_idempotency_key)
+        db.expire_all()
+        return _user_response(db.get(models.User, user.id))
+    if payload.amount <= 0:
+        raise HTTPException(422, "receipt_topup_amount_invalid")
+    # Customer positive credits use the narrow A2 transaction: wallet
+    # phase lock -> approval runtime lock -> approval lock -> user lock;
+    # the credit and its ledger row commit together.
+    user = receipt_approval_topup.apply(
+        db, principal, username, payload.amount, payload.payment_card_id,
+        payload.approval_uuid, lambda customer: wallet_policy.can_topup(db, customer),
+        payload.execution_token)
     return _user_response(user)
+
+
+def _adjusting_admin(db: Session, principal, telegram_id) -> models.AdminUser:
+    """The admin a manual adjustment from the bot is made by. The Telegram
+    id in the body is only a claim; it is accepted only from a MANAGED bot -
+    the in-process bot or a remote installation's key the panel minted
+    (Receipt Void 6.4, owner decision #13: the managed key is the trusted
+    proxy of the admin's Telegram identity, as for a manual approval). Any
+    other key (an integration key, an old global key) cannot attribute a
+    money change to an admin: 403 before anything. Then an active admin
+    with that Telegram id, and - for a bot scoped to one admin's tree -
+    inside that tree."""
+    from ..services import receipt_approval_intent as approval_intent
+    if not approval_intent.is_managed_principal(principal):
+        raise HTTPException(403, "manual_adjustment_requires_managed_bot")
+    if not isinstance(telegram_id, int) or telegram_id <= 0:
+        raise HTTPException(422, "actor_telegram_id_required")
+    actor = db.query(models.AdminUser).filter(models.AdminUser.telegram_id == telegram_id).first()
+    if actor is None or getattr(actor, "is_active", True) is False:
+        raise HTTPException(403, "adjusting_admin_not_found")
+    if principal.is_scoped:
+        owner = db.get(models.AdminUser, principal.owner_admin_id) if principal.owner_admin_id else None
+        owned = hierarchy.owned_admin_ids(db, owner) if owner is not None else set()
+        if owned is not None and actor.id not in owned:
+            raise HTTPException(403, "adjusting_admin_out_of_scope")
+    return actor
 
 
 @router.delete("/users/{username}")

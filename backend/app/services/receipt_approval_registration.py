@@ -210,7 +210,8 @@ def recover_failed_with_mutation(db: Session, row: dict) -> dict:
 
 def _register_once(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalIntent, approval_mode: str,
                    approved_by_telegram_id: Optional[int], registered_under_mode: str,
-                   local_decision: Optional[str] = None, rate_limit_mode: str = runtime.OFF) -> Registration:
+                   local_decision: Optional[str] = None, rate_limit_mode: str = runtime.OFF,
+                   completeness_generation: int = 0) -> Registration:
     approvals, expected, effects, _authority = _tables()
     if approval_mode == MANUAL and not ri.is_managed_principal(principal):
         raise RegistrationRejected(403, "manual_requires_managed_bot")
@@ -308,7 +309,7 @@ def _register_once(db: Session, principal: bot_auth.BotPrincipal, intent: ri.App
         registration_seq=(last["registration_seq"] + 1) if last else 0,
         immutable_intent_hash=intent_hash, manifest_hash=ri.manifest_hash(manifest),
         supersedes_approval_uuid=last["approval_uuid"] if last else None,
-        registered_under_mode=registered_under_mode, completeness_generation=0,
+        registered_under_mode=registered_under_mode, completeness_generation=completeness_generation,
         registered_by_key_instance_uuid=key_uuid, execution_key_instance_uuid=key_uuid,
         registered_by_api_key_id=principal.key_id, kind=intent.kind, target_shape=target.shape,
         approval_mode=approval_mode, auto_granted_at=now if approval_mode == AUTO else None,
@@ -341,17 +342,23 @@ def _register_once(db: Session, principal: bot_auth.BotPrincipal, intent: ri.App
 
 def register(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalIntent, *, approval_mode: str,
              approved_by_telegram_id: Optional[int] = None, registered_under_mode: str = runtime.SHADOW,
-             local_decision: Optional[str] = None, rate_limit_mode: str = runtime.OFF) -> Registration:
+             local_decision: Optional[str] = None, rate_limit_mode: str = runtime.OFF,
+             completeness_generation: int = 0) -> Registration:
     """In the caller's transaction (inside one savepoint). Two concurrent
     registrations of one pending compute the same seq; the loser's
     IntegrityError is retried exactly once and then finds the winner."""
     if approval_mode not in (AUTO, MANUAL):
         raise RegistrationRejected(422, "invalid_approval_mode")
+    try:
+        intent = ri.normalize_renewal(db, intent)
+    except ri.IntentRejected as exc:
+        raise RegistrationRejected(exc.status, exc.code) from None
     for attempt in (1, 2):
         try:
             with db.begin_nested():
                 return _register_once(db, principal, intent, approval_mode, approved_by_telegram_id,
-                                      registered_under_mode, local_decision, rate_limit_mode)
+                                      registered_under_mode, local_decision, rate_limit_mode,
+                                      completeness_generation)
         except IntegrityError:
             if attempt == 2:
                 raise RegistrationRejected(409, "registration_conflict")
@@ -388,7 +395,8 @@ def describe_error(exc: BaseException) -> str:
 
 
 def begin(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalIntent, *, approval_mode: str,
-          approved_by_telegram_id: Optional[int] = None, local_decision: Optional[str] = None) -> dict:
+          approved_by_telegram_id: Optional[int] = None, local_decision: Optional[str] = None,
+          protocol_version: Optional[int] = None) -> dict:
     """The structured answer of design 5.6. Commits. Only the backend
     decides the mode; nothing in the request can claim one."""
     for attempt in range(1, WRITE_ATTEMPTS + 1):
@@ -403,8 +411,26 @@ def begin(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalInte
                 db.rollback()
                 raise RegistrationRejected(503, "receipt_approval_blocked")
             if mode == runtime.REQUIRED:
-                db.rollback()
-                raise RegistrationRejected(503, "required_mode_not_available")
+                # After the joint activation (P9a): registered under 'required'
+                # with the current completeness generation. Any refusal here is
+                # fail-closed for the bot - the approval must stop, never run
+                # the legacy path.
+                try:
+                    result = register(db, principal, intent, approval_mode=approval_mode,
+                                      approved_by_telegram_id=approved_by_telegram_id,
+                                      registered_under_mode=runtime.REQUIRED, local_decision=local_decision,
+                                      rate_limit_mode=runtime.effective_auto_rate_limit_mode(state),
+                                      completeness_generation=int(state["completeness_generation"]))
+                except RegistrationRejected as exc:
+                    db.rollback()
+                    raise RegistrationRejected(exc.status, f"approval_registration_refused:{exc.code}") from None
+                _record_protocol_version(db, principal, protocol_version)
+                db.commit()
+                return {"mode": "required", "approval_uuid": result.approval_uuid,
+                        "execution_token": result.execution_token, "registration_seq": result.registration_seq,
+                        "state": result.state, "created": result.created, "proceed_legacy": False,
+                        "renew_purchase_id": _renew_purchase_of(db, result.approval_uuid),
+                        "central_decision": central_decision(db, result.approval_uuid)}
 
             error = runtime.shadow_error(state)
             if error is not None:
@@ -420,13 +446,15 @@ def begin(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalInte
                               approved_by_telegram_id=approved_by_telegram_id, registered_under_mode=runtime.SHADOW,
                               local_decision=local_decision,
                               rate_limit_mode=runtime.effective_auto_rate_limit_mode(state))
+            _record_protocol_version(db, principal, protocol_version)
             db.commit()
             return {"mode": "shadow", "approval_uuid": result.approval_uuid, "execution_token": result.execution_token,
                     "registration_seq": result.registration_seq, "state": result.state, "created": result.created,
-                    "proceed_legacy": False, "central_decision": central_decision(db, result.approval_uuid)}
+                    "proceed_legacy": False, "renew_purchase_id": _renew_purchase_of(db, result.approval_uuid),
+                    "central_decision": central_decision(db, result.approval_uuid)}
         except RegistrationRejected as exc:
             db.rollback()
-            if exc.status == 503:
+            if exc.status == 503 or exc.code.startswith("approval_registration_refused:"):
                 raise
             error = exc.code
             break
@@ -447,6 +475,29 @@ def begin(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalInte
                                 stage="registration", error_code=error)
     db.commit()
     return {"mode": "shadow", "approval_uuid": None, "shadow_error": error, "proceed_legacy": True}
+
+
+# The approval protocol this backend's registration and execution speak
+# (Receipt Void 5.5): a managed remote bot reports it on every registration;
+# the joint activation needs every enabled managed key to have reported it.
+APPROVAL_PROTOCOL_VERSION = 1
+
+
+def _record_protocol_version(db: Session, principal: bot_auth.BotPrincipal, version) -> None:
+    if principal.key_id is None or type(version) is not int or version < 1:
+        return                                  # in-process bot, or an old bot that reports nothing
+    db.execute(models.ApiKey.__table__.update().where(models.ApiKey.__table__.c.id == principal.key_id).values(
+        approval_protocol_version=int(version)))
+
+
+def _renew_purchase_of(db: Session, approval_uuid: str):
+    """The service a renewal approval renews (its manifest's purchase_renewed
+    row): the bot executes exactly that service (owner decision: a renewal
+    is always one service, never the whole user)."""
+    expected = _tables()[1]
+    raw = db.execute(select(expected.c.expected).where(
+        expected.c.approval_uuid == approval_uuid, expected.c.effect_type == "purchase_renewed")).scalar()
+    return json.loads(raw).get("purchase_id") if raw else None
 
 
 def central_decision(db: Session, approval_uuid: str) -> dict:

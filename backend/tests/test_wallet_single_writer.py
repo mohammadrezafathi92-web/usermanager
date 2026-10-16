@@ -41,6 +41,9 @@ RESELLER_WRITERS = {
     ("services/admin_billing.py", "refund_for_package"),
     ("services/reseller_refund_settlement.py", "settle"),
     ("services/payment_reservations.py", "release"),
+    # Receipt Void 14: a voided approval's admin_credit_spend is refunded to
+    # the reseller (admin_credit_refund + AdminUser.balance, one UPDATE).
+    ("services/receipt_void_steps.py", "_refund_spend"),
 }
 
 failures: list[str] = []

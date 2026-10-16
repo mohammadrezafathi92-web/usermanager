@@ -41,6 +41,13 @@ def snapshot(resource_kind, resource_id, connections, *, purchase_ids=None):
     return json.dumps(result, sort_keys=True)
 
 
+def _forced(step):
+    """A step an operator abandoned through force-step (Lifecycle 13): the
+    remote may still hold it - an orphan recorded on the step itself - and
+    the deletion finishes without it, exactly what force-step promised."""
+    return step.remote_outcome == "abandoned" and step.forced_by_admin_id is not None and step.forced_at is not None
+
+
 def finish(db, operation_id, version, leases):
     # Runtime read precedes resource rows and operation locks.
     wallet_service.writer_phase(db)
@@ -111,8 +118,9 @@ def finish(db, operation_id, version, leases):
     if any(step.direction != "remove" or step.state != "removed" or (
             step.node_id, step.protocol) != (by_id[step.connection_id].node_id, by_id[step.connection_id].type.value) or (
             not removal_matches(step, by_id[step.connection_id], nodes[step.node_id], removed=True)) or (
-            step.backend != "radius_ppp" and (not step.remote_attempted or step.remote_outcome not in (
-                "verified_absent", "delete_idempotently_absent")))
+            step.backend != "radius_ppp" and not _forced(step) and (
+                not step.remote_attempted or step.remote_outcome not in (
+                    "verified_absent", "delete_idempotently_absent")))
             for step in steps):
         raise HTTPException(409, "provisioning_steps_incomplete")
     if any(row.enabled for row in connections) or (kind == "user" and (

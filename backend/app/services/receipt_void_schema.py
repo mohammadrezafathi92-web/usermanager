@@ -110,8 +110,28 @@ def _widen_card_event_kind(engine) -> None:
     logger.info("receipt void schema: widened %s.event_kind to 32", name)
 
 
+def _widen_lot_source_kind(engine) -> None:
+    """wallet_lots.source_kind was created as VARCHAR(24), one short of
+    'debt_settlement_remainder' (25): on MariaDB a top-up that settled part
+    of a debt and kept the rest as a lot was refused (SQLite does not enforce
+    the length). Widened in place, keeping every row; SQLite needs nothing."""
+    name = rv.wallet_lots.name
+    if engine.dialect.name == "sqlite":
+        return
+    inspector = inspect(engine)
+    if name not in inspector.get_table_names():
+        return
+    column = next((c for c in inspector.get_columns(name) if c["name"] == "source_kind"), None)
+    if column is None or getattr(column["type"], "length", None) != 24:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(f"ALTER TABLE {name} MODIFY source_kind VARCHAR(32) NOT NULL"))
+    logger.info("receipt void schema: widened %s.source_kind to 32", name)
+
+
 def create_tables(engine) -> None:
     _widen_card_event_kind(engine)
+    _widen_lot_source_kind(engine)
     rv.RECEIPT_VOID_METADATA.create_all(bind=engine, tables=list(rv.RECEIPT_VOID_TABLES))
     # These tables use their own MetaData, outside main's additive Base
     # migration. Preserve existing approval rows while extending their shape.

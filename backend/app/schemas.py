@@ -2133,6 +2133,12 @@ class LedgerEntryOut(BaseModel):
     note: Optional[str] = None
     created_at: dt.datetime
     voided_at: Optional[dt.datetime] = None
+    approval_uuid: Optional[str] = None
+    reversal_of_id: Optional[int] = None
+    void_operation_id: Optional[int] = None
+    # Filled by the transactions list from receipt_approvals (Receipt Void 19).
+    approval_state: Optional[str] = None
+    approval_void_operation_id: Optional[int] = None
 
 
 class LedgerPage(BaseModel):

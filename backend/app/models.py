@@ -1771,6 +1771,13 @@ class PanelSettings(Base):
     # snapshot endpoint (X-API-Key auth, same header the external bot API
     # uses) plus the manual /resolve action below.
     ha_enabled = Column(Boolean, default=False)
+    # Receipt Void P10/P11 phase gates (design 21: RECEIPT_VOID_PREVIEW,
+    # RECEIPT_VOID_EXECUTE, RECEIPT_VOID_WORKER). Off by default; changed only
+    # through services/receipt_void_flags.py (superadmin + password), never
+    # before the joint activation (P9a).
+    receipt_void_preview_enabled = Column(Boolean, default=False, nullable=True)
+    receipt_void_execute_enabled = Column(Boolean, default=False, nullable=True)
+    receipt_void_worker_enabled = Column(Boolean, default=False, nullable=True)
     ha_mode = Column(String(20), nullable=True, default="standby")  # "primary" or "standby" - role THIS server plays
     ha_peer_url = Column(String(255), nullable=True)  # e.g. http://1.2.3.4:8000 - base URL of the OTHER server
     # An API key MINTED ON THE PEER (its own Settings > کلیدهای API page),

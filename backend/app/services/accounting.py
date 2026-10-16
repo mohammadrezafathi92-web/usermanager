@@ -199,8 +199,20 @@ def owner_column():
     return func.coalesce(models.LedgerEntry.owner_admin_id_snapshot, models.LedgerEntry.admin_id)
 
 
-def scoped_query(db: Session, admin: models.AdminUser):
+# A receipt void writes voided_at only on these (Receipt Void 14, 16); the
+# business view leaves them out, and the amount-0 receipt_void rows that
+# pair with them are audit-only.
+VOIDABLE_KINDS = ("sale_new", "sale_renew", "wallet_topup")
+
+
+def scoped_query(db: Session, admin: models.AdminUser, *, include_voided: bool = False):
+    """Role-scoped ledger rows. Business view by default (16): a voided
+    sale/top-up and its receipt_void pair are left out; include_voided is the
+    audit view of every row."""
     q = db.query(models.LedgerEntry)
+    if not include_voided:
+        q = q.filter(sa.or_(~models.LedgerEntry.kind.in_(VOIDABLE_KINDS), models.LedgerEntry.voided_at.is_(None)),
+                     models.LedgerEntry.kind != "receipt_void")
     ids = visible_admin_ids(db, admin)
     if ids is not None:
         q = q.filter(owner_column().in_(ids))

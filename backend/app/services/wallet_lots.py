@@ -22,8 +22,7 @@ The cache User.balance is checked against the lots before, and written
 after, every mutation (20.5): a mismatch is wallet_cache_mismatch, never a
 silent repair.
 
-Not here: R2 and V (a refund over a voided lot, the void itself) belong to
-the receipt void (P11); a voided lot is refused fail-closed until then.
+R2 and V (a refund over a voided lot, the void itself): wallet_void.py.
 """
 from __future__ import annotations
 
@@ -347,9 +346,10 @@ def _reverse_allocations(db, debit: dict, operation_id: int) -> None:
             allocations.c.wallet_debit_event_id == debit["id"]).order_by(allocations.c.id)).mappings().all():
         lot = db.execute(_for_update(db, select(lots).where(lots.c.id == allocation["wallet_lot_id"]))).mappings().one()
         if lot["state"] == "voided":
-            # R2: the money came from a voided (scam) lot; that is the receipt
-            # void's own algorithm (P11), not implemented - never guessed.
-            raise HTTPException(409, "wallet_refund_voided_lot_unsupported")
+            # R2 (12.5): the money came from a voided (scam) lot.
+            from . import wallet_void
+            wallet_void.refund_voided_allocation(db, dict(allocation), dict(lot), operation_id)
+            continue
         amount = int(allocation["allocated_amount"])
         db.execute(reversals.insert().values(wallet_allocation_id=allocation["id"], reversed_amount=amount,
                                              lot_was_voided=False, wallet_operation_id=operation_id,

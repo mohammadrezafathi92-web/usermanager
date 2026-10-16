@@ -431,7 +431,21 @@ def _inspect_columns(inspector, table, dialect, problems: list[str]) -> None:
 
         expected_type = normalize_type(column.type.dialect_impl(dialect), dialect.name)
         live_type = normalize_type(live["type"], dialect.name)
-        if live_type != expected_type:
+        # SQLite does not enforce VARCHAR(n). The first receipt-void release
+        # declared this one column as VARCHAR(24), before the 25-character
+        # debt_settlement_remainder kind was added. MariaDB widens it at
+        # startup; rebuilding a SQLite financial table just to change its
+        # unenforced declaration would risk its existing rows and FK graph.
+        # Keep the exception exact: other columns and other widths still
+        # fail the schema inspection.
+        historical_sqlite_lot_width = (
+            dialect.name == "sqlite"
+            and name == "wallet_lots"
+            and column.name == "source_kind"
+            and live_type == ("varchar", 24)
+            and expected_type == ("varchar", 32)
+        )
+        if live_type != expected_type and not historical_sqlite_lot_width:
             problems.append(f"{name}.{column.name}: type is {live_type}, expected {expected_type}")
 
         # A primary-key column is NOT NULL by definition, but SQLite reports

@@ -18,7 +18,7 @@ def run(path: Path) -> subprocess.CompletedProcess[str]:
 
 
 compose = (ROOT / "docker-compose.yml").read_text()
-assert "- /etc/usermanager/host.id:/etc/usermanager/host.id:ro" in compose
+assert "- /etc/usermanager:/etc/usermanager:ro" in compose
 assert "bash backend/scripts/ensure_host_identity.sh" in (ROOT / "install.sh").read_text()
 assert "bash backend/scripts/ensure_host_identity.sh" in (ROOT / "update.sh").read_text()
 

@@ -11,6 +11,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "backend/scripts/ensure_host_identity.sh"
+sys.path.insert(0, str(ROOT / "backend"))        # run_all starts each test from the repository checkout
 
 
 def run(path: Path) -> subprocess.CompletedProcess[str]:

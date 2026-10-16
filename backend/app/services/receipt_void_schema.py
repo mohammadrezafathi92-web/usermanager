@@ -113,8 +113,10 @@ def _widen_card_event_kind(engine) -> None:
 def _widen_lot_source_kind(engine) -> None:
     """wallet_lots.source_kind was created as VARCHAR(24), one short of
     'debt_settlement_remainder' (25): on MariaDB a top-up that settled part
-    of a debt and kept the rest as a lot was refused (SQLite does not enforce
-    the length). Widened in place, keeping every row; SQLite needs nothing."""
+    of a debt and kept the rest as a lot was refused. MariaDB widens it in
+    place, keeping every row. SQLite does not enforce VARCHAR length, so the
+    historical declaration is accepted by the schema inspector without a
+    financial-table rebuild."""
     name = rv.wallet_lots.name
     if engine.dialect.name == "sqlite":
         return

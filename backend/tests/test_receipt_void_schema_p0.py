@@ -31,7 +31,7 @@ from sqlalchemy import create_engine, event, inspect, select, text
 from sqlalchemy.dialects import mysql
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.schema import CreateTable
+from sqlalchemy.schema import CreateIndex, CreateTable
 
 import _mariadb_scratch as scratch
 from app import main, models
@@ -174,6 +174,52 @@ with upgrade.connect() as conn:
         rv.receipt_approvals.c.approval_uuid == old_uuid)).mappings().one()
 check("old approval remains, with an unverifiable NULL baseline",
       (old_row["approval_uuid"], old_row["target_purchase_count_snapshot"]), (old_uuid, None))
+
+
+def sqlite_with_historical_lot_width(width):
+    engine = new_engine()
+    models.Base.metadata.create_all(engine)
+    rvs.create_tables(engine)
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DROP TABLE wallet_lots")
+        ddl = str(CreateTable(rv.wallet_lots).compile(dialect=engine.dialect))
+        old = "source_kind VARCHAR(32) NOT NULL"
+        assert old in ddl
+        conn.exec_driver_sql(ddl.replace(old, f"source_kind VARCHAR({width}) NOT NULL"))
+        for index in rv.wallet_lots.indexes:
+            conn.execute(CreateIndex(index))
+    return engine
+
+
+print("--- SQLite historical wallet_lots width ---")
+old_lots = sqlite_with_historical_lot_width(24)
+identity = insert(old_lots, rv.customer_identities,
+                  tenant_scope_key="shared", identity_key="old-wallet", created_at=NOW)
+account = insert(old_lots, rv.wallet_accounts,
+                 lineage_key=str(uuid.uuid4()), customer_identity_id=identity,
+                 user_id=None, user_id_snapshot=7, username_snapshot="old-wallet",
+                 tombstoned_at=NOW, created_at=NOW)
+lot_id = insert(old_lots, rv.wallet_lots,
+                wallet_account_id=account, source_kind="legacy_baseline", source_key="original",
+                original_amount=123, available_amount=123, consumed_amount=0,
+                state="active", created_at=NOW)
+with old_lots.connect() as conn:
+    before = dict(conn.execute(select(rv.wallet_lots).where(rv.wallet_lots.c.id == lot_id)).mappings().one())
+check("SQLite's historical VARCHAR(24) is the only accepted width exception",
+      ps.inspect_schema(old_lots, rv.RECEIPT_VOID_TABLES), [])
+check("bootstrap accepts historical SQLite lot width with an existing financial row",
+      rvs.bootstrap(old_lots, sessionmaker(bind=old_lots))["ready"], True)
+with old_lots.connect() as conn:
+    after = dict(conn.execute(select(rv.wallet_lots).where(rv.wallet_lots.c.id == lot_id)).mappings().one())
+check("bootstrap preserves every field of the existing lot", after, before)
+check("SQLite does not rebuild the historical financial table",
+      next(c["type"].length for c in inspect(old_lots).get_columns("wallet_lots")
+           if c["name"] == "source_kind"), 24)
+
+wrong_lot_width = sqlite_with_historical_lot_width(16)
+check("a different SQLite lot width still fails closed",
+      any("wallet_lots.source_kind: type is ('varchar', 16)" in p
+          for p in rvs.bootstrap(wrong_lot_width, sessionmaker(bind=wrong_lot_width))["problems"]), True)
 
 
 def run_constraint_checks(engine, tag):

@@ -490,7 +490,8 @@ wallet_lots = Table(
     _pk(),
     _fk("wallet_account_id", "wallet_accounts.id"),
     # 32, not the 24 of the design text: 'debt_settlement_remainder' is 25
-    # characters (receipt_void_schema widens a table created with 24).
+    # characters (receipt_void_schema widens MariaDB; SQLite's historical
+    # VARCHAR(24) declaration is equivalent because SQLite ignores length).
     Column("source_kind", String(32), nullable=False),
     Column("source_key", String(160), nullable=False),
     _fk("source_credit_source_id", "wallet_credit_sources.id", nullable=True),

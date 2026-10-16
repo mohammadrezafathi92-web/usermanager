@@ -167,6 +167,42 @@ def credit_reward(db: Session, user: models.User, amount: int, *, source_kind: s
     return wallet_lots.available(db, account["id"])
 
 
+def refund_debit(db: Session, debit_id: int, *, actor_kind: str = "system", actor_id=None) -> dict:
+    """Refund one CAPTURED wallet sale (Receipt Void 12.4 / 12.5), in the
+    caller's transaction: every allocation back to its lot (R1), or over a
+    lot a void voided, the debt adjusted (R2); the sale's loyalty purchase
+    event voided and loyalty_reconcile run once (14.2). Idempotent per debit
+    (wallet_refund, debit:{id}). There is no HTTP endpoint; the purchase
+    path that refunds a sale calls this."""
+    from .. import models_receipt_void as rv
+    from . import receipt_void_effects, wallet_lots
+    epoch = wallet_lots.require_enforced(db)              # the phase read first (9.2)
+    debits = rv.wallet_debit_events
+    debit = db.execute(select(debits).where(debits.c.id == debit_id)).mappings().first()
+    if debit is None:
+        raise HTTPException(status_code=404, detail="wallet_debit_not_found")
+    account = wallet_lots.account(db, debit["wallet_account_id"])
+    wallet_lots.fence_identity(db, account["customer_identity_id"])
+    operation_id, replayed = wallet_lots.operation(
+        db, "wallet_refund", f"debit:{debit_id}", payload={"refund": int(debit_id)},
+        tenant_scope_key=wallet_lots.tenant_of(db, account), epoch=epoch, actor_kind=actor_kind, actor_id=actor_id)
+    if replayed or debit["state"] == "reversed":
+        return {"debit_id": int(debit_id), "refunded": False}
+    wallet_lots.refund(db, debit_id, operation_id)
+    events = rv.loyalty_purchase_events
+    event_ids = [row.id for row in db.execute(select(events.c.id).where(
+        events.c.ledger_entry_id == debit["ledger_entry_id"], events.c.state == "active"))]
+    loyalty = None
+    if event_ids:
+        snapshot = db.execute(select(events.c.user_id_snapshot).where(events.c.id == event_ids[0])).scalar()
+        loyalty = receipt_void_effects.reverse_loyalty(
+            db, user_id=account["user_id"], user_id_snapshot=int(snapshot), purchase_event_ids=event_ids,
+            operation_id=operation_id, causing_approval_uuid=None, sale_refund=True,
+            customer_identity_id=account["customer_identity_id"])
+    wallet_lots.complete(db, operation_id, {"debit_id": int(debit_id), "loyalty": loyalty})
+    return {"debit_id": int(debit_id), "refunded": True, "loyalty": loyalty}
+
+
 # The source the last credit_reward of this session created (lot generation
 # only): an approval's effect is that source, not the balance growth.
 LAST_CREDIT_SOURCE = "wallet_last_credit_source"

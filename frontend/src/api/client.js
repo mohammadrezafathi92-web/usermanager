@@ -533,6 +533,19 @@ export const resetAccountingReceivables = () => client.post("/accounting/receiva
 export const exportAccounting = (params = {}) =>
   client.get("/accounting/export", { params, responseType: "blob" });
 
+// ---------- Receipt void (ابطال رسید) - backend routers/receipt_void.py ----------
+// Execute and force carry the superadmin's own password typed in the void
+// dialog itself; _pwRetry stops the interceptor's own prompt from asking a
+// second time, so a wrong password comes back to the dialog as a 403.
+const withPassword = (password) => ({ headers: { "X-Confirm-Password": password }, _pwRetry: true });
+export const previewReceiptVoid = (body) => client.post("/accounting/receipt-void/preview", body);
+export const executeReceiptVoid = (body, password) =>
+  client.post("/accounting/receipt-void/execute", body, withPassword(password));
+export const fetchReceiptVoidStatus = (operationId) => client.get(`/accounting/receipt-void/status/${operationId}`);
+export const retryReceiptVoid = (operationId) => client.post(`/accounting/receipt-void/retry/${operationId}`, {});
+export const forceReceiptVoidStep = (operationId, body, password) =>
+  client.post(`/accounting/receipt-void/force-step/${operationId}`, body, withPassword(password));
+
 // Converts a leftover shared-pool connection group into an independent
 // Purchase (see routers/users.py's convert_legacy_group).
 export const convertLegacyGroup = (userId, data) => client.post(`/users/${userId}/legacy-groups/convert`, data);

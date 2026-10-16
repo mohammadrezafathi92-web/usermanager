@@ -822,6 +822,8 @@ def get_sales_stats(
         q = db.query(models.LedgerEntry).filter(
             models.LedgerEntry.created_at >= since,
             models.LedgerEntry.kind.in_(accounting.SALE_KINDS),
+            # Business view (Receipt Void 16): a voided sale is not a sale.
+            models.LedgerEntry.voided_at.is_(None),
         )
         if owner_admin_id is not None:
             q = q.filter(models.LedgerEntry.admin_id == owner_admin_id)

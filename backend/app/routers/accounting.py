@@ -114,13 +114,14 @@ def list_transactions(
     kind: Optional[str] = None,
     admin_id: Optional[int] = None,
     payment_card_id: Optional[int] = None,
+    include_voided: bool = False,
     db: Session = Depends(get_db),
     current: models.AdminUser = Depends(get_current_admin),
 ):
     page = max(page, 1)
     page_size = min(max(page_size, 1), 200)
     q = accounting.apply_filters(
-        accounting.scoped_query(db, current),
+        accounting.scoped_query(db, current, include_voided=include_voided),
         date_from=_parse_date(date_from), date_to=_parse_date(date_to, end=True),
         kind=kind, admin_id=admin_id, payment_card_id=payment_card_id,
     )
@@ -132,9 +133,28 @@ def list_transactions(
         .all()
     )
     return schemas.LedgerPage(
-        items=[schemas.LedgerEntryOut.model_validate(e) for e in items],
+        items=_with_approval_state(db, [schemas.LedgerEntryOut.model_validate(e) for e in items]),
         total=total, page=page, page_size=page_size,
     )
+
+
+def _with_approval_state(db, items):
+    """The receipt approval's state on each row that has one (Receipt Void
+    19: voiding / cleanup_required / voided shown on the row)."""
+    from ..services import receipt_void_schema
+    uuids = {item.approval_uuid for item in items if item.approval_uuid}
+    if not uuids or not receipt_void_schema.is_ready():
+        return items
+    from sqlalchemy import select
+    from .. import models_receipt_void as rv
+    table = rv.receipt_approvals
+    states = {row.approval_uuid: (row.state, row.void_operation_id) for row in db.execute(
+        select(table.c.approval_uuid, table.c.state, table.c.void_operation_id).where(
+            table.c.approval_uuid.in_(uuids)))}
+    for item in items:
+        if item.approval_uuid in states:
+            item.approval_state, item.approval_void_operation_id = states[item.approval_uuid]
+    return items
 
 
 @router.post("/expenses", response_model=schemas.LedgerEntryOut)
@@ -286,15 +306,17 @@ def export_xlsx(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     kind: Optional[str] = None,
+    include_voided: bool = False,
     db: Session = Depends(get_db),
     current: models.AdminUser = Depends(get_current_admin),
 ):
     """Excel export of the (role-scoped, filtered) transactions - same
-    openpyxl+FileResponse approach as routers/users.py's export."""
+    openpyxl+FileResponse approach as routers/users.py's export. Business
+    view by default; include_voided=true is the audit export (16)."""
     from openpyxl import Workbook
 
     q = accounting.apply_filters(
-        accounting.scoped_query(db, current),
+        accounting.scoped_query(db, current, include_voided=include_voided),
         date_from=_parse_date(date_from), date_to=_parse_date(date_to, end=True),
         kind=kind,
     ).order_by(models.LedgerEntry.created_at.desc())
@@ -305,7 +327,7 @@ def export_xlsx(
     headers = [
         "ID", "Kind", "Amount (Toman)", "Customer", "Admin/Seller",
         "Package", "Payment method", "Card ID", "Discount code",
-        "Discount amount", "Category", "Note", "Created at",
+        "Discount amount", "Category", "Note", "Created at", "Voided at", "Reverses",
     ]
     for col, h in enumerate(headers, start=1):
         ws.cell(row=1, column=col, value=h)
@@ -323,6 +345,8 @@ def export_xlsx(
         ws.cell(row=row, column=11, value=e.category)
         ws.cell(row=row, column=12, value=e.note)
         ws.cell(row=row, column=13, value=fmt_jalali(e.created_at) if e.created_at else None)
+        ws.cell(row=row, column=14, value=fmt_jalali(e.voided_at) if e.voided_at else None)
+        ws.cell(row=row, column=15, value=e.reversal_of_id)
 
     fd, path = tempfile.mkstemp(suffix=".xlsx")
     os.close(fd)

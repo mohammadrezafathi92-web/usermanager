@@ -150,7 +150,9 @@ def scenario(engine):
         step.remote_outcome, step.forced_by_admin_id, step.force_reason, step.forced_at = (
             "abandoned", 1, "test force", dt.datetime.utcnow())
         db.flush()
-        refused("provisioning_steps_incomplete", lambda: deletion.finish(db, oid, 0, tokens))
+        # Lifecycle 12 / 11.5: T_final runs when every step is removed OR
+        # abandoned by force (the orphan stays on the step row).
+        assert deletion.finish(db, oid, 0, tokens).state == "completed"
         db.rollback()
         locks.begin_business(db)
         step = db.query(mp.ProvisioningStep).filter_by(operation_id=oid, connection_id=cid).one()

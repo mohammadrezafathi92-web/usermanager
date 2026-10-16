@@ -8,6 +8,7 @@ import JalaliDateInput from "../components/JalaliDateInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import StatCard from "../components/StatCard.jsx";
 import { useConfirm } from "../components/ConfirmDialog.jsx";
+import ReceiptVoidDialog from "../components/ReceiptVoidDialog.jsx";
 import {
   fetchAccountingSummary,
   fetchAccountingSeries,
@@ -40,6 +41,26 @@ import { formatDateTime, isoToJalali, errorText, formatToman, formatGb } from ".
 // language, unlike formatDate/formatToman elsewhere in the panel - moved
 // inside the component below so it can follow `language` like everywhere
 // else (found during the 2026-09 full-codebase audit).
+
+// Receipt void (Receipt Void 19): only a superadmin, only on a sale or a
+// top-up row; the row must carry its approval_uuid, otherwise it is shown
+// disabled as "not traceable" - never guessed.
+const VOIDABLE_KINDS = ["sale_new", "sale_renew", "wallet_topup"];
+
+function VoidCell({ entry, t, onOpen }) {
+  if (!VOIDABLE_KINDS.includes(entry.kind)) return null;
+  if (!entry.approval_uuid) {
+    return <button type="button" className="btn-secondary text-xs opacity-60" disabled
+      title={t("void.notTraceable")} aria-label={t("void.notTraceable")}>{t("void.button")}</button>;
+  }
+  const state = entry.approval_state;
+  if (["voiding", "cleanup_required", "voided"].includes(state)) {
+    return <button type="button" className={`text-xs rounded-full px-2 py-0.5 ${state === "voided" ? "bg-gray-100 text-gray-500 dark:bg-slate-800" : "bg-amber-50 text-amber-700 dark:bg-amber-500/10"}`}
+      onClick={() => onOpen(entry, entry.approval_void_operation_id)}>{t(`void.rowState.${state}`)}</button>;
+  }
+  if (state !== "completed") return null;
+  return <button type="button" className="btn-danger text-xs" onClick={() => onOpen(entry, null)}>{t("void.button")}</button>;
+}
 
 function KindBadge({ kind, t }) {
   const tones = {
@@ -123,6 +144,8 @@ export default function Accounting() {
   // ---------------- transactions ----------------
   const [txPage, setTxPage] = useState(1);
   const [txKind, setTxKind] = useState("");
+  const [txAudit, setTxAudit] = useState(false);
+  const [voiding, setVoiding] = useState(null);       // {entry, operationId}
   const [tx, setTx] = useState(null);
   const loadTx = useCallback(() => {
     const seq = ++txSeq.current;
@@ -132,10 +155,11 @@ export default function Accounting() {
       date_from: dateFrom || undefined,
       date_to: dateTo || undefined,
       kind: txKind || undefined,
+      include_voided: txAudit || undefined,
     })
       .then((res) => { if (seq !== txSeq.current) return; setTx(res.data); clearError("transactions"); })
       .catch((err) => { if (seq !== txSeq.current) return; setTx(null); fail("transactions")(err); });
-  }, [txPage, txKind, dateFrom, dateTo]);
+  }, [txPage, txKind, txAudit, dateFrom, dateTo]);
 
   // ---------------- receivables (طلب از نماینده‌ها) ----------------
   // Credit is routinely handed to a reseller before it is paid for, so
@@ -368,6 +392,7 @@ export default function Accounting() {
       date_from: dateFrom || undefined,
       date_to: dateTo || undefined,
       kind: txKind || undefined,
+      include_voided: txAudit || undefined,
     });
     const url = URL.createObjectURL(res.data);
     const a = document.createElement("a");
@@ -574,6 +599,10 @@ export default function Accounting() {
                 ))}
               </select>
             </div>
+            {isSuperadmin && <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={txAudit} onChange={(e) => { setTxAudit(e.target.checked); setTxPage(1); }} />
+              {t("void.auditView")}
+            </label>}
             <button type="button" className="btn-secondary" onClick={loadTx}>{t("accounting.apply")}</button>
             <button type="button" className="btn-secondary flex items-center gap-1" onClick={doExport}>
               <Download size={15} /> {t("accounting.export")}
@@ -598,11 +627,12 @@ export default function Accounting() {
                       <th>{t("accounting.package")}</th>
                       <th>{t("accounting.method")}</th>
                       <th>{t("accounting.date")}</th>
+                      {isSuperadmin && <th>{t("void.column")}</th>}
                     </tr>
                   </thead>
                   <tbody>
                     {tx.items.map((e) => (
-                      <tr key={e.id}>
+                      <tr key={e.id} className={e.voided_at ? "opacity-60 line-through decoration-gray-400" : ""}>
                         <td><KindBadge kind={e.kind} t={t} /></td>
                         <td className="font-medium" dir="ltr">{fmt(e.amount)}</td>
                         <td>{e.username_snapshot || "-"}</td>
@@ -610,6 +640,7 @@ export default function Accounting() {
                         <td>{e.package_name_snapshot || e.category || "-"}</td>
                         <td>{e.payment_method ? t(`accounting.method.${e.payment_method}`) : "-"}</td>
                         <td className="text-gray-400 text-xs" dir="ltr">{formatDateTime(e.created_at, language)}</td>
+                        {isSuperadmin && <td className="no-underline"><VoidCell entry={e} t={t} onOpen={(entry, operationId) => setVoiding({ entry, operationId })} /></td>}
                       </tr>
                     ))}
                   </tbody>
@@ -631,6 +662,7 @@ export default function Accounting() {
                       {e.payment_method && <span>{t(`accounting.method.${e.payment_method}`)}</span>}
                     </div>
                     <div className="text-gray-400 text-xs mt-1" dir="ltr">{formatDateTime(e.created_at, language)}</div>
+                    {isSuperadmin && <div className="mt-2"><VoidCell entry={e} t={t} onOpen={(entry, operationId) => setVoiding({ entry, operationId })} /></div>}
                   </div>
                 ))}
               </div>
@@ -647,6 +679,9 @@ export default function Accounting() {
           )}
         </>
       )}
+
+      {voiding && isSuperadmin && <ReceiptVoidDialog entry={voiding.entry} operationId={voiding.operationId}
+        onClose={() => { setVoiding(null); loadTx(); }} onDone={loadTx} />}
 
       {/* ================= expenses (superadmin only) ================= */}
       {tab === "expenses" && isSuperadmin && (

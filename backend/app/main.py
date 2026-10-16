@@ -165,6 +165,8 @@ app.include_router(receipt_approvals_router.router)
 app.include_router(receipt_approvals_router.bot_router)
 from .routers import wallet as wallet_router  # noqa: E402
 app.include_router(wallet_router.router)
+from .routers import receipt_void as receipt_void_router  # noqa: E402
+app.include_router(receipt_void_router.router)
 app.include_router(provisioning_router.router)
 app.include_router(ads_router.router)
 app.include_router(license_router.router)
@@ -1043,6 +1045,10 @@ def _start_full_services() -> None:
     # Lifecycle 11.1: the durable worker (no-op until a type is durable and this host owns it).
     scheduler.add_job(provisioning_durable.recover_due, "interval", seconds=provisioning_durable.RECOVER_SECONDS,
                       id="provisioning_recover_due", replace_existing=True, max_instances=1, coalesce=True)
+    # Receipt Void 13 / 21: the void worker (a no-op while its flag is off).
+    from .services import receipt_void_operator
+    scheduler.add_job(receipt_void_operator.recover_due, "interval", seconds=30, id="receipt_void_recover_due",
+                      replace_existing=True, max_instances=1, coalesce=True)
     scheduler.add_job(provisioning_host_lifecycle.heartbeat, "interval",
                       seconds=provisioning_host_lifecycle.HEARTBEAT_SECONDS, id="provisioning_heartbeat",
                       replace_existing=True)

@@ -91,7 +91,7 @@ describe("receipt void dialog", () => {
     await openDialog(user, { lang: "en" });
     expect(await screen.findByText(/22222222-2222/)).toBeTruthy();
     expect(screen.getByText(/Renewal - Completed/)).toBeTruthy();
-    expect(screen.getByText(/#4 Shared/)).toBeTruthy();
+    expect(screen.getByRole("list", { name: "Services" }).textContent).toMatch(/#4 Shared - 1\.0 GB \/ 10\.0 GB/);
     expect(screen.getByText(/#7 wireguard - mt-void/)).toBeTruthy();
     expect(screen.getByText(/ledger_sale:sale/)).toBeTruthy();
     expect(screen.getByText(/Allocation #31 of debit #12/)).toBeTruthy();
@@ -99,11 +99,11 @@ describe("receipt void dialog", () => {
     expect(document.body.textContent).not.toMatch(/private|psk|password":/i);
   });
 
-  it("puts the focus on the typed-username field, traps Tab, and restores the opener on close", async () => {
+  it("focuses the preview heading first (top of the summary), traps Tab, and restores the opener on close", async () => {
     const user = userEvent.setup();
     await openDialog(user, { lang: "en" });
-    const field = await screen.findByLabelText(/To confirm, type the username/);
-    await waitFor(() => expect(document.activeElement).toBe(field));
+    const heading = await screen.findByText(/Void preview for/);
+    await waitFor(() => expect(document.activeElement).toBe(heading));
     expect(document.getElementById("root").hasAttribute("inert")).toBe(true);
     const dialog = screen.getByRole("dialog");
     for (let i = 0; i < 30; i += 1) {
@@ -180,6 +180,15 @@ describe("receipt void dialog", () => {
     expect(api.previewReceiptVoid).toHaveBeenCalledTimes(2);
   });
 
+  it("says the account is already gone instead of 'the customer stays'", async () => {
+    const user = userEvent.setup();
+    api.previewReceiptVoid.mockResolvedValue({ data: { ...PREVIEW, other_approvals_on_account: [],
+      resources: { delete: null, user_exists: false, purchases: [], connections: [] } } });
+    await openDialog(user, { lang: "en" });
+    expect(await screen.findByText(/already deleted; nothing is removed from the nodes/)).toBeTruthy();
+    expect(screen.queryByText(/the customer stays/)).toBeNull();
+  });
+
   it("renders in Persian with the Persian strings", async () => {
     const user = userEvent.setup();
     await openDialog(user, { lang: "fa" });
@@ -206,6 +215,7 @@ describe("void cell on a ledger row", () => {
     expect(onOpen).toHaveBeenCalledWith(ENTRY, null);
     rerender(<VoidCell entry={{ ...ENTRY, approval_uuid: null }} t={t} onOpen={onOpen} />);
     expect(screen.getByRole("button").disabled).toBe(true);
+    expect(screen.getByRole("button").textContent).toBe("Not traceable");      // visible on touch too
     expect(screen.getByRole("button").getAttribute("title")).toMatch(/Not traceable/);
     rerender(<VoidCell entry={{ ...ENTRY, kind: "expense" }} t={t} onOpen={onOpen} />);
     expect(container.textContent).toBe("");

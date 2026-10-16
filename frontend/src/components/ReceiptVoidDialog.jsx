@@ -23,7 +23,7 @@ export function VoidCell({ entry, t, onOpen }) {
   if (!VOIDABLE_KINDS.includes(entry.kind)) return null;
   if (!entry.approval_uuid) {
     return <button type="button" className="btn-secondary text-xs opacity-60" disabled
-      title={t("void.notTraceable")} aria-label={t("void.notTraceable")}>{t("void.button")}</button>;
+      title={t("void.notTraceable")} aria-label={t("void.notTraceable")}>{t("void.notTraceableShort")}</button>;
   }
   const state = entry.approval_state;
   if (["voiding", "cleanup_required", "voided"].includes(state)) {
@@ -177,8 +177,8 @@ export default function ReceiptVoidDialog({ entry, operationId: initialOperation
 
   return <Modal open onClose={() => { if (!busy) onClose(); }} dismissible={!busy} title={t("void.title")} width="max-w-2xl">
     <div className="space-y-4 text-sm">
-      {notice && <p role="status" className="text-amber-600">{notice}</p>}
-      {error && <p role="alert" className="text-red-600">{error}</p>}
+      {notice && <p role="status" className="text-amber-700 dark:text-amber-400">{notice}</p>}
+      {error && <p role="alert" className="text-red-700 dark:text-red-400">{error}</p>}
 
       {operationId ? <section aria-live="polite" className="space-y-3">
         <h4 tabIndex={-1} data-autofocus className="font-semibold outline-none">
@@ -187,7 +187,7 @@ export default function ReceiptVoidDialog({ entry, operationId: initialOperation
         {status && <ol className="space-y-1">
           {status.steps.map((step) => <li key={step.step_key} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-gray-100 dark:bg-slate-800 px-3 py-2">
             <span dir="ltr" className="font-mono text-xs break-all">{step.step_key}</span>
-            <span className={step.state === "done" ? "text-emerald-600" : ["failed", "blocked"].includes(step.state) ? "text-red-600" : step.state === "abandoned" ? "text-amber-600" : "text-gray-500"}>
+            <span className={step.state === "done" ? "text-emerald-700 dark:text-emerald-400" : ["failed", "blocked"].includes(step.state) ? "text-red-700 dark:text-red-400" : step.state === "abandoned" ? "text-amber-700 dark:text-amber-400" : "text-gray-600 dark:text-gray-400"}>
               {t(`void.step.${step.state}`)}{step.remote_outcome ? ` (${step.remote_outcome})` : ""}
               {step.error_sanitized ? ` - ${step.error_sanitized}` : ""}
               {step.result?.node_id ? ` - ${t("void.node")} #${step.result.node_id}` : ""}
@@ -196,12 +196,12 @@ export default function ReceiptVoidDialog({ entry, operationId: initialOperation
               onClick={() => setForce({ step: step.step_key, reason: "", password: "", ack: false })}>{t("void.force")}</button>}
           </li>)}
         </ol>}
-        {status?.state === "completed" && <p className="text-emerald-600 font-semibold">{t("void.completed")}</p>}
-        {stuck && <p className="text-amber-600">{t("void.cleanupRequired")}</p>}
+        {status?.state === "completed" && <p className="text-emerald-700 dark:text-emerald-400 font-semibold">{t("void.completed")}</p>}
+        {stuck && <p className="text-amber-700 dark:text-amber-400">{t("void.cleanupRequired")}</p>}
         {(stuck || status?.state === "failed") && <button type="button" className="btn-secondary" disabled={busy}
           onClick={retry}>{t("void.retry")}</button>}
         {force && <fieldset className="space-y-2 rounded-xl border border-red-200 p-3">
-          <legend className="px-1 text-red-600">{t("void.forceTitle", { step: force.step })}</legend>
+          <legend className="px-1 text-red-700 dark:text-red-400">{t("void.forceTitle", { step: force.step })}</legend>
           <p>{t("void.forceWarning")}</p>
           <label className="block">{t("void.reason")}
             <textarea className="input mt-1" value={force.reason} onChange={(e) => setForce({ ...force, reason: e.target.value })} /></label>
@@ -217,8 +217,11 @@ export default function ReceiptVoidDialog({ entry, operationId: initialOperation
         </fieldset>}
         <button type="button" className="btn-secondary w-full" disabled={busy} onClick={onClose}>{t("common.close")}</button>
       </section> : !preview ? (!error && <p role="status">{t("common.loading")}</p>) : <>
+        <h4 tabIndex={-1} data-autofocus className="font-semibold text-red-700 dark:text-red-400 outline-none">
+          {t("void.previewHeading", { username: preview.username })}
+        </h4>
         <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1 rounded-xl bg-gray-100 dark:bg-slate-800 p-4">
-          <dt>{t("void.customer")}</dt><dd dir="ltr">{preview.username}{preview.telegram_id ? ` (${preview.telegram_id})` : ""}</dd>
+          <dt>{t("void.customer")}</dt><dd><bdi dir="ltr">{preview.username}{preview.telegram_id ? ` (${preview.telegram_id})` : ""}</bdi></dd>
           <dt>{t("void.kind")}</dt><dd>{t(`void.shape.${preview.target_shape}`)}</dd>
           <dt>{t("void.amount")}</dt><dd>{money(preview.amount)}</dd>
           <dt>{t("void.approvalMode")}</dt><dd>{t(`void.mode.${preview.approval_mode}`)}{preview.approved_by_telegram_id ? ` - ${preview.approved_by_telegram_id}` : ""}</dd>
@@ -230,16 +233,17 @@ export default function ReceiptVoidDialog({ entry, operationId: initialOperation
         </dl>
 
         <Section title={t("void.resources")}>
-          {!preview.resources.delete ? <p className="text-gray-500">{t("void.noDeletion")}</p> : <>
+          {!preview.resources.delete ? <p className="text-gray-600 dark:text-gray-400">
+            {t(preview.resources.user_exists ? "void.noDeletion" : "void.accountGone")}</p> : <>
             <p>{t(preview.resources.delete.kind === "user" ? "void.deleteAccount" : "void.deletePurchase")}</p>
             <ul className="list-disc ps-5" aria-label={t("void.purchases")}>
               {preview.resources.purchases.map((p) => <li key={p.id}>
-                #{p.id} {p.package_name || p.comment || ""} - {gb(p.used_bytes)} / {p.quota_bytes ? gb(p.quota_bytes) : t("void.unlimited")}
-                {p.expire_at ? ` - ${formatDateTime(p.expire_at, language)}` : ""} ({p.status})
+                <bdi dir="ltr">#{p.id}</bdi> {p.package_name || p.comment || ""} - <bdi dir="ltr">{gb(p.used_bytes)} / {p.quota_bytes ? gb(p.quota_bytes) : t("void.unlimited")}</bdi>
+                {p.expire_at ? <> - <bdi dir="ltr">{formatDateTime(p.expire_at, language)}</bdi></> : ""} ({t(`void.approvalState.${p.status}`) !== `void.approvalState.${p.status}` ? t(`void.approvalState.${p.status}`) : p.status})
               </li>)}
             </ul>
             <ul className="list-disc ps-5" aria-label={t("void.connections")}>
-              {preview.resources.connections.map((c) => <li key={c.id} dir="ltr">#{c.id} {c.protocol} - {c.node_name || `node ${c.node_id}`}</li>)}
+              {preview.resources.connections.map((c) => <li key={c.id}><bdi dir="ltr">#{c.id} {c.protocol} - {c.node_name || `node ${c.node_id}`}</bdi></li>)}
             </ul>
           </>}
         </Section>
@@ -248,7 +252,7 @@ export default function ReceiptVoidDialog({ entry, operationId: initialOperation
           <p>{t("void.otherApprovals", { count: preview.other_approvals_on_account.length })}</p>
           <ul className="list-disc ps-5">
             {preview.other_approvals_on_account.map((a) => <li key={a.approval_uuid}>
-              <span dir="ltr" className="font-mono text-xs break-all">{a.approval_uuid}</span> - {t(`void.approvalKind.${a.kind}`)} - {t(`void.approvalState.${a.state}`)} - {money(a.amount_snapshot)}
+              <bdi dir="ltr" className="font-mono text-xs break-all">{a.approval_uuid}</bdi> - {t(`void.approvalKind.${a.kind}`)} - {t(`void.approvalState.${a.state}`)} - {money(a.amount_snapshot)}
             </li>)}
           </ul>
         </div>}
@@ -261,13 +265,14 @@ export default function ReceiptVoidDialog({ entry, operationId: initialOperation
 
         <Section title={t("void.effects")}>
           <ul className="list-disc ps-5">
-            {preview.effects.map((e) => <li key={e.id} dir="ltr" className="text-xs">{e.effect_type}:{e.effect_key}{e.delta_value != null ? ` (${e.delta_value})` : ""}</li>)}
+            {preview.effects.map((e) => <li key={e.id} className="text-xs"><bdi dir="ltr">{e.effect_type}:{e.effect_key}{e.delta_value != null ? ` (${e.delta_value})` : ""}</bdi></li>)}
           </ul>
         </Section>
 
         {preview.wallet.sources.length > 0 && <Section title={t("void.wallet")}>
-          <div className="table-wrap !mx-0"><table>
-            <thead><tr><th>{t("void.source")}</th><th>{t("void.gross")}</th><th>{t("void.clawback")}</th>
+          {/* Scrolls sideways on a phone: focusable, so the keyboard can scroll it too. */}
+          <div className="table-wrap !mx-0" tabIndex={0} role="region" aria-label={t("void.wallet")}><table>
+            <thead className="[&_th]:text-gray-700 dark:[&_th]:text-gray-200"><tr><th>{t("void.source")}</th><th>{t("void.gross")}</th><th>{t("void.clawback")}</th>
               <th>{t("void.debt")}</th><th>{t("void.reopen")}</th><th>{t("void.writeoff")}</th></tr></thead>
             <tbody>{preview.wallet.sources.map((s) => <tr key={s.source_id}>
               <td>{t(`void.origin.${s.origin_kind}`)}</td><td>{money(s.gross)}</td><td>{money(s.projected_clawback)}</td>
@@ -275,7 +280,7 @@ export default function ReceiptVoidDialog({ entry, operationId: initialOperation
             </tr>)}</tbody>
           </table></div>
           {preview.wallet.sources.some((s) => s.allocations.length) && <>
-            <p className="text-xs text-gray-500">{t("void.salesStay")}</p>
+            <p className="text-xs text-gray-600 dark:text-gray-400">{t("void.salesStay")}</p>
             <ul className="list-disc ps-5 text-xs" aria-label={t("void.allocations")}>
               {preview.wallet.sources.flatMap((s) => s.allocations.map((a) => <li key={a.allocation_id}>
                 {t("void.allocation", { allocation: a.allocation_id, debit: a.debit_id })} - {money(a.amount)}
@@ -293,18 +298,18 @@ export default function ReceiptVoidDialog({ entry, operationId: initialOperation
           </ul>
         </Section>}
 
-        {(preview.blockers || []).map((code) => <p key={code} role="alert" className="text-red-600">{t(`void.code.${code}`)}</p>)}
+        {(preview.blockers || []).map((code) => <p key={code} role="alert" className="text-red-700 dark:text-red-400">{t(`void.code.${code}`)}</p>)}
 
         <div className="space-y-3">
           <label className="block">{t("void.typeUsername", { username: preview.username })}
-            <input data-autofocus className="input mt-1" dir="ltr" autoComplete="off" value={typed}
+            <input className="input mt-1" dir="ltr" autoComplete="off" value={typed}
               aria-invalid={typed !== "" && typed !== preview.username} onChange={(e) => setTyped(e.target.value)} /></label>
           <label className="block">{t("void.reason")}
             <textarea className="input mt-1" required value={reason} onChange={(e) => setReason(e.target.value)} /></label>
           <label className="block">{t("void.password")}
             <input type="password" className="input mt-1" autoComplete="current-password" value={password}
               onChange={(e) => setPassword(e.target.value)} /></label>
-          <label className="flex items-start gap-2 text-red-600"><input type="checkbox" checked={ack}
+          <label className="flex items-start gap-2 text-red-700 dark:text-red-400"><input type="checkbox" checked={ack}
             onChange={(e) => setAck(e.target.checked)} />{t("void.dangerAck")}</label>
         </div>
         <div className="flex flex-wrap gap-2 pb-[env(safe-area-inset-bottom)]">

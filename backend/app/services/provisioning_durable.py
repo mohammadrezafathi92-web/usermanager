@@ -31,7 +31,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from .. import models, models_provisioning as mp
-from . import provisioning_schema
+from . import provisioning_schema, resource_leases
 from .provisioning_host import HostIdentityUnavailable, read_identity
 from .provisioning_transitions import TERMINAL
 
@@ -95,6 +95,19 @@ def _owner(session_factory):
         return identity, dict(installation_uuid=row.installation_uuid, ownership_epoch=int(row.ownership_epoch))
 
 
+def _in_progress(session_factory, operation_id):
+    """A lease that expired by the DB clock while this request held it (the
+    process stalled past its TTL - observed: the host slept mid-request).
+    The fencing already refused the stale transaction; the committed
+    remote_calling marker makes the next owner recover by reading the remote
+    first. The caller is told the truth: still in progress, retry later."""
+    with session_factory() as db:
+        operation = db.get(mp.ProvisioningOperation, operation_id)
+        state = operation.state if operation is not None else None
+    logger.warning("provisioning operation %s: lease lost mid-request; left to recovery", operation_id)
+    return HTTPException(409, {"error": "operation_in_progress", "operation_id": operation_id, "state": state})
+
+
 def _finish(session_factory, operation_id, deadline, step):
     result = None
     while True:
@@ -107,7 +120,10 @@ def _finish(session_factory, operation_id, deadline, step):
             break
         if state == "cleanup_required" or time.monotonic() >= deadline:
             raise HTTPException(409, {"error": "operation_in_progress", "operation_id": operation_id, "state": state})
-        result = step(operation_id)
+        try:
+            result = step(operation_id)
+        except resource_leases.LeaseLost:
+            raise _in_progress(session_factory, operation_id) from None
         pause = _PAUSE.get((result or {}).get("status"))
         if pause:
             time.sleep(pause)
@@ -186,8 +202,18 @@ def run(session_factory, request, *, actor_kind="system", actor_id=None, budget=
     deadline = time.monotonic() + budget
     worker = deletion_worker if isinstance(request, delete_preparation.DeleteRequest) else operation_worker
     extra = {"approval": approval} if approval is not None else {}
-    first = worker.start_once(session_factory, request, identity, actor_kind=actor_kind, actor_id=actor_id,
-                              **extra, **owner)
+    try:
+        first = worker.start_once(session_factory, request, identity, actor_kind=actor_kind, actor_id=actor_id,
+                                  **extra, **owner)
+    except resource_leases.LeaseLost:
+        # T1 committed (only a committed operation has leases to lose).
+        from . import provisioning_requests
+        with session_factory() as db:
+            operation = provisioning_requests.existing_operation(db, request.operation_type, request.business_key)
+            operation_id = operation.id if operation is not None else None
+        if operation_id is None:
+            raise
+        raise _in_progress(session_factory, operation_id) from None
     operation_id = first["operation_id"]
     return _finish(session_factory, operation_id, deadline,
                    lambda op_id: worker.resume_one(session_factory, op_id, identity, **owner))

@@ -81,6 +81,7 @@ RUN apt-get update \
 # its own state files - state that would not survive this container
 # being recreated on every deploy). Together well under 5MB.
     && apt-get install -y --no-install-recommends default-mysql-client git wireguard-tools iproute2 \
+    && mkdir -p /etc/usermanager \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=pydeps /install /usr/local

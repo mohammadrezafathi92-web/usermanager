@@ -437,6 +437,8 @@ CURRENT_PORT="${CURRENT_PORT:-80}"
 # ---------------------------------------------------------------------------
 # 7) build + start
 # ---------------------------------------------------------------------------
+log_step "Checking the persistent P6 host identity..."
+bash backend/scripts/ensure_host_identity.sh || exit 1
 log_step "Building and starting containers (this can take a few minutes on first install)..."
 docker compose up -d --build
 

@@ -23,11 +23,12 @@ FLAGS = {"preview": "receipt_void_preview_enabled", "execute": "receipt_void_exe
          "worker": "receipt_void_worker_enabled"}
 
 
-def _settings(db, lock=False):
+def _settings(db, lock=False, shared=False):
     query = select(models.PanelSettings).where(models.PanelSettings.id == 1)
-    if lock and db.get_bind().dialect.name != "sqlite":
-        query = query.with_for_update()
-    row = db.execute(query).scalar_one_or_none()
+    if (lock or shared) and db.get_bind().dialect.name != "sqlite":
+        # SQLite: the caller's BEGIN IMMEDIATE is the writer lock already.
+        query = query.with_for_update(read=shared and not lock)
+    row = db.execute(query.execution_options(populate_existing=True)).scalar_one_or_none()
     if row is None:
         row = models.PanelSettings(id=1)
         db.add(row)
@@ -49,6 +50,18 @@ def require(db, name: str) -> None:
         raise HTTPException(404, "receipt_void_disabled")
 
 
+def lock_accepting(db) -> None:
+    """In a void's claim transaction (opened with begin_business): the
+    settings row under a SHARED lock, so set_flag (exclusive) cannot change a
+    flag between this check and the claim's commit - a claim is accepted
+    only while execute AND the worker are on, and the worker cannot be
+    switched off by a transaction that did not yet see the new operation.
+    404 like every other disabled route."""
+    row = _settings(db, shared=True)
+    if not (bool(row.receipt_void_execute_enabled) and bool(row.receipt_void_worker_enabled)):
+        raise HTTPException(404, "receipt_void_disabled")
+
+
 def _activated(db) -> bool:
     row = db.execute(select(rv.receipt_approval_runtime_state)).mappings().first()
     return bool(row) and row["registration_mode"] == "required" and row["loyalty_timing_mode"] == "payment_event"
@@ -65,8 +78,12 @@ def set_flag(db, name: str, value: bool) -> dict:
     if name not in FLAGS:
         raise HTTPException(422, "receipt_void_flag_invalid")
     receipt_void_schema.assert_ready()
+    from . import resource_leases
+    if db.in_transaction():
+        db.rollback()
+    resource_leases.begin_business(db)          # SQLite: BEGIN IMMEDIATE; serializes with a claim
     row = _settings(db, lock=True)
-    current = state(db)
+    current = {name: bool(getattr(row, column)) for name, column in FLAGS.items()}
     if value and not _activated(db):
         raise HTTPException(409, "receipt_void_requires_joint_activation")
     if value and name == "execute" and not current["preview"]:
@@ -88,4 +105,5 @@ def set_flag(db, name: str, value: bool) -> dict:
         raise HTTPException(409, "receipt_void_preview_needed_by_execute")
     setattr(row, FLAGS[name], bool(value))
     db.commit()
+    db.info.pop("resource_lease_business_transaction", None)
     return state(db)

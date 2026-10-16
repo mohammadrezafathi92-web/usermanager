@@ -74,6 +74,7 @@ def reverse_quota(db, *, target_type: str, target_id: Optional[int], granted: in
     reversible = max(min(int(granted), quota - used), 0)
     shortfall = int(granted) - reversible
     setattr(resource, column, quota - reversible)
+    _limit_reached(db, resource, quota - reversible, used)
     db.flush()
     if shortfall > 0:
         db.execute(rv.quota_reversal_shortfalls.insert().values(
@@ -82,6 +83,41 @@ def reverse_quota(db, *, target_type: str, target_id: Optional[int], granted: in
             shortfall_bytes=shortfall, created_at=_now()))
         return "partially_reversed", reversible
     return "fully_reversed", reversible
+
+
+RECONCILE = "receipt_void_reconcile_after_commit"
+
+
+def _limit_reached(db, resource, quota: int, used: int) -> None:
+    """14.1 "reconcile the connections": the quota just went down. At or
+    over it, the resource is quota_exceeded in THIS transaction (RADIUS reads
+    it live), and its connections are pushed to the nodes right after the
+    commit (reconcile_after_commit) - never a node call inside the
+    transaction."""
+    if quota > 0 and used >= quota and resource.status == models.UserStatus.active:
+        resource.status = models.UserStatus.quota_exceeded
+    db.info.setdefault(RECONCILE, []).append((type(resource).__name__, resource.id))
+
+
+def reconcile_after_commit(session_factory, targets) -> None:
+    """The existing reconciliation, after the step committed, each target in
+    its own short transaction (it may call a node). Best effort: a failure
+    leaves the DB status in force and the poller converges."""
+    import logging
+    from . import user_ops
+    for kind, ident in dict.fromkeys(targets or ()):
+        try:
+            with session_factory() as db:
+                target = db.get(models.Purchase if kind == "Purchase" else models.User, ident)
+                if target is None:
+                    continue
+                if kind == "Purchase":
+                    user_ops.reconcile_purchase_connections(db, target)
+                else:
+                    user_ops.reconcile_user_connections(db, target)
+                db.commit()
+        except Exception:  # noqa: BLE001 - the reversal is committed; the poller converges
+            logging.getLogger(__name__).exception("receipt void: reconciliation of %s %s failed", kind, ident)
 
 
 def effect_quota_facts(effect: dict) -> tuple[str, Optional[int], int, int, bool]:
@@ -107,24 +143,63 @@ def _active_count(db, user_id: Optional[int], snapshot: int, generation: int) ->
     return loyalty_service._baseline(db, user_id if user_id is not None else snapshot, generation)[0] + int(counted)
 
 
+def _owner(table, user_id, snapshot):
+    return table.c.user_id == user_id if user_id is not None else (
+        table.c.user_id.is_(None)) & (table.c.user_id_snapshot == snapshot)
+
+
+def lock_user(db, user_id: Optional[int]) -> None:
+    """The User row, in the order record_purchase takes it (after the
+    loyalty runtime row): purchase recording and reconciliation never both
+    count the same customer at once."""
+    if user_id is None:
+        return
+    users = models.User.__table__
+    query = select(users.c.id).where(users.c.id == user_id)
+    if db.get_bind().dialect.name != "sqlite":          # SQLite: the writer lock of BEGIN IMMEDIATE
+        query = query.with_for_update()
+    db.execute(query).all()
+
+
+def loyalty_plan(db, *, user_id: Optional[int], user_id_snapshot: int, void_event_ids) -> dict:
+    """14.2 without writing anything: the active count once the given purchase
+    events are voided, and every active reward that count no longer backs
+    (any causation - possibly a later, healthy approval's). The preview and
+    reverse_loyalty use exactly this."""
+    from . import loyalty_service
+    events, rewards = rv.loyalty_purchase_events, rv.loyalty_reward_events
+    state = loyalty_service.runtime_row(db)
+    generation = int(state["completeness_generation"]) if state else 0
+    ids = [int(i) for i in void_event_ids]
+    leaving = 0 if not ids else int(db.execute(select(func.count()).select_from(events).where(
+        events.c.id.in_(ids), events.c.state == "active", events.c.completeness_generation == generation)).scalar_one())
+    count = _active_count(db, user_id, user_id_snapshot, generation) - leaving
+    invalid = [dict(r) for r in db.execute(select(rewards).where(
+        _owner(rewards, user_id, user_id_snapshot), rewards.c.state == "active",
+        rewards.c.required_active_count > count).order_by(
+            rewards.c.required_active_count.desc(), rewards.c.id.desc())).mappings()]
+    return {"active_count_after": count, "rewards": invalid, "generation": generation}
+
+
 def reverse_loyalty(db, *, user_id: Optional[int], user_id_snapshot: int, purchase_event_ids: list,
                     operation_id: int, causing_approval_uuid: Optional[str], sale_refund: bool,
                     customer_identity_id: Optional[int], forced_keys: frozenset = frozenset()) -> dict:
     """loyalty_reconcile: void the given purchase events, then every active
     reward of this customer above the new count. user_id None: the customer
     was deleted by this same void - its events and rewards are found by
-    snapshot and no cache is written."""
+    snapshot and no cache is written. Locks: the loyalty runtime row, then
+    the User row (the order of record_purchase), before anything is counted."""
     from . import loyalty_service
     events, rewards = rv.loyalty_purchase_events, rv.loyalty_reward_events
     state = loyalty_service.runtime_row(db, lock=True)
     generation = int(state["completeness_generation"]) if state else 0
+    lock_user(db, user_id)
     now = _now()
     for event_id in purchase_event_ids:
         db.execute(events.update().where(events.c.id == event_id, events.c.state == "active").values(
             state="voided", voided_at=now, void_operation_id=operation_id))
     count = _active_count(db, user_id, user_id_snapshot, generation)
-    owner = rewards.c.user_id == user_id if user_id is not None else (
-        rewards.c.user_id.is_(None)) & (rewards.c.user_id_snapshot == user_id_snapshot)
+    owner = _owner(rewards, user_id, user_id_snapshot)
     voided = []
     for reward in db.execute(select(rewards).where(owner, rewards.c.state == "active").order_by(
             rewards.c.required_active_count.desc(), rewards.c.id.desc())).mappings().all():

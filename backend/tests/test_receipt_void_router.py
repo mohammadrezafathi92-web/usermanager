@@ -91,7 +91,8 @@ check("execute without danger_ack: 422 before anything", (response.status_code, 
       (422, "danger_ack_required"))
 response = client.post("/api/accounting/receipt-void/execute", headers=PW, json={
     "preview_token": "x", "typed_username": "u", "reason": "r", "danger_ack": True})
-check("execute while off: 404", (response.status_code, response.json()["detail"]), (404, "receipt_void_disabled"))
+check("execute with a token that is not ours: 409 before any flag or claim",
+      (response.status_code, response.json()["detail"]), (409, "preview_token_invalid"))
 check("force while the worker is off: 404", client.post("/api/accounting/receipt-void/force-step/1", headers=PW, json={
     "step_key": "verify:1", "reason": "r", "danger_ack": True}).status_code, 404)
 check("retry while the worker is off: 404", client.post("/api/accounting/receipt-void/retry/1").status_code, 404)

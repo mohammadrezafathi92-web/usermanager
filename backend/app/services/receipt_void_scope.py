@@ -94,9 +94,19 @@ def scope(db, approval: dict, rows: list[dict]) -> dict:
     """The resources of 13.1, by id (connections with node name, no credential)."""
     shape, user_id = approval["target_shape"], target_user_id(approval, rows)
     user = db.get(models.User, user_id) if user_id is not None else None
+    if user is not None and user.username != approval["target_username_snapshot"]:
+        # The approval's customer is gone and its id was given to someone
+        # else (SQLite reuses the highest rowid): never touch that customer.
+        user = None
     out = {"shape": shape, "user_id": user_id, "user_exists": user is not None, "delete": None,
-           "purchases": [], "connections": []}
-    if shape == "topup" or user is None:
+           "user": None, "purchases": [], "connections": [],
+           "customer_identity_id": _identity(db, user_id, approval["target_username_snapshot"], user is not None)}
+    if user is None:
+        return out
+    out["user"] = {"id": user.id, "username": user.username, "status": getattr(user.status, "value", user.status),
+                   "owner_admin_id": user.owner_admin_id, "telegram_id": user.telegram_id,
+                   "total_quota_bytes": int(user.total_quota_bytes or 0), "expire_at": user.expire_at}
+    if shape == "topup":
         return out
     if shape in FULL_ACCOUNT:
         purchases = db.query(models.Purchase).filter(models.Purchase.user_id == user.id).order_by(models.Purchase.id).all()
@@ -112,69 +122,133 @@ def scope(db, approval: dict, rows: list[dict]) -> dict:
         out["delete"] = {"kind": "purchase", "id": purchase.id} if purchase is not None else None
     nodes = {node.id: node.name for node in db.query(models.Node).filter(
         models.Node.id.in_({c.node_id for c in connections})).all()} if connections else {}
-    out["purchases"] = [{"id": p.id, "package_id": p.package_id, "comment": p.comment} for p in purchases]
+    packages = {pkg.id: pkg.name for pkg in db.query(models.Package).filter(
+        models.Package.id.in_({p.package_id for p in purchases if p.package_id})).all()} if purchases else {}
+    out["purchases"] = [{"id": p.id, "package_id": p.package_id, "package_name": packages.get(p.package_id),
+                         "comment": p.comment, "status": getattr(p.status, "value", p.status),
+                         "quota_bytes": int(p.quota_bytes or 0), "used_bytes": int(p.used_bytes or 0),
+                         "expire_at": p.expire_at} for p in purchases]
     out["connections"] = [{"id": c.id, "purchase_id": c.purchase_id, "protocol": getattr(c.type, "value", c.type),
                            "node_id": c.node_id, "node_name": nodes.get(c.node_id), "enabled": bool(c.enabled)}
                           for c in connections]
     return out
 
 
-def other_approvals(db, approval: dict, user_id: Optional[int]) -> list[dict]:
+def other_approvals(db, approval: dict, resources: dict) -> list[dict]:
+    """Every other approval on what this void deletes: the whole account for
+    new_user / renew, the created purchase (its renewals) for existing_user."""
+    approvals, effects_table = rv.receipt_approvals, rv.receipt_approval_effects
+    user_id, delete = resources["user_id"], resources["delete"]
     if user_id is None:
         return []
-    approvals, effects_table = rv.receipt_approvals, rv.receipt_approval_effects
-    created_here = select(effects_table.c.approval_uuid).where(
-        effects_table.c.effect_type == "user_created", effects_table.c.resource_id == user_id)
-    rows = db.execute(select(approvals.c.approval_uuid, approvals.c.kind, approvals.c.state,
-                             approvals.c.amount_snapshot).where(
-        approvals.c.approval_uuid != approval["approval_uuid"],
-        (approvals.c.target_user_id_snapshot == user_id) | approvals.c.approval_uuid.in_(created_here))
-        .order_by(approvals.c.id)).mappings().all()
+    if delete is not None and delete["kind"] == "purchase":
+        on_it = select(effects_table.c.approval_uuid).where(
+            effects_table.c.resource_type == "Purchase", effects_table.c.resource_id == delete["id"])
+        condition = approvals.c.approval_uuid.in_(on_it)
+    else:
+        created_here = select(effects_table.c.approval_uuid).where(
+            effects_table.c.effect_type == "user_created", effects_table.c.resource_id == user_id)
+        condition = (approvals.c.target_user_id_snapshot == user_id) | approvals.c.approval_uuid.in_(created_here)
+    # A deleted customer's id can be given to a new one (SQLite reuses the
+    # highest rowid): the username snapshot pins the approvals of THIS customer.
+    username = (resources.get("user") or {}).get("username") or approval["target_username_snapshot"]
+    rows = db.execute(select(approvals.c.approval_uuid, approvals.c.kind, approvals.c.target_shape, approvals.c.state,
+                             approvals.c.version, approvals.c.amount_snapshot, approvals.c.completed_at).where(
+        approvals.c.approval_uuid != approval["approval_uuid"], condition,
+        approvals.c.target_username_snapshot == username).order_by(approvals.c.id)).mappings().all()
     return [dict(row) for row in rows]
 
 
-def customer_identity(db, user_id: Optional[int]) -> Optional[int]:
+def _identity(db, user_id: Optional[int], username: str, live: bool) -> Optional[int]:
+    """The approval's customer identity: its live account, or - the customer
+    deleted - the tombstoned account with the same id and username snapshot."""
     if user_id is None:
         return None
-    return db.execute(select(rv.wallet_accounts.c.customer_identity_id).where(
-        rv.wallet_accounts.c.user_id == user_id)).scalar()
+    accounts = rv.wallet_accounts
+    if live:
+        return db.execute(select(accounts.c.customer_identity_id).where(accounts.c.user_id == user_id)).scalar()
+    return db.execute(select(accounts.c.customer_identity_id).where(
+        accounts.c.user_id.is_(None), accounts.c.user_id_snapshot == user_id,
+        accounts.c.username_snapshot == username).order_by(accounts.c.id.desc())).scalar()
+
+
+def customer_identity(db, resources: dict) -> Optional[int]:
+    return resources["customer_identity_id"]
+
+
+# ------------------------------------------------------------------ loyalty: the same plan as the execution (14.2)
+def loyalty_plan(db, approval: dict, resources: dict) -> dict:
+    from . import receipt_void_effects
+    events = rv.loyalty_purchase_events
+    ids = [int(r.id) for r in db.execute(select(events.c.id).where(
+        events.c.approval_uuid == approval["approval_uuid"], events.c.state == "active").order_by(events.c.id))]
+    if approval["target_shape"] == "topup" or resources["user_id"] is None:
+        return {"purchase_events": ids, "active_count_after": None, "rewards": []}
+    user_id = resources["user_id"] if resources["user_exists"] else None
+    plan = receipt_void_effects.loyalty_plan(db, user_id=user_id, user_id_snapshot=int(resources["user_id"]),
+                                             void_event_ids=ids)
+    return {"purchase_events": ids, "active_count_after": plan["active_count_after"],
+            "rewards": [{"id": int(r["id"]), "epoch_id": int(r["epoch_id"]), "slot": int(r["slot"]),
+                         "required_active_count": int(r["required_active_count"]),
+                         "causation_approval_uuid": r["causation_approval_uuid"],
+                         "caused_by_this_approval": r["causation_approval_uuid"] == approval["approval_uuid"],
+                         "credit_amount": int(r["credit_amount"]), "quota_bytes": int(r["quota_bytes"]),
+                         "wallet_credit_source_id": r["wallet_credit_source_id"]} for r in plan["rewards"]]}
 
 
 # ------------------------------------------------------------------ money (12.6 projections, 14)
 def sources(db, approval_uuid: str) -> list[dict]:
+    """S* of wallet_reversal: the sources this approval caused, except
+    loyalty rewards (reconciled by 5a, whichever reward the count no longer
+    backs)."""
     table = rv.wallet_credit_sources
     return [dict(row) for row in db.execute(select(table).where(
-        table.c.causation_approval_uuid == approval_uuid).order_by(table.c.id)).mappings()]
+        table.c.causation_approval_uuid == approval_uuid, table.c.origin_kind != "loyalty_reward")
+        .order_by(table.c.id)).mappings()]
 
 
-def wallet_projection(db, approval_uuid: str, identity_id: Optional[int]) -> dict:
+def _source(db, source_id) -> dict:
+    return dict(db.execute(select(rv.wallet_credit_sources).where(
+        rv.wallet_credit_sources.c.id == source_id)).mappings().one())
+
+
+def _project(db, source: dict, identity_id: Optional[int], step: str, reward_id=None) -> dict:
     lots, apps, allocations = rv.wallet_lots, rv.wallet_credit_applications, rv.wallet_allocations
-    items = []
-    for source in sources(db, approval_uuid):
-        source_lots = [dict(r) for r in db.execute(select(lots).where(
-            lots.c.source_credit_source_id == source["id"]).order_by(lots.c.id)).mappings()]
-        settlements = [dict(r) for r in db.execute(select(apps).where(
-            apps.c.wallet_credit_source_id == source["id"], apps.c.application_kind == "debt_settlement")).mappings()]
-        clawback = debt = writeoff = 0
-        spent_by = []
-        for lot in source_lots:
-            if lot["state"] == "voided":
-                continue
-            clawback += int(lot["available_amount"])
-            consumed = int(lot["consumed_amount"])
-            owner = wallet_lots.account(db, lot["wallet_account_id"])["customer_identity_id"]
-            if consumed > 0:
-                if identity_id is not None and owner == identity_id:
-                    debt += consumed
-                else:
-                    writeoff += consumed
-            spent_by += [int(r.wallet_debit_event_id) for r in db.execute(select(allocations.c.wallet_debit_event_id)
-                                                                          .where(allocations.c.wallet_lot_id == lot["id"]))]
-        items.append({"source_id": source["id"], "origin_kind": source["origin_kind"], "state": source["state"],
-                      "gross": int(source["gross_amount"]),
-                      "projected_clawback": clawback, "projected_debt": debt, "projected_writeoff": writeoff,
-                      "projected_settlement_reopen": sum(int(a["amount"]) - int(a["reversed_amount"]) for a in settlements),
-                      "spent_by_debits": sorted(set(spent_by)), "spent_sales_stay_valid": True})
+    source_lots = [dict(r) for r in db.execute(select(lots).where(
+        lots.c.source_credit_source_id == source["id"]).order_by(lots.c.id)).mappings()]
+    settlements = [dict(r) for r in db.execute(select(apps).where(
+        apps.c.wallet_credit_source_id == source["id"], apps.c.application_kind == "debt_settlement")).mappings()]
+    clawback = debt = writeoff = 0
+    spent = []
+    for lot in source_lots:
+        if lot["state"] == "voided":
+            continue
+        clawback += int(lot["available_amount"])
+        consumed = int(lot["consumed_amount"])
+        owner = wallet_lots.account(db, lot["wallet_account_id"])["customer_identity_id"]
+        if consumed > 0:
+            if identity_id is not None and owner == identity_id:
+                debt += consumed
+            else:
+                writeoff += consumed
+        spent += [{"allocation_id": int(r.id), "debit_id": int(r.wallet_debit_event_id),
+                   "amount": int(r.allocated_amount)} for r in db.execute(select(allocations).where(
+                       allocations.c.wallet_lot_id == lot["id"]).order_by(allocations.c.id))]
+    return {"source_id": source["id"], "origin_kind": source["origin_kind"], "state": source["state"],
+            "step": step, "loyalty_reward_id": reward_id, "causation_approval_uuid": source["causation_approval_uuid"],
+            "gross": int(source["gross_amount"]),
+            "projected_clawback": clawback, "projected_debt": debt, "projected_writeoff": writeoff,
+            "projected_settlement_reopen": sum(int(a["amount"]) - int(a["reversed_amount"]) for a in settlements),
+            "spent_by_debits": sorted({a["debit_id"] for a in spent}), "allocations": spent,
+            "spent_sales_stay_valid": True}
+
+
+def wallet_projection(db, approval_uuid: str, identity_id: Optional[int], plan: dict) -> dict:
+    items = [_project(db, source, identity_id, "wallet_reversal") for source in sources(db, approval_uuid)]
+    for reward in plan["rewards"]:
+        if reward["credit_amount"] > 0 and reward["wallet_credit_source_id"] is not None:
+            items.append(_project(db, _source(db, reward["wallet_credit_source_id"]), identity_id,
+                                  "loyalty_reconciliation", reward["id"]))
     return {"sources": items, "open_debt": wallet_lots.open_debt(db, identity_id) if identity_id else 0}
 
 
@@ -184,11 +258,11 @@ def ledger(db, approval_uuid: str, rows: list[dict]) -> dict:
     spend = _effect(rows, "ledger_credit_spend", "credit_spend")
     spend_entry = db.get(models.LedgerEntry, int(spend["resource_id"])) if spend and spend["resource_id"] else None
     discount = _effect(rows, "discount_redeemed")
-    card = db.execute(select(payment_card_events._tables()[2]).where(
-        payment_card_events._tables()[2].c.approval_uuid == approval_uuid)).mappings().first()
+    card = card_event(db, approval_uuid)
     return {
-        "entries": [{"id": e.id, "kind": e.kind, "amount": int(e.amount or 0), "voided": e.voided_at is not None}
-                    for e in entries if e.kind in ("sale_new", "sale_renew", "wallet_topup")],
+        "entries": [{"id": e.id, "kind": e.kind, "amount": int(e.amount or 0), "voided": e.voided_at is not None,
+                     "payment_method": e.payment_method, "reversal_of_id": e.reversal_of_id,
+                     "created_at": e.created_at} for e in entries],
         "voidable_sale_amount": sum(int(e.amount or 0) for e in entries
                                     if e.kind in ("sale_new", "sale_renew") and e.voided_at is None),
         "reseller_credit_refund": ({"ledger_entry_id": spend_entry.id, "admin_id": spend_entry.admin_id,
@@ -196,16 +270,32 @@ def ledger(db, approval_uuid: str, rows: list[dict]) -> dict:
         "discount": ({"redemption_id": discount["resource_id"], "amount": discount["delta_value"]}
                      if discount else None),
         "card": ({"event_id": card["id"], "card_id": card["card_id_snapshot"], "amount": int(card["amount"]),
+                  "pool_key": card["pool_key"], "reset_after": bool(card["reset_after"]),
                   "voided": card["voided_at"] is not None} if card else None),
     }
 
 
-def loyalty(db, approval_uuid: str) -> dict:
-    events, rewards = rv.loyalty_purchase_events, rv.loyalty_reward_events
-    return {"purchase_events": [int(r.id) for r in db.execute(select(events.c.id).where(
-                events.c.approval_uuid == approval_uuid, events.c.state == "active"))],
-            "rewards_caused": [int(r.id) for r in db.execute(select(rewards.c.id).where(
-                rewards.c.causation_approval_uuid == approval_uuid, rewards.c.state == "active"))]}
+def card_event(db, approval_uuid: str):
+    events = payment_card_events._tables()[2]
+    return db.execute(select(events).where(events.c.approval_uuid == approval_uuid)).mappings().first()
+
+
+# ------------------------------------------------------------------ the lease set (12.1)
+def lease_keys(db, approval_uuid: str, identity_id: Optional[int]) -> list[str]:
+    """Every customer identity the void touches (its own customer, every
+    account a caused source credited - a referrer is another identity - and
+    the owner of every reward the reconciliation may void) and the receipt's
+    card pool; sorted: identities numerically, then pools alphabetically."""
+    sources_t, accounts = rv.wallet_credit_sources, rv.wallet_accounts
+    identities = {int(identity_id)} if identity_id is not None else set()
+    identities |= {int(r.customer_identity_id) for r in db.execute(
+        select(accounts.c.customer_identity_id).join(sources_t, sources_t.c.wallet_account_id == accounts.c.id)
+        .where(sources_t.c.causation_approval_uuid == approval_uuid))}
+    pools = set()
+    card = card_event(db, approval_uuid)
+    if card is not None:
+        pools.add(card["pool_key"])
+    return [f"customer_identity:{i}" for i in sorted(identities)] + [f"payment_card_pool:{p}" for p in sorted(pools)]
 
 
 # ------------------------------------------------------------------ blockers known before the claim
@@ -220,7 +310,7 @@ def blockers(db, approval: dict, rows: list[dict], resources: dict) -> list[str]
                 out.append("approval_sale_voided_elsewhere")
     if resources["delete"] is not None and not receipt_void_deletion.durable_ready(db, resources["delete"]):
         out.append("receipt_void_deletion_not_durable")
-    if resources["user_exists"] and customer_identity(db, resources["user_id"]) is None:
+    if resources["user_exists"] and resources["customer_identity_id"] is None:
         out.append("wallet_account_not_ready")
     return out
 
@@ -232,22 +322,52 @@ def preflight(db, approval: dict, rows: list[dict], resources: dict) -> None:
 
 
 # ------------------------------------------------------------------ state hash and token (18)
-def state_hash(db, approval: dict, rows: list[dict], resources: dict) -> str:
-    lots = rv.wallet_lots
-    source_rows = sources(db, approval["approval_uuid"])
-    lot_rows = [] if not source_rows else [
+def fingerprint(db, approval: dict, rows: list[dict], resources: dict) -> str:
+    """Everything the operator confirmed that a void destroys or reverses,
+    WITHOUT the approval's own version/state (our own transitions move them):
+    the target user and every purchase / connection of the deletion scope
+    with their mutable fields (not usage, which the poller moves), every
+    other approval on that scope with its state and version, this approval's
+    effects, the caused sources and their lots, the identity's debts, the
+    loyalty plan, the card event. Any change -> 409 preview_state_changed."""
+    lots, debts = rv.wallet_lots, rv.wallet_debts
+    caused = [dict(r) for r in db.execute(select(rv.wallet_credit_sources).where(
+        rv.wallet_credit_sources.c.causation_approval_uuid == approval["approval_uuid"])
+        .order_by(rv.wallet_credit_sources.c.id)).mappings()]
+    plan = loyalty_plan(db, approval, resources)
+    reward_sources = [r["wallet_credit_source_id"] for r in plan["rewards"] if r["wallet_credit_source_id"]]
+    source_ids = sorted({s["id"] for s in caused} | set(reward_sources))
+    lot_rows = [] if not source_ids else [
         (int(r.id), int(r.version), r.state) for r in db.execute(select(lots.c.id, lots.c.version, lots.c.state).where(
-            lots.c.source_credit_source_id.in_([s["id"] for s in source_rows])).order_by(lots.c.id))]
+            lots.c.source_credit_source_id.in_(source_ids)).order_by(lots.c.id))]
+    identity = resources["customer_identity_id"]
+    debt_rows = [] if identity is None else [(int(r.id), int(r.version)) for r in db.execute(
+        select(debts.c.id, debts.c.version).where(debts.c.customer_identity_id == identity).order_by(debts.c.id))]
+    card = card_event(db, approval["approval_uuid"])
+    user = dict(resources["user"] or {})
+    if resources["delete"] is None:
+        user.pop("status", None)            # a top-up void deletes nothing; the poller may move the status
     payload = {
-        "approval": [approval["approval_uuid"], int(approval["version"]), approval["state"]],
-        "sources": [(s["id"], int(s["version"]), s["state"]) for s in source_rows],
-        "lots": lot_rows,
-        "effects": [(r["id"], r["voided_at"] is None) for r in rows],
-        "connections": [c["id"] for c in resources["connections"]],
-        "purchases": [p["id"] for p in resources["purchases"]],
-        "user": resources["user_id"],
+        "user": user,
+        "delete": resources["delete"],
+        "purchases": [{k: v for k, v in p.items() if k != "used_bytes"} for p in resources["purchases"]],
+        "connections": [{k: v for k, v in c.items() if k not in ("enabled", "node_name")}
+                        for c in resources["connections"]],
+        "other_approvals": [(a["approval_uuid"], a["state"], int(a["version"])) for a in
+                            other_approvals(db, approval, resources)],
+        "effects": [(r["id"], r["effect_type"], r["effect_key"], r["resource_id"], r["voided_at"] is None) for r in rows],
+        "sources": [(s["id"], int(s["version"]), s["state"]) for s in caused],
+        "lots": lot_rows, "debts": debt_rows,
+        "loyalty": [plan["purchase_events"], [(r["id"], r["required_active_count"]) for r in plan["rewards"]]],
+        "card": None if card is None else (int(card["id"]), card["voided_at"] is None),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def state_hash(db, approval: dict, rows: list[dict], resources: dict, *, scope_fingerprint=None) -> str:
+    digest = scope_fingerprint or fingerprint(db, approval, rows, resources)
+    payload = [approval["approval_uuid"], int(approval["version"]), approval["state"], digest]
+    return hashlib.sha256(json.dumps(payload).encode()).hexdigest()
 
 
 def _sign(body: bytes) -> str:
@@ -260,16 +380,21 @@ def make_token(approval_uuid: str, digest: str, now: Optional[float] = None) -> 
     return base64.urlsafe_b64encode(body).decode().rstrip("=") + "." + _sign(body)
 
 
-def read_token(token: str, now: Optional[float] = None) -> dict:
+def read_token(token: str, now: Optional[float] = None, *, check_expiry: bool = True) -> dict:
+    """The signed body. check_expiry=False only to recognise the request
+    that already created an operation (an exact replay is answered with that
+    operation, never re-executed)."""
     try:
         encoded, signature = str(token).split(".", 1)
         body = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
         if not hmac.compare_digest(signature, _sign(body)):
             raise ValueError("signature")
         data = json.loads(body)
+        if not isinstance(data, dict) or not isinstance(data.get("u"), str) or not isinstance(data.get("h"), str):
+            raise ValueError("shape")
     except (ValueError, TypeError):
         raise HTTPException(409, "preview_token_invalid") from None
-    if int(data.get("exp", 0)) < int(now or time.time()):
+    if check_expiry and int(data.get("exp", 0)) < int(now or time.time()):
         raise HTTPException(409, "preview_expired")
     return data
 
@@ -279,7 +404,8 @@ def preview(db, admin, *, approval_uuid=None, ledger_entry_id=None) -> dict:
     eligible(approval)
     rows = effects(db, approval["approval_uuid"])
     resources = scope(db, approval, rows)
-    identity = customer_identity(db, resources["user_id"])
+    identity = resources["customer_identity_id"]
+    plan = loyalty_plan(db, approval, resources)
     digest = state_hash(db, approval, rows, resources)
     return {
         "approval_uuid": approval["approval_uuid"], "kind": approval["kind"], "target_shape": approval["target_shape"],
@@ -288,13 +414,13 @@ def preview(db, admin, *, approval_uuid=None, ledger_entry_id=None) -> dict:
         "approved_by_telegram_id": approval["approved_by_telegram_id"],
         "completed_at": approval["completed_at"],
         "resources": resources,
-        "other_approvals_on_account": other_approvals(db, approval, resources["user_id"])
-        if approval["target_shape"] in FULL_ACCOUNT else [],
+        "other_approvals_on_account": other_approvals(db, approval, resources) if resources["delete"] else [],
         "ledger": ledger(db, approval["approval_uuid"], rows),
-        "wallet": wallet_projection(db, approval["approval_uuid"], identity),
-        "loyalty": loyalty(db, approval["approval_uuid"]),
-        "effects": [{"effect_type": r["effect_type"], "effect_key": r["effect_key"], "delta_value": r["delta_value"],
-                     "reversal_state": r["reversal_state"]} for r in rows],
+        "wallet": wallet_projection(db, approval["approval_uuid"], identity, plan),
+        "loyalty": plan,
+        "effects": [{"id": r["id"], "effect_type": r["effect_type"], "effect_key": r["effect_key"],
+                     "resource_type": r["resource_type"], "resource_id": r["resource_id"],
+                     "delta_value": r["delta_value"], "reversal_state": r["reversal_state"]} for r in rows],
         "blockers": blockers(db, approval, rows, resources),
         "preview_token": make_token(approval["approval_uuid"], digest),
         "token_expires_in": TOKEN_SECONDS,

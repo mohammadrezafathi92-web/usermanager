@@ -95,15 +95,23 @@ def loyalty(db, ctx: dict, operation_id: int, forced: frozenset) -> dict:
 
 
 # ------------------------------------------------------------------ 6. wallet_reversal (12.6)
-def wallet(db, ctx: dict, operation_id: int) -> dict:
-    sources = rv.wallet_credit_sources
-    rows = [dict(r) for r in db.execute(wallet_lots._for_update(db, select(sources).where(
+def wallet(db, ctx: dict, operation_id: int, leased_identities: set) -> dict:
+    """The identities were resolved, sorted and leased (and revalidated in
+    this transaction) BEFORE any source row is locked here: a source of an
+    identity outside that set is a changed scope - nothing is locked for it."""
+    sources, accounts = rv.wallet_credit_sources, rv.wallet_accounts
+    query = select(sources.c.id, accounts.c.customer_identity_id).join(
+        accounts, accounts.c.id == sources.c.wallet_account_id).where(
         sources.c.causation_approval_uuid == ctx["approval_uuid"],
         # A loyalty reward's source is the reward's: loyalty_reconcile voids
         # it with the reward (5a) or keeps it while the entitlement stands.
+        sources.c.origin_kind != "loyalty_reward")
+    if any(int(r.customer_identity_id) not in leased_identities for r in db.execute(query)):
+        from .receipt_void_runner import LeaseScopeChanged
+        raise LeaseScopeChanged()
+    rows = [dict(r) for r in db.execute(wallet_lots._for_update(db, select(sources).where(
+        sources.c.causation_approval_uuid == ctx["approval_uuid"],
         sources.c.origin_kind != "loyalty_reward").order_by(sources.c.id))).mappings()]
-    for identity in sorted({wallet_lots.account(db, r["wallet_account_id"])["customer_identity_id"] for r in rows}):
-        wallet_lots.fence_identity(db, identity)
     results = {}
     for source in rows:
         outcome = wallet_void.void_source(db, int(source["id"]), operation_id, ctx["customer_identity_id"])

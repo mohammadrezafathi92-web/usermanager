@@ -52,10 +52,19 @@ def scenario(label, engine):
     models.Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     check(L + "schema ready", receipt_void_schema.bootstrap(engine, Session)["ready"], True)
+    if engine.dialect.name != "sqlite":
+        from sqlalchemy import inspect, text
+        with engine.begin() as conn:                       # a table created by the first P9 release
+            conn.execute(text("ALTER TABLE wallet_lots MODIFY source_kind VARCHAR(24) NOT NULL"))
+        receipt_void_schema.create_tables(engine)
+        length = next(c["type"].length for c in inspect(engine).get_columns("wallet_lots") if c["name"] == "source_kind")
+        check(L + "wallet_lots.source_kind created as VARCHAR(24) is widened to 32 ('debt_settlement_remainder')",
+              length, 32)
     with Session() as db:
         db.execute(rv.wallet_runtime_state.update().values(phase="enforced"))
         db.commit()
     counter = iter(range(1, 10_000))
+    credits_made = {"n": 0}
 
     def operation(db, kind, account):
         epoch = wallet_lots.require_enforced(db)
@@ -101,6 +110,7 @@ def scenario(label, engine):
             source = wallet_lots.credit(db, wallet, origin_kind=kind, source_key=f"k{next(counter)}", amount=amount,
                                         operation_id=op, causation_approval_uuid=causation)
             db.commit()
+            credits_made["n"] += 1
             return source
 
     def sale(user_id, amount):
@@ -149,6 +159,72 @@ def scenario(label, engine):
             return sum(db.execute(select(func.count()).select_from(table)).scalar_one() for table in (
                 rv.wallet_lots, rv.wallet_credit_sources, rv.wallet_debit_events, rv.wallet_allocations,
                 rv.wallet_debts, rv.wallet_credit_applications))
+
+    def invariants(user_id) -> dict:
+        """I-NET (with write-offs) for the user's identity and I-SRC for every
+        source of it, computed from the rows only (never a result_snapshot)."""
+        lots, sources, apps = rv.wallet_lots, rv.wallet_credit_sources, rv.wallet_credit_applications
+        reversals_t, allocations, alloc_rev = (rv.wallet_credit_application_reversals, rv.wallet_allocations,
+                                               rv.wallet_allocation_reversals)
+        with Session() as db:
+            identity = account(db, user_id)["customer_identity_id"]
+            account_ids = [int(r.id) for r in db.execute(select(rv.wallet_accounts.c.id).where(
+                rv.wallet_accounts.c.customer_identity_id == identity))]
+            total = lambda q: int(db.execute(q).scalar() or 0)  # noqa: E731
+            available = total(select(func.sum(lots.c.available_amount)).where(
+                lots.c.wallet_account_id.in_(account_ids), lots.c.state != "voided"))
+            gross = total(select(func.sum(sources.c.gross_amount)).where(
+                sources.c.wallet_account_id.in_(account_ids), sources.c.state != "voided"))
+            baseline = total(select(func.sum(lots.c.original_amount)).where(
+                lots.c.wallet_account_id.in_(account_ids), lots.c.source_kind == "legacy_baseline"))
+            lot_ids = select(lots.c.id).where(lots.c.wallet_account_id.in_(account_ids))
+            debited = total(select(func.sum(allocations.c.allocated_amount)).where(
+                allocations.c.wallet_lot_id.in_(lot_ids))) - total(
+                select(func.sum(alloc_rev.c.reversed_amount)).select_from(alloc_rev.join(
+                    allocations, allocations.c.id == alloc_rev.c.wallet_allocation_id)).where(
+                    allocations.c.wallet_lot_id.in_(lot_ids)))
+            writeoffs = total(select(func.sum(rv.wallet_writeoffs.c.amount)).where(
+                rv.wallet_writeoffs.c.customer_identity_id == identity))
+            # 11.2 prints "+ writeoffs" on the left; with a third party (no debt,
+            # nothing left, 150 consumed of a voided reward: 0 + 150 != 0 - 150)
+            # only the right-hand form balances - the write-off is value the
+            # identity kept without owing it.
+            net = available - wallet_lots.open_debt(db, identity) == gross + baseline - debited + writeoffs
+            src_ok = True
+            for source in db.execute(select(sources).where(sources.c.wallet_account_id.in_(account_ids))).mappings():
+                applied = total(select(func.sum(apps.c.amount)).where(apps.c.wallet_credit_source_id == source["id"]))
+                realloc = total(select(func.sum(reversals_t.c.amount)).select_from(reversals_t.join(
+                    apps, apps.c.id == reversals_t.c.wallet_credit_application_id)).where(
+                    apps.c.wallet_credit_source_id == source["id"], reversals_t.c.disposition == "reallocate"))
+                src_ok &= applied - realloc + int(source["unapplied_amount"]) == int(source["gross_amount"])
+            return {"I-NET": net, "I-SRC": src_ok}
+
+    OK = {"I-NET": True, "I-SRC": True}
+
+    # ================================================================ R1 (12.4)
+    plain = customer("r1")
+    credit(plain, 100)
+    debit = sale(plain, 40)
+    refund(debit)
+    with Session() as db:
+        lot = db.execute(select(rv.wallet_lots).where(rv.wallet_lots.c.wallet_account_id == account(
+            db, plain)["id"])).mappings().one()
+    check(L + "RV-33 refund on an active lot: available up, consumed down; I-NET/I-SRC",
+          (int(lot["available_amount"]), int(lot["consumed_amount"]), lot["state"], invariants(plain)), (100, 0, "active", OK))
+    debit = sale(plain, 100)
+    refund(debit)
+    with Session() as db:
+        lot = db.execute(select(rv.wallet_lots).where(rv.wallet_lots.c.wallet_account_id == account(
+            db, plain)["id"])).mappings().one()
+    check(L + "RV-34 full refund on an exhausted lot (100): available 100, consumed 0, active",
+          (int(lot["available_amount"]), int(lot["consumed_amount"]), lot["state"]), (100, 0, "active"))
+    early = customer("rv35")
+    scam35 = credit(early, 100, causation=new_approval())
+    first, second = sale(early, 30), sale(early, 50)
+    refund(first)                                          # refunded BEFORE the void
+    void(scam35, early)
+    check(L + "RV-35 refund before the void, then the void: the debt is the net consumption (50)",
+          (state(early)[1], invariants(early)), (50, OK))
 
     # ================================================================ V (12.6)
     scam = new_approval()
@@ -200,6 +276,7 @@ def scenario(label, engine):
             credit(user, amount)                                  # healthy money settles D
         refund(debits[refund_index])
         balance, open_debt, debts = state(user)
+        check(L + f"RV-42 I-NET / I-SRC after R2 {settlements}/{sales}", invariants(user), OK)
         return debts[0][1:], balance, open_debt
 
     #               settled before  sales      refund   -> (adjusted, settled, state), spendable, open
@@ -232,6 +309,74 @@ def scenario(label, engine):
             rv.wallet_allocation_reversals.c.id.desc())).scalars().first()
     check(L + "R2 over a third party's voided lot: a reversal row only, the write-off stays, nothing spendable",
           (writeoff, reversal, state(third)), (1, True, (0, 0, [])))
+    # ---- RV-43: R2 with ANOTHER open debt of the identity: the freed money settles that one, never D again
+    two = customer("rv43")
+    scam_a, scam_b = credit(two, 100, causation=new_approval()), credit(two, 100, causation=new_approval())
+    sale_a = sale(two, 100)
+    sale(two, 100)
+    void(scam_a, two)                                      # D_a = 100 (sale_a's lot)
+    void(scam_b, two)                                      # D_b = 100
+    credit(two, 100)                                       # healthy money settles D_a first (oldest)
+    refund(sale_a)                                         # D_a's obligation goes; 100 freed -> D_b
+    debts = state(two)[2]
+    check(L + "RV-43 R2 with another open debt: freed money settles the other debt, never the same one",
+          (debts, state(two)[0], invariants(two)), ([(100, 100, 0, "settled"), (100, 0, 100, "settled")], 0, OK))
+
+    # ---- RV-44: voiding a source whose freed money became a settlement_reallocation lot
+    realloc = customer("rv44")
+    scam44 = credit(realloc, 100, causation=new_approval())
+    sold = sale(realloc, 100)
+    void(scam44, realloc)
+    healthy = credit(realloc, 60, causation=new_approval())   # settles 60 of the debt
+    refund(sold)                                           # the 60 is freed -> a settlement_reallocation lot
+    with Session() as db:
+        kinds = [r.source_kind for r in db.execute(select(rv.wallet_lots.c.source_kind).where(
+            rv.wallet_lots.c.source_credit_source_id == healthy, rv.wallet_lots.c.state != "voided"))]
+    result = void(healthy, realloc)                        # ... and later that source is voided too
+    check(L + "RV-44 void of a source with a settlement_reallocation lot: that lot is clawed back as well",
+          (kinds, result.reclaimed, state(realloc)[0], invariants(realloc)), (["settlement_reallocation"], 60, 0, OK))
+
+    # ---- RV-46: no internal operation makes a source
+    with Session() as db:
+        sources_count = db.execute(select(func.count()).select_from(rv.wallet_credit_sources)).scalar_one()
+    check(L + "RV-46 sources = external credit events only (no source made by refunds, voids or re-allocations)",
+          sources_count, credits_made["n"])
+
+    # ---- RV-49 / RV-48: a top-up half into an old debt, half a lot; then voided
+    halfdebt = customer("rv49")
+    old49 = credit(halfdebt, 100, causation=new_approval())
+    sale(halfdebt, 100)
+    void(old49, halfdebt)                                  # owes 100
+    top49 = credit(halfdebt, 300, causation=new_approval())   # 100 settles, 200 a lot
+    result = void(top49, halfdebt)
+    check(L + "RV-49 a top-up half settlement, half lot: both branches (200 back, 100 re-opened)",
+          (result.reclaimed, result.reopened, state(halfdebt)[:2], invariants(halfdebt)), (200, 100, (0, 100), OK))
+
+    # ---- RV-50: several healthy top-ups and one scam, FIFO: the healthy lots are byte for byte as before
+    fifo = customer("rv50")
+    credit(fifo, 100)
+    scam50 = credit(fifo, 100, causation=new_approval())
+    credit(fifo, 100)
+    sale(fifo, 150)                                        # FIFO: 100 healthy, 50 of the scam
+    with Session() as db:
+        def healthy_lots():
+            return [(int(r.id), int(r.available_amount), int(r.consumed_amount), r.state) for r in db.execute(
+                select(rv.wallet_lots).where(rv.wallet_lots.c.wallet_account_id == account(db, fifo)["id"],
+                                             rv.wallet_lots.c.source_credit_source_id != scam50)
+                .order_by(rv.wallet_lots.c.id))]
+        before_lots = healthy_lots()
+    void(scam50, fifo)
+    with Session() as db:
+        after_lots = healthy_lots()
+    check(L + "RV-50 healthy lots unchanged by the scam's void; its spent 50 a debt",
+          (after_lots == before_lots, state(fifo)[1], invariants(fifo)), (True, 50, OK))
+
+    # ---- RV-133: I-NET from wallet_writeoffs only, never from a tampered result_snapshot
+    with Session() as db:
+        db.execute(rv.wallet_operations.update().values(result_snapshot='{"writeoff": 999999}'))
+        db.commit()
+    check(L + "RV-133 I-NET of the third party unchanged by a tampered result_snapshot", invariants(referrer), OK)
+
     with Session() as db:
         check(L + "I-CACHE holds for every customer", wallet_reconcile.check(db)["problems"], [])
 
@@ -281,6 +426,59 @@ def scenario(label, engine):
         check(L + "quota granted on an unlimited resource: back to 0 (unlimited), the whole grant",
               (reverse(unlimited.id, 5 * GB, unlimited=True), unlimited.quota_bytes), (("fully_reversed", 5 * GB), 0))
         db.rollback()
+
+    # ================================================================ 14.1: the connections follow at once
+    from unittest.mock import patch
+    from app.services import quota_manager
+    with Session() as db:
+        node = models.Node(name=f"{label}-n", type=models.NodeType.mikrotik, enabled=True, mt_host="10.9.0.1",
+                           mt_wireguard_interface="wg0", mt_client_subnet="10.99.0.0/24")
+        owner = wallet_accounts.create_user_with_wallet(db, username=f"{label}-live", telegram_id=90_002,
+                                                        total_quota_bytes=15 * GB, used_bytes=14 * GB)
+        db.add(node)
+        db.flush()
+        service = models.Purchase(user_id=owner.id, quota_bytes=15 * GB, used_bytes=13 * GB)
+        db.add(service)
+        db.flush()
+        legacy = models.Connection(user_id=owner.id, node_id=node.id, type=models.ConnectionType.wireguard,
+                                   enabled=True, wg_peer_name=f"{label}-a")
+        bought = models.Connection(user_id=owner.id, node_id=node.id, type=models.ConnectionType.wireguard,
+                                   enabled=True, purchase_id=service.id, wg_peer_name=f"{label}-b")
+        db.add_all([legacy, bought])
+        op = db.execute(rv.wallet_operations.insert().values(
+            operation_type="void_receipt", business_key=str(uuid.uuid4()), request_hash="0" * 64,
+            tenant_scope_key="shared", actor_kind="admin", state="running", epoch_at_start=1, result_snapshot="{}",
+            attempts=0, created_at=dt.datetime.utcnow(), version=0)).inserted_primary_key[0]
+        approval_uuid = new_approval(db)
+        effect_ids = [db.execute(rv.receipt_approval_effects.insert().values(
+            approval_uuid=approval_uuid, effect_type="quota_reward_granted", effect_key=key, resource_type=kind,
+            resource_id=ident, actual_projection="{}", resource_snapshot="{}", delta_value=5 * GB,
+            created_at=dt.datetime.utcnow())).inserted_primary_key[0]
+            for key, kind, ident in (("quota:referral:referrer", "User", owner.id),
+                                     ("quota:referral:new_user", "Purchase", service.id))]
+        user_result = void_effects.reverse_quota(db, target_type="User", target_id=owner.id, granted=5 * GB,
+                                                 quota_after=15 * GB, before_was_unlimited=False, operation_id=op,
+                                                 user_id_snapshot=owner.id, effect_id=effect_ids[0])
+        purchase_result = void_effects.reverse_quota(db, target_type="Purchase", target_id=service.id, granted=5 * GB,
+                                                     quota_after=15 * GB, before_was_unlimited=False, operation_id=op,
+                                                     user_id_snapshot=owner.id, effect_id=effect_ids[1])
+        statuses = (owner.status, service.status)
+        targets = list(db.info.pop(void_effects.RECONCILE, []))
+        db.commit()
+        ids = (owner.id, service.id, legacy.id, bought.id)
+    check(L + "a reversal that brings usage to the quota: User and Purchase quota_exceeded in the same transaction",
+          (user_result[0], purchase_result[0], statuses),
+          ("partially_reversed", "partially_reversed",
+           (models.UserStatus.quota_exceeded, models.UserStatus.quota_exceeded)))
+
+    def fake_push(db, connection, enabled):
+        connection.enabled = enabled                                   # the node call, without a node
+
+    with patch.object(quota_manager, "_set_connection_enabled", side_effect=fake_push):
+        void_effects.reconcile_after_commit(Session, targets)
+    with Session() as db:
+        check(L + "...right after the commit both connections are pushed off (User and Purchase reconciliation)",
+              (db.get(models.Connection, ids[2]).enabled, db.get(models.Connection, ids[3]).enabled), (False, False))
 
 
 with contextlib.ExitStack() as cleanup:

@@ -69,11 +69,19 @@ def acquire(db, resource_key, owner, ttl=60):
     else:
         statement = mysql_insert(table).values(resource_key=resource_key).on_duplicate_key_update(
             resource_key=table.c.resource_key)
-    db.execute(statement)
-    result = db.execute(table.update().where(table.c.resource_key == resource_key,
-        or_(table.c.lease_owner.is_(None), table.c.leased_until < now)
-    ).values(lease_owner=owner, fencing_epoch=table.c.fencing_epoch + 1,
-             leased_until=deadline, heartbeat_at=now, version=table.c.version + 1))
+    try:
+        db.execute(statement)
+        result = db.execute(table.update().where(table.c.resource_key == resource_key,
+            or_(table.c.lease_owner.is_(None), table.c.leased_until < now)
+        ).values(lease_owner=owner, fencing_epoch=table.c.fencing_epoch + 1,
+                 leased_until=deadline, heartbeat_at=now, version=table.c.version + 1))
+    except Exception as exc:
+        # MariaDB snapshot isolation: the row changed after this
+        # transaction's snapshot (another holder just took or released it).
+        # The transaction is gone; the caller treats it as busy and retries.
+        if getattr(getattr(exc, "orig", None), "args", (None,))[0] in (1020, 1213):
+            raise LeaseBusy("resource_lease_busy") from exc
+        raise
     if result.rowcount != 1:
         raise LeaseBusy("resource_lease_busy")
     epoch = db.execute(select(table.c.fencing_epoch).where(table.c.resource_key == resource_key)).scalar_one()

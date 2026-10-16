@@ -8,7 +8,7 @@ import JalaliDateInput from "../components/JalaliDateInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import StatCard from "../components/StatCard.jsx";
 import { useConfirm } from "../components/ConfirmDialog.jsx";
-import ReceiptVoidDialog from "../components/ReceiptVoidDialog.jsx";
+import ReceiptVoidDialog, { VoidCell } from "../components/ReceiptVoidDialog.jsx";
 import {
   fetchAccountingSummary,
   fetchAccountingSeries,
@@ -41,26 +41,6 @@ import { formatDateTime, isoToJalali, errorText, formatToman, formatGb } from ".
 // language, unlike formatDate/formatToman elsewhere in the panel - moved
 // inside the component below so it can follow `language` like everywhere
 // else (found during the 2026-09 full-codebase audit).
-
-// Receipt void (Receipt Void 19): only a superadmin, only on a sale or a
-// top-up row; the row must carry its approval_uuid, otherwise it is shown
-// disabled as "not traceable" - never guessed.
-const VOIDABLE_KINDS = ["sale_new", "sale_renew", "wallet_topup"];
-
-function VoidCell({ entry, t, onOpen }) {
-  if (!VOIDABLE_KINDS.includes(entry.kind)) return null;
-  if (!entry.approval_uuid) {
-    return <button type="button" className="btn-secondary text-xs opacity-60" disabled
-      title={t("void.notTraceable")} aria-label={t("void.notTraceable")}>{t("void.button")}</button>;
-  }
-  const state = entry.approval_state;
-  if (["voiding", "cleanup_required", "voided"].includes(state)) {
-    return <button type="button" className={`text-xs rounded-full px-2 py-0.5 ${state === "voided" ? "bg-gray-100 text-gray-500 dark:bg-slate-800" : "bg-amber-50 text-amber-700 dark:bg-amber-500/10"}`}
-      onClick={() => onOpen(entry, entry.approval_void_operation_id)}>{t(`void.rowState.${state}`)}</button>;
-  }
-  if (state !== "completed") return null;
-  return <button type="button" className="btn-danger text-xs" onClick={() => onOpen(entry, null)}>{t("void.button")}</button>;
-}
 
 function KindBadge({ kind, t }) {
   const tones = {

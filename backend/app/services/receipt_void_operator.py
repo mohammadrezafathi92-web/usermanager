@@ -17,7 +17,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from .. import models, models_receipt_void as rv
-from . import receipt_void_deletion as deletion, receipt_void_engine as engine
+from . import receipt_void_deletion as deletion, receipt_void_engine as engine, receipt_void_runner as runner
 from . import receipt_void_flags as flags, receipt_void_scope as scope, receipt_void_schema
 
 logger = logging.getLogger(__name__)
@@ -70,9 +70,14 @@ def retry(session_factory, admin, operation_id: int, *, reason=None, budget: flo
     if provisioning_id is not None:
         provisioning_operator.retry(session_factory, admin.id, provisioning_id, (reason or "receipt void retry"))
     with session_factory() as db:
+        engine._lock_approval(db, operation["business_key"])
         operation = engine._operation(db, operation_id, lock=True)
         if operation["state"] == "failed":
-            scope.eligible(scope.find(db, admin, approval_uuid=operation["business_key"], lock=True))
+            # Nothing was applied (block is one transaction), but the account
+            # may have changed since: only the exact confirmed scope is retried;
+            # otherwise 409 and a fresh preview + execute re-plans it.
+            scope.eligible(scope.find(db, admin, approval_uuid=operation["business_key"]))
+            engine.revalidate_scope(db, operation)
             engine._approval_state(db, operation["business_key"], ("completed",), "voiding",
                                    void_operation_id=operation_id)
         elif operation["state"] == "cleanup_required":
@@ -86,7 +91,7 @@ def retry(session_factory, admin, operation_id: int, *, reason=None, budget: flo
         engine._bump(db, operation, state="running", completed_at=None)
         db.commit()
     logger.info("receipt void %s retried by admin %s", operation_id, admin.id)
-    engine.advance(session_factory, operation_id, budget=budget)
+    runner.advance(session_factory, operation_id, budget=budget)
     with session_factory() as db:
         return engine._public_state(db, operation_id)
 
@@ -123,6 +128,7 @@ def force_step(session_factory, admin, operation_id: int, *, step_key: str, reas
     if provisioning_step is not None:
         provisioning_operator.force_step(session_factory, admin.id, provisioning_step[0], provisioning_step[1], reason)
     with session_factory() as db:
+        engine._lock_approval(db, operation["business_key"])
         operation = engine._operation(db, operation_id, lock=True)
         if operation["state"] != "cleanup_required":
             raise HTTPException(409, "receipt_void_step_not_forceable")
@@ -159,7 +165,7 @@ def force_step(session_factory, admin, operation_id: int, *, step_key: str, reas
         db.commit()
     logger.info("receipt void %s step %s forced by admin %s", operation_id, step_key, admin.id)
     if state == "running":
-        engine.advance(session_factory, operation_id, budget=budget)
+        runner.advance(session_factory, operation_id, budget=budget)
     with session_factory() as db:
         return engine._public_state(db, operation_id)
 
@@ -224,7 +230,7 @@ def recover_due(session_factory=None, *, max_operations: int = 20) -> int:
             .limit(max_operations))]
     for operation_id in ids:
         try:
-            engine.advance(session_factory, operation_id, budget=10.0)
+            runner.advance(session_factory, operation_id, budget=10.0)
         except Exception:  # noqa: BLE001 - one void never stops the pass
             logger.exception("receipt void %s could not be advanced", operation_id)
     return len(ids)

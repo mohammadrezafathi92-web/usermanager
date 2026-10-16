@@ -300,8 +300,10 @@ def _rebuild_steps(db, operation_id: int, keys: list, now) -> None:
 
 
 def revalidate_scope(db, operation: dict) -> None:
-    """Retry of a failed void: the scope must still be exactly the one the
-    operator confirmed (otherwise a fresh preview + execute is required)."""
+    """The scope must still be exactly the one the operator confirmed
+    (otherwise a fresh preview + execute is required): at block, under the
+    void's full lease set before its first mutation, and on retry of a failed
+    void."""
     ctx = context(operation)
     approval = _lock_approval(db, ctx["approval_uuid"])
     rows = scope.effects(db, ctx["approval_uuid"])

@@ -176,6 +176,13 @@ def _local_once(session_factory, operation, step, leases):
                 return True
             name = step["step_key"]
             if name == "block":
+                # The claim committed before the lease set existed and before
+                # the fraud hold: a purchase, renewal or wallet movement may
+                # have landed in between. Under the full lease set, before ANY
+                # mutation, the scope must still be exactly the confirmed one;
+                # otherwise block fails (nothing applied, approval completed)
+                # and only a fresh preview re-plans this operation.
+                engine.revalidate_scope(db, locked)
                 result = steps.block(db, ctx)
             elif name == "loyalty_reconciliation":
                 result = steps.loyalty(db, ctx, operation["id"], forced)
@@ -257,10 +264,17 @@ def _deletion(session_factory, operation, budget) -> bool:
         with session_factory() as db:
             if _held_debit(db, ctx):
                 raise steps.StepFailed("wallet_account_has_hold")
+            if deletion.provisioning_operation(db, ctx["delete"], operation["id"]) is None and \
+                    _scope_connections(db, ctx) != sorted(ctx["connections"]):
+                # After block the account is held and disabled; a connection
+                # still added by hand would be deleted without being in the
+                # confirmed plan: stop before the deletion starts.
+                raise steps.StepFailed("receipt_void_scope_changed")
         deletion.start_or_advance(session_factory, ctx, operation["id"], budget=budget)
     except Exception as exc:  # noqa: BLE001
         _fail(session_factory, operation["id"], first, exc,
-              blocked=isinstance(exc, steps.StepFailed) and exc.code == "wallet_account_has_hold")
+              blocked=isinstance(exc, steps.StepFailed) and exc.code in (
+                  "wallet_account_has_hold", "receipt_void_scope_changed"))
         return False
     with session_factory() as db:
         _lock_approval(db, ctx["approval_uuid"])
@@ -315,3 +329,13 @@ def _held_debit(db, ctx) -> bool:
     debits, accounts = rv.wallet_debit_events, rv.wallet_accounts
     return db.execute(select(debits.c.id).join(accounts, accounts.c.id == debits.c.wallet_account_id).where(
         accounts.c.user_id == ctx["user_id"], debits.c.state == "held").limit(1)).first() is not None
+
+
+def _scope_connections(db, ctx) -> list:
+    from .. import models
+    query = db.query(models.Connection.id)
+    if ctx["delete"]["kind"] == "user":
+        query = query.filter(models.Connection.user_id == ctx["delete"]["id"])
+    else:
+        query = query.filter(models.Connection.purchase_id == ctx["delete"]["id"])
+    return sorted(row.id for row in query)

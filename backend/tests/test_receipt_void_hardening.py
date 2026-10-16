@@ -224,6 +224,72 @@ def scenario(label, engine):
                [a["approval_uuid"] for a in fresh["other_approvals_on_account"]]),
               (failed["operation_id"], "completed", 2, True, [later["approval_uuid"]]))
 
+        # ============================================================ 4b. the gap between claim and block
+        def after_claim(work):
+            real = void_engine._claim
+
+            def wrapper(*args, **kwargs):
+                answer = real(*args, **kwargs)        # committed: no lease, no fraud hold yet
+                work()
+                return answer
+            return patch.object(void_engine, "_claim", side_effect=wrapper)
+
+        gap = env.new_user("gapper", 7112)
+        shown = env.preview(gap["approval_uuid"])
+        removals = len([c for c in fixture.CALLS if c[0] == "absent"])
+        healthy = {}
+        with after_claim(lambda: healthy.update(item=env.purchase("gapper", 7112))):
+            failed = env.void(shown["preview_token"], "gapper")
+        with env.Session() as db:
+            uid = env.user_id("gapper")
+            connections = sorted(c.id for c in db.query(models.Connection).filter_by(user_id=uid))
+            held = db.get(models.User, uid).purchases_blocked
+            enabled = [c.enabled for c in db.query(models.Connection).filter_by(user_id=uid)]
+            error = next(s["error_sanitized"] for s in void_engine._steps(db, failed["operation_id"])
+                         if s["step_key"] == "block")
+        check(L + "a purchase completed between claim and block: block fails before any mutation",
+              (failed["state"], error, env.approval(gap["approval_uuid"])["state"],
+               env.approval(healthy["item"]["approval_uuid"])["state"], held, all(enabled), len(connections)),
+              ("failed", "preview_state_changed", "completed", "completed", False, True, 2))
+        check(L + "...no remote deletion attempted",
+              len([c for c in fixture.CALLS if c[0] == "absent"]), removals)
+        check(L + "...the old preview cannot proceed (retry 409, execute replays the failed one)",
+              (fixture.code(lambda: operator.retry(env.Session, env.root, failed["operation_id"])),
+               env.void(shown["preview_token"], "gapper").get("state")), ((409, "preview_state_changed"), "failed"))
+        fresh = env.preview(gap["approval_uuid"])
+        check(L + "...the fresh preview lists the new approval and both connections",
+              ([a["approval_uuid"] for a in fresh["other_approvals_on_account"]],
+               sorted(c["id"] for c in fresh["resources"]["connections"])),
+              ([healthy["item"]["approval_uuid"]], connections))
+        done = env.void(fresh["preview_token"], "gapper")
+        plan = env.steps_of(done["operation_id"])
+        check(L + "...confirmed: the same operation re-planned with both connections, completed",
+              (done["operation_id"], done["state"], [plan[f"verify:{c}"][0] for c in connections], env.user_id("gapper")),
+              (failed["operation_id"], "completed", ["done", "done"], None))
+
+        steady = env.new_user("steady", 7113)
+        with after_claim(lambda: None):
+            done = env.void(env.preview(steady["approval_uuid"])["preview_token"], "steady")
+        check(L + "unchanged scope between claim and block: completes", (done["state"], env.user_id("steady")),
+              ("completed", None))
+
+        with env.Session() as db:
+            from app.services import wallet_accounts
+            wallet_accounts.create_user_with_wallet(db, username="gaptop", telegram_id=7114)
+            db.commit()
+        top = env.topup("gaptop", 1500)
+        shown = env.preview(top["approval_uuid"])
+        with after_claim(lambda: env.wallet_sale("gaptop")):
+            failed = env.void(shown["preview_token"], "gaptop")
+        with env.Session() as db:
+            held = db.query(models.User).filter_by(username="gaptop").one().purchases_blocked
+        check(L + "a top-up void whose money was spent between claim and block: fails, nothing applied",
+              (failed["state"], held, env.approval(top["approval_uuid"])["state"]), ("failed", False, "completed"))
+        fresh = env.preview(top["approval_uuid"])
+        done = env.void(fresh["preview_token"], "gaptop")
+        check(L + "...the fresh preview shows the new projection (debt 1000) and completes",
+              (fresh["wallet"]["sources"][0]["projected_debt"], done["state"]), (1000, "completed"))
+
         # ============================================================ 5. loyalty: preview = execution
         bought = [env.purchase("loyal", 7004)["approval_uuid"] for _ in range(4)]
         shown = env.preview(bought[1])

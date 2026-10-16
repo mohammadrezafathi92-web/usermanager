@@ -24,6 +24,9 @@ fi
 echo "==> در حال گرفتن آخرین تغییرات از GitHub ..."
 git pull --no-rebase origin main
 
+echo "==> Checking the persistent P6 host identity ..."
+bash backend/scripts/ensure_host_identity.sh
+
 echo "==> در حال ری‌بیلد و ری‌استارت بک‌اند و فرانت‌اند ..."
 docker compose up -d --build
 

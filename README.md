@@ -218,6 +218,7 @@ sudo bash install.sh uninstall    # حذف کامل
 cd usermanager
 cp backend/.env.example backend/.env
 # مقادیر SECRET_KEY و DEFAULT_ADMIN_PASSWORD را در backend/.env عوض کنید (حتما - نکات امنیتی را ببینید)
+sudo bash backend/scripts/ensure_host_identity.sh  # یک‌بار؛ فایل هویت پایدار خارج از پروژه
 docker compose up -d --build
 ```
 
@@ -239,6 +240,7 @@ scp usermanager_update.zip root@SERVER_IP:/root/
 cd /root/usermanager
 unzip -o /root/usermanager_update.zip -d /root/usermanager
 rm /root/usermanager_update.zip
+sudo bash backend/scripts/ensure_host_identity.sh  # اگر قبلاً ساخته شده باشد، تغییر نمی‌کند
 docker compose up -d --build
 # اگر فقط یک سمت تغییر کرده: docker compose up -d --build backend  (یا frontend)
 ```

@@ -64,6 +64,11 @@ services:
       # updates. Read-only, and only the id is exposed. If the host file is
       # missing, licensing falls back to CPU/MAC + a persisted random id.
       - /etc/machine-id:/host/etc/machine-id:ro
+      # P6 ownership is tied to a stable, host-only random secret. The
+      # installer/update script creates it once; manual Compose deployments
+      # must run backend/scripts/ensure_host_identity.sh before recreation.
+      # It is outside backend/data and never included in DB snapshots.
+      - /etc/usermanager/host.id:/etc/usermanager/host.id:ro
       # Same reasoning as machine-id above, found 2026-09-07: the licence
       # fingerprint also hashes in the host's primary MAC address
       # (services/licensing.py's _primary_mac), but without THIS mount it

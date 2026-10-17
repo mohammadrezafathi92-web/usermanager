@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..database import get_db
 from ..deps import require_confirm_password, require_superadmin
-from ..services import purchase_cap_repair, session_cap_mode
+from ..services import purchase_cap_repair, session_cap_enforce, session_cap_mode
 
 router = APIRouter(prefix="/api/session-caps", tags=["session-caps"], dependencies=[Depends(require_superadmin)])
 
@@ -25,9 +25,17 @@ def get_session_factory():
     return SessionLocal
 
 
+class EnforcePreviewAck(BaseModel):
+    token: str
+    generated_at: int
+    confirmation: str
+
+
 class ModeRequest(BaseModel):
     target: Literal["legacy", "shadow", "enforced"]
     reason: str
+    # Required for 'enforced' only: a fresh /enforce-preview, typed back.
+    enforce_preview: Optional[EnforcePreviewAck] = None
 
 
 class RepairPreviewRequest(BaseModel):
@@ -52,7 +60,16 @@ def status(db: Session = Depends(get_db)):
 @router.post("/mode")
 def change_mode(payload: ModeRequest, admin=Depends(require_confirm_password),
                 factory=Depends(get_session_factory)):
-    return session_cap_mode.change_mode(factory, admin.id, payload.target, payload.reason)
+    return session_cap_mode.change_mode(factory, admin.id, payload.target, payload.reason,
+                                        enforce_preview=payload.enforce_preview.dict() if payload.enforce_preview else None)
+
+
+@router.post("/enforce-preview")
+def enforce_preview(db: Session = Depends(get_db)):
+    """Read-only: what 'enforced' would do to customers now, what is still
+    unresolved, and the token + confirmation phrase a change to 'enforced'
+    must carry (services/session_cap_enforce.py)."""
+    return session_cap_enforce.preview(db)
 
 
 @router.get("/shadow-events")

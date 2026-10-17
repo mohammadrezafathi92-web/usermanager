@@ -51,7 +51,7 @@ from sqlalchemy import select
 from app import models, models_receipt_void as rv, schemas
 from app.routers import bot as bot_router
 from app.services import provisioning_parent_execute as execute, radius_server, remote_action as action
-from app.services import quota_manager, session_cap_mode, user_ops
+from app.services import quota_manager, session_cap_enforce, session_cap_mode, user_ops
 import _receipt_void_env as fixture
 
 failures = []
@@ -138,6 +138,21 @@ def scenario(label, engine):
         check(L + "renewal of a 1-user service with a 3-user package: queued with the cap frozen (3), the service "
               "still 1 until it activates", queued, (1, 3, env.ids.shared))
         check(L + "...activation applies the frozen 3, not the package's edited 9", activated, (3, None))
+        env.new_user("capvoid", 7406)
+        with env.Session() as db:
+            row = db.query(models.Purchase).join(models.User).filter(models.User.username == "capvoid").one()
+            row.max_concurrent_sessions = 1
+            db.commit()
+            voided_purchase = row.id
+        renewal = env.renew("capvoid")
+        with env.Session() as db:
+            frozen_before_void = db.get(models.Purchase, voided_purchase).reserved_max_concurrent_sessions
+        done = env.void(env.preview(renewal["approval_uuid"])["preview_token"], "capvoid")
+        with env.Session() as db:
+            left = (db.get(models.Purchase, voided_purchase), env.user_id("capvoid"))
+        check(L + "Void of that renewal (the whole account, Receipt Void 13.1): completes and deletes the Purchase "
+              "with its frozen reserved cap - nothing to restore", (frozen_before_void, done.get("state"), left),
+              (3, "completed", (None, None)))
 
         # ======================================================== approval with no connection (zero_final)
         item = env.begin("new", "capzero", 700, package_id=free_id, claimed_telegram_id=7402)
@@ -215,7 +230,11 @@ def scenario(label, engine):
         # ======================================================== two purchases, caps 1 and 3
         # The per-Purchase rule decides only in session_cap_mode 'enforced'
         # (legacy and shadow: test_session_cap_modes.py).
-        session_cap_mode.change_mode(env.Session, env.root.id, "enforced", "per-Purchase rule test")
+        session_cap_mode.change_mode(env.Session, env.root.id, "shadow", "per-Purchase rule test")
+        with env.Session() as db:
+            shown = session_cap_enforce.preview(db)
+        session_cap_mode.change_mode(env.Session, env.root.id, "enforced", "per-Purchase rule test", enforce_preview=dict(
+            token=shown["token"], generated_at=shown["generated_at"], confirmation=shown["confirmation_phrase"]))
         radius_server.SessionLocal = env.Session
         server = object.__new__(radius_server.UserManagerRadiusServer)
         server._rejection_log_times = {}
@@ -294,8 +313,9 @@ def scenario(label, engine):
             toggles.clear()
             with patch.object(quota_manager, "_set_connection_enabled", side_effect=fake_enabled), \
                     env.Session() as db:
-                quota_manager.enforce_concurrent_session_limits(db)
-                db.commit()
+                with session_cap_mode.decision(db.get_bind()) as cap_mode:
+                    quota_manager.enforce_concurrent_session_limits(db, cap_mode)
+                    db.commit()
                 state = {k: (c.enabled, c.session_limited) for k, c in
                          ((k, db.get(models.Connection, ids[k])) for k in ("wg1", "wg3"))}
             return sorted(toggles), state

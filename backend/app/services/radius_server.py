@@ -369,6 +369,18 @@ class UserManagerRadiusServer(Server):
             return False
 
     def HandleAuthPacket(self, pkt):
+        """One Access-Request, decided and answered under the shared lock of
+        session_cap_mode from before the mode is read until after the reply
+        is sent - a mode change can never fall in between. No valid mode
+        (lock busy or unavailable, mode unreadable): no decision and no reply,
+        exactly as for any other internal error here; the NAS retries."""
+        try:
+            with session_cap_mode.decision(SessionLocal.kw["bind"]) as cap_mode:
+                self._handle_auth_packet(pkt, cap_mode)
+        except session_cap_mode.ModeUnavailable as exc:
+            logger.error("RADIUS Access-Request not answered: no session cap mode (%s)", exc)
+
+    def _handle_auth_packet(self, pkt, cap_mode):
         db = SessionLocal()
         try:
             reply = self.CreateReplyPacket(pkt)
@@ -480,15 +492,15 @@ class UserManagerRadiusServer(Server):
                         reason = "wrong password"
                         reject_kind = "auth_fail"
                     else:
-                        # Which rule decides is session_cap_mode's: legacy
-                        # (default) is _legacy_session_limit, exactly as it
-                        # always was; enforced is the per-Purchase rule;
+                        # Which rule decides is session_cap_mode's (read under
+                        # the lock HandleAuthPacket holds until the reply):
+                        # legacy (default) is _legacy_session_limit, exactly as
+                        # it always was; enforced is the per-Purchase rule;
                         # shadow decides by legacy and records the difference.
-                        with session_cap_mode.decision(db.get_bind()) as cap_mode:
-                            limit, active_count = _legacy_session_limit(db, user, conn)
-                            if cap_mode != "legacy":
-                                limit, active_count = _apply_session_cap_mode(
-                                    db, user, conn, cap_mode, (limit, active_count))
+                        limit, active_count = _legacy_session_limit(db, user, conn)
+                        if cap_mode != "legacy":
+                            limit, active_count = _apply_session_cap_mode(
+                                db, user, conn, cap_mode, (limit, active_count))
                         if limit and active_count >= limit:
                             ok = False
                             just_banned = self._record_overlimit_attempt(conn)

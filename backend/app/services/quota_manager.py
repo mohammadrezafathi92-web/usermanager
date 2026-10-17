@@ -3,6 +3,7 @@ onto each connection's owning user (shared quota across all protocols),
 and enable/disable connections as quota / expiry dictate."""
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import logging
 
@@ -589,22 +590,24 @@ def _enforce_legacy_session_limits(db: Session) -> int:
 
 
 
-def enforce_concurrent_session_limits(db: Session) -> int:
-    """The poll cycle's concurrent-session step, by session_cap_mode:
+def enforce_concurrent_session_limits(db: Session, mode: str) -> int:
+    """The poll cycle's concurrent-session step, by session_cap_mode `mode`:
     legacy and shadow act exactly as _enforce_legacy_session_limits always
     did; shadow also records what the per-Purchase rule would have done
     instead (nothing more); enforced acts per Purchase
-    (session_cap_rule.session_scope). The whole step is one decision under
-    the mode's shared lock (session_cap_mode)."""
-    with session_cap_mode.decision(db.get_bind()) as mode:
-        if mode == "enforced":
-            return _enforce_per_purchase_session_limits(db)
-        if mode == "shadow":
-            try:
-                _shadow_per_purchase_session_limits(db)
-            except Exception:  # noqa: BLE001 - a shadow record never touches enforcement
-                logger.exception("session cap shadow comparison failed")
-        return _enforce_legacy_session_limits(db)
+    (session_cap_rule.session_scope). The caller holds
+    session_cap_mode.decision - the one that yielded `mode` - until it has
+    committed what this did (_finish_cycle)."""
+    if mode == "enforced":
+        return _enforce_per_purchase_session_limits(db)
+    if mode == "shadow":
+        try:
+            _shadow_per_purchase_session_limits(db)
+        except Exception:  # noqa: BLE001 - a shadow record never touches enforcement
+            logger.exception("session cap shadow comparison failed")
+    elif mode != "legacy":
+        raise ValueError(f"unknown session cap mode {mode!r}")
+    return _enforce_legacy_session_limits(db)
 
 
 def _per_purchase_candidates(db: Session):
@@ -1041,6 +1044,37 @@ from .reseller_refund_fence import guarded as _refund_guarded
 
 
 @_refund_guarded
+def _finish_cycle(db: Session, now, purchase_ids, user_ids) -> None:
+    """poll_all's last steps and its commit, under session_cap_mode's shared
+    lock from before the concurrent-session step reads the mode until after
+    the commit - a mode change can never fall between a kick or release
+    and its being committed. No valid mode: that step is skipped this cycle
+    (no kick, no release); everything else proceeds as before."""
+    with contextlib.ExitStack() as hold:
+        try:
+            cap_mode = hold.enter_context(session_cap_mode.decision(db.get_bind()))
+        except session_cap_mode.ModeUnavailable as exc:
+            cap_mode = None
+            logger.error("poll_all: concurrent-session step skipped this cycle: no session cap mode (%s)", exc)
+        session_limited_count = enforce_concurrent_session_limits(db, cap_mode) if cap_mode else 0
+
+        # Independent of everything above: catches any WireGuard/Xray
+        # connection whose enabled flag never actually caught up with its
+        # governing quota/expiry - see _reconcile_connection_enabled_state's
+        # own docstring for why this is needed even with the rest of this
+        # function working correctly (2026-09 bug report).
+        reconciled_count = _reconcile_connection_enabled_state(db, now)
+
+        if purchase_ids or user_ids or session_limited_count or reconciled_count:
+            logger.info(
+                "poll_all: enforced %d purchase(s), %d account(s), %d concurrent-session toggle(s), "
+                "%d reconciled connection(s)",
+                len(purchase_ids), len(user_ids), session_limited_count, reconciled_count,
+            )
+
+        db.commit()
+
+
 def poll_all():
     db = SessionLocal()
     try:
@@ -1133,23 +1167,7 @@ def poll_all():
         # _apply_enabled_state's session_limited override actually has
         # something to override rather than racing it. See its own
         # docstring for the full "why" (2026-09-06).
-        session_limited_count = enforce_concurrent_session_limits(db)
-
-        # Independent of everything above: catches any WireGuard/Xray
-        # connection whose enabled flag never actually caught up with its
-        # governing quota/expiry - see _reconcile_connection_enabled_state's
-        # own docstring for why this is needed even with the rest of this
-        # function working correctly (2026-09 bug report).
-        reconciled_count = _reconcile_connection_enabled_state(db, now)
-
-        if purchase_ids or user_ids or session_limited_count or reconciled_count:
-            logger.info(
-                "poll_all: enforced %d purchase(s), %d account(s), %d concurrent-session toggle(s), "
-                "%d reconciled connection(s)",
-                len(purchase_ids), len(user_ids), session_limited_count, reconciled_count,
-            )
-
-        db.commit()
+        _finish_cycle(db, now, purchase_ids, user_ids)
     except Exception:
         logger.exception("poll_all failed")
         db.rollback()

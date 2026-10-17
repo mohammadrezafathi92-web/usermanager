@@ -8,9 +8,14 @@ SQLite AND real MariaDB (CI). No network.
   enforced  the per-Purchase rule
   rollback  enforced -> legacy: the legacy poller releases what enforced
             kicked, by its own rule
-  switch    a change waits for a decision in flight; a decision started
-            during a change waits and then uses the new mode; a change
-            refused for a busy lock leaves the mode as it was
+  switch    a change waits for a decision in flight - in RADIUS until the
+            reply is sent, in the poller until the cycle is committed; a
+            decision started during a change waits and then uses the new
+            mode; a change refused for a busy lock leaves the mode as it was
+  no mode   lock timeout, unreadable or invalid mode: no decision at all -
+            RADIUS answers nothing, the poller kicks and releases nothing
+  gate      enforced only from shadow, with a fresh enforce preview whose
+            state still holds and whose confirmation is typed back
   repair    preview then execute, compare-and-set on Purchase, User,
             current value and the scope's connections; audited
   routes    superadmin-only; the two writes re-ask the password
@@ -40,7 +45,7 @@ from app import models
 from app.deps import require_confirm_password, require_superadmin
 from app.routers import session_caps as routes
 from app.services import gate_locks, purchase_cap_repair as repair, quota_manager, radius_server
-from app.services import session_cap_mode as mode
+from app.services import session_cap_enforce, session_cap_mode as mode
 import _receipt_void_env as fixture
 
 failures = []
@@ -77,6 +82,15 @@ def login(server, username, ip):
             patch.object(radius_server, "_notify_ban_async", side_effect=lambda *a, **k: NOTIFIED.append(a)):
         server.HandleAuthPacket(pkt)
     return replies[-1].code if replies else None
+
+
+def enforce(env, reason):
+    """The only way to 'enforced': through shadow, with a fresh preview typed back."""
+    mode.change_mode(env.Session, env.root.id, "shadow", reason)
+    with env.Session() as db:
+        shown = session_cap_enforce.preview(db)
+    return mode.change_mode(env.Session, env.root.id, "enforced", reason, enforce_preview=dict(
+        token=shown["token"], generated_at=shown["generated_at"], confirmation=shown["confirmation_phrase"]))
 
 
 def scenario(label, engine):
@@ -131,12 +145,18 @@ def scenario(label, engine):
 
         toggles = []
 
-        def poll():
+        def poll(fake=None, slow_commit=False):
+            """poll_all's real tail (_finish_cycle): the session-cap step and the commit under the lock."""
             toggles.clear()
-            fake = lambda db, c, enabled: (toggles.append((c.id, enabled)), setattr(c, "enabled", enabled))
-            with patch.object(quota_manager, "_set_connection_enabled", side_effect=fake), env.Session() as db:
-                quota_manager.enforce_concurrent_session_limits(db)
-                db.commit()
+            fake = fake or (lambda db, c, enabled: (toggles.append((c.id, enabled)), setattr(c, "enabled", enabled)))
+            with patch.object(quota_manager, "_set_connection_enabled", side_effect=fake), \
+                    patch.object(quota_manager, "_reconcile_connection_enabled_state",
+                                 side_effect=lambda db, now: 0), env.Session() as db:
+                if slow_commit:   # the commit itself is late: nothing reaches the database before it
+                    commit = db.commit
+                    db.commit = lambda: (time.sleep(0.6), commit())[1]
+                quota_manager._finish_cycle(db, None, [], [])
+            with env.Session() as db:
                 wg = db.get(models.Connection, ids["wg"])
                 return sorted(toggles), (wg.enabled, wg.session_limited)
 
@@ -191,7 +211,7 @@ def scenario(label, engine):
               shadow_rows(), sorted([("radius_would_reject", ids["l2tp"], 3), ("poll_would_kick", ids["wg"], 1)]))
 
         # ================================================================ enforced, then rollback
-        mode.change_mode(env.Session, env.root.id, "enforced", "owner decided")
+        enforce(env, "owner decided")
         unban()
         check(L + "enforced: the 2nd protocol of the cap-1 Purchase is refused",
               login(server, "mode-l2tp", "10.8.3.1"), REJECT)
@@ -202,7 +222,7 @@ def scenario(label, engine):
         with env.Session() as db:
             db.get(models.User, uid).max_concurrent_sessions = 1
             db.commit()
-        mode.change_mode(env.Session, env.root.id, "enforced", "again")
+        enforce(env, "again")
         poll()
         mode.change_mode(env.Session, env.root.id, "legacy", "rollback 2")
         check(L + "rollback with a User cap of 1 and the OpenVPN still on: legacy keeps it kicked (no room)",
@@ -214,8 +234,8 @@ def scenario(label, engine):
             history = [(e.from_mode, e.to_mode) for e in db.query(models.SessionCapModeEvent).order_by(
                 models.SessionCapModeEvent.id)]
         check(L + "every mode change audited", history, [("legacy", "shadow"), ("shadow", "enforced"),
-                                                          ("enforced", "legacy"), ("legacy", "enforced"),
-                                                          ("enforced", "legacy")])
+                                                          ("enforced", "legacy"), ("legacy", "shadow"),
+                                                          ("shadow", "enforced"), ("enforced", "legacy")])
 
         # ================================================================ the switch
         bind = env.Session().get_bind()
@@ -233,7 +253,7 @@ def scenario(label, engine):
         reader = threading.Thread(target=in_flight)
         reader.start()
         held.wait(5)
-        changer = threading.Thread(target=change, args=("enforced",))
+        changer = threading.Thread(target=change, args=("shadow",))
         changer.start()
         time.sleep(0.5)
         with env.Session() as db:
@@ -244,8 +264,8 @@ def scenario(label, engine):
         with mode.decision(bind) as after:
             pass
         check(L + "a change waits for the decision in flight (still legacy), then answers; the next decision is "
-              "enforced", (pending, outcome["in_flight"], outcome["enforced"]["mode"], after),
-              ((True, "legacy"), "legacy", "enforced", "enforced"))
+              "shadow", (pending, outcome["in_flight"], outcome["shadow"]["mode"], after),
+              ((True, "legacy"), "legacy", "shadow", "shadow"))
 
         exclusive = gate_locks.FileLock(mode.lock_path()).acquire(shared=False, timeout=5)
         with env.Session() as db:   # what a change does while it holds the lock: commit first
@@ -278,6 +298,153 @@ def scenario(label, engine):
             code(lambda: mode.change_mode(env.Session, env.root.id, "off", "x")),
             code(lambda: mode.change_mode(env.Session, env.root.id, "shadow", " "))),
             ((422, "session_cap_mode_invalid"), (422, "session_cap_mode_reason_required")))
+
+        # ================================================================ the gate in front of enforced
+        with env.Session() as db:
+            db.query(models.SessionCapRuntimeState).update({"mode": "legacy"})
+            db.commit()
+        check(L + "enforced straight from legacy: refused", code(lambda: mode.change_mode(
+            env.Session, env.root.id, "enforced", "x", enforce_preview=dict(token="t", generated_at=0,
+                                                                           confirmation="c"))),
+              (409, "enforced_requires_shadow"))
+        mode.change_mode(env.Session, env.root.id, "shadow", "gate test")
+        check(L + "enforced without a preview: refused", code(lambda: mode.change_mode(
+            env.Session, env.root.id, "enforced", "x")), (422, "enforce_preview_required"))
+        with env.Session() as db:
+            shown = session_cap_enforce.preview(db)
+        ack = dict(token=shown["token"], generated_at=shown["generated_at"], confirmation=shown["confirmation_phrase"])
+        check(L + "the preview names the unresolved and asks for the counts typed back",
+              (shown["mode"], shown["confirmation_phrase"].startswith("ENFORCE "), "unrepaired" in shown,
+               "would_kick_now" in shown), ("shadow", True, True, True))
+        with env.Session() as db:
+            db.get(models.User, uid).max_concurrent_sessions = 2       # a Purchase of it has no cap: one more unrepaired
+            unrepaired = models.Purchase(user_id=uid, status=models.UserStatus.active, quota_bytes=0)
+            db.add(unrepaired)
+            db.flush()
+            db.add(models.Connection(user_id=uid, node_id=node, type=models.ConnectionType.openvpn, enabled=True,
+                                     purchase_id=unrepaired.id, ppp_username="gate-ovpn", ppp_password="pw"))
+            db.commit()
+            gate_purchase = unrepaired.id
+        check(L + "state changed since the preview (one more unrepaired): refused, still shadow",
+              (code(lambda: mode.change_mode(env.Session, env.root.id, "enforced", "x", enforce_preview=ack)),
+               mode.status(env.Session())["mode"]), ((409, "enforce_preview_stale"), "shadow"))
+        with env.Session() as db:
+            shown = session_cap_enforce.preview(db)
+        check(L + "...the fresh preview lists it", [r[0] for r in shown["unrepaired"]].count(gate_purchase), 1)
+        check(L + "a wrong confirmation: refused", code(lambda: mode.change_mode(
+            env.Session, env.root.id, "enforced", "x", enforce_preview=dict(
+                token=shown["token"], generated_at=shown["generated_at"], confirmation="ENFORCE"))),
+              (409, "enforce_confirmation_mismatch"))
+        old = shown["generated_at"] - session_cap_enforce.PREVIEW_SECONDS - 1
+        check(L + "an expired preview: refused", code(lambda: mode.change_mode(
+            env.Session, env.root.id, "enforced", "x", enforce_preview=dict(
+                token=shown["token"], generated_at=old, confirmation=shown["confirmation_phrase"]))),
+              (409, "enforce_preview_expired"))
+        check(L + "the fresh preview typed back: enforced", mode.change_mode(
+            env.Session, env.root.id, "enforced", "gate passed", enforce_preview=dict(
+                token=shown["token"], generated_at=shown["generated_at"],
+                confirmation=shown["confirmation_phrase"]))["mode"], "enforced")
+        with env.Session() as db:
+            db.query(models.Connection).filter_by(purchase_id=gate_purchase).delete()
+            db.query(models.Purchase).filter_by(id=gate_purchase).delete()
+            db.get(models.User, uid).max_concurrent_sessions = None
+            db.commit()
+
+        # ================================================================ no valid mode: no decision
+        sessions("ovpn", 1)
+        with env.Session() as db:
+            wg = db.get(models.Connection, ids["wg"])
+            wg.online, wg.enabled, wg.session_limited = True, True, False
+            db.commit()
+        unban()
+        before = events()
+        exclusive = gate_locks.FileLock(mode.lock_path()).acquire(shared=False, timeout=5)
+        with patch.object(mode, "READ_WAIT_SECONDS", 0.2):
+            timed_out = (login(server, "mode-l2tp", "10.8.4.1"), poll())
+        exclusive.release()
+        check(L + "lock timeout: RADIUS answers nothing, the poller kicks nothing (enforced would)",
+              (timed_out, events() - before), ((None, ([], (True, False))), 0))
+        with patch.object(mode, "select", side_effect=RuntimeError("database down")):
+            unreadable = (login(server, "mode-l2tp", "10.8.4.2"), poll())
+        check(L + "mode unreadable: the same - no decision, no cached or guessed mode",
+              (unreadable, events() - before), ((None, ([], (True, False))), 0))
+        with env.Session() as db:
+            db.query(models.SessionCapRuntimeState).update({"mode": "bogus"})
+            db.commit()
+        check(L + "an invalid stored mode: the same", login(server, "mode-l2tp", "10.8.4.3"), None)
+        with env.Session() as db:
+            db.query(models.SessionCapRuntimeState).update({"mode": "enforced"})
+            db.commit()
+        check(L + "...and a valid mode again: decided (enforced refuses the 2nd protocol)",
+              login(server, "mode-l2tp", "10.8.4.4"), REJECT)
+
+        # ================================================================ the gap from rule to reply (RADIUS)
+        sessions("ovpn", 1)
+        unban()
+        mode.change_mode(env.Session, env.root.id, "legacy", "reply gap test")
+        sending, release_reply, order = threading.Event(), threading.Event(), []
+
+        def slow_reply(srv, pkt, reply):
+            with env.Session() as db:
+                order.append(("reply", reply.code, mode.status(db)["mode"]))
+            sending.set()
+            release_reply.wait(10)
+
+        def radius_login():
+            pkt = packet.AuthPacket(id=1, secret=b"testsecret", authenticator=os.urandom(16), dict=_dict)
+            pkt["User-Name"], pkt["Calling-Station-Id"] = "mode-l2tp", "10.8.5.1"
+            pkt["User-Password"] = pkt.PwCrypt("pw")
+            pkt.source = ("10.8.5.1", 12345)
+            with patch.object(radius_server, "_send_reply", side_effect=slow_reply):
+                server.HandleAuthPacket(pkt)
+
+        auth = threading.Thread(target=radius_login)
+        auth.start()
+        sending.wait(10)
+        changer = threading.Thread(target=lambda: (mode.change_mode(env.Session, env.root.id, "shadow", "during reply"),
+                                                   order.append(("changed",))))
+        changer.start()
+        time.sleep(0.4)
+        waited = changer.is_alive()
+        release_reply.set()
+        auth.join(10)
+        changer.join(10)
+        check(L + "a change cannot fall between the rule and the reply: it waits for the reply (decided by legacy)",
+              (waited, order), (True, [("reply", ACCEPT, "legacy"), ("changed",)]))
+
+        # ================================================================ the gap from kick to commit (poller)
+        enforce(env, "commit gap test")
+        with env.Session() as db:
+            wg = db.get(models.Connection, ids["wg"])
+            wg.online, wg.enabled, wg.session_limited = True, True, False
+            db.commit()
+        kicked, release_kick, seen_at_change = threading.Event(), threading.Event(), {}
+
+        def blocking_toggle(db, c, enabled):
+            c.enabled = enabled
+            kicked.set()
+            release_kick.wait(10)
+
+        cycle = threading.Thread(target=lambda: poll(fake=blocking_toggle, slow_commit=True))
+        cycle.start()
+        kicked.wait(10)
+
+        def change_then_look():
+            mode.change_mode(env.Session, env.root.id, "legacy", "during the poll")
+            with env.Session() as db:
+                seen_at_change["wg"] = db.get(models.Connection, ids["wg"]).session_limited
+
+        changer = threading.Thread(target=change_then_look)
+        changer.start()
+        time.sleep(0.4)
+        waited = changer.is_alive()
+        release_kick.set()
+        cycle.join(10)
+        changer.join(10)
+        check(L + "a change cannot fall between a kick and its commit: answered only after the cycle committed it",
+              (waited, seen_at_change.get("wg")), (True, True))
+        sessions("ovpn", 0)
+        poll()
 
         # ================================================================ repair
         with env.Session() as db:
@@ -345,9 +512,10 @@ def routes_guarded():
     confirm = {path: any(d.call is require_confirm_password for d in r.dependant.dependencies)
                for (path, methods), r in by_path.items() if "POST" in methods}
     check("routes: every route superadmin-only", superadmin, True)
-    check("routes: the mode change and the repair execute re-ask the password; the preview writes nothing and "
-          "does not", confirm, {"/api/session-caps/mode": True, "/api/session-caps/purchase-repairs/preview": False,
-                                "/api/session-caps/purchase-repairs/execute": True})
+    check("routes: the mode change and the repair execute re-ask the password; the two read-only previews do not",
+          confirm, {"/api/session-caps/mode": True, "/api/session-caps/enforce-preview": False,
+                    "/api/session-caps/purchase-repairs/preview": False,
+                    "/api/session-caps/purchase-repairs/execute": True})
 
 
 with contextlib.ExitStack() as cleanup:

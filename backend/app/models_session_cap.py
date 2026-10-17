@@ -66,6 +66,9 @@ class PurchaseCapRepair(Base):
     id = Column(Integer, primary_key=True)
     purchase_id = Column(Integer, nullable=False, index=True)
     user_id = Column(Integer, nullable=False)
+    # max_concurrent_sessions | reserved_max_concurrent_sessions (NULL on
+    # rows from before the second existed: the first)
+    field = Column(String(40), nullable=True)
     before_value = Column(Integer, nullable=True)
     after_value = Column(Integer, nullable=False)
     user_cap_at_repair = Column(Integer, nullable=True)

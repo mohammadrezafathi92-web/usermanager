@@ -38,9 +38,13 @@ class ModeRequest(BaseModel):
     enforce_preview: Optional[EnforcePreviewAck] = None
 
 
+CapField = Literal["max_concurrent_sessions", "reserved_max_concurrent_sessions"]
+
+
 class RepairPreviewRequest(BaseModel):
     purchase_id: int
     new_value: int
+    field: CapField = "max_concurrent_sessions"
 
 
 class RepairExecuteRequest(BaseModel):
@@ -50,6 +54,7 @@ class RepairExecuteRequest(BaseModel):
     new_value: int
     preview_token: str
     reason: str
+    field: CapField = "max_concurrent_sessions"
 
 
 @router.get("/status")
@@ -97,7 +102,7 @@ def shadow_summary(db: Session = Depends(get_db)):
 
 @router.post("/purchase-repairs/preview")
 def repair_preview(payload: RepairPreviewRequest, db: Session = Depends(get_db)):
-    return purchase_cap_repair.preview(db, payload.purchase_id, payload.new_value)
+    return purchase_cap_repair.preview(db, payload.purchase_id, payload.new_value, payload.field)
 
 
 @router.post("/purchase-repairs/execute")
@@ -106,12 +111,13 @@ def repair_execute(payload: RepairExecuteRequest, admin=Depends(require_confirm_
     return purchase_cap_repair.execute(
         factory, admin.id, purchase_id=payload.purchase_id, expected_user_id=payload.expected_user_id,
         expected_current=payload.expected_current, new_value=payload.new_value,
-        preview_token=payload.preview_token, reason=payload.reason)
+        preview_token=payload.preview_token, reason=payload.reason, field=payload.field)
 
 
 @router.get("/purchase-repairs")
 def repair_audit(db: Session = Depends(get_db), limit: int = Query(200, ge=1, le=2000)):
     rows = db.query(models.PurchaseCapRepair).order_by(models.PurchaseCapRepair.id.desc()).limit(limit).all()
-    return [dict(id=r.id, purchase_id=r.purchase_id, user_id=r.user_id, before=r.before_value, after=r.after_value,
+    return [dict(id=r.id, purchase_id=r.purchase_id, user_id=r.user_id, field=r.field or "max_concurrent_sessions",
+                 before=r.before_value, after=r.after_value,
                  user_cap_at_repair=r.user_cap_at_repair, scope_connection_ids=r.scope_connection_ids,
                  reason=r.reason, admin_id=r.admin_id, created_at=r.created_at) for r in rows]

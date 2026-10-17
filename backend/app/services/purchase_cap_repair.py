@@ -1,5 +1,10 @@
 """Repairing ONE Purchase's concurrent-session cap, previewed then executed.
 
+Two fields: max_concurrent_sessions (the cap in force) and
+reserved_max_concurrent_sessions (the cap a queued renewal will put in
+force when it activates - only on a Purchase that has a queued renewal
+with a package; the cap in force is left as it is).
+
 The preview shows the exact state the change would apply to - the
 Purchase, its customer and the User's cap, every connection in the
 Purchase's scope and the live sessions on them - and a token binding all
@@ -25,9 +30,10 @@ from .. import models
 from . import session_cap_rule
 
 MAX_CAP = 1000
+FIELDS = ("max_concurrent_sessions", "reserved_max_concurrent_sessions")
 
 
-def _state(db, purchase_id: int, *, lock: bool = False) -> dict:
+def _state(db, purchase_id: int, field: str, *, lock: bool = False) -> dict:
     query = select(models.Purchase).where(models.Purchase.id == purchase_id)
     purchase = db.execute(query.with_for_update() if lock else query).scalar_one_or_none()
     if purchase is None:
@@ -41,9 +47,11 @@ def _state(db, purchase_id: int, *, lock: bool = False) -> dict:
     return dict(
         purchase_id=purchase.id, user_id=user.id, username=user.username,
         purchase_status=purchase.status.value if purchase.status else None,
-        current_value=purchase.max_concurrent_sessions,
+        field=field, current_value=getattr(purchase, field),
+        cap_in_force=purchase.max_concurrent_sessions,
         user_cap=user.max_concurrent_sessions,
         package_id=purchase.package_id,
+        reserved_package_id=purchase.reserved_package_id,
         scope=[dict(connection_id=c.id, type=c.type.value, enabled=bool(c.enabled),
                     connection_cap=c.max_concurrent_sessions,
                     live=counts.get(c.id, 0) if c.type in session_cap_rule.PPP_TYPES else int(bool(c.online)))
@@ -59,54 +67,64 @@ def _token(state: dict, new_value: int) -> str:
     return hashlib.sha256(json.dumps(bound, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _valid(new_value) -> int:
+def _valid(new_value, field: str) -> int:
+    if field not in FIELDS:
+        raise HTTPException(422, "purchase_cap_field_invalid")
     if not isinstance(new_value, int) or isinstance(new_value, bool) or not 1 <= new_value <= MAX_CAP:
         raise HTTPException(422, "purchase_cap_value_invalid")
     return new_value
 
 
-def preview(db, purchase_id: int, new_value: int) -> dict:
-    new_value = _valid(new_value)
-    state = _state(db, purchase_id)
+def _reservation_required(state: dict) -> None:
+    if state["field"] == "reserved_max_concurrent_sessions" and state["reserved_package_id"] is None:
+        raise HTTPException(409, "purchase_cap_no_queued_renewal")
+
+
+def preview(db, purchase_id: int, new_value: int, field: str = "max_concurrent_sessions") -> dict:
+    new_value = _valid(new_value, field)
+    state = _state(db, purchase_id, field)
+    _reservation_required(state)
     live = sum(row["live"] for row in state["scope"] if row["enabled"])
     token = _token(state, new_value)
     db.rollback()
+    enforced = (f"at most {new_value} live session(s) across this Purchase's connections combined; {live} live now"
+                if field == "max_concurrent_sessions" else
+                f"none now; {new_value} becomes this Purchase's cap when its queued renewal activates")
     return dict(state, new_value=new_value, live_sessions_in_scope=live, preview_token=token,
-                effect=dict(
-                    legacy_and_shadow="none: the legacy rule never reads a Purchase's cap",
-                    enforced=f"at most {new_value} live session(s) across this Purchase's connections combined; "
-                             f"{live} live now"))
+                effect=dict(legacy_and_shadow="none: the legacy rule never reads a Purchase's cap", enforced=enforced))
 
 
 def execute(session_factory, admin_id: int, *, purchase_id: int, expected_user_id: int,
-            expected_current: Optional[int], new_value: int, preview_token: str, reason: str) -> dict:
-    new_value = _valid(new_value)
+            expected_current: Optional[int], new_value: int, preview_token: str, reason: str,
+            field: str = "max_concurrent_sessions") -> dict:
+    new_value = _valid(new_value, field)
     reason = (reason or "").strip()
     if not reason:
         raise HTTPException(422, "purchase_cap_reason_required")
     with session_factory() as db:
         if db.get_bind().dialect.name == "sqlite":
             db.execute(text("BEGIN IMMEDIATE"))
-        state = _state(db, purchase_id, lock=True)
+        state = _state(db, purchase_id, field, lock=True)
+        _reservation_required(state)
         if state["user_id"] != expected_user_id or state["current_value"] != expected_current:
             db.rollback()
             raise HTTPException(409, "purchase_cap_target_changed")
         if _token(state, new_value) != preview_token:
             db.rollback()
             raise HTTPException(409, "purchase_cap_preview_stale")
-        column = models.Purchase.max_concurrent_sessions
+        column = getattr(models.Purchase, field)
         result = db.execute(models.Purchase.__table__.update().where(
             models.Purchase.id == purchase_id, models.Purchase.user_id == expected_user_id,
             column.is_(None) if expected_current is None else column == expected_current,
-        ).values(max_concurrent_sessions=new_value))
+        ).values(**{field: new_value}))
         if result.rowcount != 1:
             db.rollback()
             raise HTTPException(409, "purchase_cap_target_changed")
         audit = models.PurchaseCapRepair(
-            purchase_id=purchase_id, user_id=expected_user_id, before_value=expected_current,
+            purchase_id=purchase_id, user_id=expected_user_id, field=field, before_value=expected_current,
             after_value=new_value, user_cap_at_repair=state["user_cap"],
             scope_connection_ids=json.dumps([row["connection_id"] for row in state["scope"]]),
             preview_token=preview_token, reason=reason[:2000], admin_id=admin_id)
         db.add(audit)
         db.commit()
-        return dict(purchase_id=purchase_id, before=expected_current, after=new_value, repair_id=audit.id)
+        return dict(purchase_id=purchase_id, field=field, before=expected_current, after=new_value, repair_id=audit.id)

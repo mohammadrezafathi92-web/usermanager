@@ -135,6 +135,8 @@ def migrate_user(db: Session, user: models.User) -> tuple[int, int]:
             used_bytes=user.used_bytes or 0,
             expire_at=user.expire_at,
             expire_days_after_first_use=user.expire_days_after_first_use,
+            # The cap that governed this pool (session_cap_rule.session_scope).
+            max_concurrent_sessions=user.max_concurrent_sessions,
             reserved_quota_bytes=user.reserved_quota_bytes,
             reserved_duration_days=user.reserved_duration_days,
             reserved_package_id=user.reserved_package_id,
@@ -163,6 +165,9 @@ def migrate_user(db: Session, user: models.User) -> tuple[int, int]:
             quota_bytes=gb_to_bytes(pkg.quota_gb) if pkg.quota_gb else 0,
             used_bytes=sum(c.total_bytes or 0 for c in conns),
             expire_at=(group_created + dt.timedelta(days=pkg.duration_days)) if pkg.duration_days else None,
+            # Not today's editable package value: the cap that actually
+            # governed these connections - the User's, until now.
+            max_concurrent_sessions=user.max_concurrent_sessions,
             created_at=group_created,
         )
         converted.append(purchase)

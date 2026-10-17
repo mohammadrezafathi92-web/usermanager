@@ -20,10 +20,14 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATABASE_URL", "sqlite://")
 os.environ.setdefault("RADIUS_ENABLED", "false")
+# Every Access-Request is decided under session_cap_mode's lock file; without
+# one RADIUS answers nothing (services/session_cap_mode.py).
+os.environ["UM_LOCK_DIR"] = tempfile.mkdtemp(prefix="um-radius-ip-ban-locks-")
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker

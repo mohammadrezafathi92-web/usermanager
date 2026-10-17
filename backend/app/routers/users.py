@@ -555,7 +555,9 @@ def create_user(
         admin_billing.ensure_volume_available(admin)
         reseller_debit = admin_billing.charge_for_package(db, admin, package, units=1)
         # the package's own quota/duration/concurrent-session cap win over
-        # whatever was in the manual fields above
+        # whatever was in the manual fields above. The User's cap is what
+        # session_cap_mode 'legacy' enforces; the Purchase below gets the
+        # same value as its own (session_cap_rule.session_scope).
         data["total_quota_bytes"] = int(package.quota_gb * 1024 ** 3) if package.quota_gb else 0
         data["expire_at"] = (
             dt.datetime.utcnow() + dt.timedelta(days=package.duration_days) if package.duration_days else None
@@ -610,10 +612,12 @@ def create_user(
         # the new model from minute one - the exact split reported
         # 2026-08-28. absorb_legacy_pool_into_purchase carries the
         # user-level quota/usage/expiry it just got above onto the Purchase
-        # 1:1, so nothing is double-counted.
+        # 1:1, so nothing is double-counted; the package's cap is this
+        # Purchase's own.
         new_purchase = None
         if result["created"]:
-            new_purchase = user_ops.absorb_legacy_pool_into_purchase(db, user)
+            new_purchase = user_ops.absorb_legacy_pool_into_purchase(
+                db, user, max_concurrent_sessions=package.max_concurrent_sessions)
         # Revenue side - see accounting.record_panel_sale for why this used
         # to be missing entirely on every panel-made sale.
         sale_entry = accounting.record_panel_sale(db, "sale_new", user, package, actor_admin_id=admin.id)
@@ -1553,6 +1557,9 @@ def convert_legacy_group(
         quota_bytes=user_ops.gb_to_bytes(payload.quota_gb) if payload.quota_gb else 0,
         used_bytes=sum(c.total_bytes or 0 for c in conns),
         expire_at=(_dt.datetime.utcnow() + _dt.timedelta(days=payload.expire_days)) if payload.expire_days else None,
+        # The cap that governed these connections until now (the User's);
+        # see session_cap_rule.session_scope.
+        max_concurrent_sessions=user.max_concurrent_sessions,
         status=models.UserStatus.active,
         created_at=min((c.created_at for c in conns if c.created_at), default=_dt.datetime.utcnow()),
     )

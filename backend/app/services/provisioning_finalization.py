@@ -237,9 +237,10 @@ def finish(db, operation_id, version, leases, *, require_contracts=False, approv
         user = user_ops.create_user_record_core(db, **intent.user.dict(), quota_gb=intent.quota_bytes / 1024 ** 3,
             expire_days=intent.duration_days, package_id=package.id if package else None, defer_loyalty=True)
         user.total_quota_bytes = intent.quota_bytes
-        if intent.package is not None:
-            # The combined session cap frozen with the request (never the live
-            # package now): RADIUS enforces the user's cap, not the Purchase's.
+        if user_limits and not steps:
+            # No connection, so no Purchase below: the User's own pool is the
+            # package's service and holds its cap frozen with the request,
+            # like its quota and expiry. Otherwise the cap is the Purchase's.
             user.max_concurrent_sessions = intent.package.max_concurrent_sessions
         if intent.created_via is not None:
             user.created_via = intent.created_via
@@ -331,10 +332,14 @@ def finish(db, operation_id, version, leases, *, require_contracts=False, approv
             user_ops._maybe_grant_loyalty_reward(db, user)
     elif renewal:
         core = user_ops.renew_purchase_core if purchase is not None else user_ops.renew_user_core
+        renewed_package = package.id if package and not intent.keep_package else None
+        # A Purchase's renewal carries the cap frozen with the request.
+        cap = dict(max_concurrent_sessions=intent.package.max_concurrent_sessions) if (
+            purchase is not None and renewed_package is not None) else {}
         core(db, purchase if purchase is not None else user, add_gb=intent.quota_bytes / 1024 ** 3,
             add_days=intent.duration_days, reset_usage=intent.reset_usage,
-            package_id=package.id if package and not intent.keep_package else None, reconciliation_sink=reconcile,
-            evidence_sink=renewal_evidence)
+            package_id=renewed_package, reconciliation_sink=reconcile,
+            evidence_sink=renewal_evidence, **cap)
     if intent.node_fingerprints is not None:
         if set(intent.node_fingerprints) != {str(step.node_id) for step in steps}:
             raise HTTPException(409, "provisioning_node_config_changed")

@@ -1099,13 +1099,6 @@ def create_user(
         package_id=payload.package_id,
         defer_loyalty=True,
     )
-    if payload.package_id:
-        # The package's combined concurrent-session cap (models.Package), as
-        # the panel's create already copies it. Without it RADIUS falls back
-        # to each connection's own cap (1): a 3-user package let one login
-        # per credential through. Set before absorb_legacy_pool_into_purchase
-        # below, which copies the user's cap onto the new Purchase.
-        user.max_concurrent_sessions = _new_package.max_concurrent_sessions
     # Marks where this customer came from, so the panel can show «ربات»
     # instead of «بدون ادمین» for a bot signup that legitimately has no
     # owning reseller - see models.User.created_via.
@@ -1151,7 +1144,13 @@ def create_user(
     # exists, User.effective_quota_bytes stops reading the user-level
     # number at all.
     new_purchase = None
-    if payload.connections:
+    if payload.connections and payload.package_id:
+        # The package's concurrent cap is this Purchase's own (reported
+        # 2026-10-17: it was copied from the User, which had none, so a
+        # 3-user package let one login per credential through).
+        new_purchase = user_ops.absorb_legacy_pool_into_purchase(
+            db, user, comment=payload.comment, max_concurrent_sessions=_new_package.max_concurrent_sessions)
+    elif payload.connections:
         new_purchase = user_ops.absorb_legacy_pool_into_purchase(db, user, comment=payload.comment)
 
     # Reuses the same already-authorized fetch above rather than a second
@@ -1765,7 +1764,8 @@ def renew_service(
         user, purchase = db.get(models.User, user_id), db.get(models.Purchase, purchase_id)
         renew_package = db.get(models.Package, payload.package_id) if payload.package_id else None
         user_ops.renew_purchase(db, purchase, payload.add_gb, payload.add_days, payload.reset_usage,
-                                package_id=payload.package_id, evidence_sink=renewal_evidence)
+                                package_id=payload.package_id, evidence_sink=renewal_evidence,
+                                max_concurrent_sessions=renew_package.max_concurrent_sessions if renew_package else None)
         sale_entry = None
         _charge_seller(db, user, renew_package, payload.add_gb or 0)
         if payload.package_id or payload.paid_amount is not None:

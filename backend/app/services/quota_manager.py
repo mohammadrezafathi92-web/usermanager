@@ -3,6 +3,7 @@ onto each connection's owning user (shared quota across all protocols),
 and enable/disable connections as quota / expiry dictate."""
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import logging
 
@@ -13,7 +14,7 @@ from .. import models
 from ..database import SessionLocal
 from .mikrotik_client import MikrotikClient, MikrotikError, parse_ros_duration_seconds
 from .node_gate import writer_gate
-from . import legacy_remote
+from . import legacy_remote, session_cap_mode, session_cap_rule
 from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
 from .xray_client import XrayError, client_for_node
 from .softether_client import SoftEtherError, client_for_node as softether_client_for_node
@@ -488,7 +489,7 @@ def active_session_count(db: Session, user_id: int) -> int:
     return ppp_count + other_online_count
 
 
-def enforce_concurrent_session_limits(db: Session) -> int:
+def _enforce_legacy_session_limits(db: Session) -> int:
     """Reactively kicks a WireGuard/Xray connection that pushed a user over
     their own User.max_concurrent_sessions cap, and releases one back once
     there is genuinely room again.
@@ -586,6 +587,98 @@ def enforce_concurrent_session_limits(db: Session) -> int:
                 toggled += 1
                 room -= 1
     return toggled
+
+
+
+def enforce_concurrent_session_limits(db: Session, mode: str) -> int:
+    """The poll cycle's concurrent-session step, by session_cap_mode `mode`:
+    legacy and shadow act exactly as _enforce_legacy_session_limits always
+    did; shadow also records what the per-Purchase rule would have done
+    instead (nothing more); enforced acts per Purchase
+    (session_cap_rule.session_scope). The caller holds
+    session_cap_mode.decision - the one that yielded `mode` - until it has
+    committed what this did (_finish_cycle)."""
+    if mode == "enforced":
+        return _enforce_per_purchase_session_limits(db)
+    if mode == "shadow":
+        try:
+            _shadow_per_purchase_session_limits(db)
+        except Exception:  # noqa: BLE001 - a shadow record never touches enforcement
+            logger.exception("session cap shadow comparison failed")
+    elif mode != "legacy":
+        raise ValueError(f"unknown session cap mode {mode!r}")
+    return _enforce_legacy_session_limits(db)
+
+
+def _per_purchase_candidates(db: Session):
+    """Every user the per-Purchase rule could act on: a User cap, a capped
+    Purchase, or a connection still kicked (to be released)."""
+    ids = {
+        uid for (uid,) in db.query(models.User.id)
+        .filter(models.User.max_concurrent_sessions.isnot(None), models.User.max_concurrent_sessions > 0)
+        .all()
+    } | {
+        uid for (uid,) in db.query(models.Purchase.user_id)
+        .filter(models.Purchase.max_concurrent_sessions.isnot(None), models.Purchase.max_concurrent_sessions > 0)
+        .distinct()
+        .all()
+    } | {
+        uid for (uid,) in db.query(models.Connection.user_id)
+        .filter(models.Connection.session_limited.is_(True))
+        .distinct()
+        .all()
+    }
+    if not ids:
+        return []
+    return (
+        db.query(models.User)
+        .options(selectinload(models.User.connections).selectinload(models.Connection.purchase))
+        .filter(models.User.id.in_(ids))
+        .all()
+    )
+
+
+def _enforce_per_purchase_session_limits(db: Session) -> int:
+    """Each scope (session_cap_rule.session_scope) decides on its own
+    connections only: a kick or a release in one Purchase never makes or
+    takes room in another, nor in the customer's legacy pool."""
+    users = _per_purchase_candidates(db)
+    counts = session_cap_rule.ppp_counts(db, [u.id for u in users])
+    toggled = 0
+    for user in users:
+        kicks, releases = session_cap_rule.plan(user, session_cap_rule.capped_scopes(user), counts)
+        for conn, _limit, _count in kicks:
+            conn.session_limited = True
+            _set_connection_enabled(db, conn, enabled=False)
+            toggled += 1
+        for conn, _limit, _count in releases:
+            conn.session_limited = False
+            _set_connection_enabled(db, conn, enabled=True)
+            toggled += 1
+    return toggled
+
+
+def _shadow_per_purchase_session_limits(db: Session) -> None:
+    """Compares, before legacy acts, what each rule would kick and release
+    this cycle and records every connection where they disagree. Reads
+    only."""
+    users = _per_purchase_candidates(db)
+    counts = session_cap_rule.ppp_counts(db, [u.id for u in users])
+    for user in users:
+        legacy_kicks, legacy_releases = session_cap_rule.plan(user, session_cap_rule.legacy_scopes(user), counts)
+        new_kicks, new_releases = session_cap_rule.plan(user, session_cap_rule.capped_scopes(user), counts)
+        # (kind, the rule that acts, its plan, the other rule's plan)
+        for kind, new_side, acting, other in (("poll_would_kick", True, new_kicks, legacy_kicks),
+                                              ("poll_would_not_kick", False, legacy_kicks, new_kicks),
+                                              ("poll_would_release", True, new_releases, legacy_releases),
+                                              ("poll_would_not_release", False, legacy_releases, new_releases)):
+            others = {conn.id for conn, _limit, _count in other}
+            for conn, limit, count in acting:
+                if conn.id in others:
+                    continue
+                session_cap_mode.note(kind, user_id=user.id, purchase_id=conn.purchase_id, connection_id=conn.id,
+                                      legacy=(None, None) if new_side else (limit, count),
+                                      new=(limit, count) if new_side else (None, None))
 
 
 def _set_connection_enabled(db: Session, connection: models.Connection, enabled: bool):
@@ -951,6 +1044,37 @@ from .reseller_refund_fence import guarded as _refund_guarded
 
 
 @_refund_guarded
+def _finish_cycle(db: Session, now, purchase_ids, user_ids) -> None:
+    """poll_all's last steps and its commit, under session_cap_mode's shared
+    lock from before the concurrent-session step reads the mode until after
+    the commit - a mode change can never fall between a kick or release
+    and its being committed. No valid mode: that step is skipped this cycle
+    (no kick, no release); everything else proceeds as before."""
+    with contextlib.ExitStack() as hold:
+        try:
+            cap_mode = hold.enter_context(session_cap_mode.decision(db.get_bind()))
+        except session_cap_mode.ModeUnavailable as exc:
+            cap_mode = None
+            logger.error("poll_all: concurrent-session step skipped this cycle: no session cap mode (%s)", exc)
+        session_limited_count = enforce_concurrent_session_limits(db, cap_mode) if cap_mode else 0
+
+        # Independent of everything above: catches any WireGuard/Xray
+        # connection whose enabled flag never actually caught up with its
+        # governing quota/expiry - see _reconcile_connection_enabled_state's
+        # own docstring for why this is needed even with the rest of this
+        # function working correctly (2026-09 bug report).
+        reconciled_count = _reconcile_connection_enabled_state(db, now)
+
+        if purchase_ids or user_ids or session_limited_count or reconciled_count:
+            logger.info(
+                "poll_all: enforced %d purchase(s), %d account(s), %d concurrent-session toggle(s), "
+                "%d reconciled connection(s)",
+                len(purchase_ids), len(user_ids), session_limited_count, reconciled_count,
+            )
+
+        db.commit()
+
+
 def poll_all():
     db = SessionLocal()
     try:
@@ -1043,25 +1167,12 @@ def poll_all():
         # _apply_enabled_state's session_limited override actually has
         # something to override rather than racing it. See its own
         # docstring for the full "why" (2026-09-06).
-        session_limited_count = enforce_concurrent_session_limits(db)
-
-        # Independent of everything above: catches any WireGuard/Xray
-        # connection whose enabled flag never actually caught up with its
-        # governing quota/expiry - see _reconcile_connection_enabled_state's
-        # own docstring for why this is needed even with the rest of this
-        # function working correctly (2026-09 bug report).
-        reconciled_count = _reconcile_connection_enabled_state(db, now)
-
-        if purchase_ids or user_ids or session_limited_count or reconciled_count:
-            logger.info(
-                "poll_all: enforced %d purchase(s), %d account(s), %d concurrent-session toggle(s), "
-                "%d reconciled connection(s)",
-                len(purchase_ids), len(user_ids), session_limited_count, reconciled_count,
-            )
-
-        db.commit()
+        _finish_cycle(db, now, purchase_ids, user_ids)
     except Exception:
         logger.exception("poll_all failed")
         db.rollback()
     finally:
         db.close()
+    # Its own transaction, after the cycle's: a shadow record never delays
+    # or fails enforcement (session_cap_mode.flush_shadow).
+    session_cap_mode.flush_shadow(SessionLocal)

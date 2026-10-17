@@ -1764,7 +1764,8 @@ def renew_service(
         user, purchase = db.get(models.User, user_id), db.get(models.Purchase, purchase_id)
         renew_package = db.get(models.Package, payload.package_id) if payload.package_id else None
         user_ops.renew_purchase(db, purchase, payload.add_gb, payload.add_days, payload.reset_usage,
-                                package_id=payload.package_id, evidence_sink=renewal_evidence)
+                                package_id=payload.package_id, evidence_sink=renewal_evidence,
+                                max_concurrent_sessions=renew_package.max_concurrent_sessions if renew_package else None)
         sale_entry = None
         _charge_seller(db, user, renew_package, payload.add_gb or 0)
         if payload.package_id or payload.paid_amount is not None:

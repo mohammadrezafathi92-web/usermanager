@@ -1085,6 +1085,11 @@ class Purchase(Base):
     reserved_duration_days = Column(Integer, nullable=True)
     reserved_package_id = Column(Integer, ForeignKey("packages.id"), nullable=True)
     reserved_created_at = Column(DateTime, nullable=True)
+    # The renewed package's concurrent cap, frozen at the renewal and put on
+    # max_concurrent_sessions when the queued renewal activates (reported
+    # 2026-10-17: a 1-user service renewed with a 2-user package stayed
+    # 1-user). NULL: the renewal leaves the cap as it is.
+    reserved_max_concurrent_sessions = Column(Integer, nullable=True)
 
     notified_quota_80 = Column(Boolean, default=False)
     notified_expiry_soon = Column(Boolean, default=False)

@@ -12,6 +12,10 @@ stored but enforced nowhere, and the bot's create left it empty.
                            User's cap is not touched
   legacy bot create_user   the absorbed Purchase gets the package cap, not
                            the User's
+  renewal with a package  the Purchase gets the renewed package's cap,
+                           frozen at the renewal: now if it applies now,
+                           at activation if queued; none, or a renewal
+                           without a package, leaves it
   approval, no connection  no Purchase: the User's pool holds
                            the package's cap from the approval snapshot
   two purchases, caps 1/3  (session_cap_mode 'enforced') RADIUS: each Purchase admits up to its own cap and
@@ -111,6 +115,30 @@ def scenario(label, engine):
         check(L + "durable create_user: the Purchase gets the cap frozen with the request (3, not the edited 9); "
               "the User's stays empty", caps, (3, None, True))
 
+        # ======================================================== renewal with another package (durable approval)
+        env.new_user("caprenew", 7404)
+        with env.Session() as db:
+            renewed = db.query(models.Purchase).join(models.User).filter(models.User.username == "caprenew").one()
+            renewed.max_concurrent_sessions = 1          # a 1-user service, renewed with the 3-user package
+            db.commit()
+            renewed_id = renewed.id
+        env.renew("caprenew")
+        with env.Session() as db:
+            row = db.get(models.Purchase, renewed_id)
+            queued = (row.max_concurrent_sessions, row.reserved_max_concurrent_sessions, row.reserved_package_id)
+            db.query(models.Package).filter_by(id=env.ids.shared).update({"max_concurrent_sessions": 9})
+            db.commit()
+        with env.Session() as db:
+            row = db.get(models.Purchase, renewed_id)
+            user_ops._maybe_activate_reserved_purchase_renewal(db, row)
+            db.commit()
+            activated = (row.max_concurrent_sessions, row.reserved_max_concurrent_sessions)
+            db.query(models.Package).filter_by(id=env.ids.shared).update({"max_concurrent_sessions": 3})
+            db.commit()
+        check(L + "renewal of a 1-user service with a 3-user package: queued with the cap frozen (3), the service "
+              "still 1 until it activates", queued, (1, 3, env.ids.shared))
+        check(L + "...activation applies the frozen 3, not the package's edited 9", activated, (3, None))
+
         # ======================================================== approval with no connection (zero_final)
         item = env.begin("new", "capzero", 700, package_id=free_id, claimed_telegram_id=7402)
         env.run(lambda db: bot_router.create_user(schemas.BotCreateUserRequest(
@@ -151,6 +179,38 @@ def scenario(label, engine):
         check(L + "legacy bot create_user: the absorbed Purchase gets the package cap (3), the User's stays empty",
               (getattr(outcome, "username", outcome), purchases, user.max_concurrent_sessions if user else None),
               ("caplegacy", [3], None))
+
+        # ======================================================== legacy renewals
+        def legacy_renew(purchase_id, **request):
+            with env.Session() as db:
+                name = db.get(models.User, db.get(models.Purchase, purchase_id).user_id).username
+            return env.run(lambda db: bot_router.renew_service(name, purchase_id, schemas.BotRenewRequest(
+                paid_amount=700, payment_method="card", **request), db=db, owner_admin_id=None, principal=env.internal))
+
+        def cap_of(purchase_id):
+            with env.Session() as db:
+                row = db.get(models.Purchase, purchase_id)
+                return row.max_concurrent_sessions, row.reserved_max_concurrent_sessions
+
+        with env.Session() as db:
+            row = db.query(models.Purchase).join(models.User).filter(models.User.username == "caplegacy").one()
+            row.max_concurrent_sessions, row.used_bytes, row.quota_bytes = 1, 10, 10
+            row.status = models.UserStatus.quota_exceeded       # exhausted: the renewal applies now
+            db.commit()
+            exhausted = row.id
+        legacy_renew(exhausted, add_gb=5, add_days=30, package_id=free_id)
+        check(L + "legacy renewal of an exhausted 1-user service with a 2-user package: the cap is 2 now",
+              cap_of(exhausted), (2, None))
+        legacy_renew(exhausted, add_gb=1, add_days=0)
+        check(L + "...a renewal without a package leaves the cap", cap_of(exhausted)[0], 2)
+        with env.Session() as db:
+            row = db.get(models.Purchase, exhausted)
+            row.reserved_quota_bytes, row.reserved_package_id = 1024, free_id   # queued before this column existed
+            row.max_concurrent_sessions = 1
+            user_ops._maybe_activate_reserved_purchase_renewal(db, row)
+            db.commit()
+        check(L + "...a reservation without a frozen cap activates and leaves the cap as it is", cap_of(exhausted),
+              (1, None))
 
         # ======================================================== two purchases, caps 1 and 3
         # The per-Purchase rule decides only in session_cap_mode 'enforced'

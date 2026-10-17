@@ -124,7 +124,7 @@ def finish(db, approval_uuid, execution_version, principal, execution_intent, *,
     evidence = []
     user_ops.renew_purchase_core(db, purchase, add_gb=renew_expected["add_quota_bytes"] / 1024 ** 3,
         add_days=renew_expected["add_days"], package_id=package.id, evidence_sink=evidence,
-        reconciliation_sink=[])
+        reconciliation_sink=[], max_concurrent_sessions=frozen.package.max_concurrent_sessions)
     if len(evidence) != 1:
         raise HTTPException(409, "approval_renew_evidence_invalid")
     entry = accounting.record_core(db, "sale_renew", sale_expected["amount"], user=user,

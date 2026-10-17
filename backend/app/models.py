@@ -849,13 +849,14 @@ class User(Base):
     # whenever the customer actually connects").
     expire_days_after_first_use = Column(Integer, nullable=True)
 
-    # Combined cap on concurrent sessions across this user's LEGACY
-    # (purchase-less) connections put together - e.g. 3 such servers and
-    # max_concurrent_sessions=1 allow ONE login at a time in total, not one
-    # on each. A connection of a Purchase is governed by that Purchase
-    # instead, never by this (quota_manager.session_scope). NULL = no
-    # user-level cap (each Connection's own max_concurrent_sessions,
-    # checked independently per connection).
+    # Combined cap on concurrent sessions across this user's connections
+    # put together - e.g. 3 servers and max_concurrent_sessions=1 allow ONE
+    # login at a time in total, not one on each. That is the rule of
+    # session_cap_mode 'legacy' (the default); under 'enforced' it covers
+    # only the user's purchase-less connections, a Purchase's connections
+    # being governed by that Purchase (session_cap_rule.session_scope).
+    # NULL = no user-level cap (each Connection's own
+    # max_concurrent_sessions, checked independently per connection).
     max_concurrent_sessions = Column(Integer, nullable=True)
 
     # Flags so the daily "نزدیک به اتمام" reminder job (services/notify.py)
@@ -1064,8 +1065,9 @@ class Purchase(Base):
     expire_days_after_first_use = Column(Integer, nullable=True)
     # Concurrent-session cap for JUST this purchase's own connections,
     # combined - never summed with, nor bounded by, another Purchase or the
-    # User (quota_manager.session_scope). NULL falls back to each
-    # Connection's own max_concurrent_sessions.
+    # User (session_cap_rule.session_scope). Enforced only in
+    # session_cap_mode 'enforced'; NULL falls back to each Connection's own
+    # max_concurrent_sessions.
     max_concurrent_sessions = Column(Integer, nullable=True)
 
     status = Column(Enum(UserStatus), default=UserStatus.active, nullable=False)
@@ -1542,9 +1544,9 @@ class Package(Base):
     created_at = Column(DateTime, default=now)
 
     # Combined concurrent-session cap applied to the WHOLE package (copied
-    # onto the Purchase each sale of this package creates - or, for a new
-    # customer with no connection yet, onto the User's pool) - covers every
-    # bundled service together, e.g. a
+    # onto the Purchase each sale of this package creates, and - as
+    # session_cap_mode 'legacy' enforces it - onto the User where a create
+    # path always did) - covers every bundled service together, e.g. a
     # 4-server package with this set to 1 still only allows one active
     # session at a time in total, not one per server. NULL = unlimited.
     max_concurrent_sessions = Column(Integer, nullable=True)
@@ -2528,4 +2530,9 @@ Index("uq_ledger_entries_reversal_of_id", LedgerEntry.reversal_of_id, unique=Tru
 # Register the additive reseller refund provenance table before create_all.
 from .models_reseller_refund import (  # noqa: E402,F401
     ResellerSaleBasis, ResellerRefundOperation, ResellerRefundStep,
+)
+
+# Register the per-Purchase session-cap rollout tables before create_all.
+from .models_session_cap import (  # noqa: E402,F401
+    PurchaseCapRepair, SessionCapModeEvent, SessionCapRuntimeState, SessionCapShadowEvent,
 )

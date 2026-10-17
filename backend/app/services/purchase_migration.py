@@ -135,7 +135,7 @@ def migrate_user(db: Session, user: models.User) -> tuple[int, int]:
             used_bytes=user.used_bytes or 0,
             expire_at=user.expire_at,
             expire_days_after_first_use=user.expire_days_after_first_use,
-            # The cap that governed this pool (quota_manager.session_scope).
+            # The cap that governed this pool (session_cap_rule.session_scope).
             max_concurrent_sessions=user.max_concurrent_sessions,
             reserved_quota_bytes=user.reserved_quota_bytes,
             reserved_duration_days=user.reserved_duration_days,

@@ -14,7 +14,7 @@ stored but enforced nowhere, and the bot's create left it empty.
                            the User's
   approval, no connection  no Purchase: the User's pool holds
                            the package's cap from the approval snapshot
-  two purchases, caps 1/3  RADIUS: each Purchase admits up to its own cap and
+  two purchases, caps 1/3  (session_cap_mode 'enforced') RADIUS: each Purchase admits up to its own cap and
                            refuses the next; a full one never blocks the
                            other; a User cap does not bound either
   fallbacks                Purchase without a cap: the connection's own cap;
@@ -47,7 +47,7 @@ from sqlalchemy import select
 from app import models, models_receipt_void as rv, schemas
 from app.routers import bot as bot_router
 from app.services import provisioning_parent_execute as execute, radius_server, remote_action as action
-from app.services import quota_manager, user_ops
+from app.services import quota_manager, session_cap_mode, user_ops
 import _receipt_void_env as fixture
 
 failures = []
@@ -153,6 +153,9 @@ def scenario(label, engine):
               ("caplegacy", [3], None))
 
         # ======================================================== two purchases, caps 1 and 3
+        # The per-Purchase rule decides only in session_cap_mode 'enforced'
+        # (legacy and shadow: test_session_cap_modes.py).
+        session_cap_mode.change_mode(env.Session, env.root.id, "enforced", "per-Purchase rule test")
         radius_server.SessionLocal = env.Session
         server = object.__new__(radius_server.UserManagerRadiusServer)
         server._rejection_log_times = {}
@@ -260,6 +263,7 @@ def scenario(label, engine):
         check(L + "...Purchase-3 back to 2 PPP: its WG released", (moved, state["wg3"]),
               ([(ids["wg3"], True)], (True, False)))
         sessions(ovpn1=0, ovpn3=0)
+        session_cap_mode.change_mode(env.Session, env.root.id, "legacy", "end of the per-Purchase rule test")
 
         # ======================================================== the other Purchase paths
         from app.routers import users as users_router
@@ -271,8 +275,8 @@ def scenario(label, engine):
             user = db.query(models.User).filter_by(username="bulkcap1").one()
             bulk = ([p.max_concurrent_sessions for p in db.query(models.Purchase).filter_by(user_id=user.id)],
                     user.max_concurrent_sessions)
-        check(L + "bulk create from a package: the Purchase gets the package cap (3), the User's stays empty",
-              bulk, ([3], None))
+        check(L + "bulk create from a package: the Purchase gets the package cap (3); the User too, as legacy "
+              "enforces it", bulk, ([3], 3))
 
         with env.Session() as db:
             user = db.get(models.User, owner_id)
@@ -282,8 +286,9 @@ def scenario(label, engine):
             caps = sorted((p.package_name_snapshot, p.max_concurrent_sessions)
                           for p in db.query(models.Purchase).filter_by(user_id=owner_id))
             replaced = (caps, db.get(models.User, owner_id).max_concurrent_sessions)
-        check(L + "apply a package to one service: only that Purchase's cap changes (1 -> 2); the others and "
-              "the User's (1) stay", replaced, ([("cap-1", 2), ("cap-3", 3), ("cap-None", None)], 1))
+        check(L + "apply a package to one service: only that Purchase's cap changes (1 -> 2), the other "
+              "Purchases' stay; the User's follows as legacy enforces it", replaced,
+              ([("cap-1", 2), ("cap-3", 3), ("cap-None", None)], 2))
 
         with env.Session() as db:
             user = db.query(models.User).filter_by(username="legacycap").one()

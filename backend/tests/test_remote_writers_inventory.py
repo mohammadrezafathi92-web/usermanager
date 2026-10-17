@@ -287,6 +287,8 @@ check("legacy writers are gated; private guarded infrastructure has no live dura
       {"app.routers.nodes": ["node_gate.writer_gate"], "app.routers.users": ["node_gate.writer_gate"],
        "app.services.quota_manager": ["node_gate.writer_gate"], "app.services.user_ops": ["node_gate.writer_gate"],
        "app.services.reseller_refund_fence": ["gate_locks.FileLock", "gate_locks.lock_base_dir"],
+       "app.services.session_cap_mode": ["gate_locks.FileLock", "gate_locks.LockTimeout",
+                                          "gate_locks.LockUnavailable", "gate_locks.lock_base_dir"],
        "app.services.provisioning_lock_verification": ["gate_locks"],
        "app.services.provisioning_ownership": ["gate_locks"],
        "app.services.provisioning_installation": ["gate_locks"],

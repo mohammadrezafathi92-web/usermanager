@@ -33,7 +33,8 @@ from .. import models
 from ..config import settings
 from ..database import SessionLocal
 from ..telegram_bot import runner as telegram_bot_runner
-from .quota_manager import add_usage, _enforce_user_limits, _enforce_purchase_limits, scope_session_count, session_scope
+from .quota_manager import add_usage, _enforce_user_limits, _enforce_purchase_limits, active_session_count
+from . import session_cap_mode, session_cap_rule
 from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
 from . import mschapv2
 from . import ip_guard
@@ -142,6 +143,61 @@ def _notify_ban_async(telegram_id: int, username: str, minutes: int, banned_unti
 
     threading.Thread(target=_run, name="ban-notify", daemon=True).start()
 
+
+
+def _legacy_session_limit(db, user, conn):
+    """(limit, active count) of the legacy rule - unchanged."""
+    if user.max_concurrent_sessions:
+        # User-level cap: counts currently-active
+        # connections across ALL of this user's services
+        # combined (e.g. an OpenVPN server + a WireGuard
+        # peer + a VLESS account bundled from one
+        # package), not just PPP ones. This can only
+        # ever REJECT a new PPP login attempt (the one
+        # live enforcement point this panel has for a
+        # login event); it can't kick an already-open
+        # xray/wireguard session in real time - that's
+        # what quota_manager.enforce_concurrent_session_
+        # limits is for, reactively, on the next poll
+        # cycle. Shared counting logic - see
+        # quota_manager.active_session_count's own
+        # docstring for exactly how each protocol type
+        # is counted.
+        limit = user.max_concurrent_sessions
+        active_count = active_session_count(db, user.id)
+    else:
+        # Legacy behavior: each connection's own cap,
+        # checked independently.
+        limit = conn.max_concurrent_sessions or 0
+        active_count = (
+            db.query(models.RadiusActiveSession)
+            .filter(models.RadiusActiveSession.connection_id == conn.id)
+            .count()
+            if limit else 0
+        )
+    return limit, active_count
+
+
+def _apply_session_cap_mode(db, user, conn, mode, legacy):
+    """enforced: the per-Purchase rule's (limit, count)
+    (session_cap_rule.session_scope). shadow: the legacy pair, unchanged,
+    after recording where the per-Purchase rule would decide otherwise -
+    a failure to compare never changes the legacy decision."""
+    if mode == "enforced":
+        limit, scope = session_cap_rule.session_scope(user, conn)
+        return limit, (session_cap_rule.scope_session_count(db, scope) if limit else 0)
+    try:
+        limit, scope = session_cap_rule.session_scope(user, conn)
+        count = session_cap_rule.scope_session_count(db, scope) if limit else 0
+        legacy_rejects = bool(legacy[0] and legacy[1] >= legacy[0])
+        new_rejects = bool(limit and count >= limit)
+        if legacy_rejects != new_rejects:
+            session_cap_mode.note("radius_would_reject" if new_rejects else "radius_would_accept",
+                                  user_id=user.id, purchase_id=conn.purchase_id, connection_id=conn.id,
+                                  legacy=legacy, new=(limit, count))
+    except Exception:  # noqa: BLE001
+        logger.exception("session cap shadow comparison failed")
+    return legacy
 
 class UserManagerRadiusServer(Server):
     def __init__(self):
@@ -424,22 +480,15 @@ class UserManagerRadiusServer(Server):
                         reason = "wrong password"
                         reject_kind = "auth_fail"
                     else:
-                        # The cap governing this login and the connections
-                        # it counts - quota_manager.session_scope: this
-                        # connection's Purchase's own cap over that
-                        # Purchase's connections (never summed with, nor
-                        # bounded by, another Purchase or the User), else
-                        # the legacy User/connection cap. Counted across
-                        # protocols, not just PPP. This can only ever
-                        # REJECT a new PPP login attempt (the one live
-                        # enforcement point this panel has for a login
-                        # event); it can't kick an already-open
-                        # xray/wireguard session in real time - that's
-                        # what quota_manager.enforce_concurrent_session_
-                        # limits is for, reactively, on the next poll
-                        # cycle, with the same scopes.
-                        limit, scope = session_scope(user, conn)
-                        active_count = scope_session_count(db, scope) if limit else 0
+                        # Which rule decides is session_cap_mode's: legacy
+                        # (default) is _legacy_session_limit, exactly as it
+                        # always was; enforced is the per-Purchase rule;
+                        # shadow decides by legacy and records the difference.
+                        with session_cap_mode.decision(db.get_bind()) as cap_mode:
+                            limit, active_count = _legacy_session_limit(db, user, conn)
+                            if cap_mode != "legacy":
+                                limit, active_count = _apply_session_cap_mode(
+                                    db, user, conn, cap_mode, (limit, active_count))
                         if limit and active_count >= limit:
                             ok = False
                             just_banned = self._record_overlimit_attempt(conn)

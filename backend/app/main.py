@@ -22,6 +22,7 @@ from .services.notify import run_daily_notify_job
 from .services.backup import run_scheduled_backup, ha_healthcheck, ha_pull_and_apply, notify_admins_text
 from .routers import auth, nodes, users, dashboard, bot, bot_onboarding, api_keys, packages, package_groups, panel_settings, telegram_bot_settings, tg_tunnel, tutorials, backup, remote_bot, admins, radius_logs, discount_codes, subscription, accounting as accounting_router, ads as ads_router, license as license_router, ip_bans as ip_bans_router, db_health as db_health_router, miniapp, receipt_approvals as receipt_approvals_router
 from .routers import provisioning as provisioning_router
+from .routers import session_caps as session_caps_router
 from .services import accounting as accounting_service
 from .services import purchase_migration
 from .services import ip_guard
@@ -168,6 +169,7 @@ app.include_router(wallet_router.router)
 from .routers import receipt_void as receipt_void_router  # noqa: E402
 app.include_router(receipt_void_router.router)
 app.include_router(provisioning_router.router)
+app.include_router(session_caps_router.router)
 app.include_router(ads_router.router)
 app.include_router(license_router.router)
 # The two licence routes that must work WITHOUT a session - a panel locked

@@ -237,6 +237,10 @@ def finish(db, operation_id, version, leases, *, require_contracts=False, approv
         user = user_ops.create_user_record_core(db, **intent.user.dict(), quota_gb=intent.quota_bytes / 1024 ** 3,
             expire_days=intent.duration_days, package_id=package.id if package else None, defer_loyalty=True)
         user.total_quota_bytes = intent.quota_bytes
+        if intent.package is not None:
+            # The combined session cap frozen with the request (never the live
+            # package now): RADIUS enforces the user's cap, not the Purchase's.
+            user.max_concurrent_sessions = intent.package.max_concurrent_sessions
         if intent.created_via is not None:
             user.created_via = intent.created_via
     else:

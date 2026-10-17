@@ -201,6 +201,7 @@ def finish(db, approval_uuid, approval_execution_version, operation_id, version,
         quota_gb=frozen.quota_bytes / 1024 ** 3, expire_days=frozen.duration_days,
         package_id=frozen.package.id, defer_loyalty=True)
     user.total_quota_bytes = frozen.quota_bytes
+    user.max_concurrent_sessions = frozen.package.max_concurrent_sessions   # frozen with the approval
     db.flush()
     # A new user with no connection has no Purchase (Receipt Void 5.3).
     sale_package = models.Package(id=frozen.package.id, name=frozen.package.name)

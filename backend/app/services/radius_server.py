@@ -33,7 +33,7 @@ from .. import models
 from ..config import settings
 from ..database import SessionLocal
 from ..telegram_bot import runner as telegram_bot_runner
-from .quota_manager import add_usage, _enforce_user_limits, _enforce_purchase_limits, active_session_count
+from .quota_manager import add_usage, _enforce_user_limits, _enforce_purchase_limits, scope_session_count, session_scope
 from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
 from . import mschapv2
 from . import ip_guard
@@ -424,34 +424,22 @@ class UserManagerRadiusServer(Server):
                         reason = "wrong password"
                         reject_kind = "auth_fail"
                     else:
-                        if user.max_concurrent_sessions:
-                            # User-level cap: counts currently-active
-                            # connections across ALL of this user's services
-                            # combined (e.g. an OpenVPN server + a WireGuard
-                            # peer + a VLESS account bundled from one
-                            # package), not just PPP ones. This can only
-                            # ever REJECT a new PPP login attempt (the one
-                            # live enforcement point this panel has for a
-                            # login event); it can't kick an already-open
-                            # xray/wireguard session in real time - that's
-                            # what quota_manager.enforce_concurrent_session_
-                            # limits is for, reactively, on the next poll
-                            # cycle. Shared counting logic - see
-                            # quota_manager.active_session_count's own
-                            # docstring for exactly how each protocol type
-                            # is counted.
-                            limit = user.max_concurrent_sessions
-                            active_count = active_session_count(db, user.id)
-                        else:
-                            # Legacy behavior: each connection's own cap,
-                            # checked independently.
-                            limit = conn.max_concurrent_sessions or 0
-                            active_count = (
-                                db.query(models.RadiusActiveSession)
-                                .filter(models.RadiusActiveSession.connection_id == conn.id)
-                                .count()
-                                if limit else 0
-                            )
+                        # The cap governing this login and the connections
+                        # it counts - quota_manager.session_scope: this
+                        # connection's Purchase's own cap over that
+                        # Purchase's connections (never summed with, nor
+                        # bounded by, another Purchase or the User), else
+                        # the legacy User/connection cap. Counted across
+                        # protocols, not just PPP. This can only ever
+                        # REJECT a new PPP login attempt (the one live
+                        # enforcement point this panel has for a login
+                        # event); it can't kick an already-open
+                        # xray/wireguard session in real time - that's
+                        # what quota_manager.enforce_concurrent_session_
+                        # limits is for, reactively, on the next poll
+                        # cycle, with the same scopes.
+                        limit, scope = session_scope(user, conn)
+                        active_count = scope_session_count(db, scope) if limit else 0
                         if limit and active_count >= limit:
                             ok = False
                             just_banned = self._record_overlimit_attempt(conn)

@@ -1056,7 +1056,6 @@ def bulk_create_users(
             user.expire_at = (
                 dt.datetime.utcnow() + dt.timedelta(days=package.duration_days) if package.duration_days else None
             )
-            user.max_concurrent_sessions = package.max_concurrent_sessions
             user.package_id = package.id
             db.commit()
             db.refresh(user)
@@ -1068,7 +1067,9 @@ def bulk_create_users(
             # from a package must land on the new independently-enforced
             # Purchase model too, not the legacy shared pool (2026-08-28).
             if result["created"]:
-                absorb_legacy_pool_into_purchase(db, user)
+                # The package's cap is this Purchase's own, never the User's
+                # (quota_manager.session_scope).
+                absorb_legacy_pool_into_purchase(db, user, max_concurrent_sessions=package.max_concurrent_sessions)
                 db.commit()
         else:
             db.commit()
@@ -1161,7 +1162,8 @@ def replace_purchase_with_package_core(db: Session, user: models.User, purchase:
     purchase.expire_days_after_first_use = None
     purchase.max_concurrent_sessions = package.max_concurrent_sessions
     purchase.package_id = package.id
-    user.max_concurrent_sessions = package.max_concurrent_sessions
+    # This one service's cap; the User's and every other Purchase's stay as
+    # they are (quota_manager.session_scope).
     user.package_id = package.id
     if reset_usage:
         purchase.used_bytes = 0
@@ -1637,9 +1639,8 @@ def provision_package_connections(db: Session, user: models.User, package: model
             continue
         try:
             # per-connection max_concurrent_sessions is just a fallback now
-            # (see models.User.max_concurrent_sessions) - default to 1;
-            # create_user_record/routers/users.py sets the real combined
-            # cap from package.max_concurrent_sessions on the user itself.
+            # (see quota_manager.session_scope) - default to 1; the
+            # package's cap goes on the Purchase these connections join.
             conn = provision_connection(
                 db, user, node, pc.protocol, pc.flow or "", 1,
                 purchase_batch=batch, package_name=package.name,
@@ -1691,12 +1692,18 @@ def rename_purchase(db: Session, purchase: models.Purchase, comment: str) -> mod
     return purchase
 
 
-def absorb_legacy_pool_into_purchase(db: Session, user: models.User, comment: Optional[str] = None) -> Optional[models.Purchase]:
+# absorb_legacy_pool_core's default: the new Purchase keeps the User's cap.
+_USER_CAP = object()
+
+
+def absorb_legacy_pool_into_purchase(db: Session, user: models.User, comment: Optional[str] = None,
+                                     *, max_concurrent_sessions=_USER_CAP) -> Optional[models.Purchase]:
     # Historical wrapper never committed; preserve that contract exactly.
-    return absorb_legacy_pool_core(db, user, comment)
+    return absorb_legacy_pool_core(db, user, comment, max_concurrent_sessions=max_concurrent_sessions)
 
 
-def absorb_legacy_pool_core(db: Session, user: models.User, comment: Optional[str] = None) -> Optional[models.Purchase]:
+def absorb_legacy_pool_core(db: Session, user: models.User, comment: Optional[str] = None,
+                            *, max_concurrent_sessions=_USER_CAP) -> Optional[models.Purchase]:
     """Moves a customer's leftover shared-pool connections into a Purchase
     of their own, carrying the user-level quota/usage/expiry across 1:1.
 
@@ -1719,6 +1726,12 @@ def absorb_legacy_pool_core(db: Session, user: models.User, comment: Optional[st
     (services/purchase_migration.py) calls this with none, so those get
     the auto-generated fallback instead.
 
+    `max_concurrent_sessions`: the Purchase's own concurrent cap (see
+    quota_manager.session_scope). By default the User's - the cap that
+    governed these legacy connections until now. A caller that has just
+    provisioned a package for a NEW customer passes that package's cap: the
+    connections are that one purchase, and its cap is the purchase's own.
+
     Returns the created Purchase, or None when nothing needed doing."""
     legacy = [c for c in user.connections if c.purchase_id is None]
     if not legacy:
@@ -1737,7 +1750,8 @@ def absorb_legacy_pool_core(db: Session, user: models.User, comment: Optional[st
         used_bytes=user.used_bytes or 0,
         expire_at=user.expire_at,
         expire_days_after_first_use=user.expire_days_after_first_use,
-        max_concurrent_sessions=user.max_concurrent_sessions,
+        max_concurrent_sessions=(user.max_concurrent_sessions if max_concurrent_sessions is _USER_CAP
+                                 else max_concurrent_sessions),
         status=models.UserStatus.disabled if user.status == models.UserStatus.disabled else models.UserStatus.active,
         reserved_quota_bytes=user.reserved_quota_bytes,
         reserved_duration_days=user.reserved_duration_days,

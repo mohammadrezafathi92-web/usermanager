@@ -452,49 +452,80 @@ def _apply_enabled_state(db: Session, connection: models.Connection, target_acti
     _set_connection_enabled(db, connection, enabled=target_active)
 
 
-def active_session_count(db: Session, user_id: int) -> int:
-    """How many of this user's connections are active RIGHT NOW, combined
-    across every protocol they might have.
+def session_scope(user: models.User, connection: models.Connection) -> tuple[int, list[models.Connection]]:
+    """(cap, connections counted against it) for a session on `connection`.
 
-    PPP (openvpn/l2tp/ikev2/sstp) is counted from the live
-    RadiusActiveSession table - real-time, updated on every Access-Request/
-    Accounting packet (see radius_server.py). Everything else (wireguard/
-    xray) has no login event the panel is asked to approve, so it's counted
-    from Connection.online instead, only ever as fresh as the last poll
-    cycle (poll_mikrotik_node / poll_xray_node above).
+    The owner's rule (2026-10-17): every Purchase has its OWN concurrent
+    cap - a customer's purchases are never summed, nor does one of them
+    (or the User) bound another.
 
-    Shared by radius_server.py's live accept/reject decision on a new PPP
-    login and enforce_concurrent_session_limits below (the reactive
-    WireGuard/Xray kick), so the two enforcement points can never disagree
-    about what "how many sessions does this user have right now" means."""
+      Purchase with a cap   that cap, over the connections of that Purchase
+                            only; the User's cap and the connection's own
+                            are not applied on top of it
+      Purchase without one  the connection's own cap, over itself
+      no Purchase (legacy)  as before: the User's cap if set, over the
+                            customer's legacy (purchase-less) connections,
+                            else the connection's own cap, over itself
+
+    A cap of 0 means no cap."""
+    if connection.purchase_id is not None:
+        purchase = connection.purchase
+        if purchase is not None and purchase.max_concurrent_sessions:
+            return purchase.max_concurrent_sessions, [
+                c for c in user.connections if c.purchase_id == connection.purchase_id]
+        return connection.max_concurrent_sessions or 0, [connection]
+    if user.max_concurrent_sessions:
+        return user.max_concurrent_sessions, [c for c in user.connections if c.purchase_id is None]
+    return connection.max_concurrent_sessions or 0, [connection]
+
+
+def scope_session_count(db: Session, connections: list[models.Connection]) -> int:
+    """Live sessions of these connections: PPP from RadiusActiveSession
+    (real time), WireGuard/Xray from Connection.online (as fresh as the
+    last poll). `online` says a config is in use, not by how many devices:
+    one WireGuard peer or Xray client counts once however many share it."""
+    ppp_ids = [c.id for c in connections if c.type in PPP_TYPES]
     ppp_count = (
         db.query(models.RadiusActiveSession)
-        .join(models.Connection, models.Connection.id == models.RadiusActiveSession.connection_id)
-        .filter(
-            models.Connection.user_id == user_id,
-            models.Connection.type.in_(PPP_TYPES),
-        )
+        .filter(models.RadiusActiveSession.connection_id.in_(ppp_ids))
         .count()
+        if ppp_ids else 0
     )
-    other_online_count = (
-        db.query(models.Connection)
-        .filter(
-            models.Connection.user_id == user_id,
-            models.Connection.type.notin_(PPP_TYPES),
-            models.Connection.online.is_(True),
-        )
-        .count()
-    )
-    return ppp_count + other_online_count
+    return ppp_count + sum(1 for c in connections if c.type not in PPP_TYPES and c.online)
+
+
+def _capped_scopes(user: models.User) -> list[tuple[int, list[models.Connection]]]:
+    """The user's connections split into the scopes session_scope defines,
+    each with its cap (0 = none). Every connection is in exactly one."""
+    scopes, legacy, by_purchase, singles = [], [], {}, []
+    for conn in user.connections:
+        if conn.purchase_id is None:
+            legacy.append(conn)
+        elif conn.purchase is not None and conn.purchase.max_concurrent_sessions:
+            by_purchase.setdefault(conn.purchase_id, []).append(conn)
+        else:
+            singles.append(conn)
+    for conns in by_purchase.values():
+        scopes.append((conns[0].purchase.max_concurrent_sessions, conns))
+    if legacy and user.max_concurrent_sessions:
+        scopes.append((user.max_concurrent_sessions, legacy))
+    else:
+        singles.extend(legacy)
+    # A connection's own cap is a per-credential PPP limit RADIUS enforces at
+    # login; a WireGuard/Xray online flag cannot count devices on one config,
+    # so these scopes never kick - they only release an earlier kick.
+    scopes.extend((0, [conn]) for conn in singles)
+    return scopes
 
 
 def enforce_concurrent_session_limits(db: Session) -> int:
-    """Reactively kicks a WireGuard/Xray connection that pushed a user over
-    their own User.max_concurrent_sessions cap, and releases one back once
-    there is genuinely room again.
+    """Reactively kicks a WireGuard/Xray connection that pushed one of a
+    user's scopes over its cap (see session_scope: a Purchase's own cap, or
+    for legacy connections User.max_concurrent_sessions), and releases one
+    back once there is genuinely room again in that same scope.
 
     OpenVPN/L2TP/IKEv2/SSTP (PPP) sessions are gated LIVE at RADIUS
-    Access-Request time (see radius_server.py's use of active_session_count) -
+    Access-Request time (see radius_server.py's use of session_scope) -
     a login that would exceed the cap is simply refused, so PPP alone never
     needs this. WireGuard and Xray have no such login event: a peer/client
     that already exists on the node just works the moment its own keys/
@@ -524,6 +555,11 @@ def enforce_concurrent_session_limits(db: Session) -> int:
         .filter(models.User.max_concurrent_sessions.isnot(None), models.User.max_concurrent_sessions > 0)
         .all()
     } | {
+        uid for (uid,) in db.query(models.Purchase.user_id)
+        .filter(models.Purchase.max_concurrent_sessions.isnot(None), models.Purchase.max_concurrent_sessions > 0)
+        .distinct()
+        .all()
+    } | {
         uid for (uid,) in db.query(models.Connection.user_id)
         .filter(models.Connection.session_limited.is_(True))
         .distinct()
@@ -541,50 +577,49 @@ def enforce_concurrent_session_limits(db: Session) -> int:
 
     toggled = 0
     for user in users:
-        limit = user.max_concurrent_sessions or 0
-        non_ppp = [c for c in user.connections if c.type not in PPP_TYPES]
-        ppp_ids = [c.id for c in user.connections if c.type in PPP_TYPES]
-        ppp_count = (
-            db.query(models.RadiusActiveSession)
-            .filter(models.RadiusActiveSession.connection_id.in_(ppp_ids))
-            .count()
-            if ppp_ids else 0
-        )
-        # Excludes this function's OWN already-kicked connections - see the
-        # docstring above for why that exclusion is what keeps this from
-        # flapping.
-        not_limited_online = [c for c in non_ppp if c.online and not c.session_limited]
-        effective_count = ppp_count + len(not_limited_online)
+        # Each scope (see session_scope) decides on its own connections only:
+        # a kick or a release in one Purchase never makes or takes room in
+        # another, nor in the customer's legacy pool.
+        for limit, scope in _capped_scopes(user):
+            non_ppp = [c for c in scope if c.type not in PPP_TYPES]
+            if not non_ppp:
+                continue  # PPP only: RADIUS already refuses the excess login live
+            ppp_count = scope_session_count(db, [c for c in scope if c.type in PPP_TYPES])
+            # Excludes this function's OWN already-kicked connections - see the
+            # docstring above for why that exclusion is what keeps this from
+            # flapping.
+            not_limited_online = [c for c in non_ppp if c.online and not c.session_limited]
+            effective_count = ppp_count + len(not_limited_online)
 
-        if limit:
-            kickable = sorted(
-                (c for c in not_limited_online if c.enabled),
-                key=lambda c: c.id, reverse=True,  # newest connection first
-            )
-            excess = effective_count - limit
-            for conn in kickable:
-                if excess <= 0:
-                    break
-                conn.session_limited = True
-                _set_connection_enabled(db, conn, enabled=False)
-                toggled += 1
-                excess -= 1
-
-        session_limited_conns = [c for c in non_ppp if c.session_limited]
-        if session_limited_conns:
-            room = len(session_limited_conns) if not limit else max(limit - effective_count, 0)
-            for conn in sorted(session_limited_conns, key=lambda c: c.id):
-                if room <= 0:
-                    break
-                governing_status = (
-                    conn.purchase.status if conn.purchase_id and conn.purchase else user.status
+            if limit:
+                kickable = sorted(
+                    (c for c in not_limited_online if c.enabled),
+                    key=lambda c: c.id, reverse=True,  # newest connection first
                 )
-                if governing_status != models.UserStatus.active:
-                    continue  # quota/expiry still says no - leave it kicked, doesn't consume room
-                conn.session_limited = False
-                _set_connection_enabled(db, conn, enabled=True)
-                toggled += 1
-                room -= 1
+                excess = effective_count - limit
+                for conn in kickable:
+                    if excess <= 0:
+                        break
+                    conn.session_limited = True
+                    _set_connection_enabled(db, conn, enabled=False)
+                    toggled += 1
+                    excess -= 1
+
+            session_limited_conns = [c for c in non_ppp if c.session_limited]
+            if session_limited_conns:
+                room = len(session_limited_conns) if not limit else max(limit - effective_count, 0)
+                for conn in sorted(session_limited_conns, key=lambda c: c.id):
+                    if room <= 0:
+                        break
+                    governing_status = (
+                        conn.purchase.status if conn.purchase_id and conn.purchase else user.status
+                    )
+                    if governing_status != models.UserStatus.active:
+                        continue  # quota/expiry still says no - leave it kicked, doesn't consume room
+                    conn.session_limited = False
+                    _set_connection_enabled(db, conn, enabled=True)
+                    toggled += 1
+                    room -= 1
     return toggled
 
 

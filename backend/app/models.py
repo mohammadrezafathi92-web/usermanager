@@ -849,13 +849,13 @@ class User(Base):
     # whenever the customer actually connects").
     expire_days_after_first_use = Column(Integer, nullable=True)
 
-    # Combined cap on concurrent RADIUS (OpenVPN/L2TP) sessions across ALL
-    # of this user's connections put together - e.g. a user with 3 servers
-    # bundled from a package and max_concurrent_sessions=1 can only be
-    # logged into ONE of them at a time in total, not one on each. NULL =
-    # no user-level cap (falls back to each Connection's own
-    # max_concurrent_sessions, checked independently per connection - the
-    # old behavior, still used for manually-added connections).
+    # Combined cap on concurrent sessions across this user's LEGACY
+    # (purchase-less) connections put together - e.g. 3 such servers and
+    # max_concurrent_sessions=1 allow ONE login at a time in total, not one
+    # on each. A connection of a Purchase is governed by that Purchase
+    # instead, never by this (quota_manager.session_scope). NULL = no
+    # user-level cap (each Connection's own max_concurrent_sessions,
+    # checked independently per connection).
     max_concurrent_sessions = Column(Integer, nullable=True)
 
     # Flags so the daily "نزدیک به اتمام" reminder job (services/notify.py)
@@ -1062,9 +1062,10 @@ class Purchase(Base):
     used_bytes = Column(BigInteger, default=0)
     expire_at = Column(DateTime, nullable=True)  # null == never expires
     expire_days_after_first_use = Column(Integer, nullable=True)
-    # Concurrent-session cap for JUST this purchase's own connections - NULL
-    # falls back to each Connection's own max_concurrent_sessions (same
-    # fallback rule as User.max_concurrent_sessions).
+    # Concurrent-session cap for JUST this purchase's own connections,
+    # combined - never summed with, nor bounded by, another Purchase or the
+    # User (quota_manager.session_scope). NULL falls back to each
+    # Connection's own max_concurrent_sessions.
     max_concurrent_sessions = Column(Integer, nullable=True)
 
     status = Column(Enum(UserStatus), default=UserStatus.active, nullable=False)
@@ -1541,8 +1542,9 @@ class Package(Base):
     created_at = Column(DateTime, default=now)
 
     # Combined concurrent-session cap applied to the WHOLE package (copied
-    # onto User.max_concurrent_sessions when a user is created with this
-    # package) - covers every bundled OpenVPN/L2TP service together, e.g. a
+    # onto the Purchase each sale of this package creates - or, for a new
+    # customer with no connection yet, onto the User's pool) - covers every
+    # bundled service together, e.g. a
     # 4-server package with this set to 1 still only allows one active
     # session at a time in total, not one per server. NULL = unlimited.
     max_concurrent_sessions = Column(Integer, nullable=True)

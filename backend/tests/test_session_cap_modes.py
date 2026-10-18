@@ -17,7 +17,9 @@ SQLite AND real MariaDB (CI). No network.
   gate      enforced only from shadow, with a fresh enforce preview whose
             state still holds and whose confirmation is typed back
   repair    preview then execute, compare-and-set on Purchase, User,
-            current value and the scope's connections; audited
+            current value and the scope's connections; audited; also the
+            queued renewal's cap (only with a queued renewal; the cap in
+            force untouched)
   routes    superadmin-only; the two writes re-ask the password
 """
 import contextlib
@@ -504,6 +506,68 @@ def scenario(label, engine):
                                                                               env.root.id)]))
         check(L + "the same preview again: refused (the value is no longer the previewed one)", execute(shown),
               (409, "purchase_cap_target_changed"))
+
+        # the queued renewal's cap (reserved_max_concurrent_sessions)
+        def preview_reserved(value=3):
+            with env.Session() as db:
+                return repair.preview(db, tid, value, "reserved_max_concurrent_sessions")
+
+        def execute_reserved(shown, **over):
+            return execute(shown, field="reserved_max_concurrent_sessions", **over)
+
+        check(L + "queued-renewal cap without a queued renewal: refused", code(preview_reserved),
+              (409, "purchase_cap_no_queued_renewal"))
+        with env.Session() as db:
+            row = db.get(models.Purchase, tid)
+            row.reserved_package_id, row.reserved_quota_bytes = env.ids.shared, 1024
+            db.commit()
+        shown = preview_reserved()
+        with env.Session() as db:
+            shared_cap = db.get(models.Package, env.ids.shared).max_concurrent_sessions
+        check(L + "queued-renewal preview: that field, the cap in force shown apart, the source package's cap",
+              (shown["field"], shown["current_value"], shown["cap_in_force"], shown["reserved_package_id"],
+               shown["reserved_package_cap"]), ("reserved_max_concurrent_sessions", None, 3, env.ids.shared, shared_cap))
+        with env.Session() as db:
+            db.get(models.Package, env.ids.shared).max_concurrent_sessions = (shared_cap or 0) + 7
+            db.commit()
+        check(L + "the source package's cap edited since the preview: refused", execute_reserved(shown),
+              (409, "purchase_cap_preview_stale"))
+        with env.Session() as db:
+            db.get(models.Package, env.ids.shared).max_concurrent_sessions = shared_cap
+            db.commit()
+        shown = preview_reserved()
+        with env.Session() as db:
+            db.get(models.Purchase, tid).reserved_package_id = None
+            db.commit()
+        check(L + "the queued renewal gone since the preview: refused", execute_reserved(shown),
+              (409, "purchase_cap_no_queued_renewal"))
+        with env.Session() as db:
+            db.get(models.Purchase, tid).reserved_package_id = env.ids.shared
+            db.commit()
+        shown = preview_reserved()
+        with env.Session() as db:
+            db.get(models.Purchase, tid).max_concurrent_sessions = 4
+            db.commit()
+        check(L + "the cap in force changed since the preview: refused", execute_reserved(shown),
+              (409, "purchase_cap_preview_stale"))
+        with env.Session() as db:
+            db.get(models.Purchase, tid).max_concurrent_sessions = 3
+            db.commit()
+        shown = preview_reserved()
+        done = execute_reserved(shown)
+        with env.Session() as db:
+            row = db.get(models.Purchase, tid)
+            after = (row.max_concurrent_sessions, row.reserved_max_concurrent_sessions)
+            fields = [(a.field, a.before_value, a.after_value) for a in db.query(models.PurchaseCapRepair).order_by(
+                models.PurchaseCapRepair.id)]
+        check(L + "queued-renewal cap set by compare-and-set, the cap in force untouched, audited with its field",
+              (done["field"], after, fields), ("reserved_max_concurrent_sessions", (3, 3),
+                                               [("max_concurrent_sessions", None, 3),
+                                                ("reserved_max_concurrent_sessions", None, 3)]))
+        with env.Session() as db:
+            row = db.get(models.Purchase, tid)
+            row.reserved_package_id = row.reserved_quota_bytes = row.reserved_max_concurrent_sessions = None
+            db.commit()
 
 
 def routes_guarded():

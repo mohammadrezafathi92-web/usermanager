@@ -1152,6 +1152,23 @@ def create_user(
             db, user, comment=payload.comment, max_concurrent_sessions=_new_package.max_concurrent_sessions)
     elif payload.connections:
         new_purchase = user_ops.absorb_legacy_pool_into_purchase(db, user, comment=payload.comment)
+    if new_purchase is None and created_connections:
+        # provision_connection never leaves a new connection on the legacy
+        # pool (user_ops._commit_new_connection): it already put them on a
+        # Purchase, so the absorb above found nothing to move. That Purchase
+        # IS this sale's - without it the sale had no purchase_created effect
+        # (receipt approvals stuck 'mutating' on missing_effects, and a
+        # referral reward targeting it unresolvable), no refund binding and
+        # no package cap (found 2026-10-18).
+        owners = {c.purchase_id for c in created_connections}
+        if len(owners) == 1 and None not in owners:
+            candidate = db.get(models.Purchase, next(iter(owners)))
+            if candidate is not None and candidate.user_id == user.id:
+                new_purchase = candidate
+                if payload.package_id and new_purchase.max_concurrent_sessions is None:
+                    new_purchase.max_concurrent_sessions = _new_package.max_concurrent_sessions
+                if (payload.comment or "").strip():
+                    new_purchase.comment = payload.comment.strip()[:255]
 
     # Reuses the same already-authorized fetch above rather than a second
     # raw db.get - one _get_package_or_403 call per package_id per request.

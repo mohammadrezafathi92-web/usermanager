@@ -82,6 +82,23 @@ with patch.object(lifecycle, "read_identity", return_value=ME):
             lifecycle.shutdown_release(grace_seconds=0), state()[0]), ("kept", "active"))
     remote_runner._closing = False
 
+    # Restart safety: what must run before this host may write through 'enforced'.
+    def action(identity):
+        with SessionLocal() as db:
+            return lifecycle.ownership_action(db.get(mp.ProvisioningRuntimeState, 1), identity)
+
+    rebooted = HostIdentity(ME.host_id, str(uuid.uuid4()))
+    check("restart on the same host boot (row kept): nothing to run, the same owner writes on",
+          action(ME), None)
+    check("the same host after a reboot (new boot id): an authenticated reclaim first", action(rebooted), "reclaim")
+    check("another host: only a forced takeover", action(OTHER), "forced_takeover")
+    check("no host identity: no write", action(None), "host_identity_unavailable")
+    with patch.object(lifecycle, "_me", return_value=rebooted), \
+            patch.object(lifecycle.logger, "error") as said:
+        check("startup with 'enforced' and a reboot: says so as an error, names the route",
+              (lifecycle.startup_check(SessionLocal), said.call_count, "ownership/reclaim" in str(said.call_args)),
+              ("reclaim", 1, True))
+
     # A live runner is killed and reaped before the release.
     own(ME, gate="shadow")
     results = {}
@@ -103,6 +120,7 @@ with patch.object(lifecycle, "read_identity", return_value=ME):
         check("released row: no owner, epoch + 1; event with actor 0",
               (row.owner_state, row.owner_host_id, row.ownership_epoch, event.actor_admin_id, event.ownership_epoch),
               ("released", None, 4, 0, 4))
+    check("released at a shutdown outside 'enforced': an authenticated claim before 'enforced'", action(ME), "claim")
     try:
         remote_runner.run_action(RemoteActionDTO(action_type=ActionType.SELFTEST_ECHO))
         refused = "started"

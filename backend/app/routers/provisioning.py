@@ -55,6 +55,12 @@ def _snapshot(db):
     if runtime is None:
         raise LookupError("runtime missing")
     result = {"runtime": dict(runtime)}
+    # What a superadmin must run before this host may write through
+    # 'enforced' (None: nothing) - after a deploy or a reboot.
+    from ..services import provisioning_host_lifecycle as lifecycle
+    action = lifecycle.ownership_action(db.get(mp.ProvisioningRuntimeState, 1), lifecycle._me())
+    result["runtime"]["ownership_action"] = action
+    result["runtime"]["ownership_action_route"] = lifecycle.OWNERSHIP_ACTIONS.get(action)
     result["operation_counts"] = dict(db.execute(select(mp.ProvisioningOperation.state,
         func.count()).group_by(mp.ProvisioningOperation.state)).all())
     result["step_counts"] = dict(db.execute(select(mp.ProvisioningStep.state,

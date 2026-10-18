@@ -91,7 +91,12 @@ with patch.object(lifecycle, "read_identity", return_value=ME):
     check("restart on the same host boot (row kept): nothing to run, the same owner writes on",
           action(ME), None)
     check("the same host after a reboot (new boot id): an authenticated reclaim first", action(rebooted), "reclaim")
-    check("another host: only a forced takeover", action(OTHER), "forced_takeover")
+    with patch.object(lifecycle.logger, "error") as said:
+        with patch.object(lifecycle, "_me", return_value=OTHER):
+            foreign = lifecycle.startup_check(SessionLocal)
+    check("another host owns it: 'foreign_owner', no route suggested, a manual-review error at startup",
+          (action(OTHER), foreign, lifecycle.OWNERSHIP_ACTIONS["foreign_owner"], "Manual review" in str(said.call_args)),
+          ("foreign_owner", "foreign_owner", None, True))
     check("no host identity: no write", action(None), "host_identity_unavailable")
     with patch.object(lifecycle, "_me", return_value=rebooted), \
             patch.object(lifecycle.logger, "error") as said:

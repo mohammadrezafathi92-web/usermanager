@@ -15,6 +15,10 @@ _commit_new_connection; only the remote call is faked.
                    approval completes; the Purchase has the package cap
   referral sale    the new customer's quota reward resolves against that
                    Purchase; the approval completes, no shadow error
+  fail-closed      the new connections on several Purchases, on none, or on
+                   another customer's: 409 purchase_target_unresolved, no
+                   sale recorded; what exists stays and the approval stays
+                   'mutating' - to resolve, never a completed sale
 """
 import contextlib
 import os
@@ -75,11 +79,12 @@ def scenario(label, engine):
                      for pc in package.connections]
             db.commit()
 
-        def sell(username, telegram_id, **extra):
+        def sell(username, telegram_id, provision=fake_provision, connections=None, **extra):
             item = env.begin("new", username, 1000, package_id=env.ids.shared, claimed_telegram_id=telegram_id, **extra)
-            with patch.object(user_ops, "provision_connection", side_effect=fake_provision):
+            with patch.object(user_ops, "provision_connection", side_effect=provision):
                 answer = env.run(lambda db: bot_router.create_user(schemas.BotCreateUserRequest(
-                    username=username, telegram_id=telegram_id, package_id=env.ids.shared, connections=specs, **sale,
+                    username=username, telegram_id=telegram_id, package_id=env.ids.shared,
+                    connections=connections or specs, **sale,
                     paid_amount=1000, payment_method="card", approval_uuid=item["approval_uuid"],
                     execution_token=item["execution_token"], list_price=1000), db=db, principal=env.internal))
             return item, answer
@@ -135,6 +140,55 @@ def scenario(label, engine):
               (purchases[0].quota_bytes - before, reward), (5 * 1024 ** 3, [purchases[0].id]))
         check(L + "the referral approval completes - no effect_manifest_mismatch, no missing effects",
               (result["state"], result["missing_effects"], errors), ("completed", [], []))
+
+        # ------------------------------------------------------------ fail-closed: no single Purchase of this customer
+        with env.Session() as db:
+            stranger = wallet_accounts.create_user_with_wallet(db, username="fxstranger", telegram_id=7790)
+            db.flush()
+            foreign = models.Purchase(user_id=stranger.id, status=models.UserStatus.active, quota_bytes=0)
+            db.add(foreign)
+            db.commit()
+            foreign_id = foreign.id
+
+        def persisted(db, user, node, protocol, flow, purchase_id, kwargs):
+            connection = models.Connection(user_id=user.id, node_id=node.id, type=protocol, enabled=True,
+                                           purchase_batch=kwargs.get("purchase_batch"), purchase_id=purchase_id,
+                                           wg_peer_name=f"fx-{user.username}-{node.id}-{getattr(protocol, 'value', protocol)}")
+            db.add(connection)
+            db.commit()
+            return connection
+
+        def on_separate_purchases(db, user, node, protocol, flow="", *_a, **kwargs):
+            own = models.Purchase(user_id=user.id, status=models.UserStatus.active, quota_bytes=0)
+            db.add(own)
+            db.flush()
+            return persisted(db, user, node, protocol, flow, own.id, kwargs)
+
+        def on_no_purchase(db, user, node, protocol, flow="", *_a, **kwargs):
+            return persisted(db, user, node, protocol, flow, None, kwargs)
+
+        def on_foreign_purchase(db, user, node, protocol, flow="", *_a, **kwargs):
+            return persisted(db, user, node, protocol, flow, foreign_id, kwargs)
+
+        def refused_sale(username, telegram_id, provision, *patches, connections=None):
+            with contextlib.ExitStack() as extra:
+                for target, name, value in patches:
+                    extra.enter_context(patch.object(target, name, return_value=value))
+                item, answer = sell(username, telegram_id, provision=provision, connections=connections)
+            result = finalize(item)
+            with env.Session() as db:
+                sales = db.query(models.LedgerEntry).filter(models.LedgerEntry.approval_uuid == item["approval_uuid"]).count()
+                exists = db.query(models.User).filter_by(username=username).count()
+            return (answer, sales, result["state"], "purchase_created:purchase" in result["missing_effects"], exists)
+
+        refused = ("purchase_target_unresolved", 0, "mutating", True, 1)
+        check(L + "connections on several Purchases: refused 409, no sale; the approval stays 'mutating' (to resolve)",
+              refused_sale("fxmulti", 7791, on_separate_purchases, connections=specs * 2), refused)
+        check(L + "connections on no Purchase: the same",
+              refused_sale("fxnone", 7792, on_no_purchase,
+                           (user_ops, "absorb_legacy_pool_into_purchase", None)), refused)
+        check(L + "connections on another customer's Purchase: the same",
+              refused_sale("fxforeign", 7793, on_foreign_purchase), refused)
 
 
 with contextlib.ExitStack() as cleanup:

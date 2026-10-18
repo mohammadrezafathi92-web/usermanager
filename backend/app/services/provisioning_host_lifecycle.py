@@ -34,7 +34,10 @@ HEARTBEAT_SECONDS = 60
 OWNERSHIP_ACTIONS = {
     "claim": "POST /api/provisioning/lock-backend/verify",
     "reclaim": "POST /api/provisioning/ownership/reclaim",
-    "forced_takeover": "POST /api/provisioning/ownership/forced-takeover",
+    # Not a routine step: another host owns it. Only after a person has
+    # established that host is stopped may a forced takeover be considered -
+    # no route is suggested for it.
+    "foreign_owner": None,
 }
 
 
@@ -43,14 +46,15 @@ def ownership_action(row, identity):
     container restart on the same host boot keeps it, as the 'enforced'
     shutdown keeps the row (see shutdown_release). Otherwise what must run
     first: 'claim' (no owner, e.g. released at a shutdown outside
-    'enforced'), 'reclaim' (this host after a reboot: a new boot), or
-    'forced_takeover' (another host owns it), or 'host_identity_unavailable'."""
+    'enforced'), 'reclaim' (this host after a reboot: a new boot),
+    'foreign_owner' (another host owns it: manual review, never a routine
+    restart step), or 'host_identity_unavailable'."""
     if identity is None:
         return "host_identity_unavailable"
     if row is None or row.owner_state not in ("active", "draining") or row.owner_host_id is None:
         return "claim"
     if row.owner_host_id != identity.host_id:
-        return "forced_takeover"
+        return "foreign_owner"
     if row.owner_boot_id != identity.boot_id:
         return "reclaim"
     return None
@@ -72,7 +76,10 @@ def startup_check(session_factory=None):
     except Exception:  # noqa: BLE001
         logger.exception("provisioning ownership startup check failed")
         return None
-    if action is not None and gate == "enforced":
+    if action == "foreign_owner":
+        logger.error("P6 ownership belongs to ANOTHER host: this host may not write. Manual review required - do not "
+                     "take over unless that host is confirmed stopped.")
+    elif action is not None and gate == "enforced":
         logger.error("P6 gate is 'enforced' and this host may not write: ownership needs %s (%s). Every legacy "
                      "remote write is refused until a superadmin runs it.", action, OWNERSHIP_ACTIONS.get(action, "-"))
     elif action is not None:

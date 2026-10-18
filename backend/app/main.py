@@ -786,6 +786,10 @@ def _create_schema() -> None:
     _auto_migrate_missing_columns()
     _bootstrap_provisioning_schema()
     _bootstrap_receipt_void_schema()
+    # Loud when the P6 gate is 'enforced' and this host must first be
+    # claimed/reclaimed by a superadmin (writes are refused until then).
+    from .services import provisioning_host_lifecycle
+    provisioning_host_lifecycle.startup_check(SessionLocal)
 
 
 @app.on_event("startup")

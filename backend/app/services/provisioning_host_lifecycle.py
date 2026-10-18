@@ -28,6 +28,64 @@ from .provisioning_host import HostIdentityUnavailable, read_identity
 logger = logging.getLogger(__name__)
 HEARTBEAT_SECONDS = 60
 
+# What a superadmin must run (authenticated, password re-asked) before this
+# host may write through the 'enforced' gate. Until then every legacy remote
+# write is refused by the runner child's ownership check - fail-closed.
+OWNERSHIP_ACTIONS = {
+    "claim": "POST /api/provisioning/lock-backend/verify",
+    "reclaim": "POST /api/provisioning/ownership/reclaim",
+    # Not a routine step: another host owns it. Only after a person has
+    # established that host is stopped may a forced takeover be considered -
+    # no route is suggested for it.
+    "foreign_owner": None,
+}
+
+
+def ownership_action(row, identity):
+    """None when this process (host AND boot) is the active owner - a
+    container restart on the same host boot keeps it, as the 'enforced'
+    shutdown keeps the row (see shutdown_release). Otherwise what must run
+    first: 'claim' (no owner, e.g. released at a shutdown outside
+    'enforced'), 'reclaim' (this host after a reboot: a new boot),
+    'foreign_owner' (another host owns it: manual review, never a routine
+    restart step), or 'host_identity_unavailable'."""
+    if identity is None:
+        return "host_identity_unavailable"
+    if row is None or row.owner_state not in ("active", "draining") or row.owner_host_id is None:
+        return "claim"
+    if row.owner_host_id != identity.host_id:
+        return "foreign_owner"
+    if row.owner_boot_id != identity.boot_id:
+        return "reclaim"
+    return None
+
+
+def startup_check(session_factory=None):
+    """At startup, says loudly when the gate is 'enforced' and this process
+    may not write until a superadmin step: an operator restarting or
+    deploying must run it. Reads only; never fatal."""
+    if not provisioning_schema.is_ready():
+        return None
+    if session_factory is None:
+        from ..database import SessionLocal as session_factory  # noqa: N813
+    try:
+        with session_factory() as db:
+            row = db.get(mp.ProvisioningRuntimeState, 1)
+            action = ownership_action(row, _me())
+            gate = row.gate_mode if row is not None else None
+    except Exception:  # noqa: BLE001
+        logger.exception("provisioning ownership startup check failed")
+        return None
+    if action == "foreign_owner":
+        logger.error("P6 ownership belongs to ANOTHER host: this host may not write. Manual review required - do not "
+                     "take over unless that host is confirmed stopped.")
+    elif action is not None and gate == "enforced":
+        logger.error("P6 gate is 'enforced' and this host may not write: ownership needs %s (%s). Every legacy "
+                     "remote write is refused until a superadmin runs it.", action, OWNERSHIP_ACTIONS.get(action, "-"))
+    elif action is not None:
+        logger.info("P6 ownership: %s required before the gate may be 'enforced'", action)
+    return action
+
 
 def _me():
     try:

@@ -269,6 +269,8 @@ class PurchaseOut(BaseModel):
     # several renewals queued since. See models.Purchase.reserved_package_name.
     reserved_package_name: Optional[str] = None
     reserved_created_at: Optional[dt.datetime] = None
+    # The queued renewal's concurrent cap, put in force when it activates.
+    reserved_max_concurrent_sessions: Optional[int] = None
     created_at: dt.datetime
     # Free-form label written by the customer at purchase time (bot) and/or
     # the admin - see models.Purchase.comment.

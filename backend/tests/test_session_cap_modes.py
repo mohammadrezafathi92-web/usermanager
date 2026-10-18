@@ -1,8 +1,8 @@
 """session_cap_mode: the staged rollout of the per-Purchase session cap, on
 SQLite AND real MariaDB (CI). No network.
 
-  legacy    the default after deploy (no state row): RADIUS, the poller,
-            bans and ban messages exactly as before
+  default   enforced (no state row): the per-Purchase rule decides
+  legacy    RADIUS, the poller, bans and ban messages exactly as before
   shadow    legacy decides and acts; the disagreement is recorded, nothing
             else - no reject, kick, ban or message of its own
   enforced  the per-Purchase rule
@@ -172,13 +172,23 @@ def scenario(label, engine):
                 db.commit()
             server._overlimit_attempts.clear()
 
-        # ================================================================ legacy (default)
-        with env.Session() as db:
-            check(L + "after deploy: no state row, mode legacy", (db.get(models.SessionCapRuntimeState, 1),
-                                                                 mode.status(db)["mode"]), (None, "legacy"))
+        # ================================================================ enforced by default, then legacy
         sessions("ovpn", 1)
+        with env.Session() as db:
+            default = (db.get(models.SessionCapRuntimeState, 1), mode.status(db)["mode"])
+        check(L + "after deploy: no state row, mode enforced (the default) - and it decides by the per-Purchase rule",
+              (default, login(server, "mode-l2tp", "10.8.0.9")), ((None, "enforced"), REJECT))
+        unban()
+        mode.change_mode(env.Session, env.root.id, "legacy", "explicit legacy for these checks")
+        with env.Session() as db:
+            check(L + "an explicit change from the default is recorded", (
+                mode.status(db)["mode"], [(e.from_mode, e.to_mode) for e in db.query(models.SessionCapModeEvent)]),
+                ("legacy", [("enforced", "legacy")]))
+            db.query(models.SessionCapModeEvent).delete()     # the audit history check below starts here
+            db.commit()
+        base_events = events()
         check(L + "legacy: a 2nd protocol of a cap-1 Purchase is accepted (each connection's own cap), no event",
-              (login(server, "mode-l2tp", "10.8.0.1"), events(), dict(mode._shadow)), (ACCEPT, 0, {}))
+              (login(server, "mode-l2tp", "10.8.0.1"), events() - base_events, dict(mode._shadow)), (ACCEPT, 0, {}))
         check(L + "legacy: the poller kicks nothing for a customer without a User cap", poll(), ([], (True, False)))
 
         def ban_trail():

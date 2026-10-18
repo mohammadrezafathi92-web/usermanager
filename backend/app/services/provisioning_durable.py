@@ -186,11 +186,37 @@ def _run_renewal(session_factory, request, identity, owner, *, actor_kind, actor
         return operation
 
 
+def _resolve_wallet(session_factory, request):
+    """The identity T1 will lease, in its own commit before T1
+    (wallet_accounts.resolve_for_operation): the target User's live account
+    - a pre-P5 User gets one, without a lot - or, for a new customer, the
+    identity of its Telegram ID. A malformed request is left to T1."""
+    from . import provisioning_delete_preparation as delete_preparation, wallet_accounts
+    if isinstance(request, delete_preparation.DeleteRequest):
+        model = {"user": models.User, "purchase": models.Purchase, "connection": models.Connection}.get(
+            request.resource_kind)
+        if model is None:
+            return
+        with session_factory() as db:
+            row = db.get(model, request.resource_id)
+            user_id = None if row is None else row.id if model is models.User else row.user_id
+        wallet_accounts.resolve_for_operation(session_factory, user_id=user_id)
+        return
+    target = getattr(request, "target_user_id", None)
+    user = getattr(getattr(request, "intent", None), "user", None)
+    if target is not None:
+        wallet_accounts.resolve_for_operation(session_factory, user_id=target)
+    elif getattr(request, "operation_type", None) == "create_user" and getattr(user, "telegram_id", None) is not None:
+        wallet_accounts.resolve_for_operation(session_factory, telegram_id=user.telegram_id,
+                                              owner_admin_id=user.owner_admin_id)
+
+
 def run(session_factory, request, *, actor_kind="system", actor_id=None, budget=None, approval=None):
     """Run one durable operation from the request thread (see module doc).
     `approval`: provisioning_approval_exec.ApprovalExecution of a receipt
     approval's production call (T1 binds it; 7.6)."""
     budget = REQUEST_BUDGET_SECONDS if budget is None else budget
+    _resolve_wallet(session_factory, request)
     if getattr(request, "operation_type", "").startswith("renew_"):
         identity, owner = _owner(session_factory)
         return _run_renewal(session_factory, request, identity, owner, actor_kind=actor_kind, actor_id=actor_id,

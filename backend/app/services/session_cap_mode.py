@@ -1,15 +1,19 @@
 """Which concurrent-session rule RADIUS and the poller apply, and the
 shadow record of where the per-Purchase rule would decide differently.
 
-  legacy    (default; also with no state row) exactly the rule before the
-            per-Purchase one: the User's cap over all of the customer's
-            connections, else each connection's own cap
+  legacy    exactly the rule before the per-Purchase one: the User's cap
+            over all of the customer's connections, else each connection's
+            own cap
   shadow    legacy decides and acts; the per-Purchase rule is computed too
             and every disagreement is recorded - nothing else: no reject,
             kick, ban or message of its own
-  enforced  the per-Purchase rule (session_cap_rule.session_scope); only
-            reachable from shadow, with a fresh enforce preview and its
-            explicit confirmation (session_cap_enforce)
+  enforced  the per-Purchase rule (session_cap_rule.session_scope). The
+            DEFAULT (owner, 2026-10-18): an install whose mode was never
+            changed - no state row - is enforced, so a panel updates into it
+            with no command; session_cap_backfill fills the caps it needs at
+            every startup. Changed back to it by hand only from shadow, with
+            a fresh enforce preview and its explicit confirmation
+            (session_cap_enforce).
 
 Atomic switch. A decision holds the shared lock of one lock file (LOCK_SH)
 from BEFORE it reads the mode until AFTER its final effect: for RADIUS the
@@ -25,8 +29,8 @@ READ_WAIT_SECONDS, cannot open the lock file, or cannot read a valid mode
 raises ModeUnavailable and takes NO decision: RADIUS sends no reply (as for
 any internal error there - the NAS retries), the poller skips the
 concurrent-session step for that cycle (no kick, no release). A missing
-state row is the documented default, legacy - but only while the mode has
-never been changed; once a change is on record, a missing row is lost
+state row is the documented default, DEFAULT_MODE - but only while the mode
+has never been changed; once a change is on record, a missing row is lost
 state: ModeUnavailable, and a change refuses to recreate it.
 """
 from __future__ import annotations
@@ -47,6 +51,7 @@ from .gate_locks import FileLock, LockTimeout, LockUnavailable, lock_base_dir
 logger = logging.getLogger("session_cap_mode")
 
 MODES = ("legacy", "shadow", "enforced")
+DEFAULT_MODE = "enforced"
 LOCK_NAME = "session-cap-mode.lock"
 READ_WAIT_SECONDS = 2.0
 CHANGE_WAIT_SECONDS = 60.0
@@ -81,7 +86,7 @@ def _read(engine) -> str:
     if lost:
         raise ModeUnavailable("mode row missing after a mode change")
     if mode is None:
-        return "legacy"  # no row and never changed: the documented default
+        return DEFAULT_MODE  # no row and never changed: the documented default
     if mode not in MODES:
         raise ModeUnavailable(f"invalid mode {mode!r}")
     return mode
@@ -119,7 +124,7 @@ def status(db) -> dict:
         pass  # held exclusively right now: the file itself is fine
     if row is None:
         # "missing": changed before, row lost since - decisions take none
-        return dict(mode="missing" if _changed_before(db) else "legacy", epoch=0, changed_at=None,
+        return dict(mode="missing" if _changed_before(db) else DEFAULT_MODE, epoch=0, changed_at=None,
                     changed_by_admin_id=None, shadow_pending=pending, lock_available=lock_ok)
     return dict(mode=row.mode, epoch=row.epoch, changed_at=row.changed_at, changed_by_admin_id=row.changed_by_admin_id,
                 shadow_pending=pending, lock_available=lock_ok)
@@ -160,7 +165,7 @@ def change_mode(session_factory, admin_id: int, target: str, reason: str, *,
                 if _changed_before(db):
                     # Lost, not new: recreating it would invent a mode.
                     raise HTTPException(409, "session_cap_mode_state_missing")
-                row = models.SessionCapRuntimeState(id=1, mode="legacy", epoch=0, version=0)
+                row = models.SessionCapRuntimeState(id=1, mode=DEFAULT_MODE, epoch=0, version=0)
                 db.add(row)
                 db.flush()
             if row.mode not in MODES:

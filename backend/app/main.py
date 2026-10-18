@@ -793,6 +793,11 @@ def on_startup():
     _warn_if_insecure_defaults()
     _admin_node_access_is_new = "admin_node_access" not in set(inspect(engine).get_table_names())
     _create_schema()
+    if not settings.bot_standalone_mode:
+        # Per-Purchase session caps from the linked packages, so the default
+        # session_cap_mode 'enforced' needs no command (never fatal).
+        from .services import session_cap_backfill
+        session_cap_backfill.run(SessionLocal)
     _backfill_api_key_hashes()
     _backfill_hierarchy_node_access(_admin_node_access_is_new)
     _backfill_roles_and_paths()

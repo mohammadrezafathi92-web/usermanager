@@ -1040,6 +1040,13 @@ export default function UserDetail() {
                       : t("userDetail.noExpiry"),
                   })}
                 </div>
+                <div className="hint">
+                  {t("userDetail.purchaseSessionCap", {
+                    value: purchase.max_concurrent_sessions
+                      ? purchase.max_concurrent_sessions
+                      : t("userDetail.perConnectionCap"),
+                  })}
+                </div>
                 {(purchase.reserved_quota_bytes || purchase.reserved_duration_days) && (
                   <div className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-500/10 dark:text-amber-400 rounded-lg px-3 py-2 mt-2">
                     <div>
@@ -1060,6 +1067,11 @@ export default function UserDetail() {
                         {t("userDetail.reservedSince", { value: formatDateTime(purchase.reserved_created_at, language) })}
                       </div>
                     )}
+                    {purchase.reserved_max_concurrent_sessions ? (
+                      <div className="opacity-75 mt-0.5">
+                        {t("userDetail.reservedSessionCap", { value: purchase.reserved_max_concurrent_sessions })}
+                      </div>
+                    ) : null}
                   </div>
                 )}
                 <div className="mt-2">
@@ -1181,7 +1193,11 @@ export default function UserDetail() {
                           <div>
                             {t("userDetail.concurrentConn", {
                               used: c.active_session_count ?? 0,
-                              max: c.max_concurrent_sessions ? c.max_concurrent_sessions : t("userDetail.unlimited"),
+                              // A capped service's cap governs its connections together
+                              // (backend session_cap_rule); the connection's own is unused.
+                              max: purchase && purchase.max_concurrent_sessions
+                                ? `${purchase.max_concurrent_sessions} ${t("userDetail.serviceCapNote")}`
+                                : c.max_concurrent_sessions ? c.max_concurrent_sessions : t("userDetail.unlimited"),
                             })}
                           </div>
                           {c.banned_until && new Date(c.banned_until) > new Date() && (

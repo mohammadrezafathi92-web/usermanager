@@ -18,7 +18,8 @@ do to customers right now, and what is still unresolved:
   shadow                the disagreements recorded since shadow began
 
 It returns a token signed over the structural state (the unrepaired and
-unfrozen lists, every Purchase's cap, the mode epoch) and its generation
+unfrozen lists, every Purchase's cap, which connection belongs to which
+Purchase and customer, the mode epoch) and its generation
 time, and a confirmation phrase naming the counts. verify(), called by
 session_cap_mode.change_mode under the exclusive lock, refuses unless the
 preview is younger than PREVIEW_SECONDS, the state still signs to the same
@@ -60,8 +61,14 @@ def _structure(db, row) -> dict:
     unfrozen = [[p.id, p.reserved_package_id, packages.get(p.reserved_package_id), p.max_concurrent_sessions]
                 for p in purchases if p.reserved_package_id is not None and p.reserved_max_concurrent_sessions is None]
     caps = [[p.id, p.max_concurrent_sessions] for p in purchases]
+    # Which connection belongs to which Purchase and customer: a connection
+    # added, removed or moved after the preview changes the scopes it showed.
+    members = [list(m) for m in db.query(models.Connection.id, models.Connection.purchase_id,
+                                         models.Connection.user_id).order_by(models.Connection.id).all()]
     return dict(epoch=row.epoch if row is not None else 0, unrepaired=unrepaired, unfrozen_reservations=unfrozen,
-                caps_digest=hashlib.sha256(json.dumps(caps).encode()).hexdigest(), capped=sum(1 for c in caps if c[1]))
+                caps_digest=hashlib.sha256(json.dumps(caps).encode()).hexdigest(),
+                members_digest=hashlib.sha256(json.dumps(members).encode()).hexdigest(),
+                capped=sum(1 for c in caps if c[1]))
 
 
 def _sign(structure: dict, generated_at: int) -> str:

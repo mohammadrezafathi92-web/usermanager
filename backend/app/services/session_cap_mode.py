@@ -25,7 +25,9 @@ READ_WAIT_SECONDS, cannot open the lock file, or cannot read a valid mode
 raises ModeUnavailable and takes NO decision: RADIUS sends no reply (as for
 any internal error there - the NAS retries), the poller skips the
 concurrent-session step for that cycle (no kick, no release). A missing
-state row is not an error: it is the documented default, legacy.
+state row is the documented default, legacy - but only while the mode has
+never been changed; once a change is on record, a missing row is lost
+state: ModeUnavailable, and a change refuses to recreate it.
 """
 from __future__ import annotations
 
@@ -62,15 +64,24 @@ def lock_path(base_dir: Optional[str] = None) -> str:
     return os.path.join(base_dir or lock_base_dir(), LOCK_NAME)
 
 
+def _changed_before(conn_or_db) -> bool:
+    """Has the mode ever been changed? Then a missing state row is a lost
+    one, never the default."""
+    return conn_or_db.execute(select(models.SessionCapModeEvent.id).limit(1)).first() is not None
+
+
 def _read(engine) -> str:
     try:
         with engine.connect() as conn:
             mode = conn.execute(select(models.SessionCapRuntimeState.mode).where(
                 models.SessionCapRuntimeState.id == 1)).scalar_one_or_none()
+            lost = mode is None and _changed_before(conn)
     except Exception as exc:  # noqa: BLE001
         raise ModeUnavailable(f"mode unreadable: {type(exc).__name__}") from exc
+    if lost:
+        raise ModeUnavailable("mode row missing after a mode change")
     if mode is None:
-        return "legacy"  # no row: never changed, the documented default
+        return "legacy"  # no row and never changed: the documented default
     if mode not in MODES:
         raise ModeUnavailable(f"invalid mode {mode!r}")
     return mode
@@ -107,8 +118,9 @@ def status(db) -> dict:
     except LockTimeout:
         pass  # held exclusively right now: the file itself is fine
     if row is None:
-        return dict(mode="legacy", epoch=0, changed_at=None, changed_by_admin_id=None, shadow_pending=pending,
-                    lock_available=lock_ok)
+        # "missing": changed before, row lost since - decisions take none
+        return dict(mode="missing" if _changed_before(db) else "legacy", epoch=0, changed_at=None,
+                    changed_by_admin_id=None, shadow_pending=pending, lock_available=lock_ok)
     return dict(mode=row.mode, epoch=row.epoch, changed_at=row.changed_at, changed_by_admin_id=row.changed_by_admin_id,
                 shadow_pending=pending, lock_available=lock_ok)
 
@@ -145,6 +157,9 @@ def change_mode(session_factory, admin_id: int, target: str, reason: str, *,
             row = db.execute(select(models.SessionCapRuntimeState).where(
                 models.SessionCapRuntimeState.id == 1).with_for_update()).scalar_one_or_none()
             if row is None:
+                if _changed_before(db):
+                    # Lost, not new: recreating it would invent a mode.
+                    raise HTTPException(409, "session_cap_mode_state_missing")
                 row = models.SessionCapRuntimeState(id=1, mode="legacy", epoch=0, version=0)
                 db.add(row)
                 db.flush()

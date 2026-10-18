@@ -12,10 +12,12 @@ SQLite AND real MariaDB (CI). No network.
             reply is sent, in the poller until the cycle is committed; a
             decision started during a change waits and then uses the new
             mode; a change refused for a busy lock leaves the mode as it was
-  no mode   lock timeout, unreadable or invalid mode: no decision at all -
-            RADIUS answers nothing, the poller kicks and releases nothing
+  no mode   lock timeout, unreadable or invalid mode, or the state row lost
+            after a change: no decision at all - RADIUS answers nothing,
+            the poller kicks and releases nothing
   gate      enforced only from shadow, with a fresh enforce preview whose
-            state still holds and whose confirmation is typed back
+            state still holds (caps, unresolved items, which connection
+            belongs to which Purchase) and whose confirmation is typed back
   repair    preview then execute, compare-and-set on Purchase, User,
             current value and the scope's connections; audited; also the
             queued renewal's cap (only with a queued renewal; the cap in
@@ -66,6 +68,8 @@ def code(fn):
         return fn()
     except HTTPException as exc:
         return exc.status_code, exc.detail
+    except mode.ModeUnavailable:
+        return "ModeUnavailable"
 
 
 _dict = Dictionary(radius_server.DICT_PATH)
@@ -239,6 +243,26 @@ def scenario(label, engine):
                                                           ("enforced", "legacy"), ("legacy", "shadow"),
                                                           ("shadow", "enforced"), ("enforced", "legacy")])
 
+        # ================================================================ a lost mode row
+        with env.Session() as db:
+            saved = {c.name: getattr(db.get(models.SessionCapRuntimeState, 1), c.name)
+                     for c in models.SessionCapRuntimeState.__table__.columns}
+            db.query(models.SessionCapRuntimeState).delete()
+            db.commit()
+        unban()
+        sessions("ovpn", 1)
+        with env.Session() as db:
+            lost_status = mode.status(db)["mode"]
+        check(L + "mode row lost after a change: no decision (no legacy default), status 'missing', a change refuses "
+              "to recreate it", (code(lambda: mode.decision(env.Session().get_bind()).__enter__()),
+                                 login(server, "mode-l2tp", "10.8.6.1"), lost_status,
+                                 code(lambda: mode.change_mode(env.Session, env.root.id, "shadow", "x"))),
+              ("ModeUnavailable", None, "missing", (409, "session_cap_mode_state_missing")))
+        with env.Session() as db:
+            db.add(models.SessionCapRuntimeState(**saved))
+            db.commit()
+        sessions("ovpn", 0)
+
         # ================================================================ the switch
         bind = env.Session().get_bind()
         held, release, outcome = threading.Event(), threading.Event(), {}
@@ -333,6 +357,26 @@ def scenario(label, engine):
         with env.Session() as db:
             shown = session_cap_enforce.preview(db)
         check(L + "...the fresh preview lists it", [r[0] for r in shown["unrepaired"]].count(gate_purchase), 1)
+        with env.Session() as db:
+            moved = models.Connection(user_id=uid, node_id=node, type=models.ConnectionType.wireguard, enabled=False,
+                                      purchase_id=pid, wg_peer_name="gate-moved")
+            db.add(moved)
+            db.commit()
+            moved_id = moved.id
+        member_ack = dict(token=shown["token"], generated_at=shown["generated_at"],
+                          confirmation=shown["confirmation_phrase"])
+        check(L + "a connection added to a Purchase since the preview (caps unchanged): refused",
+              code(lambda: mode.change_mode(env.Session, env.root.id, "enforced", "x", enforce_preview=member_ack)),
+              (409, "enforce_preview_stale"))
+        with env.Session() as db:
+            db.query(models.Connection).filter_by(id=moved_id).update({"purchase_id": gate_purchase})
+            db.commit()
+        check(L + "...or moved to another Purchase: refused",
+              code(lambda: mode.change_mode(env.Session, env.root.id, "enforced", "x", enforce_preview=member_ack)),
+              (409, "enforce_preview_stale"))
+        with env.Session() as db:
+            db.query(models.Connection).filter_by(id=moved_id).delete()
+            db.commit()
         check(L + "a wrong confirmation: refused", code(lambda: mode.change_mode(
             env.Session, env.root.id, "enforced", "x", enforce_preview=dict(
                 token=shown["token"], generated_at=shown["generated_at"], confirmation="ENFORCE"))),

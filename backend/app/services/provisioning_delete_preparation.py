@@ -93,8 +93,7 @@ def _scope(db, request, *, lock, user_id=None):
     if lock:
         purchases = purchases.with_for_update()
     purchase_ids = tuple(db.execute(purchases).scalars()) if request.resource_kind == "user" else ()
-    identity = db.scalar(select(rv.wallet_accounts.c.customer_identity_id).where(
-        rv.wallet_accounts.c.user_id == user.id, rv.wallet_accounts.c.tombstoned_at.is_(None)))
+    identity = wallet_accounts.live_identity(db, user.id)
     if identity is None:
         raise HTTPException(409, "provisioning_deletion_wallet_missing")
     return user, connections, purchase_ids, identity

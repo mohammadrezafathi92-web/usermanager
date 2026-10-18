@@ -286,8 +286,12 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
                 wallet_accounts.tenant_scope(db, user.owner_admin_id) != request.tenant_scope_key):
             raise HTTPException(409, "provisioning_target_changed")
         wallet_policy.can_purchase(db, user)
-        customer = db.execute(select(rv.wallet_accounts.c.customer_identity_id).where(
-            rv.wallet_accounts.c.user_id == user.id, rv.wallet_accounts.c.tombstoned_at.is_(None))).scalar_one()
+        # The account was resolved before T1 (provisioning_durable.run ->
+        # wallet_accounts.resolve_for_operation); without it there is no
+        # identity to lease, so nothing is staged.
+        customer = wallet_accounts.live_identity(db, user.id)
+        if customer is None:
+            raise HTTPException(503, "wallet_account_not_ready")
     approval_columns = {}
     if approval is not None:
         approval_columns = dict(approval_uuid=approval.approval_uuid, approval_execution_version=approval.version,
@@ -312,9 +316,7 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
     # Re-read targets after fencing, before any benefit, claim or payment.
     if request.target_user_id is not None:
         fresh = final._locked(db, models.User, request.target_user_id)
-        current_customer = db.execute(select(rv.wallet_accounts.c.customer_identity_id).where(
-            rv.wallet_accounts.c.user_id == request.target_user_id,
-            rv.wallet_accounts.c.tombstoned_at.is_(None))).scalar_one_or_none()
+        current_customer = wallet_accounts.live_identity(db, request.target_user_id)
         if fresh is None or current_customer != customer or (fresh.username, fresh.telegram_id, fresh.owner_admin_id) != (
                 intent.user.username, intent.user.telegram_id, intent.user.owner_admin_id):
             raise HTTPException(409, "provisioning_target_changed")

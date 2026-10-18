@@ -250,8 +250,7 @@ def finish(db, operation_id, version, leases, *, require_contracts=False, approv
                 intent.user.username, intent.user.telegram_id, intent.user.owner_admin_id) or (
                 wallet_accounts.tenant_scope(db, user.owner_admin_id) != operation.tenant_scope_key):
             raise HTTPException(409, "provisioning_target_changed")
-        identity = db.execute(select(rv.wallet_accounts.c.customer_identity_id).where(
-            rv.wallet_accounts.c.user_id == user.id, rv.wallet_accounts.c.tombstoned_at.is_(None))).scalar_one_or_none()
+        identity = wallet_accounts.live_identity(db, user.id)
         if identity is None or f"customer_identity:{identity}" not in keys:
             raise HTTPException(409, "provisioning_lease_scope_invalid")
         if operation.operation_type != "add_connection":
@@ -312,7 +311,11 @@ def finish(db, operation_id, version, leases, *, require_contracts=False, approv
             user.reserved_duration_days = None
             user.reserved_package_id = None
             user.reserved_created_at = None
-            provisioning_claims.bind_purchase(db, operation.id, purchase.id)
+            if operation.operation_type == "create_user":
+                # add_connection reserves no one-time claim (T1 does so only
+                # for create_user / purchase): nothing to bind, and
+                # bind_purchase refuses the type.
+                provisioning_claims.bind_purchase(db, operation.id, purchase.id)
     if operation.operation_type == "renew_purchase" and purchase is None:
         raise HTTPException(409, "provisioning_intent_invalid")
     renewal_evidence = [] if approved else None

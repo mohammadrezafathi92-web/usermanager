@@ -522,9 +522,20 @@ def scenario(label, engine):
             row.reserved_package_id, row.reserved_quota_bytes = env.ids.shared, 1024
             db.commit()
         shown = preview_reserved()
-        check(L + "queued-renewal preview: that field, the cap in force shown apart",
-              (shown["field"], shown["current_value"], shown["cap_in_force"], shown["reserved_package_id"]),
-              ("reserved_max_concurrent_sessions", None, 3, env.ids.shared))
+        with env.Session() as db:
+            shared_cap = db.get(models.Package, env.ids.shared).max_concurrent_sessions
+        check(L + "queued-renewal preview: that field, the cap in force shown apart, the source package's cap",
+              (shown["field"], shown["current_value"], shown["cap_in_force"], shown["reserved_package_id"],
+               shown["reserved_package_cap"]), ("reserved_max_concurrent_sessions", None, 3, env.ids.shared, shared_cap))
+        with env.Session() as db:
+            db.get(models.Package, env.ids.shared).max_concurrent_sessions = (shared_cap or 0) + 7
+            db.commit()
+        check(L + "the source package's cap edited since the preview: refused", execute_reserved(shown),
+              (409, "purchase_cap_preview_stale"))
+        with env.Session() as db:
+            db.get(models.Package, env.ids.shared).max_concurrent_sessions = shared_cap
+            db.commit()
+        shown = preview_reserved()
         with env.Session() as db:
             db.get(models.Purchase, tid).reserved_package_id = None
             db.commit()

@@ -33,6 +33,16 @@ MAX_CAP = 1000
 FIELDS = ("max_concurrent_sessions", "reserved_max_concurrent_sessions")
 
 
+def _package_cap(db, package_id):
+    """The linked package's cap now - shown so the operator can check the
+    source, and bound in the token so a package edited after the preview
+    makes the execute refuse."""
+    if package_id is None:
+        return None
+    package = db.get(models.Package, package_id)
+    return package.max_concurrent_sessions if package is not None else None
+
+
 def _state(db, purchase_id: int, field: str, *, lock: bool = False) -> dict:
     query = select(models.Purchase).where(models.Purchase.id == purchase_id)
     purchase = db.execute(query.with_for_update() if lock else query).scalar_one_or_none()
@@ -51,7 +61,9 @@ def _state(db, purchase_id: int, field: str, *, lock: bool = False) -> dict:
         cap_in_force=purchase.max_concurrent_sessions,
         user_cap=user.max_concurrent_sessions,
         package_id=purchase.package_id,
+        package_cap=_package_cap(db, purchase.package_id),
         reserved_package_id=purchase.reserved_package_id,
+        reserved_package_cap=_package_cap(db, purchase.reserved_package_id),
         scope=[dict(connection_id=c.id, type=c.type.value, enabled=bool(c.enabled),
                     connection_cap=c.max_concurrent_sessions,
                     live=counts.get(c.id, 0) if c.type in session_cap_rule.PPP_TYPES else int(bool(c.online)))

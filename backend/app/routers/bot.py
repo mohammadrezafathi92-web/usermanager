@@ -1161,8 +1161,8 @@ def create_user(
         # referral reward targeting it unresolvable), no refund binding and
         # no package cap (found 2026-10-18).
         owners = {c.purchase_id for c in created_connections}
-        candidate = db.get(models.Purchase, next(iter(owners))) if len(owners) == 1 and None not in owners else None
-        if candidate is None or candidate.user_id != user.id:
+        candidate = user_ops.purchase_of_new_connections(db, user, created_connections)
+        if candidate is None:
             # Fail closed: the sale is not recorded, charged or reported as
             # done. What already exists (the customer and the connections
             # provision_connection committed) stays; the approval stays

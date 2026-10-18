@@ -1072,7 +1072,13 @@ def bulk_create_users(
             if result["created"]:
                 # The package's cap is this Purchase's own, never the User's
                 # (session_cap_rule.session_scope).
-                absorb_legacy_pool_into_purchase(db, user, max_concurrent_sessions=package.max_concurrent_sessions)
+                target = absorb_legacy_pool_into_purchase(
+                    db, user, max_concurrent_sessions=package.max_concurrent_sessions
+                ) or purchase_of_new_connections(db, user, result["created"])
+                if target is None:
+                    skipped.append({"name": f"{username} (سرویس)", "reason": "purchase_target_unresolved"})
+                elif target.max_concurrent_sessions is None:
+                    target.max_concurrent_sessions = package.max_concurrent_sessions
                 db.commit()
         else:
             db.commit()
@@ -1699,6 +1705,23 @@ def rename_purchase(db: Session, purchase: models.Purchase, comment: str) -> mod
 
 # absorb_legacy_pool_core's default: the new Purchase keeps the User's cap.
 _USER_CAP = object()
+
+
+def purchase_of_new_connections(db: Session, user: models.User, connections) -> Optional[models.Purchase]:
+    """The Purchase a sale's freshly provisioned connections are on.
+
+    provision_connection never leaves a new connection on the legacy pool
+    (_commit_new_connection puts it on a Purchase), so the
+    absorb_legacy_pool_into_purchase a create path calls right after finds
+    nothing to move and returns None - this is that sale's Purchase instead.
+    None unless every connection is on exactly one existing Purchase of this
+    customer: the caller must then refuse the sale, never record it on no
+    Purchase (found 2026-10-18)."""
+    owners = {c.purchase_id for c in connections}
+    if len(owners) != 1 or None in owners:
+        return None
+    purchase = db.get(models.Purchase, next(iter(owners)))
+    return purchase if purchase is not None and purchase.user_id == user.id else None
 
 
 def absorb_legacy_pool_into_purchase(db: Session, user: models.User, comment: Optional[str] = None,

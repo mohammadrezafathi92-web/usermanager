@@ -617,7 +617,16 @@ def create_user(
         new_purchase = None
         if result["created"]:
             new_purchase = user_ops.absorb_legacy_pool_into_purchase(
-                db, user, max_concurrent_sessions=package.max_concurrent_sessions)
+                db, user, max_concurrent_sessions=package.max_concurrent_sessions
+            ) or user_ops.purchase_of_new_connections(db, user, result["created"])
+            if new_purchase is None:
+                # Fail closed (as the bot's create_user): no sale on no
+                # Purchase. The charge is refunded; what was provisioned
+                # stays for an admin to resolve.
+                admin_billing.refund_for_package(db, admin, package, units=1)
+                raise HTTPException(409, "purchase_target_unresolved")
+            if new_purchase.max_concurrent_sessions is None:
+                new_purchase.max_concurrent_sessions = package.max_concurrent_sessions
         # Revenue side - see accounting.record_panel_sale for why this used
         # to be missing entirely on every panel-made sale.
         sale_entry = accounting.record_panel_sale(db, "sale_new", user, package, actor_admin_id=admin.id)

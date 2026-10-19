@@ -92,7 +92,6 @@ def finish(db, approval_uuid, execution_version, principal, execution_intent, *,
     if (renew_expected["purchase_id"] != execution_intent.renew_purchase_id or
             renew_expected["user_id"] != approval["target_user_id_snapshot"] or
             renew_expected["add_quota_bytes"] < 0 or renew_expected["add_days"] < 0 or
-            (renew_expected["add_quota_bytes"] == 0 and renew_expected["add_days"] == 0) or
             sale_expected["payment_card_id"] is not None):
         raise HTTPException(409, "approval_renew_shape_not_supported")
     user = db.execute(select(models.User).where(models.User.id == renew_expected["user_id"])
@@ -124,7 +123,8 @@ def finish(db, approval_uuid, execution_version, principal, execution_intent, *,
     evidence = []
     user_ops.renew_purchase_core(db, purchase, add_gb=renew_expected["add_quota_bytes"] / 1024 ** 3,
         add_days=renew_expected["add_days"], package_id=package.id, evidence_sink=evidence,
-        reconciliation_sink=[], max_concurrent_sessions=frozen.package.max_concurrent_sessions)
+        reconciliation_sink=[], max_concurrent_sessions=frozen.package.max_concurrent_sessions,
+        replace_package_limits=True)
     if len(evidence) != 1:
         raise HTTPException(409, "approval_renew_evidence_invalid")
     entry = accounting.record_core(db, "sale_renew", sale_expected["amount"], user=user,

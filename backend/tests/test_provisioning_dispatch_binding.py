@@ -310,7 +310,12 @@ def scenario(engine, directory):
                             assert competitor.execute(text(child_db.ADVISORY_GET), dict(name=name, timeout=0)).scalar_one() == 0
                             competitor.end_snapshot()
                             guard._connection._connection.invalidate()  # Real connection loss releases GET_LOCK.
-                            assert competitor.execute(text(child_db.ADVISORY_GET), dict(name=name, timeout=0)).scalar_one() == 1
+                            # Closing the client socket is local; MariaDB may
+                            # not have processed its disconnect yet. Wait for
+                            # actual server-side release, never force-unlock.
+                            # The zero-wait check BEFORE disconnect above
+                            # still proves that a live owner cannot be stolen.
+                            assert competitor.execute(text(child_db.ADVISORY_GET), dict(name=name, timeout=5)).scalar_one() == 1
                             competitor.end_snapshot()
                             try:
                                 guard.check()

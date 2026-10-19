@@ -417,6 +417,7 @@ with old.begin() as conn:
     # two unique indexes do not exist, and there are keys and ledger rows.
     conn.execute(text("DROP INDEX uq_api_keys_key_instance_uuid"))
     conn.execute(text("DROP INDEX uq_ledger_entries_reversal_of_id"))
+    conn.execute(text("ALTER TABLE purchases DROP COLUMN reserved_replace_package_limits"))
     for table, columns in rvs.ADDED_COLUMNS.items():
         for name in ("ix_ledger_entries_approval_uuid", "ix_discount_code_redemptions_approval_uuid"):
             conn.execute(text(f"DROP INDEX IF EXISTS {name}"))
@@ -430,6 +431,9 @@ raised, errors = run_startup(old)
 check("startup on the old database does not raise", raised, None)
 check("...and logs no error", [r.getMessage() for r in errors], [])
 check("the ten columns and both unique indexes now exist", rvs.inspect_added_columns(old), [])
+check("startup adds the nullable Purchase reservation marker",
+      any(c["name"] == "reserved_replace_package_limits" and c["nullable"]
+          for c in inspect(old).get_columns("purchases")), True)
 check("receipt void is ready", (rvs.is_ready(), rvs.status()["problems"]), (True, []))
 with old.connect() as conn:
     key_uuids = [row[0] for row in conn.execute(text("SELECT key_instance_uuid FROM api_keys ORDER BY id"))]

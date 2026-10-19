@@ -86,6 +86,9 @@ def scenario(label, engine):
             assert before["target_purchase_package_id_snapshot"] == source_package
             result = execute(name, purchase_id, package, item, values)
             assert not isinstance(result, str), result
+            with env.Session() as db:
+                purchase = db.get(models.Purchase, purchase_id)
+                assert result.renewal_reserved == (purchase.reserved_package_id is not None)
             row = env.approval(item["approval_uuid"])
             assert row["state"] == "completed", row["state"]
             with env.Session() as db:
@@ -175,6 +178,21 @@ def scenario(label, engine):
             user_ops.renew_purchase_core(db, p, add_days=30, package_id=finite)
             assert p.quota_bytes == 20 * GB and p.expire_at > dt.datetime.utcnow()
             db.commit()
+        # Historical and partial-package reservations with quota zero meant
+        # preserve quota, not unlimited; the new nullable flag keeps that rule.
+        for historical in (False, True):
+            name, pid = customer(finite, quota=20 * GB, usable=True)
+            with env.Session() as db:
+                p = db.get(models.Purchase, pid)
+                if historical:
+                    p.reserved_package_id, p.reserved_quota_bytes, p.reserved_duration_days = finite, 0, 30
+                    assert p.reserved_replace_package_limits is None
+                else:
+                    user_ops.renew_purchase_core(db, p, add_days=30, package_id=finite)
+                    assert p.reserved_replace_package_limits is False
+                assert user_ops._maybe_activate_reserved_purchase_renewal(db, p)
+                assert p.quota_bytes == 20 * GB and p.reserved_replace_package_limits is None
+                db.commit()
 
         # A poller's usage update is allowed, but changing the source package is refused.
         name, pid = customer(finite, quota=20 * GB, usable=True)

@@ -607,7 +607,7 @@ async def pay_with_balance(call: CallbackQuery, state: FSMContext, bot: Bot) -> 
 
     await state.clear()
     text = f"✅ خرید با موفقیت از اعتبار شما پرداخت شد.\n\nموجودی فعلی: {user['balance']:,} تومان"
-    if user.get("reserved_quota_gb") or user.get("reserved_duration_days"):
+    if user.get("renewal_reserved") or user.get("reserved_quota_gb") or user.get("reserved_duration_days"):
         # renew_user() queued this instead of applying it right now - see
         # services/user_ops.py's renew_user docstring.
         text += "\n\n⏳ سرویس فعلی شما هنوز اعتبار دارد، پس این تمدید رزرو شد و به محض تمام شدنش خودکار فعال می‌شود."

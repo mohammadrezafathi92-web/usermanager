@@ -533,11 +533,12 @@ def _renewal_state(target) -> tuple:
     package) of a User or a Purchase - the columns a renewal can touch."""
     quota = target.total_quota_bytes if isinstance(target, models.User) else target.quota_bytes
     return (int(quota or 0), int(target.used_bytes or 0), target.expire_at, target.reserved_quota_bytes,
-            target.reserved_duration_days, target.reserved_package_id, target.package_id)
+            target.reserved_duration_days, target.reserved_package_id, target.package_id,
+            bool(getattr(target, "reserved_replace_package_limits", False)))
 
 
 def _renewal_evidence(sink: Optional[list], mode: str, now: dt.datetime, add_gb: float, add_days: int,
-                      package_id: Optional[int], before: tuple, after: tuple) -> None:
+                      package_id: Optional[int], before: tuple, after: tuple, *, package_limits: bool = False) -> None:
     """Receipt-approval evidence of one renewal (services/
     receipt_approval_effects.py): which branch ran, with the values read
     before and after it, and the very `now` the branch used. Only built
@@ -552,7 +553,8 @@ def _renewal_evidence(sink: Optional[list], mode: str, now: dt.datetime, add_gb:
         q_before=before[0], u_before=before[1], e_before=before[2], rq_before=before[3], rd_before=before[4],
         rp_before=before[5], pk_before=before[6],
         q_after=after[0], u_after=after[1], e_after=after[2], rq_after=after[3], rd_after=after[4],
-        rp_after=after[5], pk_after=after[6]))
+        rp_after=after[5], pk_after=after[6], package_limits=package_limits,
+        reserved_package_limits_before=before[7], reserved_package_limits_after=after[7]))
 
 
 def renew_user(
@@ -2004,21 +2006,24 @@ def renew_purchase_core(
             # while zero in a manual add-days/add-quota request means leave
             # that dimension alone. An unlimited queued package remains
             # unlimited when another package is added to the same queue.
-            unlimited_quota = package_limits and (not add_gb or (
-                purchase.reserved_package_id is not None and purchase.reserved_quota_bytes == 0))
-            unlimited_days = package_limits and (not add_days or (
-                purchase.reserved_package_id is not None and purchase.reserved_duration_days == 0))
+            queued_package_limits = bool(purchase.reserved_replace_package_limits)
+            unlimited_quota = (package_limits and not add_gb) or (
+                queued_package_limits and purchase.reserved_quota_bytes == 0)
+            unlimited_days = (package_limits and not add_days) or (
+                queued_package_limits and purchase.reserved_duration_days == 0)
             purchase.reserved_quota_bytes = 0 if unlimited_quota else (
                 (purchase.reserved_quota_bytes or 0) + (gb_to_bytes(add_gb) if add_gb else 0))
             purchase.reserved_duration_days = 0 if unlimited_days else (
                 (purchase.reserved_duration_days or 0) + add_days)
+            purchase.reserved_replace_package_limits = queued_package_limits or package_limits
             if package_id is not None:
                 purchase.reserved_package_id = package_id
                 if max_concurrent_sessions is not None:
                     purchase.reserved_max_concurrent_sessions = max_concurrent_sessions
             if purchase.reserved_created_at is None:
                 purchase.reserved_created_at = now
-            _renewal_evidence(evidence_sink, "reserved", now, add_gb, add_days, package_id, before, _renewal_state(purchase))
+            _renewal_evidence(evidence_sink, "reserved", now, add_gb, add_days, package_id, before,
+                              _renewal_state(purchase), package_limits=package_limits)
             return purchase
         purchase.used_bytes = 0
         if add_gb or package_limits:
@@ -2047,7 +2052,8 @@ def renew_purchase_core(
         if max_concurrent_sessions is not None and is_real_renewal:
             purchase.max_concurrent_sessions = max_concurrent_sessions
     if is_real_renewal:
-        _renewal_evidence(evidence_sink, "immediate_reset", now, add_gb, add_days, package_id, before, _renewal_state(purchase))
+        _renewal_evidence(evidence_sink, "immediate_reset", now, add_gb, add_days, package_id, before,
+                          _renewal_state(purchase), package_limits=package_limits)
     return purchase
 
 
@@ -2061,11 +2067,11 @@ def _maybe_activate_reserved_purchase_renewal(db: Session, purchase: models.Purc
     now = dt.datetime.utcnow()
     purchase.used_bytes = 0
     if purchase.reserved_quota_bytes or (
-            purchase.reserved_package_id is not None and purchase.reserved_quota_bytes == 0):
+            purchase.reserved_replace_package_limits and purchase.reserved_quota_bytes == 0):
         purchase.quota_bytes = purchase.reserved_quota_bytes
     if purchase.reserved_duration_days:
         purchase.expire_at = now + dt.timedelta(days=purchase.reserved_duration_days)
-    elif purchase.reserved_package_id is not None and purchase.reserved_duration_days == 0:
+    elif purchase.reserved_replace_package_limits and purchase.reserved_duration_days == 0:
         purchase.expire_at = None
     if purchase.reserved_package_id is not None:
         purchase.package_id = purchase.reserved_package_id
@@ -2079,6 +2085,7 @@ def _maybe_activate_reserved_purchase_renewal(db: Session, purchase: models.Purc
     purchase.reserved_package_id = None
     purchase.reserved_created_at = None
     purchase.reserved_max_concurrent_sessions = None
+    purchase.reserved_replace_package_limits = None
     if purchase.status in (models.UserStatus.quota_exceeded, models.UserStatus.expired):
         # See _resolve_status_after_reset's docstring / _maybe_activate_reserved_renewal's
         # matching comment above - same "only one dimension got restored"

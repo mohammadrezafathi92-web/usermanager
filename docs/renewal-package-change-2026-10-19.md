@@ -23,10 +23,18 @@ package until its current quota or expiry ends; an exhausted service
 applies it immediately. Existing connections are retained. Quota zero in
 a purchased package means unlimited quota, and duration zero means no
 expiry; these values replace the old limits when the renewal activates.
+A nullable `Purchase.reserved_replace_package_limits` flag identifies new
+complete-package reservations, so historical zero-valued reservations are
+never reinterpreted as unlimited. The flag and its before/after evidence
+are recorded with the renewal; consuming the reservation clears it.
 Manual additions without a package retain their existing zero-means-no-
 change behavior. Finite renewals in the single existing reservation slot
 continue to accumulate; an unlimited package in that slot keeps that
 dimension unlimited.
+
+Renewal responses explicitly report whether the renewal was reserved, even
+when both limits are zero. Bot confirmations and service cards therefore
+continue to show that it will activate after the current service ends.
 
 Receipt #1031 was already cancelled and its bot request rejected before
 this correction. This change does not reopen it or create a sale. Recovery

@@ -78,12 +78,16 @@ def _user_detail_text(user: dict, purchases: list[dict] | None = None) -> str:
             lines.append(f"  انقضا: {fmt_date(p.get('expire_at'))}")
             if p.get("comment"):
                 lines.append(f"  📝 {p['comment']}")
-            if p.get("reserved_quota_bytes") or p.get("reserved_duration_days"):
+            if p.get("reserved_quota_bytes") or p.get("reserved_duration_days") or p.get("reserved_package_id"):
                 parts = []
                 if p.get("reserved_quota_bytes"):
                     parts.append(fmt_bytes(p["reserved_quota_bytes"]))
+                elif p.get("reserved_replace_package_limits"):
+                    parts.append("حجم نامحدود")
                 if p.get("reserved_duration_days"):
                     parts.append(f"{p['reserved_duration_days']} روز")
+                elif p.get("reserved_replace_package_limits"):
+                    parts.append("بدون انقضا")
                 lines.append("  ⏳ تمدید رزروشده: " + " + ".join(parts))
             lines.append(f"  اتصالات: {p.get('connection_count', 0)}")
 

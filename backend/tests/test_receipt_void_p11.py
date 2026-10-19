@@ -224,6 +224,9 @@ def scenario(label, engine):
     with Session() as db:
         db.query(models.PanelSettings).update({"loyalty_purchase_threshold": 2, "loyalty_reward_credit": 100})
         db.commit()
+    with Session() as db:
+        from app.services import product_decisions
+        product_decisions.confirm(db, ROOT, version=product_decisions.VERSION, content_hash=product_decisions.CONTENT_HASH)
     with Session() as db, ready:
         check(L + "joint activation", loyalty_activation.activate(db, ROOT)["activated"], True)
     with Session() as db:

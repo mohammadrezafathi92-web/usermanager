@@ -296,6 +296,16 @@ with SessionLocal() as db:
     db.query(models.User).filter_by(username="card").update({"reserved_duration_days": None})
     db.commit()
 with SessionLocal() as db, READY:
+    unconfirmed = code(lambda: loyalty_activation.activate(db, ROOT))
+check("activation before the Product decisions were confirmed: refused", unconfirmed,
+      (409, "product_decisions_unconfirmed"))
+with SessionLocal() as db:
+    from app.services import product_decisions
+    check("a confirmation must name the exact version and hash",
+          code(lambda: product_decisions.confirm(db, ROOT, version=product_decisions.VERSION, content_hash="0" * 64)),
+          (409, "product_decisions_version_mismatch"))
+    product_decisions.confirm(db, ROOT, version=product_decisions.VERSION, content_hash=product_decisions.CONTENT_HASH)
+with SessionLocal() as db, READY:
     outdated = code(lambda: loyalty_activation.activate(db, ROOT))
 check("activation with a remote key that never reported the protocol: refused", outdated,
       (409, "approval_protocol_outdated"))

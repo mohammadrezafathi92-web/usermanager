@@ -1093,6 +1093,11 @@ class Purchase(Base):
     # True only for a queued complete package whose zero limits mean
     # unlimited. NULL preserves the historical meaning of existing queues.
     reserved_replace_package_limits = Column(Boolean, nullable=True)
+    # How many times a reservation of this purchase was consumed: the
+    # consumer increments it under the row lock and logs the value it saw
+    # (purchase_reservation_activations.seq_before), so a P9a snapshot taken
+    # at seq s is matched to its consumption by ID, never by time. NULL = 0.
+    reservation_activation_seq = Column(Integer, nullable=True)
 
     notified_quota_80 = Column(Boolean, default=False)
     notified_expiry_soon = Column(Boolean, default=False)

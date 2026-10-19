@@ -168,6 +168,8 @@ from .routers import wallet as wallet_router  # noqa: E402
 app.include_router(wallet_router.router)
 from .routers import receipt_void as receipt_void_router  # noqa: E402
 app.include_router(receipt_void_router.router)
+from .routers import reservation_resolutions as reservation_resolutions_router  # noqa: E402
+app.include_router(reservation_resolutions_router.router)
 app.include_router(provisioning_router.router)
 app.include_router(session_caps_router.router)
 app.include_router(ads_router.router)

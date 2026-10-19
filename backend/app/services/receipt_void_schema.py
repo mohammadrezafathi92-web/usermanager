@@ -31,6 +31,7 @@ from sqlalchemy.exc import IntegrityError
 
 from .. import models
 from .. import models_receipt_void as rv
+from .. import models_reservation_transition as rt
 from . import provisioning_schema
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,8 @@ ADDED_COLUMNS = {
     "discount_code_redemptions": ["approval_uuid", "voided_at", "void_operation_id"],
     "api_keys": ["key_instance_uuid", "approval_protocol_version"],
 }
+# The P9a reservation addendum's column (not a P0 column), checked the same way.
+TRANSITION_ADDED_COLUMNS = {"purchases": ["reservation_activation_seq"]}
 ADDED_UNIQUE_INDEXES = {"api_keys": API_KEY_UUID_INDEX, "ledger_entries": LEDGER_REVERSAL_INDEX}
 
 # Seed defaults are not restart invariants: P9/P9a legitimately change them.
@@ -132,6 +135,7 @@ def create_tables(engine) -> None:
     _widen_card_event_kind(engine)
     _widen_lot_source_kind(engine)
     rv.RECEIPT_VOID_METADATA.create_all(bind=engine, tables=list(rv.RECEIPT_VOID_TABLES))
+    rt.RESERVATION_TRANSITION_METADATA.create_all(bind=engine, tables=list(rt.RESERVATION_TRANSITION_TABLES))
     # These tables use their own MetaData, outside main's additive Base
     # migration. Preserve existing approval rows while extending their shape.
     table = rv.receipt_approvals.name
@@ -148,7 +152,7 @@ def inspect_added_columns(engine) -> list[str]:
     two unique indexes exist by name and ARE unique."""
     problems: list[str] = []
     inspector = inspect(engine)
-    for table, columns in ADDED_COLUMNS.items():
+    for table, columns in list(ADDED_COLUMNS.items()) + list(TRANSITION_ADDED_COLUMNS.items()):
         try:
             live = {c["name"] for c in inspector.get_columns(table)}
         except Exception as exc:  # noqa: BLE001
@@ -286,7 +290,9 @@ def bootstrap(engine, session_factory) -> dict:
     try:
         create_tables(engine)
         stage = "inspect"
-        problems = provisioning_schema.inspect_schema(engine, rv.RECEIPT_VOID_TABLES) + inspect_added_columns(engine)
+        problems = (provisioning_schema.inspect_schema(engine, rv.RECEIPT_VOID_TABLES)
+                    + provisioning_schema.inspect_schema(engine, rt.RESERVATION_TRANSITION_TABLES)
+                    + inspect_added_columns(engine))
         if not problems:
             stage = "seed"
             db = session_factory()

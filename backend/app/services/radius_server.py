@@ -443,7 +443,7 @@ class UserManagerRadiusServer(Server):
                 if purchase is not None:
                     quota_ok = not purchase.quota_bytes or purchase.used_bytes < purchase.quota_bytes
                     expiry_ok = not purchase.expire_at or purchase.expire_at > dt.datetime.utcnow()
-                    if (not quota_ok or not expiry_ok) and _maybe_activate_reserved_purchase_renewal(db, purchase):
+                    if (not quota_ok or not expiry_ok) and _maybe_activate_reserved_purchase_renewal(db, purchase, "radius"):
                         quota_ok = not purchase.quota_bytes or purchase.used_bytes < purchase.quota_bytes
                         expiry_ok = not purchase.expire_at or purchase.expire_at > dt.datetime.utcnow()
                     status_ok = purchase.status == models.UserStatus.active

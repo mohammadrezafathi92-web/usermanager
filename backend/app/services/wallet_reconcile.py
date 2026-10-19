@@ -10,6 +10,9 @@ its own wallet_cache_repair operation, not implemented here).
   open_epoch          payment_event needs exactly one open epoch of the
                       current generation; legacy_activation none
   loyalty_cache       purchase_count / loyalty_rewards_given != the events
+  cutover_snapshot_*  a P9a reservation snapshot changed, or its live purchase
+                      consumed past it with no logged consumption (a deleted
+                      purchase, or a reused id, is history - no alert)
 """
 from __future__ import annotations
 
@@ -18,7 +21,7 @@ import datetime as dt
 from sqlalchemy import func, select
 
 from .. import models, models_receipt_void as rv
-from . import loyalty_service, receipt_void_schema
+from . import loyalty_service, receipt_void_schema, reservation_transition
 
 HOLD_ALERT_MINUTES = 15
 LIMIT = 50
@@ -57,5 +60,6 @@ def check(db) -> dict:
                     problems.append({"code": "loyalty_cache", "user_id": user.id})
         elif epochs:
             problems.append({"code": "open_epoch", "open_epochs": len(epochs)})
+    problems.extend(reservation_transition.check(db))
     db.rollback()
     return {"ok": not problems, "count": len(problems), "problems": problems[:LIMIT]}

@@ -99,13 +99,15 @@ def scope(db, approval: dict, rows: list[dict]) -> dict:
         # else (SQLite reuses the highest rowid): never touch that customer.
         user = None
     out = {"shape": shape, "user_id": user_id, "user_exists": user is not None, "delete": None,
-           "user": None, "purchases": [], "connections": [],
+           "user": None, "purchases": [], "connections": [], "prior_rights": None,
            "customer_identity_id": _identity(db, user_id, approval["target_username_snapshot"], user is not None)}
     if user is None:
         return out
     out["user"] = {"id": user.id, "username": user.username, "status": getattr(user.status, "value", user.status),
                    "owner_admin_id": user.owner_admin_id, "telegram_id": user.telegram_id,
-                   "total_quota_bytes": int(user.total_quota_bytes or 0), "expire_at": user.expire_at}
+                   "total_quota_bytes": int(user.total_quota_bytes or 0), "expire_at": user.expire_at,
+                   "reserved_quota_bytes": user.reserved_quota_bytes, "reserved_duration_days": user.reserved_duration_days,
+                   "reserved_package_id": user.reserved_package_id}
     if shape == "topup":
         return out
     if shape in FULL_ACCOUNT:
@@ -127,7 +129,22 @@ def scope(db, approval: dict, rows: list[dict]) -> dict:
     out["purchases"] = [{"id": p.id, "package_id": p.package_id, "package_name": packages.get(p.package_id),
                          "comment": p.comment, "status": getattr(p.status, "value", p.status),
                          "quota_bytes": int(p.quota_bytes or 0), "used_bytes": int(p.used_bytes or 0),
-                         "expire_at": p.expire_at} for p in purchases]
+                         "expire_at": p.expire_at, "created_at": p.created_at,
+                         "max_concurrent_sessions": p.max_concurrent_sessions,
+                         "reserved_quota_bytes": p.reserved_quota_bytes,
+                         "reserved_duration_days": p.reserved_duration_days,
+                         "reserved_package_id": p.reserved_package_id,
+                         "reserved_max_concurrent_sessions": p.reserved_max_concurrent_sessions,
+                         "reserved_replace_package_limits": p.reserved_replace_package_limits,
+                         "reservation_activation_seq": int(p.reservation_activation_seq or 0)} for p in purchases]
+    # Option A of the P9a reservation addendum: the deletion scope is the
+    # contract's own (13.1); every purchase, connection and queued renewal in
+    # it, and the cutover snapshots of those purchases, are shown and bound
+    # to the confirmation (fingerprint). A snapshot is what was queued at the
+    # cutover - NOT a record of every right acquired before it.
+    from . import reservation_transition
+    out["prior_rights"] = {"cutover_snapshots": reservation_transition.snapshots_of(db, purchases),
+                           "note": reservation_transition.PRIOR_RIGHTS_NOTE}
     out["connections"] = [{"id": c.id, "purchase_id": c.purchase_id, "protocol": getattr(c.type, "value", c.type),
                            "node_id": c.node_id, "node_name": nodes.get(c.node_id), "enabled": bool(c.enabled)}
                           for c in connections]
@@ -353,6 +370,7 @@ def fingerprint(db, approval: dict, rows: list[dict], resources: dict) -> str:
         "purchases": [{k: v for k, v in p.items() if k != "used_bytes"} for p in resources["purchases"]],
         "connections": [{k: v for k, v in c.items() if k not in ("enabled", "node_name")}
                         for c in resources["connections"]],
+        "prior_rights": (resources.get("prior_rights") or {}).get("cutover_snapshots"),
         "other_approvals": [(a["approval_uuid"], a["state"], int(a["version"])) for a in
                             other_approvals(db, approval, resources)],
         "effects": [(r["id"], r["effect_type"], r["effect_key"], r["resource_id"], r["voided_at"] is None) for r in rows],

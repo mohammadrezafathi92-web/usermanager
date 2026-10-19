@@ -2057,13 +2057,24 @@ def renew_purchase_core(
     return purchase
 
 
-def _maybe_activate_reserved_purchase_renewal(db: Session, purchase: models.Purchase) -> bool:
+def _maybe_activate_reserved_purchase_renewal(db: Session, purchase: models.Purchase, trigger: str = "other") -> bool:
     """Per-purchase counterpart to _maybe_activate_reserved_renewal above -
     called from quota_manager.py's _enforce_purchase_limits and
     radius_server.py's live login check when THIS purchase (not the user
-    overall) is about to be marked exhausted."""
+    overall) is about to be marked exhausted.
+
+    The consumption is serialized on the purchase row (P9a reservation
+    transition): the row is locked first, and a reservation another
+    transaction consumed since this one loaded the purchase (its
+    reservation_activation_seq moved) is not applied a second time. The
+    consumption is logged with the seq it consumed, in this transaction."""
     if not (purchase.reserved_quota_bytes or purchase.reserved_duration_days or purchase.reserved_package_id):
         return False
+    from . import reservation_transition
+    seq = reservation_transition.lock_for_consumption(db, purchase)
+    if seq is None:
+        return False
+    before = reservation_transition.purchase_state(purchase)
     now = dt.datetime.utcnow()
     purchase.used_bytes = 0
     if purchase.reserved_quota_bytes or (
@@ -2093,6 +2104,8 @@ def _maybe_activate_reserved_purchase_renewal(db: Session, purchase: models.Purc
         # radius_server.py's login check.
         purchase.status = _resolve_status_after_reset(purchase.quota_bytes, purchase.used_bytes, purchase.expire_at, now)
         reconcile_purchase_connections(db, purchase)
+    purchase.reservation_activation_seq = seq + 1
+    reservation_transition.log_consumption(db, purchase, seq, trigger, before)
     return True
 
 

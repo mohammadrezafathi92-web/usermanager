@@ -10,6 +10,10 @@ Note: the "👤 اکانت من" SLASH COMMAND (cmd_account) is not here - it li
 customer.py's own router alongside the other three slash commands, so it is
 always checked before any catch-all state handler regardless of which
 section file that catch-all lives in. See customer.py's module docstring."""
+import hashlib
+import json
+import logging
+
 from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -42,6 +46,15 @@ from .customer_purchase import cb_renew
 from .customer_topup import cb_topup_start
 
 router = Router(name="customer_account")
+logger = logging.getLogger("telegram_bot")
+
+
+def _delete_key(telegram_id, username, group):
+    # Same service and customer -> same key on concurrent clicks/retries.
+    # Creation timestamps/batch distinguish a recreated SQLite row id.
+    scope = (telegram_id, username, group["key"], sorted(
+        (c["id"], c.get("purchase_id"), c.get("created_at") or "") for c in group["connections"]))
+    return "customer-delete:" + hashlib.sha256(json.dumps(scope, sort_keys=True).encode()).hexdigest()
 
 
 def _account_text(user: dict) -> str:
@@ -395,18 +408,24 @@ async def cb_delete_confirm(call: CallbackQuery, callback_data: DeleteConfirmCB,
         await call.message.edit_text(_account_text(user), reply_markup=purchases_kb(groups) if groups else home_kb())
         await call.answer("این سرویس قبلاً حذف شده")
         return
+    if not group["deletable"]:
+        await call.answer("این سرویس دیگر قابل حذف نیست؛ لیست سرویس‌ها را تازه‌سازی کنید.", show_alert=True)
+        return
     # A single-connection group only has purchase_id set once the absorb-
     # legacy-pool migration has run for it (same check cb_rename_start uses)
     # - fall back to deleting the one connection directly when it hasn't.
     purchase_id = next((c.get("purchase_id") for c in group["connections"] if c.get("purchase_id")), None)
+    key = _delete_key(call.from_user.id, user["username"], group)
     try:
         if purchase_id:
-            await api.delete_purchase(user["username"], purchase_id)
+            await api.delete_purchase(user["username"], purchase_id, idempotency_key=key)
         else:
-            await api.delete_connection(user["username"], group["connections"][0]["id"])
+            await api.delete_connection(user["username"], group["connections"][0]["id"], idempotency_key=key)
     except ApiError as exc:
         await call.answer(f"خطا: {exc}", show_alert=True)
         return
+    logger.info("customer service deletion confirmed: telegram_id=%s purchase_id=%s connection_ids=%s",
+                call.from_user.id, purchase_id, [c["id"] for c in group["connections"]])
     user = await api.get_user(user["username"])
     groups = group_connections_by_purchase(user["connections"]) if user["connections"] else []
     await call.message.edit_text(

@@ -737,11 +737,9 @@ def _set_connection_enabled(db: Session, connection: models.Connection, enabled:
                 )
         elif connection.type in PPP_TYPES:
             # Authenticated via RADIUS - the RADIUS auth handler checks
-            # connection.enabled live on every Access-Request, so flipping
-            # the DB flag is all that's needed to cut the user off (RouterOS
-            # will simply reject the next re-auth / already-open PPP session
-            # will be kicked on the router's own timeout or can be dropped
-            # manually if instant cutoff is required).
+            # connection.enabled on every NEW Access-Request. Existing
+            # sessions must also be closed: the poll cycle uses RouterOS's
+            # live session list after all quota/renewal decisions below.
             pass
         elif connection.type == models.ConnectionType.xray:
             applied = legacy_remote.run(node, "xray_set_enabled", factory=client_for_node, inbound_tag=node.xr_inbound_tag,
@@ -877,6 +875,7 @@ def _reconcile_ppp_sessions(db: Session, node: models.Node, mt: MikrotikClient) 
     except MikrotikError as exc:
         logger.warning("mikrotik node %s: failed to read /ppp/active for reconciliation: %s", node.id, exc)
         return
+    db.info.setdefault("quota_ppp_live", {})[node.id] = set(live_usernames)
     by_id = {c.id: c for c in ppp_conns}
     stale_rows = (
         db.query(models.RadiusActiveSession)
@@ -889,6 +888,46 @@ def _reconcile_ppp_sessions(db: Session, node: models.Node, mt: MikrotikClient) 
             if conn.radius_session_id == row.session_id:
                 conn.radius_session_id = None
             db.delete(row)
+
+
+def _disconnect_blocked_ppp_sessions(db: Session) -> int:
+    """Close live PPP sessions after quota/expiry and queued renewals settle.
+
+    A disabled database flag only rejects the NEXT RADIUS authentication;
+    it does not terminate a session already carrying traffic. Retry from
+    fresh router observations every poll, including sessions whose Start
+    accounting packet was lost. Use the existing fenced P6 runner action,
+    never raw client writes. Failed/unknown remote outcomes retain the
+    session rows so a later poll can retry.
+    """
+    live_by_node = db.info.pop("quota_ppp_live", {})
+    if not live_by_node:
+        return 0
+    # autoflush is disabled: the enforcement passes just changed flags.
+    db.flush()
+    connections = db.query(models.Connection).filter(
+        models.Connection.type.in_(PPP_TYPES), models.Connection.enabled.is_(False),
+        models.Connection.node_id.in_(list(live_by_node)),
+    ).all()
+    stopped = 0
+    for conn in connections:
+        live = live_by_node[conn.node_id]
+        if not conn.ppp_username or conn.ppp_username not in live:
+            continue
+        try:
+            legacy_remote.run(conn.node, "ppp_kick", factory=MikrotikClient.for_node,
+                              username=conn.ppp_username)
+        except MikrotikError:
+            logger.warning("quota cutoff: PPP disconnect failed for connection %s; retry next poll", conn.id)
+            continue
+        # False means the session already disappeared: also verified absent.
+        # Keep per-session counters until Accounting-Stop (or the normal
+        # router reconciliation). Deleting them now would make a late Stop
+        # re-add the session's entire cumulative traffic as new usage.
+        conn.online = False
+        live.discard(conn.ppp_username)
+        stopped += 1
+    return stopped
 
 
 def poll_mikrotik_node(db: Session, node: models.Node):
@@ -942,7 +981,8 @@ def poll_mikrotik_node(db: Session, node: models.Node):
                     # connection type) and the cross-protocol concurrent-
                     # session count in radius_server.py.
                     age = parse_ros_duration_seconds(peer.get("last-handshake"))
-                    conn.online = age is not None and age <= WIREGUARD_ONLINE_THRESHOLD_SECONDS
+                    peer_disabled = peer.get("disabled") in (True, "true", "yes", "1", 1)
+                    conn.online = not peer_disabled and age is not None and age <= WIREGUARD_ONLINE_THRESHOLD_SECONDS
 
         node.last_seen = dt.datetime.utcnow()
         node.last_error = None
@@ -1064,6 +1104,9 @@ def _finish_cycle(db: Session, now, purchase_ids, user_ids) -> None:
         # own docstring for why this is needed even with the rest of this
         # function working correctly (2026-09 bug report).
         reconciled_count = _reconcile_connection_enabled_state(db, now)
+        stopped_ppp = _disconnect_blocked_ppp_sessions(db)
+        if stopped_ppp:
+            logger.info("poll_all: closed %d blocked PPP connection(s)", stopped_ppp)
 
         if purchase_ids or user_ids or session_limited_count or reconciled_count:
             logger.info(

@@ -57,7 +57,15 @@ def compare(db, locked: LockedApproval, execution_intent: intent.ApprovalIntent,
             purchase = db.execute(select(models.Purchase).where(
                 models.Purchase.id == execution_intent.renew_purchase_id).with_for_update()
                 .execution_options(populate_existing=True)).scalar_one_or_none()
-            if purchase is None or purchase.user_id != user.id or purchase.package_id != execution_intent.package_id:
+            if purchase is None or purchase.user_id != user.id:
+                return LivePreflight("target_purchase_changed")
+            original_id = approval["target_purchase_id_snapshot"]
+            if original_id is not None:
+                if purchase.id != original_id or purchase.package_id != approval["target_purchase_package_id_snapshot"]:
+                    return LivePreflight("target_purchase_changed")
+            elif purchase.package_id != execution_intent.package_id:
+                # Existing approvals did not record the source package. Keep
+                # their historical precondition; never infer a new snapshot.
                 return LivePreflight("target_purchase_changed")
         if target.shape == "renew_user":
             baseline = approval["target_purchase_count_snapshot"]

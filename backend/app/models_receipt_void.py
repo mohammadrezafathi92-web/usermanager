@@ -159,6 +159,12 @@ receipt_approvals = Table(
     # NULL on approvals registered before the additive upgrade: those remain
     # unverifiable for renew_user and must not be guessed at execution time.
     Column("target_purchase_count_snapshot", Integer, nullable=True),
+    # The existing service and its package at registration, independently of
+    # package_id_snapshot (the package the customer is buying for renewal).
+    # A NULL purchase id marks pre-upgrade approvals; a captured NULL package
+    # is valid for a service that was created without a package.
+    Column("target_purchase_id_snapshot", Integer, nullable=True),
+    Column("target_purchase_package_id_snapshot", Integer, nullable=True),
     Column("target_username_snapshot", String(128), nullable=False),
     Column("receipt_file_id_snapshot", String(255), nullable=True),
     Column("amount_snapshot", BigInteger, nullable=False),

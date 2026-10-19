@@ -52,6 +52,7 @@ SNAPSHOT_KEYS = frozenset({
     "renewal_mode", "effective_now", "add_quota_bytes", "add_days", "package_id_requested",
     "q_before", "u_before", "e_before", "rq_before", "rd_before", "rp_before", "pk_before",
     "q_after", "u_after", "e_after", "rq_after", "rd_after", "rp_after", "pk_after",
+    "package_limits", "reserved_package_limits_before", "reserved_package_limits_after",
     "balance_before", "balance_after", "rewards_count", "slot_key",
     "purchase_event_id", "user_id", "eligibility_reason",            # loyalty_purchase_recorded (P9a)
     "source_id", "gross_amount", "settled_amount", "lot_amount",     # a lot-generation credit source (P9)
@@ -147,6 +148,9 @@ class PurchaseRenewedEvidence:
     rd_after: Optional[int]
     rp_after: Optional[int]
     pk_after: Optional[int]
+    package_limits: bool = False
+    reserved_package_limits_before: bool = False
+    reserved_package_limits_after: bool = False
 
 
 def renewal_mode_of(q_before: int, u_before: int, e_before: Optional[dt.datetime], now: dt.datetime) -> str:
@@ -157,23 +161,36 @@ def renewal_mode_of(q_before: int, u_before: int, e_before: Optional[dt.datetime
 
 
 def _validate_renewal(ev: PurchaseRenewedEvidence) -> None:
-    """The state table of design 5.3, column by column."""
-    if ev.add_quota_bytes < 0 or ev.add_days < 0 or (ev.add_quota_bytes == 0 and ev.add_days == 0):
+    """Validate renewal evidence, including the 2026-10-19 owner decision:
+    a complete Purchase package replaces zero limits with unlimited. Raw
+    additions and historical user-level renewals retain design 5.3 math.
+    """
+    package_limits = ev.package_limits
+    if package_limits and ev.package_id_requested is None:
+        raise EffectRejected(EVIDENCE_INVALID, "complete package limits require a package")
+    if ev.add_quota_bytes < 0 or ev.add_days < 0 or (
+            ev.add_quota_bytes == 0 and ev.add_days == 0 and not package_limits):
         raise EffectRejected(EVIDENCE_INVALID, "a renewal must add quota or days")
     if renewal_mode_of(ev.q_before, ev.u_before, ev.e_before, ev.effective_now) != ev.renewal_mode:
         raise EffectRejected(EVIDENCE_INVALID, "renewal_mode does not follow from the before values")
     if ev.renewal_mode == "reserved":
         expected = {
             "q_after": ev.q_before, "u_after": ev.u_before, "e_after": ev.e_before,
-            "rq_after": (ev.rq_before or 0) + ev.add_quota_bytes, "rd_after": (ev.rd_before or 0) + ev.add_days,
+            "rq_after": 0 if (package_limits and ev.add_quota_bytes == 0) or (
+                ev.reserved_package_limits_before and ev.rq_before == 0) else (ev.rq_before or 0) + ev.add_quota_bytes,
+            "rd_after": 0 if (package_limits and ev.add_days == 0) or (
+                ev.reserved_package_limits_before and ev.rd_before == 0) else (ev.rd_before or 0) + ev.add_days,
             "rp_after": ev.package_id_requested if ev.package_id_requested is not None else ev.rp_before,
-            "pk_after": ev.pk_before}
+            "pk_after": ev.pk_before,
+            "reserved_package_limits_after": ev.reserved_package_limits_before or package_limits}
     else:
         expected = {
-            "q_after": ev.add_quota_bytes if ev.add_quota_bytes > 0 else ev.q_before, "u_after": 0,
-            "e_after": ev.effective_now + dt.timedelta(days=ev.add_days) if ev.add_days > 0 else ev.e_before,
+            "q_after": ev.add_quota_bytes if ev.add_quota_bytes > 0 or package_limits else ev.q_before, "u_after": 0,
+            "e_after": ev.effective_now + dt.timedelta(days=ev.add_days) if ev.add_days > 0 else (
+                None if package_limits else ev.e_before),
             "rq_after": ev.rq_before, "rd_after": ev.rd_before, "rp_after": ev.rp_before,
-            "pk_after": ev.package_id_requested if ev.package_id_requested is not None else ev.pk_before}
+            "pk_after": ev.package_id_requested if ev.package_id_requested is not None else ev.pk_before,
+            "reserved_package_limits_after": ev.reserved_package_limits_before}
     for column, value in expected.items():
         if getattr(ev, column) != value:
             raise EffectRejected(EVIDENCE_INVALID, f"{column} is {getattr(ev, column)!r}, the {ev.renewal_mode} "
@@ -231,8 +248,10 @@ def _project(effect_type: str, effect_key: str, resource, evidence) -> tuple[str
             "quota_bytes": int(resource.quota_bytes or 0), "days": evidence.days}, None
     if effect_type == "purchase_renewed":
         _need(evidence, PurchaseRenewedEvidence)
-        _validate_renewal(evidence)
         is_purchase = isinstance(resource, models.Purchase)
+        if evidence.package_limits and not is_purchase:
+            raise EffectRejected(EVIDENCE_INVALID, "complete package limits require a Purchase")
+        _validate_renewal(evidence)
         return ("Purchase" if is_purchase else "User"), resource.id, {
             "user_id": resource.user_id if is_purchase else resource.id,
             "purchase_id": resource.id if is_purchase else None, "package_id": evidence.package_id_requested,

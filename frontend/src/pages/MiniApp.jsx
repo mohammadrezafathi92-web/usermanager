@@ -498,7 +498,7 @@ function ServiceCard({ service, onRenew }) {
   const total = service.quota_bytes || 0;
   const pct = total ? Math.min(100, Math.round((used / total) * 100)) : 0;
   const [label, colour] = STATUS[service.status] || [service.status, "text-[color:var(--mi-amber)] bg-[var(--mi-soft)]"];
-  const reserved = (service.reserved_quota_bytes || 0) + (service.reserved_duration_days || 0);
+  const reserved = Boolean(service.reserved_package_id || service.reserved_quota_bytes || service.reserved_duration_days);
   const days = daysUntil(service.expire_at);
 
   // What the customer most needs to notice on this card, in one line, in
@@ -566,13 +566,15 @@ function ServiceCard({ service, onRenew }) {
       {/* A renewal already paid for, waiting for this one to run out. Without
           it, a customer who has just renewed sees nothing change and buys
           again. */}
-      {reserved > 0 && (
+      {reserved && (
         <div className="text-xs text-[color:var(--mi-sky)] mt-3 bg-sky-500/10 rounded-lg px-3 py-2 flex items-center gap-2">
           <Clock size={14} className="shrink-0" />
           <span>
             تمدید رزروشده
             {service.reserved_quota_bytes ? ` · ${formatBytes(service.reserved_quota_bytes)}` : ""}
+            {!service.reserved_quota_bytes && service.reserved_replace_package_limits ? " · حجم نامحدود" : ""}
             {service.reserved_duration_days ? ` · ${fa(service.reserved_duration_days)} روز` : ""}
+            {!service.reserved_duration_days && service.reserved_replace_package_limits ? " · بدون انقضا" : ""}
           </span>
         </div>
       )}

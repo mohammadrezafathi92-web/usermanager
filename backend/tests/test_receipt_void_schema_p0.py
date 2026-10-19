@@ -83,7 +83,7 @@ def drop_all(engine):
 
 print("--- shape ---")
 check("36 tables", len(rv.RECEIPT_VOID_TABLES), 36)
-check("399 columns", sum(len(t.columns) for t in rv.RECEIPT_VOID_TABLES), 399)
+check("401 columns", sum(len(t.columns) for t in rv.RECEIPT_VOID_TABLES), 401)
 check("none of them is in the project's general metadata", sorted(set(NAMES) & set(models.Base.metadata.tables)), [])
 check("every CHECK and UNIQUE is named",
       [t.name for t in rv.RECEIPT_VOID_TABLES for c in t.constraints
@@ -164,7 +164,8 @@ rvs.create_tables(upgrade)
 old_uuid = str(uuid.uuid4())
 insert(upgrade, rv.receipt_approvals, **approval_row(approval_uuid=old_uuid))
 with upgrade.begin() as conn:
-    conn.execute(text("ALTER TABLE receipt_approvals DROP COLUMN target_purchase_count_snapshot"))
+    for column in ("target_purchase_count_snapshot", "target_purchase_id_snapshot", "target_purchase_package_id_snapshot"):
+        conn.execute(text(f"ALTER TABLE receipt_approvals DROP COLUMN {column}"))
 check("old approval table lacks purchase-count snapshot",
       "target_purchase_count_snapshot" not in {c["name"] for c in inspect(upgrade).get_columns("receipt_approvals")})
 check("startup adds the nullable snapshot without losing old approvals",
@@ -173,7 +174,8 @@ with upgrade.connect() as conn:
     old_row = conn.execute(select(rv.receipt_approvals).where(
         rv.receipt_approvals.c.approval_uuid == old_uuid)).mappings().one()
 check("old approval remains, with an unverifiable NULL baseline",
-      (old_row["approval_uuid"], old_row["target_purchase_count_snapshot"]), (old_uuid, None))
+      (old_row["approval_uuid"], old_row["target_purchase_count_snapshot"], old_row["target_purchase_id_snapshot"],
+       old_row["target_purchase_package_id_snapshot"]), (old_uuid, None, None, None))
 
 
 def sqlite_with_historical_lot_width(width):
@@ -415,6 +417,7 @@ with old.begin() as conn:
     # two unique indexes do not exist, and there are keys and ledger rows.
     conn.execute(text("DROP INDEX uq_api_keys_key_instance_uuid"))
     conn.execute(text("DROP INDEX uq_ledger_entries_reversal_of_id"))
+    conn.execute(text("ALTER TABLE purchases DROP COLUMN reserved_replace_package_limits"))
     for table, columns in rvs.ADDED_COLUMNS.items():
         for name in ("ix_ledger_entries_approval_uuid", "ix_discount_code_redemptions_approval_uuid"):
             conn.execute(text(f"DROP INDEX IF EXISTS {name}"))
@@ -428,6 +431,9 @@ raised, errors = run_startup(old)
 check("startup on the old database does not raise", raised, None)
 check("...and logs no error", [r.getMessage() for r in errors], [])
 check("the ten columns and both unique indexes now exist", rvs.inspect_added_columns(old), [])
+check("startup adds the nullable Purchase reservation marker",
+      any(c["name"] == "reserved_replace_package_limits" and c["nullable"]
+          for c in inspect(old).get_columns("purchases")), True)
 check("receipt void is ready", (rvs.is_ready(), rvs.status()["problems"]), (True, []))
 with old.connect() as conn:
     key_uuids = [row[0] for row in conn.execute(text("SELECT key_instance_uuid FROM api_keys ORDER BY id"))]
@@ -544,7 +550,8 @@ if mariadb_url:
             maria_old_uuid = str(uuid.uuid4())
             insert(maria, rv.receipt_approvals, **approval_row(approval_uuid=maria_old_uuid))
             with maria.begin() as conn:
-                conn.execute(text("ALTER TABLE receipt_approvals DROP COLUMN target_purchase_count_snapshot"))
+                for column in ("target_purchase_count_snapshot", "target_purchase_id_snapshot", "target_purchase_package_id_snapshot"):
+                    conn.execute(text(f"ALTER TABLE receipt_approvals DROP COLUMN {column}"))
             check("[mariadb] existing approval snapshot column is absent before upgrade",
                   "target_purchase_count_snapshot" not in {
                       c["name"] for c in inspect(maria).get_columns("receipt_approvals")})
@@ -554,8 +561,9 @@ if mariadb_url:
                 maria_old = conn.execute(select(rv.receipt_approvals).where(
                     rv.receipt_approvals.c.approval_uuid == maria_old_uuid)).mappings().one()
             check("[mariadb] old approval preserved with NULL baseline",
-                  (maria_old["approval_uuid"], maria_old["target_purchase_count_snapshot"]),
-                  (maria_old_uuid, None))
+                  (maria_old["approval_uuid"], maria_old["target_purchase_count_snapshot"],
+                   maria_old["target_purchase_id_snapshot"], maria_old["target_purchase_package_id_snapshot"]),
+                  (maria_old_uuid, None, None, None))
             drop_all(maria)
             rvs.create_tables(maria)
             run_constraint_checks(maria, "mariadb")

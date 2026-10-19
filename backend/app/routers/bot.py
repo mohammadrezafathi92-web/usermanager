@@ -314,7 +314,9 @@ def _run_request(db: Session, request, **actor):
 def _renewal_response(db: Session, user_id: int, purchase_id: int):
     user, purchase = db.get(models.User, user_id), db.get(models.Purchase, purchase_id)
     out = _user_response(user)
-    if purchase is not None and (purchase.reserved_quota_bytes or purchase.reserved_duration_days):
+    if purchase is not None and (purchase.reserved_quota_bytes or purchase.reserved_duration_days
+                                 or purchase.reserved_package_id is not None):
+        out.renewal_reserved = True
         out.reserved_quota_gb = (purchase.reserved_quota_bytes / (1024 ** 3)) if purchase.reserved_quota_bytes else None
         out.reserved_duration_days = purchase.reserved_duration_days
     return out
@@ -1789,7 +1791,10 @@ def renew_service(
         renew_package = db.get(models.Package, payload.package_id) if payload.package_id else None
         user_ops.renew_purchase(db, purchase, payload.add_gb, payload.add_days, payload.reset_usage,
                                 package_id=payload.package_id, evidence_sink=renewal_evidence,
-                                max_concurrent_sessions=renew_package.max_concurrent_sessions if renew_package else None)
+                                max_concurrent_sessions=renew_package.max_concurrent_sessions if renew_package else None,
+                                replace_package_limits=bool(renew_package is not None and (
+                                    user_ops.gb_to_bytes(payload.add_gb or 0), payload.add_days or 0) == (
+                                    user_ops.gb_to_bytes(renew_package.quota_gb or 0), renew_package.duration_days or 0)))
         sale_entry = None
         _charge_seller(db, user, renew_package, payload.add_gb or 0)
         if payload.package_id or payload.paid_amount is not None:
@@ -1798,15 +1803,7 @@ def renew_service(
         db.commit()
     db.refresh(user)
     db.refresh(purchase)
-    out = _user_response(user)
-    # Surface THIS purchase's queued-renewal state in the user-level
-    # reserved fields the bot's confirmation messages already read - the
-    # user-level ones are always empty post-migration, which would make a
-    # queued renewal read as an instant one.
-    if purchase.reserved_quota_bytes or purchase.reserved_duration_days:
-        out.reserved_quota_gb = (purchase.reserved_quota_bytes / (1024 ** 3)) if purchase.reserved_quota_bytes else None
-        out.reserved_duration_days = purchase.reserved_duration_days
-    return out
+    return _renewal_response(db, user.id, purchase.id)
 
 
 @router.post("/users/{username}/renew", response_model=schemas.BotUserResponse)

@@ -139,11 +139,11 @@ def create_tables(engine) -> None:
     # migration. Preserve existing approval rows while extending their shape.
     table = rv.receipt_approvals.name
     columns = {column["name"] for column in inspect(engine).get_columns(table)}
-    if "target_purchase_count_snapshot" not in columns:
-        with engine.begin() as conn:
-            conn.execute(text(
-                f"ALTER TABLE {table} ADD COLUMN target_purchase_count_snapshot INTEGER NULL"
-            ))
+    for column in ("target_purchase_count_snapshot", "target_purchase_id_snapshot",
+                   "target_purchase_package_id_snapshot"):
+        if column not in columns:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} INTEGER NULL"))
 
 
 def inspect_added_columns(engine) -> list[str]:

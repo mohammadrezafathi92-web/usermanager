@@ -1414,6 +1414,10 @@ def renew_purchase_endpoint(
         db, purchase,
         add_gb=payload.add_gb, add_days=payload.add_days,
         reset_usage=payload.reset_usage, package_id=payload.package_id,
+        max_concurrent_sessions=package.max_concurrent_sessions if package is not None else None,
+        replace_package_limits=bool(package is not None and (
+            user_ops.gb_to_bytes(payload.add_gb or 0), payload.add_days or 0) == (
+            user_ops.gb_to_bytes(package.quota_gb or 0), package.duration_days or 0)),
     )
     # Revenue side of a panel renewal (see accounting.record_panel_sale).
     # Only a package-based renewal has a price to book - a raw add_gb/

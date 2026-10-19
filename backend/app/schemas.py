@@ -271,6 +271,7 @@ class PurchaseOut(BaseModel):
     reserved_created_at: Optional[dt.datetime] = None
     # The queued renewal's concurrent cap, put in force when it activates.
     reserved_max_concurrent_sessions: Optional[int] = None
+    reserved_replace_package_limits: Optional[bool] = None
     created_at: dt.datetime
     # Free-form label written by the customer at purchase time (bot) and/or
     # the admin - see models.Purchase.comment.
@@ -1711,6 +1712,7 @@ class BotUserResponse(BaseModel):
     # "اکانت من" so it isn't mistaken for the renewal having failed/vanished.
     reserved_quota_gb: Optional[float] = None
     reserved_duration_days: Optional[int] = None
+    renewal_reserved: bool = False
     # "قفل خرید" - see models.User.purchases_blocked. The bot uses these to
     # hide/disable the buy, renew and top-up buttons and to explain why,
     # rather than letting the customer press a button that will fail.
@@ -2186,6 +2188,8 @@ class BotPurchaseInfo(BaseModel):
     status: UserStatus
     reserved_quota_bytes: Optional[int] = None
     reserved_duration_days: Optional[int] = None
+    reserved_package_id: Optional[int] = None
+    reserved_replace_package_limits: Optional[bool] = None
     created_at: dt.datetime
     connection_count: int = 0
     comment: Optional[str] = None

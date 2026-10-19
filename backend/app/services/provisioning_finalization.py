@@ -337,7 +337,9 @@ def finish(db, operation_id, version, leases, *, require_contracts=False, approv
         core = user_ops.renew_purchase_core if purchase is not None else user_ops.renew_user_core
         renewed_package = package.id if package and not intent.keep_package else None
         # A Purchase's renewal carries the cap frozen with the request.
-        cap = dict(max_concurrent_sessions=intent.package.max_concurrent_sessions) if (
+        cap = dict(max_concurrent_sessions=intent.package.max_concurrent_sessions,
+                   replace_package_limits=(intent.quota_bytes, intent.duration_days) == (
+                       intent.package.quota_bytes, intent.package.duration_days)) if (
             purchase is not None and renewed_package is not None) else {}
         core(db, purchase if purchase is not None else user, add_gb=intent.quota_bytes / 1024 ** 3,
             add_days=intent.duration_days, reset_usage=intent.reset_usage,

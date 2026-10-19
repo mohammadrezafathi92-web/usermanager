@@ -1090,6 +1090,9 @@ class Purchase(Base):
     # 2026-10-17: a 1-user service renewed with a 2-user package stayed
     # 1-user). NULL: the renewal leaves the cap as it is.
     reserved_max_concurrent_sessions = Column(Integer, nullable=True)
+    # True only for a queued complete package whose zero limits mean
+    # unlimited. NULL preserves the historical meaning of existing queues.
+    reserved_replace_package_limits = Column(Boolean, nullable=True)
 
     notified_quota_80 = Column(Boolean, default=False)
     notified_expiry_soon = Column(Boolean, default=False)

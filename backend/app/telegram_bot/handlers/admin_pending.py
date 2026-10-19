@@ -337,7 +337,7 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
                                               execution_token=session.get("execution_token"))
                 except ApiError:
                     pass
-            if user.get("reserved_quota_gb") or user.get("reserved_duration_days"):
+            if user.get("renewal_reserved") or user.get("reserved_quota_gb") or user.get("reserved_duration_days"):
                 # renew_user() queued this instead of applying it right now -
                 # the current package still has room left (see
                 # services/user_ops.py's renew_user docstring) - say so

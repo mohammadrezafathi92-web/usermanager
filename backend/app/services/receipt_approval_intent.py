@@ -89,6 +89,8 @@ class Target:
     telegram_id_source: str                      # user_row | bot_attested | none
     user_id: Optional[int] = None
     purchase_count: int = 0                      # for renew_user: the legacy shape registration saw
+    purchase_id: Optional[int] = None             # existing service, not the renewed package
+    purchase_package_id: Optional[int] = None      # NULL is a valid original package
 
 
 @dataclass(frozen=True)
@@ -227,12 +229,14 @@ def resolve_target(db: Session, principal: bot_auth.BotPrincipal, intent: Approv
     if claimed_owner is not None and user.owner_admin_id != claimed_owner:
         raise IntentRejected(422, "identity_mismatch")
     purchases = db.query(models.Purchase).filter(models.Purchase.user_id == user.id)
+    purchase = None
     if intent.kind == "topup":
         shape = "topup"
     elif intent.kind == "new":
         shape = "existing_user"
     elif intent.renew_purchase_id is not None:
-        if purchases.filter(models.Purchase.id == intent.renew_purchase_id).first() is None:
+        purchase = purchases.filter(models.Purchase.id == intent.renew_purchase_id).first()
+        if purchase is None:
             raise IntentRejected(404, "target_purchase_not_found")
         shape = "renew_purchase"
     else:
@@ -241,7 +245,9 @@ def resolve_target(db: Session, principal: bot_auth.BotPrincipal, intent: Approv
                   tenant_scope_key=tenant_scope_key(db, user.owner_admin_id),
                   telegram_id=int(user.telegram_id) if user.telegram_id is not None else None,
                   telegram_id_source="user_row" if user.telegram_id is not None else "none",
-                  user_id=user.id, purchase_count=purchases.count())
+                  user_id=user.id, purchase_count=purchases.count(),
+                  purchase_id=purchase.id if purchase is not None else None,
+                  purchase_package_id=purchase.package_id if purchase is not None else None)
 
 
 def intent_hash(intent: ApprovalIntent, target: Target) -> str:
@@ -341,7 +347,7 @@ def build_manifest(db: Session, intent: ApprovalIntent, target: Target) -> list[
         rows.append(ManifestRow("ledger_topup", "topup", REQUIRED, {
             "user_id": target.user_id, "amount": intent.amount, "payment_card_id": intent.payment_card_id}))
     elif target.shape in ("renew_purchase", "renew_user"):
-        if quota_bytes <= 0 and days <= 0:
+        if quota_bytes <= 0 and days <= 0 and target.shape != "renew_purchase":
             raise IntentRejected(422, "empty_renewal")
         rows.append(ManifestRow("purchase_renewed", "renew", REQUIRED, {
             "user_id": target.user_id, "purchase_id": intent.renew_purchase_id, "package_id": package.id,

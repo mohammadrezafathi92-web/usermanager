@@ -560,17 +560,21 @@ class PanelBridge:
         payload = schemas.BotRenamePurchaseRequest(comment=comment)
         return _dump(await _call(bot_router.rename_purchase, username, purchase_id, payload, owner_admin_id=_scope(owner_admin_id)))
 
-    async def delete_purchase(self, username: str, purchase_id: int, owner_admin_id: Optional[int] = None) -> dict:
+    async def delete_purchase(self, username: str, purchase_id: int, owner_admin_id: Optional[int] = None,
+                              idempotency_key: Optional[str] = None) -> dict:
         """Customer's own "🗑 حذف" on an expired/exhausted service - see
         routers/bot.py's delete_purchase (raises ApiError, via _call, if the
         service isn't actually eligible - e.g. the customer's list was
         stale)."""
-        return _dump(await _call(bot_router.delete_purchase, username, purchase_id, owner_admin_id=_scope(owner_admin_id)))
+        return _dump(await _call(bot_router.delete_purchase, username, purchase_id, owner_admin_id=_scope(owner_admin_id),
+                                 x_idempotency_key=idempotency_key))
 
-    async def delete_connection(self, username: str, connection_id: int, owner_admin_id: Optional[int] = None) -> dict:
+    async def delete_connection(self, username: str, connection_id: int, owner_admin_id: Optional[int] = None,
+                                idempotency_key: Optional[str] = None) -> dict:
         """Same as delete_purchase above, for a connection with no Purchase
         of its own - see routers/bot.py's delete_connection."""
-        return _dump(await _call(bot_router.delete_connection, username, connection_id, owner_admin_id=_scope(owner_admin_id)))
+        return _dump(await _call(bot_router.delete_connection, username, connection_id, owner_admin_id=_scope(owner_admin_id),
+                                 x_idempotency_key=idempotency_key))
 
     async def renew(
         self, username: str, add_gb: float = 0, add_days: int = 0, reset_usage: bool = False,

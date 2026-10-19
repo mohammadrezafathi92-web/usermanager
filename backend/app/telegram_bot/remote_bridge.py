@@ -356,13 +356,17 @@ class RemoteBridge:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         return await self._call("POST", f"/users/{username}/purchases/{purchase_id}/rename", json=payload, params=params)
 
-    async def delete_purchase(self, username: str, purchase_id: int, owner_admin_id: Optional[int] = None) -> dict:
+    async def delete_purchase(self, username: str, purchase_id: int, owner_admin_id: Optional[int] = None,
+                              idempotency_key: Optional[str] = None) -> dict:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
-        return await self._call("DELETE", f"/users/{username}/purchases/{purchase_id}", params=params)
+        return await self._call("DELETE", f"/users/{username}/purchases/{purchase_id}", params=params,
+                                extra_headers=_key_header(idempotency_key))
 
-    async def delete_connection(self, username: str, connection_id: int, owner_admin_id: Optional[int] = None) -> dict:
+    async def delete_connection(self, username: str, connection_id: int, owner_admin_id: Optional[int] = None,
+                                idempotency_key: Optional[str] = None) -> dict:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
-        return await self._call("DELETE", f"/users/{username}/connections/{connection_id}", params=params)
+        return await self._call("DELETE", f"/users/{username}/connections/{connection_id}", params=params,
+                                extra_headers=_key_header(idempotency_key))
 
     async def reset_usage(self, username: str, owner_admin_id: Optional[int] = None) -> dict:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}

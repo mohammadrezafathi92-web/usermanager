@@ -6,6 +6,7 @@ No network, force, refund or hidden commit. Roll back every failure.
 """
 import datetime as dt
 import json
+import logging
 import re
 
 from fastapi import HTTPException
@@ -16,6 +17,8 @@ from . import payment_reservations, provisioning_transitions as transitions
 from . import resource_leases, user_ops, wallet_service
 from .provisioning_identity import removal_matches
 from . import provisioning_deletion_digest as digest
+
+logger = logging.getLogger(__name__)
 
 
 def _fingerprint(connection, node):
@@ -46,6 +49,55 @@ def _forced(step):
     remote may still hold it - an orphan recorded on the step itself - and
     the deletion finishes without it, exactly what force-step promised."""
     return step.remote_outcome == "abandoned" and step.forced_by_admin_id is not None and step.forced_at is not None
+
+
+def _complete_duplicate_purchase(db, operation, intent):
+    """Only a proven duplicate of an already completed exact deletion.
+
+    Missing target alone is NOT success. Require matching completed scope,
+    actor/tenant, removed steps with absence proof, no remaining/reused IDs,
+    and no payment. Caller already owns/revalidates runtime and identity
+    leases. Never deletes any data or performs remote work here.
+    """
+    if intent["resource_kind"] != "purchase":
+        return False
+    ident, expected = intent["resource_id"], intent["connection_fingerprints"]
+    if any(not isinstance(k, str) or not re.fullmatch(r"[1-9][0-9]*", k) for k in expected):
+        return False
+    expected_ids = [int(k) for k in expected]
+    if db.get(models.Purchase, ident) is not None:
+        return False  # id reused by another customer's purchase
+    if db.execute(select(models.Connection.id).where(
+            (models.Connection.purchase_id == ident) | models.Connection.id.in_(expected_ids))).first():
+        return False
+    peers = db.execute(select(mp.ProvisioningOperation).where(
+        mp.ProvisioningOperation.id != operation.id,
+        mp.ProvisioningOperation.operation_type == "delete_purchase",
+        mp.ProvisioningOperation.target_user_id == operation.target_user_id,
+        mp.ProvisioningOperation.tenant_scope_key == operation.tenant_scope_key,
+        mp.ProvisioningOperation.actor_kind == operation.actor_kind,
+        mp.ProvisioningOperation.actor_id == operation.actor_id,
+        mp.ProvisioningOperation.state == "completed",
+        mp.ProvisioningOperation.intent == operation.intent,
+    )).scalars().all()
+    peer = next((p for p in peers if p.intent == operation.intent), None)
+    if peer is None:
+        return False
+    steps = db.execute(select(mp.ProvisioningStep).where(
+        mp.ProvisioningStep.operation_id == operation.id).with_for_update()).scalars().all()
+    if (len(steps) != len(expected) or {str(s.connection_id) for s in steps} != set(expected)
+            or any(s.direction != "remove" or s.state != "removed" or (
+                s.backend != "radius_ppp" and not _forced(s) and (
+                    not s.remote_attempted or s.remote_outcome not in (
+                        "verified_absent", "delete_idempotently_absent"))) for s in steps)):
+        return False
+    if db.execute(select(mp.PaymentReservation.id).where(
+            mp.PaymentReservation.operation_id == operation.id)).first():
+        return False
+    transitions._write_operation(db, operation, "completed", username_claim=None,
+        completed_at=dt.datetime.utcnow(), result_user_id=operation.target_user_id)
+    logger.info("duplicate purchase deletion %s completed by exact prior operation %s", operation.id, peer.id)
+    return True
 
 
 def finish(db, operation_id, version, leases):
@@ -91,6 +143,8 @@ def finish(db, operation_id, version, leases):
         target = db.execute(select(model).where(model.id == ident, model.user_id == user.id)
             .with_for_update().execution_options(populate_existing=True)).scalar_one_or_none()
     if target is None:
+        if _complete_duplicate_purchase(db, operation, intent):
+            return operation
         raise HTTPException(409, "provisioning_deletion_scope_invalid")
     if kind == "user":
         purchase_ids = list(db.execute(select(models.Purchase.id).where(models.Purchase.user_id == user.id)

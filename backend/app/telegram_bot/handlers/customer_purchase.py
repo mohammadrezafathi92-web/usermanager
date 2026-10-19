@@ -177,12 +177,16 @@ async def cb_renew(call: CallbackQuery, state: FSMContext) -> None:
     # package queued behind what's left - see routers/bot.py's
     # renew_service). If the customer has several independent services,
     # they pick WHICH one they're renewing before seeing the package list;
-    # with exactly one it's auto-targeted; with none (pre-migration edge
-    # case) the old user-level renew still applies server-side.
+    # with exactly one it's auto-targeted. An empty account has nothing to
+    # renew: do not accept payment for an obsolete user-level entitlement.
     try:
         purchases = await api.list_purchases(account["username"])
     except ApiError:
-        purchases = []
+        await call.answer("دریافت سرویس‌ها ناموفق بود؛ دوباره تلاش کنید.", show_alert=True)
+        return
+    if not purchases:
+        await call.answer("سرویسی برای تمدید ندارید؛ برای ساخت سرویس، «خرید اشتراک» را انتخاب کنید.", show_alert=True)
+        return
     if len(purchases) >= 2:
         await state.update_data(renew_purchases={str(p["id"]): p for p in purchases})
         await state.set_state(CustomerPurchaseStates.picking_service)

@@ -214,6 +214,75 @@ def scenario(engine):
         locks.begin_business(db)
         assert deletion.finish(db, oid, 0, tokens).state == "completed"
         db.commit()
+        if kind == "purchase":
+            # Historical concurrent taps used two random business keys.
+            # The first finished; the duplicate must not stay stuck forever.
+            original = db.get(mp.ProvisioningOperation, oid)
+            duplicate = mp.ProvisioningOperation(operation_type=original.operation_type,
+                business_key=str(uuid.uuid4()), request_hash=original.request_hash,
+                tenant_scope_key=original.tenant_scope_key, actor_kind=original.actor_kind,
+                actor_id=original.actor_id, target_user_id=uid, intent=original.intent,
+                state="remote_complete", wallet_epoch_at_start=0,
+                forward_deadline=dt.datetime.utcnow() + dt.timedelta(minutes=5))
+            db.add(duplicate); db.flush()
+            did = duplicate.id
+            for source in db.query(mp.ProvisioningStep).filter_by(operation_id=oid).all():
+                values = {c.name: getattr(source, c.name) for c in mp.ProvisioningStep.__table__.columns
+                          if c.name not in ("id", "operation_id")}
+                db.add(mp.ProvisioningStep(operation_id=did, **values))
+            for token in tokens:
+                locks.release(db, token)
+            dtokens = [locks.acquire(db, f"customer_identity:{identity}", f"op:{did}:1"),
+                       locks.acquire(db, f"provisioning_op:{did}", f"op:{did}:1")]
+            db.commit()
+            # Missing target is insufficient: completed exact-scope peer is mandatory.
+            locks.begin_business(db)
+            db.get(mp.ProvisioningOperation, oid).state = "compensated"
+            db.flush()
+            refused("provisioning_deletion_scope_invalid", lambda: deletion.finish(db, did, 0, dtokens))
+            db.rollback()
+            locks.begin_business(db)
+            db.get(mp.ProvisioningOperation, did).tenant_scope_key = "foreign"
+            db.flush()
+            refused("provisioning_deletion_scope_invalid", lambda: deletion.finish(db, did, 0, dtokens))
+            db.rollback()
+            locks.begin_business(db)
+            db.get(mp.ProvisioningOperation, did).actor_kind = "bot"
+            db.flush()
+            refused("provisioning_deletion_scope_invalid", lambda: deletion.finish(db, did, 0, dtokens))
+            db.rollback()
+            locks.begin_business(db)
+            db.add(models.Connection(id=cid, user_id=uid, node_id=node.id,
+                type=models.ConnectionType.pptp, ppp_username="reused-connection", enabled=False))
+            db.flush()
+            refused("provisioning_deletion_scope_invalid", lambda: deletion.finish(db, did, 0, dtokens))
+            db.rollback()
+            locks.begin_business(db)
+            ds = db.query(mp.ProvisioningStep).filter_by(operation_id=did).one()
+            ds.state, ds.remote_outcome = "cleanup_required", "unverified"
+            db.flush()
+            refused("provisioning_deletion_scope_invalid", lambda: deletion.finish(db, did, 0, dtokens))
+            db.rollback()
+            locks.begin_business(db)
+            foreign = models.User(username="reused-" + str(uuid.uuid4()))
+            db.add(foreign); db.flush()
+            db.add(models.Purchase(id=pid, user_id=foreign.id, quota_bytes=99))
+            db.flush()
+            refused("provisioning_deletion_scope_invalid", lambda: deletion.finish(db, did, 0, dtokens))
+            db.rollback()
+            locks.begin_business(db)
+            db.add(mp.PaymentReservation(operation_id=did, payer_kind="customer_wallet",
+                generation="legacy_balance", user_id=uid, amount=1, hold_ref=str(uuid.uuid4()), state="reserved"))
+            db.flush()
+            refused("provisioning_deletion_scope_invalid", lambda: deletion.finish(db, did, 0, dtokens))
+            db.rollback()
+            locks.begin_business(db)
+            assert deletion.finish(db, did, 0, dtokens).state == "completed"
+            db.commit()
+            assert db.get(models.LedgerEntry, ledger_id).amount == 50
+            assert db.get(models.Purchase, sibling_pid) is not None
+            assert db.get(models.User, uid).balance == 100
+            print("PASS", engine.dialect.name, "duplicate deletion: exact prior proof; no payment, cross-tenant or reused-id bypass")
         db.close()
         print("PASS", engine.dialect.name, kind, "scope, proof, fence, crash rollback, audit retention and idempotent completion")
 

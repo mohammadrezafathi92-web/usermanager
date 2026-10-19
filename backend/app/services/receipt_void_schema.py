@@ -12,10 +12,12 @@ P0 is additive and inert:
 - the API-key identity readiness computation of design 5.5 (backfill of
   ApiKey.key_instance_uuid + the unique index really being there).
 
-Nothing in the application reads any of this yet. Same contract as
+Later phases use these tables and persist their activation across updates.
+Seeding is create-once, not a mode reset: validation accepts the legitimate
+P9/P9a lifecycle as well as the initial defaults. Same contract as
 services/provisioning_schema.py, whose inspector it reuses: never fatal to
 startup, and fail-closed - is_ready() is True only after create, inspect,
-seed and validate all passed. Every later Receipt Void phase must call
+seed and validate all passed. Every Receipt Void phase must call
 assert_ready() before it does anything.
 """
 from __future__ import annotations
@@ -47,12 +49,7 @@ ADDED_COLUMNS = {
 }
 ADDED_UNIQUE_INDEXES = {"api_keys": API_KEY_UUID_INDEX, "ledger_entries": LEDGER_REVERSAL_INDEX}
 
-# What the two singletons must look like while P0 is the only phase
-# deployed: no code exists yet that may change these, so anything else is a
-# corrupted or foreign row. The phase that adds a writer removes its field.
-# What stays pinned on the approval row until the joint activation (P9a).
-APPROVAL_RUNTIME_PINNED = {"loyalty_timing_mode": "legacy_activation", "completeness_generation": 0, "activated_at": None}
-WALLET_RUNTIME_P0 = {"phase": "normal", "epoch": 0, "external_fencing": "none"}
+# Seed defaults are not restart invariants: P9/P9a legitimately change them.
 
 
 class ReceiptVoidSchemaNotReady(RuntimeError):
@@ -192,21 +189,47 @@ def seed_singletons(db) -> None:
 
 
 def validate_seed(db) -> list[str]:
-    """Each singleton exists, alone. The wallet row must still hold its P0
-    values (nothing may change it before phase P9). The approval row's
-    modes are operator-controlled from phase P3 on (off <-> shadow), so only
-    what no phase before P9a may touch is pinned."""
+    """Validate persisted runtime states, never reset an activated installation.
+
+    P9 commits normal -> fencing -> enforced atomically; fencing cannot be
+    a persisted startup state. Rollback retains a nonzero epoch and P9a
+    deactivation retains its generation/activation timestamp. Accept those
+    histories, but fail closed on inconsistent cross-phase state.
+    """
     problems: list[str] = []
-    for table, expected in ((rv.receipt_approval_runtime_state, APPROVAL_RUNTIME_PINNED),
-                            (rv.wallet_runtime_state, WALLET_RUNTIME_P0)):
+    states = {}
+    for table in (rv.receipt_approval_runtime_state, rv.wallet_runtime_state):
         rows = db.execute(select(table)).mappings().all()
         if len(rows) != 1 or rows[0]["id"] != SINGLETON_ID:
             problems.append(f"{table.name}: expected exactly the singleton id={SINGLETON_ID}, "
                             f"found ids {sorted(r['id'] for r in rows)}")
             continue
-        for column, value in expected.items():
-            if rows[0][column] != value:
-                problems.append(f"{table.name}.{column}: is {rows[0][column]!r}, expected {value!r}")
+        states[table.name] = rows[0]
+    wallet = states.get("wallet_runtime_state")
+    approval = states.get("receipt_approval_runtime_state")
+    if wallet is not None:
+        if wallet["phase"] not in ("normal", "enforced"):
+            problems.append("wallet_runtime_state.phase: expected a committed normal/enforced state")
+        if wallet["epoch"] < 0 or (wallet["phase"] == "enforced" and wallet["epoch"] < 2):
+            problems.append("wallet_runtime_state.epoch: invalid for committed phase")
+        if wallet["external_fencing"] not in ("none", "coordinator"):
+            problems.append("wallet_runtime_state.external_fencing: unknown backend")
+    if approval is not None:
+        required = approval["registration_mode"] == "required"
+        payment_event = approval["loyalty_timing_mode"] == "payment_event"
+        generation = approval["completeness_generation"]
+        if (approval["registration_mode"] not in ("off", "shadow", "required")
+                or approval["loyalty_timing_mode"] not in ("legacy_activation", "payment_event")
+                or required != payment_event):
+            problems.append("receipt_approval_runtime_state: invalid joint activation modes")
+        if (generation < 0 or (required and generation < 1)
+                or ((generation == 0) != (approval["activated_at"] is None))):
+            problems.append("receipt_approval_runtime_state: invalid activation generation/timestamp")
+        if required and wallet is not None and wallet["phase"] != "enforced":
+            problems.append("receipt_approval_runtime_state: required needs enforced wallet")
+        if (approval["auto_rate_limit_mode"] not in ("off", "shadow", "enforced")
+                or (approval["auto_rate_limit_mode"] == "enforced" and not required)):
+            problems.append("receipt_approval_runtime_state: invalid auto rate-limit mode")
     return problems
 
 

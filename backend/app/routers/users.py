@@ -1674,9 +1674,6 @@ def unban_connection(
     who lifted it or when. Idempotent: safe to call even if the connection
     isn't currently banned (e.g. the admin clicks it just to be sure)."""
     user = _get_owned_user(db, admin, user_id)
-    if provisioning_durable.is_durable(db, "delete_connection") and _prior_delete(
-            db, admin, "connection", x_idempotency_key, resource_id=connection_id, user_id=user.id) is not None:
-        return {"ok": True}
     conn = db.get(models.Connection, connection_id)
     if not conn or conn.user_id != user_id:
         raise HTTPException(404, "کانکشن پیدا نشد")
@@ -1724,10 +1721,7 @@ def kick_connection_endpoint(
     if their credential is still valid); this is a live disconnect only,
     not a ban. Use the existing "غیرفعال" toggle instead if the intent is
     to actually keep them cut off."""
-    user = _get_owned_user(db, admin, user_id)
-    if provisioning_durable.is_durable(db, "delete_connection") and _prior_delete(
-            db, admin, "connection", x_idempotency_key, resource_id=connection_id, user_id=user.id) is not None:
-        return {"ok": True}
+    _get_owned_user(db, admin, user_id)
     conn = db.get(models.Connection, connection_id)
     if not conn or conn.user_id != user_id:
         raise HTTPException(404, "کانکشن پیدا نشد")

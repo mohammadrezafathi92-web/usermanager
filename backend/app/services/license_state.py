@@ -241,10 +241,16 @@ def heartbeat(timeout: float = 10.0) -> None:
 
 
 def heartbeat_job() -> None:
-    """Scheduler entry point - heartbeat, then log a one-line summary if the
-    verdict is anything other than fine."""
-    heartbeat()
-    e = current_enforcement()
+    """Check online facts, but always advance the local expiry decision.
+
+    Silence alone still does not lock by default. A failed (or unconfigured)
+    heartbeat must not, however, freeze a valid verdict past the signed
+    licence's own expiry, or past an explicitly configured silence window.
+    """
+    try:
+        heartbeat()
+    finally:
+        e = refresh()
     if e.any_lock:
         logger.warning("licence enforcement active: %s (%s)", e.reason, e.message)
 

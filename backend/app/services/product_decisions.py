@@ -20,31 +20,29 @@ from sqlalchemy.exc import IntegrityError
 from .. import models_reservation_transition as rt
 
 DECISION_SET = "p9a_loyalty"
-VERSION = "2026-10-19.1"
+VERSION = "2026-10-20.1"
 TEXT = """\
-P9a loyalty decisions (Receipt Void 23, items 15, 16, 18, 19), version 2026-10-19.1
+P9a loyalty decisions (Receipt Void 23, items 15, 16, 18, 19), version 2026-10-20.1
+Approved by the owner on 2026-10-20 (relayed in writing); recording the
+confirmation in a panel is still a superadmin's act through this API.
 
-15. When a purchase counts: at payment, the same for a customer's account
-    and for each service. A queued (reserved) renewal counts when it is
-    paid, never when it starts. Changes from today: a service renewal that
-    does not count today counts from now on; a queued account renewal
-    counts at payment instead of at its start. A sale of amount 0 does not
-    count.
+15. When a purchase counts: a purchase or a renewal with an amount above
+    zero, paid with an approved receipt or a capture from the customer's
+    wallet, counts exactly once, at payment. The start of a queued (reserved)
+    renewal counts nothing and grants nothing again.
 
-16. What does not count: a panel sale paid from a reseller's credit, and an
-    external payment with neither an approved receipt nor a wallet capture.
-    Only a sale with backend payment evidence (approved receipt or wallet
-    capture) counts. Today every panel sale and every bot sale counts.
+16. What does not count: a sale paid from a seller's credit, a free service,
+    an amount of zero, and an external payment without backend evidence. A
+    wallet top-up is not itself a purchase; the later purchase paid from that
+    balance counts.
 
-18. Changing the threshold after P9a: a new period starts from that moment.
-    Rewards already given stay; nothing owed is paid out retroactively;
-    progress restarts from the customer's count at the change (example:
-    threshold 3 -> 10 with the customer at 6: the next reward is at 16). A
-    reward not reached in a closed period cannot be earned later.
+18. Changing the threshold later: a new period starts from the customer's
+    count at that moment (example: threshold changed to 10 when the customer
+    is at 6: the next reward is at 16). Rewards already given stay.
 
-19. Starting point at activation: P - (P mod T). Progress inside the current
-    cycle is kept; an overdue reward under the old catch-up rule is not
-    created (example T=5, P=7: next reward at 10).
+19. Starting point at the first activation: current progress is kept
+    (threshold 5, count 7: the next reward is at 10); no overdue historical
+    reward is created.
 """
 CONTENT_HASH = hashlib.sha256(TEXT.encode("utf-8")).hexdigest()
 

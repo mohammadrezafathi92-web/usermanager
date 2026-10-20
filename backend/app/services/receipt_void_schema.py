@@ -49,7 +49,8 @@ ADDED_COLUMNS = {
     "api_keys": ["key_instance_uuid", "approval_protocol_version"],
 }
 # The P9a reservation addendum's column (not a P0 column), checked the same way.
-TRANSITION_ADDED_COLUMNS = {"purchases": ["reservation_activation_seq"]}
+TRANSITION_ADDED_COLUMNS = {"purchases": ["reservation_activation_seq", "renewal_event_seq", "history_key"],
+                            "users": ["history_key"]}
 ADDED_UNIQUE_INDEXES = {"api_keys": API_KEY_UUID_INDEX, "ledger_entries": LEDGER_REVERSAL_INDEX}
 
 # Seed defaults are not restart invariants: P9/P9a legitimately change them.

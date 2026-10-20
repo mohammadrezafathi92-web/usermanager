@@ -34,6 +34,7 @@ import hashlib
 import hmac
 import json
 import time
+import uuid
 from typing import Optional
 
 from fastapi import HTTPException
@@ -54,7 +55,16 @@ HISTORICAL_SEMANTICS = ("transferred as a historical reservation: reserved_repla
 
 
 def _stamp(value):
-    return value.isoformat(sep=" ")[:19] if isinstance(value, dt.datetime) else value
+    # full stored precision: never coarser than what the database keeps
+    return value.isoformat(sep=" ") if isinstance(value, dt.datetime) else value
+
+
+def _purchase_facts(p) -> dict:
+    """What a delivery or a transfer claim rests on - not usage."""
+    return {"id": p.id, "history_key": p.history_key, "user_id": p.user_id, "package_id": p.package_id,
+            "status": getattr(p.status, "value", p.status), "quota_bytes": int(p.quota_bytes or 0),
+            "expire_at": _stamp(p.expire_at), "max_concurrent_sessions": p.max_concurrent_sessions,
+            "created_at": _stamp(p.created_at)}
 
 
 def _hash(payload) -> str:
@@ -122,21 +132,19 @@ def state(db, user_id, *, target_purchase_id=None, delivered_by=(), ledger_ids=(
                                                   "voided_at": _stamp(entry.voided_at)})
     return {
         "runtime": runtime,
-        "user": {"id": user.id, "username": user.username, "telegram_id": user.telegram_id,
-                 "owner_admin_id": user.owner_admin_id, **{f: _stamp(getattr(user, f)) for f in USER_FIELDS}},
+        "user": {"id": user.id, "history_key": user.history_key, "username": user.username,
+                 "telegram_id": user.telegram_id, "owner_admin_id": user.owner_admin_id,
+                 **{f: _stamp(getattr(user, f)) for f in USER_FIELDS}},
         "legacy_connection_ids": legacy,
-        "purchases": [{"id": p.id, "created_at": _stamp(p.created_at), "user_id": p.user_id, "package_id": p.package_id,
+        "purchases": [{"id": p.id, "history_key": p.history_key, "user_id": p.user_id, "package_id": p.package_id,
                        "reserved": _reserved(p)} for p in purchases],
         "target": None if target is None else {
-            "id": target.id, "created_at": _stamp(target.created_at), "user_id": target.user_id,
-            "status": getattr(target.status, "value", target.status), "package_id": target.package_id,
-            "quota_bytes": int(target.quota_bytes or 0), "expire_at": _stamp(target.expire_at),
-            "max_concurrent_sessions": target.max_concurrent_sessions,
-            "reserved": _reserved(target), "reservation_activation_seq": int(target.reservation_activation_seq or 0)},
+            **_purchase_facts(target), "reserved": _reserved(target),
+            "reservation_activation_seq": int(target.reservation_activation_seq or 0)},
         "target_missing": target_purchase_id is not None and target is None,
-        "delivered_by": [None if by_id.get(pid) is None else {
-            "id": pid, "created_at": _stamp(by_id[pid].created_at), "package_id": by_id[pid].package_id,
-            "quota_bytes": int(by_id[pid].quota_bytes or 0)} for pid in sorted(set(delivered_by))],
+        # each delivery claim with the expiry, status and cap it rests on
+        "delivered_by": [None if by_id.get(pid) is None else _purchase_facts(by_id[pid])
+                         for pid in sorted(set(delivered_by))],
         "reserved_package": None if user.reserved_package_id is None else (
             {"id": user.reserved_package_id, "exists": False} if package is None else
             {"id": package.id, "exists": True, "quota_gb": package.quota_gb, "duration_days": package.duration_days,
@@ -242,6 +250,15 @@ def decide(db, admin, *, user_id, action, reason, target_purchase_id=None, cap_p
     delivered = sorted({int(i) for i in (delivered_by_purchase_ids or [])})
     refs = evidence_refs or {}
     ledger_ids = sorted({int(i) for i in refs.get("ledger_entry_ids", [])})
+    # stable identities first (a row from before the key existed gets one)
+    owner = db.get(models.User, user_id)
+    if owner is not None:
+        if not owner.history_key:
+            owner.history_key = str(uuid.uuid4())
+        for purchase in db.query(models.Purchase).filter(models.Purchase.user_id == owner.id):
+            if not purchase.history_key:
+                purchase.history_key = str(uuid.uuid4())
+        db.flush()
     current = state(db, user_id, target_purchase_id=target_purchase_id, delivered_by=delivered, ledger_ids=ledger_ids)
     _require_before_activation(current["runtime"])
     decision = {"action": action, "cap_policy": cap_policy, "delivered_by": delivered}
@@ -385,7 +402,10 @@ def _execute_once(db, admin, decision_id, preview_token, typed_username, key, re
         plan = _plan(decision, current)
         user = db.get(models.User, decision["user_id"])
         if decision["action"] == "transfer_to_purchase":
+            from . import reservation_transition
             target = db.get(models.Purchase, decision["target_purchase_id"])
+            reservation_transition.lock_history(db, target)
+            history_before = reservation_transition.full_state(target)
             values = plan["after"]["target"]
             target.reserved_quota_bytes = values["reserved_quota_bytes"]
             target.reserved_duration_days = values["reserved_duration_days"]
@@ -393,6 +413,13 @@ def _execute_once(db, admin, decision_id, preview_token, typed_username, key, re
             target.reserved_created_at = user.reserved_created_at
             target.reserved_max_concurrent_sessions = values["reserved_max_concurrent_sessions"]
             target.reserved_replace_package_limits = None
+            # the queue's base for a later renewal void of the same service
+            reservation_transition.record_contribution(
+                db, target, mode="transfer", before=history_before,
+                add_quota_bytes=int(values["reserved_quota_bytes"] or 0),
+                add_days=int(values["reserved_duration_days"] or 0), package_id=values["reserved_package_id"],
+                max_concurrent_sessions=values["reserved_max_concurrent_sessions"], package_limits=False,
+                batch_seq=int(target.reservation_activation_seq or 0), ref={"resolution": decision_id})
         user.reserved_quota_bytes = None
         user.reserved_duration_days = None
         user.reserved_package_id = None

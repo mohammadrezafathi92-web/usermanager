@@ -341,6 +341,9 @@ def finish(db, operation_id, version, leases, *, require_contracts=False, approv
                    replace_package_limits=(intent.quota_bytes, intent.duration_days) == (
                        intent.package.quota_bytes, intent.package.duration_days)) if (
             purchase is not None and renewed_package is not None) else {}
+        if purchase is not None:
+            # this payment's own share of the service's renewal history
+            cap["contribution_ref"] = {"approval_uuid": operation.approval_uuid, "operation_id": operation.id}
         core(db, purchase if purchase is not None else user, add_gb=intent.quota_bytes / 1024 ** 3,
             add_days=intent.duration_days, reset_usage=intent.reset_usage,
             package_id=renewed_package, reconciliation_sink=reconcile,

@@ -190,6 +190,9 @@ def _local_once(session_factory, operation, step, leases):
                 result = steps.wallet(db, ctx, operation["id"], leased_identities(leases))
             elif name == "ledger_reversal":
                 result = steps.ledger(db, ctx, operation["id"], forced)
+            elif name == "renewal_reversal":
+                from . import receipt_void_renewal
+                result = receipt_void_renewal.apply(db, ctx, operation["id"])
             elif name == "card_reversal":
                 result = steps.card(db, ctx, operation["id"])
             elif name == "finalize":

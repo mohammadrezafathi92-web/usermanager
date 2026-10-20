@@ -223,11 +223,59 @@ def scenario(label, engine):
                   (done["action"], db.get(models.User, u_rp).reserved_package_id,
                    db.get(models.Purchase, p_rp).quota_bytes), ("retire_residual", None, 10 * GB))
             last = resolution.decide(db, root, user_id=u_us, action="retire_residual",
-                                     reason="owner decision recorded for the test customer")
+                                     reason="owner decision: delivered as that service",
+                                     delivered_by_purchase_ids=[p_us])
+        for field, value, label_ in (("max_concurrent_sessions", 4, "cap"), ("status", models.UserStatus.disabled, "status"),
+                                     ("expire_at", dt.datetime(2030, 1, 1), "expiry")):
+            with Session() as db:
+                delivered = db.get(models.Purchase, p_us)
+                old_value = getattr(delivered, field)
+                setattr(delivered, field, value)
+                db.commit()
+            with Session() as db:
+                check(L + f"retire with a delivery claim: the claimed service's {label_} is bound",
+                      code(lambda: resolution.preview(db, last["decision_id"])), "state_changed")
+                setattr(db.get(models.Purchase, p_us), field, old_value)
+                db.commit()
+        with Session() as db:
+            db.get(models.Purchase, p_us).used_bytes = 9 * GB          # usage is not a delivery fact
+            db.commit()
         with Session() as db:
             shown = resolution.preview(db, last["decision_id"])
             resolution.execute(db, root, decision_id=last["decision_id"], preview_token=shown["preview_token"],
                                typed_username=n_us, idempotency_key="k-last")
+
+        # ---------------------------------------------------------------- review (a): a stale queue never decides
+        _, _, p_stale = customer(reserved=dict(reserved_quota_bytes=20 * GB, reserved_duration_days=30))
+        with Session() as first:
+            stale = first.get(models.Purchase, p_stale)
+            _ = (stale.reserved_quota_bytes, stale.reserved_duration_days, stale.reservation_activation_seq)
+            first.expire_on_commit = False
+            with Session() as second:
+                fresh = second.get(models.Purchase, p_stale)
+                fresh.reserved_quota_bytes, fresh.reserved_duration_days = 50 * GB, 60
+                second.commit()
+            stale.expire_at = dt.datetime.utcnow() - dt.timedelta(seconds=1)
+            stale.used_bytes = 3 * GB                                  # this transaction's own usage
+            try:
+                applied = user_ops._maybe_activate_reserved_purchase_renewal(first, stale, "poller")
+                first.commit()
+            except OperationalError as exc:                            # MariaDB snapshot isolation: start over
+                first.rollback()
+                applied = f"restart:{exc.orig.args[0]}"
+        stale_row = purchase_row(p_stale)
+        if mariadb:
+            check(L + "a queue changed by another transaction: the stale one restarts, nothing applied",
+                  (applied, stale_row["reserved_quota_bytes"], stale_row["seq"]), ("restart:1020", 50 * GB, 0))
+            consume(p_stale)
+            stale_row = purchase_row(p_stale)
+        else:
+            check(L + "a queue changed by another transaction: the committed queue applies, not the stale copy",
+                  applied, True)
+        check(L + "...the 50 GB / 60 days queue applied, cleared once",
+              (stale_row["quota_bytes"], stale_row["reserved_quota_bytes"], stale_row["seq"],
+               stale_row["expire_at"] > (dt.datetime.utcnow() + dt.timedelta(days=59)).isoformat(sep=" ")),
+              (50 * GB, None, 1, True))
 
         # ---------------------------------------------------------------- activation preconditions
         _, _, p_block = customer(user_reserved={"reserved_duration_days": 30})
@@ -255,6 +303,7 @@ def scenario(label, engine):
             db.add(loyal)
             db.commit()
             p_v2 = loyal.id
+        u_r, n_r, p_r = customer()                                       # renewed while the activation waits
         check(L + "a consumption before the activation", consume(p_b), True)
         before_a = purchase_row(p_a)
         with Session() as db:
@@ -293,8 +342,33 @@ def scenario(label, engine):
                                  loyalty_service.runtime_row(db)["registration_mode"])
                 check(L + "SQLite: a failed activation propagates and leaves nothing (no epoch, no snapshot, shadow)",
                       (isinstance(activated["result"], OperationalError), leftovers), (True, (0, 0, "shadow")))
+            # a renewal's T_final holds the runtime row (pin_mode) from its start
+            renewal_item = env.begin("renew", n_r, 1000, package_id=env.ids.shared, renew_purchase_id=p_r)
+            in_core, leave_core = threading.Event(), threading.Event()
+            core = user_ops.renew_purchase_core
+
+            def paused_core(*args, **kwargs):
+                out = core(*args, **kwargs)
+                in_core.set()
+                leave_core.wait(30)
+                return out
+            renewed = {}
+
+            def run_renewal():
+                with patch.object(user_ops, "renew_purchase_core", side_effect=paused_core):
+                    renewed["result"] = env.run(lambda db: bot_router.renew_service(n_r, p_r, schemas.BotRenewRequest(
+                        add_gb=10, add_days=30, package_id=env.ids.shared, paid_amount=1000, payment_method="card",
+                        approval_uuid=renewal_item["approval_uuid"], execution_token=renewal_item["execution_token"],
+                        list_price=1000), db=db, owner_admin_id=None, principal=env.internal))
+            ren = threading.Thread(target=run_renewal)
+            ren.start()
+            check(L + "a renewal's T_final reached its renewal", in_core.wait(30), True)
             act = threading.Thread(target=run_activation)
             act.start()
+            time.sleep(1.5)
+            check(L + "the activation waits for the renewal's T_final commit", paused.is_set(), False)
+            leave_core.set()
+            ren.join(60)
             check(L + "the activation reached its locked section", paused.wait(30), True)
             cons = threading.Thread(target=lambda: consumer.update(result=consume(p_a)))
             cons.start()
@@ -314,8 +388,14 @@ def scenario(label, engine):
             epochs = db.execute(select(func.count()).select_from(rv.loyalty_policy_epochs)).scalar()
         # p_tr holds the reservation transferred to it above
         check(L + "one epoch; one snapshot per reservation that existed at the commit (not the one consumed before)",
-              (epochs, sorted(snaps) == sorted([p_tr, p_a, p_c, p_d, p_v]), result["purchase_reservation_snapshots"]),
-              (1, True, 5))
+              (epochs, sorted(snaps) == sorted([p_tr, p_a, p_c, p_d, p_v, p_r]), result["purchase_reservation_snapshots"]),
+              (1, True, 6))
+        with Session() as db:
+            contribution = db.execute(select(rt.purchase_renewal_contributions).where(
+                rt.purchase_renewal_contributions.c.approval_uuid == renewal_item["approval_uuid"])).mappings().one()
+        check(L + "the renewal that committed first is in the snapshot, its own share recorded once",
+              (renewed["result"] is not None and not isinstance(renewed["result"], str), snaps[p_r]["reserved_quota_bytes"],
+               contribution["mode"], contribution["add_quota_bytes"]), (True, 10 * GB, "reserved", 10 * GB))
         check(L + "the snapshot is the reservation exactly, at its sequence",
               (snaps[p_a]["reserved_quota_bytes"], snaps[p_a]["reserved_package_id"],
                snaps[p_a]["reserved_max_concurrent_sessions"], snaps[p_a]["reservation_activation_seq"]),
@@ -364,7 +444,7 @@ def scenario(label, engine):
             db.commit()
         with Session() as db:
             reused = models.Purchase(id=p_c, user_id=u_c, package_id=env.ids.shared, quota_bytes=GB, used_bytes=0,
-                                     status=models.UserStatus.active, created_at=dt.datetime(2026, 11, 1, 9, 0, 0),
+                                     status=models.UserStatus.active, created_at=dt.datetime(2026, 10, 1, 9, 0, 0),
                                      reserved_duration_days=30, reservation_activation_seq=3)
             db.add(reused)
             db.commit()
@@ -372,7 +452,7 @@ def scenario(label, engine):
                 rt.loyalty_cutover_purchase_reservations.c.purchase_id == p_c)).scalar()
             inherited = reservation_transition.snapshots_of(db, [db.get(models.Purchase, p_c)])
             problems = wallet_reconcile.check(db)["problems"]
-        check(L + "a deleted purchase keeps its snapshot; a new purchase with its id inherits nothing; no alert",
+        check(L + "a deleted purchase keeps its snapshot; a new one with its id IN THE SAME SECOND inherits nothing",
               (kept, inherited, problems), (1, [], []))
         with Session() as db:
             table = rt.loyalty_cutover_purchase_reservations
@@ -384,7 +464,7 @@ def scenario(label, engine):
             db.execute(table.update().where(table.c.purchase_id == p_d).values(reserved_quota_bytes=20 * GB))
             db.commit()
 
-        # ---------------------------------------------------------------- Void option A
+        # ---------------------------------------------------------------- Void of a renewal: that renewal only
         with Session() as db:
             for name in ("preview", "worker", "execute"):
                 flags.set_flag(db, name, True)
@@ -394,20 +474,16 @@ def scenario(label, engine):
             approval_uuid=item["approval_uuid"], execution_token=item["execution_token"], list_price=1000),
             db=db, owner_admin_id=None, principal=env.internal))
         shown = env.preview(item["approval_uuid"])
-        scope_ids = sorted(p["id"] for p in shown["resources"]["purchases"])
-        queued = next(p for p in shown["resources"]["purchases"] if p["id"] == p_v)
-        prior = shown["resources"]["prior_rights"]
-        check(L + "Void preview of a renewal: the contract's full-account scope, every purchase with its queue",
-              (shown["resources"]["delete"]["kind"], scope_ids, queued["reserved_quota_bytes"],
-               queued["reserved_max_concurrent_sessions"]), ("user", sorted([p_v, p_v2]), 20 * GB, 3))
-        check(L + "...the cutover snapshot of the OTHER purchase, with the note that it is not every historical right",
-              ([s["purchase_id"] for s in prior["cutover_snapshots"]], "not a record of every right" in prior["note"]),
-              ([p_v], True))
+        kept = next(p for p in shown["resources"]["preserved_purchases"] if p["id"] == p_v)
+        check(L + "Void preview of a renewal: nothing deleted, only that service, every other service shown as kept",
+              (shown["resources"]["delete"], [p["id"] for p in shown["resources"]["purchases"]],
+               kept["reserved_quota_bytes"], kept["reserved_max_concurrent_sessions"], shown["resources"]["renewal"]["case"]),
+              (None, [p_v2], 20 * GB, 3, "queued"))
         with Session() as db:
-            db.get(models.Purchase, p_v).reserved_duration_days = 60       # the other purchase's queue changes
+            db.get(models.Purchase, p_v2).reserved_duration_days = 60      # the renewed service's queue changes
             db.commit()
         refused = env.void(shown["preview_token"], n_v)
-        check(L + "...bound to the confirmation: a change there refuses the void", refused,
+        check(L + "...bound to the confirmation: a change of that service refuses the void", refused,
               (409, "preview_state_changed"))
 
         with Session() as db:

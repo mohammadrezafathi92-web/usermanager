@@ -50,7 +50,8 @@ logger = logging.getLogger(__name__)
 OPERATION_TYPE = "void_receipt"
 MAX_ATTEMPTS = 5
 BACKOFF_SECONDS = (5, 30, 120, 600)
-LOCAL = ("block", "loyalty_reconciliation", "wallet_reversal", "ledger_reversal", "card_reversal", "finalize")
+LOCAL = ("block", "loyalty_reconciliation", "wallet_reversal", "ledger_reversal", "renewal_reversal", "card_reversal",
+         "finalize")
 DELETION_PREFIXES = ("deprovision:", "verify:")
 FORCEABLE_LOCAL = ("loyalty_reconciliation", "ledger_reversal")
 
@@ -129,6 +130,10 @@ def _approval_state(db, approval_uuid, expected: tuple, state: str, **values) ->
 
 
 def step_keys(shape: str, connection_ids: list, deletes: bool) -> list[str]:
+    if shape == "renew_purchase":
+        # this renewal's right only: nothing deleted, no node call in a step
+        return ["claim", "block", "loyalty_reconciliation", "wallet_reversal", "ledger_reversal",
+                "renewal_reversal", "card_reversal", "finalize"]
     keys = ["claim", "block"]
     if shape != "topup" and deletes:
         keys += [f"deprovision:{cid}" for cid in connection_ids] + [f"verify:{cid}" for cid in connection_ids]
@@ -216,7 +221,9 @@ def _context(db, admin, approval, rows, resources, fingerprint, token_hash) -> d
             "customer_identity_id": identity, "owner_admin_id_snapshot": approval["owner_admin_id_snapshot"],
             "actor_admin_id": admin.id, "username": approval["target_username_snapshot"], "forced": [],
             "fingerprint": fingerprint, "preview_hashes": [token_hash],
-            "lease_keys": scope.lease_keys(db, approval["approval_uuid"], identity)}
+            "lease_keys": scope.lease_keys(db, approval["approval_uuid"], identity),
+            # the confirmed reversal of a renewal (re-planned and compared under the step's locks)
+            "renewal": {"bound_hash": (resources.get("renewal") or {}).get("bound_hash")}}
 
 
 def _claim(db, admin, approval_uuid, token, digest, reason, ip) -> tuple[int, bool]:

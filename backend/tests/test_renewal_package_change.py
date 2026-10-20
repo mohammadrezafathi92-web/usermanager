@@ -136,6 +136,7 @@ def scenario(label, engine):
                 p = db.get(models.Purchase, pid)
                 if usable:
                     assert p.quota_bytes == 20 * GB and p.reserved_quota_bytes == 0
+                    p.expire_at = dt.datetime.utcnow() - dt.timedelta(seconds=1)   # consumed only once it ended
                     assert user_ops._maybe_activate_reserved_purchase_renewal(db, p)
                 assert (p.quota_bytes, p.package_id, p.max_concurrent_sessions) == (0, unlimited, 3)
                 db.commit()
@@ -149,6 +150,7 @@ def scenario(label, engine):
                     p = db.get(models.Purchase, pid)
                     if usable:
                         assert p.expire_at is not None and p.reserved_duration_days == 0
+                        p.expire_at = dt.datetime.utcnow() - dt.timedelta(seconds=1)   # consumed only once it ended
                         assert user_ops._maybe_activate_reserved_purchase_renewal(db, p)
                     assert p.expire_at is None and p.package_id == package, (
                         package, usable, p.expire_at, p.reserved_duration_days)
@@ -166,6 +168,7 @@ def scenario(label, engine):
         with env.Session() as db:
             p = db.get(models.Purchase, pid)
             assert (p.reserved_quota_bytes, p.reserved_duration_days) == (0, 0)
+            p.expire_at = dt.datetime.utcnow() - dt.timedelta(seconds=1)   # consumed only once it ended
             assert user_ops._maybe_activate_reserved_purchase_renewal(db, p)
             assert p.quota_bytes == 0 and p.expire_at is None
             db.commit()
@@ -190,6 +193,7 @@ def scenario(label, engine):
                 else:
                     user_ops.renew_purchase_core(db, p, add_days=30, package_id=finite)
                     assert p.reserved_replace_package_limits is False
+                p.expire_at = dt.datetime.utcnow() - dt.timedelta(seconds=1)   # consumed only once it ended
                 assert user_ops._maybe_activate_reserved_purchase_renewal(db, p)
                 assert p.quota_bytes == 20 * GB and p.reserved_replace_package_limits is None
                 db.commit()

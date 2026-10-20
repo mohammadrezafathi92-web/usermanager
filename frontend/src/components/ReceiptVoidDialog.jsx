@@ -5,6 +5,7 @@ import {
 } from "../api/client.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { formatToman, formatDateTime } from "../utils.js";
+import RenewalSection, { PriorRights, Reserved } from "./ReceiptVoidRenewal.jsx";
 
 // Receipt void (Receipt Void 18, 19): a full preview of everything the void
 // will touch, then typed username + reason + the superadmin's password + an
@@ -220,6 +221,7 @@ export default function ReceiptVoidDialog({ entry, operationId: initialOperation
         <h4 tabIndex={-1} data-autofocus className="font-semibold text-red-700 dark:text-red-400 outline-none">
           {t("void.previewHeading", { username: preview.username })}
         </h4>
+        <p role="note" className="rounded-lg bg-amber-50 dark:bg-amber-500/10 p-3 text-amber-800 dark:text-amber-300">{t("void.purposeNote")}</p>
         <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1 rounded-xl bg-gray-100 dark:bg-slate-800 p-4">
           <dt>{t("void.customer")}</dt><dd><bdi dir="ltr">{preview.username}{preview.telegram_id ? ` (${preview.telegram_id})` : ""}</bdi></dd>
           <dt>{t("void.kind")}</dt><dd>{t(`void.shape.${preview.target_shape}`)}</dd>
@@ -233,13 +235,24 @@ export default function ReceiptVoidDialog({ entry, operationId: initialOperation
         </dl>
 
         <Section title={t("void.resources")}>
-          {!preview.resources.delete ? <p className="text-gray-600 dark:text-gray-400">
-            {t(preview.resources.user_exists ? "void.noDeletion" : "void.accountGone")}</p> : <>
+          {!preview.resources.delete ? <>
+            <p className="text-gray-600 dark:text-gray-400">
+              {t(preview.resources.user_exists ? "void.noDeletion" : "void.accountGone")}</p>
+            {preview.resources.renewal && <ul className="list-disc ps-5" aria-label={t("void.purchases")}>
+              {preview.resources.purchases.map((p) => <li key={p.id}>
+                <bdi dir="ltr">#{p.id}</bdi> {p.package_name || p.comment || ""} - <bdi dir="ltr">{gb(p.used_bytes)} / {p.quota_bytes ? gb(p.quota_bytes) : t("void.unlimited")}</bdi>
+                {p.max_concurrent_sessions != null ? ` - ${t("void.cap")}: ${p.max_concurrent_sessions}` : ""}
+                <Reserved p={p} t={t} gb={gb} />
+              </li>)}
+            </ul>}
+          </> : <>
             <p>{t(preview.resources.delete.kind === "user" ? "void.deleteAccount" : "void.deletePurchase")}</p>
             <ul className="list-disc ps-5" aria-label={t("void.purchases")}>
               {preview.resources.purchases.map((p) => <li key={p.id}>
                 <bdi dir="ltr">#{p.id}</bdi> {p.package_name || p.comment || ""} - <bdi dir="ltr">{gb(p.used_bytes)} / {p.quota_bytes ? gb(p.quota_bytes) : t("void.unlimited")}</bdi>
                 {p.expire_at ? <> - <bdi dir="ltr">{formatDateTime(p.expire_at, language)}</bdi></> : ""} ({t(`void.approvalState.${p.status}`) !== `void.approvalState.${p.status}` ? t(`void.approvalState.${p.status}`) : p.status})
+                {p.max_concurrent_sessions != null ? ` - ${t("void.cap")}: ${p.max_concurrent_sessions}` : ""}
+                <Reserved p={p} t={t} gb={gb} />
               </li>)}
             </ul>
             <ul className="list-disc ps-5" aria-label={t("void.connections")}>
@@ -247,6 +260,9 @@ export default function ReceiptVoidDialog({ entry, operationId: initialOperation
             </ul>
           </>}
         </Section>
+
+        <RenewalSection resources={preview.resources} t={t} gb={gb} language={language} />
+        <PriorRights resources={preview.resources} t={t} gb={gb} />
 
         {preview.other_approvals_on_account.length > 0 && <div role="note" className="rounded-lg bg-amber-50 dark:bg-amber-500/10 p-3 text-amber-800 dark:text-amber-300 space-y-1">
           <p>{t("void.otherApprovals", { count: preview.other_approvals_on_account.length })}</p>
@@ -310,7 +326,7 @@ export default function ReceiptVoidDialog({ entry, operationId: initialOperation
             <input type="password" className="input mt-1" autoComplete="current-password" value={password}
               onChange={(e) => setPassword(e.target.value)} /></label>
           <label className="flex items-start gap-2 text-red-700 dark:text-red-400"><input type="checkbox" checked={ack}
-            onChange={(e) => setAck(e.target.checked)} />{t("void.dangerAck")}</label>
+            onChange={(e) => setAck(e.target.checked)} />{t(preview.target_shape === "renew_purchase" ? "void.dangerAckRenewal" : "void.dangerAck")}</label>
         </div>
         <div className="flex flex-wrap gap-2 pb-[env(safe-area-inset-bottom)]">
           <button type="button" className="btn-danger flex-1" disabled={!canExecute} onClick={execute}>

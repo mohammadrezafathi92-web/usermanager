@@ -14,7 +14,16 @@ a Purchase / User may be deleted normally, and its history must stay.
         consuming transaction. Ordered per Purchase by its seq_before (the
         Purchase's reservation_activation_seq the consumer incremented under
         the row lock), never by time: a snapshot taken at seq s is consumed
-        by exactly the row (purchase_id, purchase_created_at, seq_before = s).
+        by exactly the row (purchase_key, seq_before = s).
+  purchase_renewal_contributions
+        one row per renewal of a Purchase (each payment's own share: quota,
+        days, package, cap, queued or immediate, with the state before and
+        after), in the renewing transaction; with the consumptions above it
+        orders the purchase's history by event_seq (Purchase.renewal_event_seq).
+  receipt_void_renewal_reversals
+        the one durable result of voiding one renewal: what was restored,
+        and - kept apart - the volume the voided term really consumed, its
+        unused share set aside, and what cannot be attributed (unknown).
   product_decision_confirmations
         a superadmin's confirmation of one exact version (content hash) of
         the Product decisions the activation depends on.
@@ -26,12 +35,14 @@ import datetime as dt
 
 from sqlalchemy import BigInteger, Boolean, CHAR, Column, Integer, MetaData, String, Table, Text
 
-from .models_receipt_void import _big, _dt6, _in, _pk, ck, uq
+from .models_receipt_void import _big, _dt6, _in, _pk, ck, uq  # noqa: F401
 
 RESERVATION_TRANSITION_METADATA = MetaData()
 _md = RESERVATION_TRANSITION_METADATA
 
 ACTIVATION_TRIGGERS = ("poller", "radius", "other")
+CONTRIBUTION_MODES = ("reserved", "immediate_reset", "transfer")
+REVERSAL_CASES = ("queued", "current_term", "superseded", "resource_deleted")
 RESOLUTION_ACTIONS = ("retire_residual", "transfer_to_purchase")
 CAP_POLICIES = ("keep_current_cap", "package_cap")
 
@@ -49,9 +60,9 @@ loyalty_cutover_purchase_reservations = Table(
     _pk(),
     Column("generation", Integer, nullable=False),
     Column("purchase_id", Integer, nullable=False),
-    # with purchase_id, the purchase's identity: SQLite may give a deleted
-    # purchase's id to a new one - history never attaches to the new one.
-    Column("purchase_created_at", _dt6(), nullable=False),
+    # the purchase's stable identity (Purchase.history_key): SQLite may give a
+    # deleted purchase's id to a new one - history never attaches to it.
+    Column("purchase_key", String(36), nullable=False),
     Column("user_id_snapshot", Integer, nullable=False),
     Column("owner_admin_id_snapshot", Integer, nullable=True),
     Column("reserved_quota_bytes", BigInteger, nullable=True),
@@ -72,16 +83,60 @@ purchase_reservation_activations = Table(
     "purchase_reservation_activations", _md,
     _pk(),
     Column("purchase_id", Integer, nullable=False),
-    Column("purchase_created_at", _dt6(), nullable=False),
+    Column("purchase_key", String(36), nullable=False),
+    Column("event_seq", Integer, nullable=False),
     Column("user_id_snapshot", Integer, nullable=False),
     Column("seq_before", Integer, nullable=False),
+    Column("used_bytes_before", BigInteger, nullable=False),     # the ending term's usage, kept
     Column("activated_by", String(16), nullable=False),     # "trigger" is reserved in MySQL
     Column("before_json", Text, nullable=False),
     Column("after_json", Text, nullable=False),
     _created(),
-    uq("uq_resvactivation_purchase_seq", "purchase_id", "purchase_created_at", "seq_before"),
+    uq("uq_resvactivation_purchase_seq", "purchase_key", "seq_before"),
+    uq("uq_resvactivation_purchase_event", "purchase_key", "event_seq"),
     ck("ck_resvactivation_seq", "seq_before >= 0"),
     ck("ck_resvactivation_activated_by", _in("activated_by", ACTIVATION_TRIGGERS)),
+)
+
+purchase_renewal_contributions = Table(
+    "purchase_renewal_contributions", _md,
+    _pk(),
+    Column("purchase_id", Integer, nullable=False),
+    Column("purchase_key", String(36), nullable=False),
+    Column("event_seq", Integer, nullable=False),
+    Column("mode", String(16), nullable=False),
+    Column("batch_seq", Integer, nullable=True),          # reserved/transfer: the queue it joined
+    Column("approval_uuid", String(36), nullable=True),
+    Column("provisioning_operation_id", Integer, nullable=True),
+    Column("add_quota_bytes", BigInteger, nullable=False),
+    Column("add_days", Integer, nullable=False),
+    Column("package_id", Integer, nullable=True),
+    Column("max_concurrent_sessions", Integer, nullable=True),
+    Column("package_limits", Boolean, nullable=False),
+    Column("before_json", Text, nullable=False),
+    Column("after_json", Text, nullable=False),
+    _created(),
+    uq("uq_renewalcontrib_purchase_event", "purchase_key", "event_seq"),
+    ck("ck_renewalcontrib_mode", _in("mode", CONTRIBUTION_MODES)),
+    ck("ck_renewalcontrib_batch", "(mode = 'immediate_reset') = (batch_seq IS NULL)"),
+)
+
+receipt_void_renewal_reversals = Table(
+    "receipt_void_renewal_reversals", _md,
+    _pk(),
+    Column("approval_uuid", String(36), nullable=False),
+    Column("void_operation_id", Integer, nullable=False),
+    Column("purchase_id", Integer, nullable=False),
+    Column("purchase_key", String(36), nullable=True),
+    Column("reversal_case", String(20), nullable=False),
+    Column("before_json", Text, nullable=False),
+    Column("after_json", Text, nullable=False),
+    Column("consumed_bytes", BigInteger, nullable=True),
+    Column("set_aside_bytes", BigInteger, nullable=True),
+    Column("unknown_bytes", BigInteger, nullable=True),
+    _created(),
+    uq("uq_renewalreversal_approval", "approval_uuid"),
+    ck("ck_renewalreversal_case", _in("reversal_case", REVERSAL_CASES)),
 )
 
 product_decision_confirmations = Table(

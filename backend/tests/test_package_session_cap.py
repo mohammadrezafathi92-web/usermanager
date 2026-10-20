@@ -30,6 +30,7 @@ stored but enforced nowhere, and the bot's create left it empty.
                            other Purchase
 """
 import contextlib
+import datetime as dt
 import os
 import sys
 import tempfile
@@ -130,6 +131,7 @@ def scenario(label, engine):
             db.commit()
         with env.Session() as db:
             row = db.get(models.Purchase, renewed_id)
+            row.expire_at = dt.datetime.utcnow() - dt.timedelta(seconds=1)      # consumed only once it ended
             user_ops._maybe_activate_reserved_purchase_renewal(db, row)
             db.commit()
             activated = (row.max_concurrent_sessions, row.reserved_max_concurrent_sessions)
@@ -149,10 +151,12 @@ def scenario(label, engine):
             frozen_before_void = db.get(models.Purchase, voided_purchase).reserved_max_concurrent_sessions
         done = env.void(env.preview(renewal["approval_uuid"])["preview_token"], "capvoid")
         with env.Session() as db:
-            left = (db.get(models.Purchase, voided_purchase), env.user_id("capvoid"))
-        check(L + "Void of that renewal (the whole account, Receipt Void 13.1): completes and deletes the Purchase "
-              "with its frozen reserved cap - nothing to restore", (frozen_before_void, done.get("state"), left),
-              (3, "completed", (None, None)))
+            kept = db.get(models.Purchase, voided_purchase)
+            left = (kept is not None, kept.max_concurrent_sessions, kept.reserved_max_concurrent_sessions,
+                    env.user_id("capvoid") is not None)
+        check(L + "Void of that renewal (only that renewal, owner decision 2026-10-20): completes, the service and "
+              "its cap 1 stay, the queued renewal with its frozen cap 3 is gone", (frozen_before_void, done.get("state"), left),
+              (3, "completed", (True, 1, None, True)))
 
         # ======================================================== approval with no connection (zero_final)
         item = env.begin("new", "capzero", 700, package_id=free_id, claimed_telegram_id=7402)

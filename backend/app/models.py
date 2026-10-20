@@ -759,6 +759,9 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
+    # Stable identity for decisions bound to this customer (a reused id is
+    # another customer); see Purchase.history_key.
+    history_key = Column(String(36), nullable=True, unique=True, index=True, default=lambda: str(uuid.uuid4()))
     username = Column(String(128), unique=True, index=True, nullable=False)
     full_name = Column(String(255), nullable=True)
     notes = Column(Text, nullable=True)
@@ -1098,6 +1101,15 @@ class Purchase(Base):
     # (purchase_reservation_activations.seq_before), so a P9a snapshot taken
     # at seq s is matched to its consumption by ID, never by time. NULL = 0.
     reservation_activation_seq = Column(Integer, nullable=True)
+    # Order of this purchase's renewal history (a paid renewal, a queue
+    # consumption): incremented under the row lock by each (services/
+    # reservation_transition.py). NULL = 0.
+    renewal_event_seq = Column(Integer, nullable=True)
+    # Stable identity of this purchase for its history rows: SQLite may give
+    # a deleted purchase's id to a new one (even in the same second), and no
+    # history may attach to the new one. NULL on rows from before it existed:
+    # assigned under the row lock the first time history is written.
+    history_key = Column(String(36), nullable=True, unique=True, index=True, default=lambda: str(uuid.uuid4()))
 
     notified_quota_80 = Column(Boolean, default=False)
     notified_expiry_soon = Column(Boolean, default=False)

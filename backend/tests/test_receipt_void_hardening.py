@@ -485,12 +485,13 @@ def scenario(label, engine):
             db.commit()
             sale_id = sale.id
         shown = env.preview(legacy_uuid)
-        done = env.void(shown["preview_token"], "legacyu")
         with env.Session() as db:
             voided_sale = db.get(models.LedgerEntry, sale_id).voided_at is not None
-        check(L + "renew_user (legacy, no Purchase): whole account deleted, the sale voided",
-              (shown["resources"]["delete"]["kind"], done["state"], env.user_id("legacyu"), voided_sale),
-              ("user", "completed", None, True))
+        # owner decision 2026-10-20: a renewal void never deletes the account;
+        # an account-level renewal has no service to take it back from
+        check(L + "renew_user (legacy, no Purchase): refused, the account kept, the sale not voided",
+              (shown, env.user_id("legacyu") is not None, voided_sale),
+              ((409, "renewal_void_user_level_unsupported"), True, False))
 
         with env.Session() as db:
             db.query(models.PanelSettings).update({"payment_card_mode": "threshold", "payment_card_switch_threshold": 1500,

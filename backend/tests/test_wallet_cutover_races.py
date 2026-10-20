@@ -339,6 +339,9 @@ def scenario(label, engine):
             except HTTPException as exc:
                 return detail(exc)
 
+    with Session() as db:
+        from app.services import product_decisions
+        product_decisions.confirm(db, ROOT, version=product_decisions.VERSION, content_hash=product_decisions.CONTENT_HASH)
     with patch.object(execute.remote_runner, "run_action", side_effect=ok_runner), \
             patch.object(user_ops, "_count_legacy_purchase", side_effect=paused_count):
         sale_thread, sold = threaded(wallet_sale)

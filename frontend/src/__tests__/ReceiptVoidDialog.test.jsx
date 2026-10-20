@@ -225,3 +225,95 @@ describe("void cell on a ledger row", () => {
     expect(onOpen).toHaveBeenLastCalledWith(expect.anything(), 42);
   });
 });
+
+const GBYTES = 1024 ** 3;
+const RENEWAL = {
+  ...PREVIEW, kind: "renew", target_shape: "renew_purchase", other_approvals_on_account: [],
+  resources: {
+    delete: null, user_exists: true, connections: [],
+    purchases: [{ id: 4, package_name: "Shared", status: "quota_exceeded", quota_bytes: 20 * GBYTES, used_bytes: 5 * GBYTES,
+                  expire_at: null, max_concurrent_sessions: 3, reserved_quota_bytes: 10 * GBYTES, reserved_duration_days: 30,
+                  reserved_package_id: 1, reserved_max_concurrent_sessions: 1 }],
+    preserved_purchases: [{ id: 6, package_name: "Other", status: "active", quota_bytes: 50 * GBYTES, used_bytes: 0,
+                            max_concurrent_sessions: 2, reserved_quota_bytes: null, reserved_duration_days: null,
+                            reserved_package_id: null }],
+    prior_rights: { cutover_snapshots: [{ snapshot_id: 1, purchase_id: 4, reserved_quota_bytes: 20 * GBYTES,
+                                          reserved_duration_days: 30, reserved_package_id: 2,
+                                          reserved_max_concurrent_sessions: 3, consumed: true }], note: "x" },
+    renewal: {
+      case: "current_term", bound_hash: "h",
+      before: { quota_bytes: 20 * GBYTES, used_bytes: 5 * GBYTES, expire_at: null, package_id: 2, max_concurrent_sessions: 3 },
+      after: { quota_bytes: 10 * GBYTES, used_bytes: 10 * GBYTES, expire_at: null, package_id: 1, max_concurrent_sessions: 1 },
+      consumption: { consumed_bytes: 5 * GBYTES, set_aside_bytes: 15 * GBYTES, unknown_bytes: null },
+    },
+  },
+};
+
+describe("receipt void dialog - a renewal", () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { cleanup(); });
+
+  it("shows only this renewal: purpose, before/after, the voided term's usage apart, the other services kept (en)", async () => {
+    api.previewReceiptVoid.mockResolvedValue({ data: RENEWAL });
+    const user = userEvent.setup();
+    await openDialog(user, { lang: "en" });
+    const t = (key, vars) => translate("en", key, vars);
+    expect(await screen.findByText(t("void.purposeNote"))).toBeTruthy();
+    expect(screen.getByText(t("void.renewalCase.current_term"))).toBeTruthy();
+    expect(screen.queryByText(t("void.deleteAccount"))).toBeNull();
+    const table = screen.getByRole("region", { name: `${t("void.before")} / ${t("void.after")}` });
+    expect(table.textContent).toContain("20.0 GB");
+    expect(table.textContent).toContain("10.0 GB");
+    expect(screen.getByText(t("void.consumed", { value: "5.0 GB" }))).toBeTruthy();
+    expect(screen.getByText(t("void.setAside", { value: "15.0 GB" }))).toBeTruthy();
+    const kept = screen.getByRole("list", { name: t("void.preservedTitle") });
+    expect(kept.textContent).toContain("#6");
+    expect(screen.getByText(t("void.priorRightsNote"))).toBeTruthy();
+    expect(screen.getByLabelText(t("void.dangerAckRenewal"))).toBeTruthy();
+  });
+
+  it("states the refusal when the share cannot be proven, and execute stays disabled (fa)", async () => {
+    api.previewReceiptVoid.mockResolvedValue({ data: { ...RENEWAL, blockers: ["renewal_term_shared"],
+      resources: { ...RENEWAL.resources, renewal: { refused: "renewal_term_shared" } } } });
+    const user = userEvent.setup();
+    await openDialog(user, { lang: "fa" });
+    const t = (key, vars) => translate("fa", key, vars);
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts.some((a) => a.textContent.includes(t("void.code.renewal_term_shared")))).toBe(true);
+    await user.type(screen.getByLabelText(t("void.typeUsername", { username: "scam1" })), "scam1");
+    await user.type(screen.getByLabelText(t("void.reason")), "fake receipt");
+    await user.type(screen.getByLabelText(t("void.password")), "pw");
+    await user.click(screen.getByLabelText(t("void.dangerAckRenewal")));
+    expect(screen.getByRole("button", { name: t("void.execute") }).disabled).toBe(true);
+    expect(api.executeReceiptVoid).not.toHaveBeenCalled();
+  });
+});
+
+describe("receipt void dialog - what zero means", () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { cleanup(); });
+
+  it("shows usage 0 as 0 GB, a service quota 0 as unlimited, a historical queued 0 as unchanged (en)", async () => {
+    const t = (key, vars) => translate("en", key, vars);
+    const current = { ...RENEWAL.resources.renewal,
+      before: { quota_bytes: 0, used_bytes: 0, expire_at: null, package_id: 2, max_concurrent_sessions: 1 },
+      after: { quota_bytes: 10 * GBYTES, used_bytes: 0, expire_at: null, package_id: 1, max_concurrent_sessions: 1 } };
+    const historical = { ...RENEWAL.resources.preserved_purchases[0], reserved_quota_bytes: 0, reserved_duration_days: 30,
+                         reserved_package_id: 3, reserved_replace_package_limits: null };
+    const complete = { ...historical, id: 7, reserved_replace_package_limits: true };
+    api.previewReceiptVoid.mockResolvedValue({ data: { ...RENEWAL, resources: { ...RENEWAL.resources,
+      renewal: current, preserved_purchases: [historical, complete] } } });
+    const user = userEvent.setup();
+    await openDialog(user, { lang: "en" });
+    const table = await screen.findByRole("region", { name: `${t("void.before")} / ${t("void.after")}` });
+    const used = [...table.querySelectorAll("tr")].find((tr) => tr.textContent.startsWith(t("void.used")));
+    expect(used.textContent).toContain("0.0 GB");
+    expect(used.textContent).not.toContain(t("void.unlimited"));
+    const quota = [...table.querySelectorAll("tr")].find((tr) => tr.textContent.startsWith(t("void.quota")));
+    expect(quota.textContent).toContain(t("void.unlimited"));
+    const kept = screen.getByRole("list", { name: t("void.preservedTitle") }).querySelectorAll("li");
+    expect(kept[0].textContent).toContain(t("void.unchanged"));
+    expect(kept[0].textContent).not.toContain(t("void.unlimited"));
+    expect(kept[1].textContent).toContain(t("void.unlimited"));
+  });
+});

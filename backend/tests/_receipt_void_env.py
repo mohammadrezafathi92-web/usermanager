@@ -24,7 +24,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import models, models_provisioning as mp, models_receipt_void as rv, schemas
 from app.routers import bot as bot_router
-from app.services import bot_auth, loyalty_activation, payment_card_events, provisioning_contracts as contracts
+from app.services import bot_auth, loyalty_activation, payment_card_events, product_decisions, provisioning_contracts as contracts
 from app.services import provisioning_durable as durable, provisioning_parent_execute as execute
 from app.services import provisioning_readiness, provisioning_schema, quota_manager
 from app.services import receipt_approval_intent as ri, receipt_approval_registration as registration
@@ -87,7 +87,7 @@ def sqlite_engine(path):
     return engine
 
 
-def build(label, engine, stack: contextlib.ExitStack):
+def build(label, engine, stack: contextlib.ExitStack, activate: bool = True):
     models.Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     assert receipt_void_schema.bootstrap(engine, Session)["ready"]
@@ -149,11 +149,16 @@ def build(label, engine, stack: contextlib.ExitStack):
     with Session() as db:
         db.query(models.PanelSettings).update({"loyalty_purchase_threshold": 2, "loyalty_reward_credit": 100})
         db.commit()
-    with Session() as db, ready:
-        assert loyalty_activation.activate(db, ids.root)["activated"]
-    with Session() as db:
-        for name in ("preview", "worker", "execute"):
-            flags.set_flag(db, name, True)
+    if activate:
+        with Session() as db:
+            # the owner's confirmation of the Product decisions the activation needs (addendum)
+            product_decisions.confirm(db, ids.root, version=product_decisions.VERSION,
+                                      content_hash=product_decisions.CONTENT_HASH)
+        with Session() as db, ready:
+            assert loyalty_activation.activate(db, ids.root)["activated"]
+        with Session() as db:
+            for name in ("preview", "worker", "execute"):
+                flags.set_flag(db, name, True)
     stack.enter_context(patch.object(user_ops, "get_connection_share", side_effect=RuntimeError("no node")))
     stack.enter_context(patch.object(execute.remote_runner, "run_action", side_effect=runner))
     stack.enter_context(patch.object(quota_manager, "_set_connection_enabled", side_effect=fake_set_enabled))
@@ -254,7 +259,8 @@ def build(label, engine, stack: contextlib.ExitStack):
     return env
 
 
-def environment(label, engine, stack):
-    """DATABASE_URL of the runner's child must be the scenario's database."""
+def environment(label, engine, stack, activate: bool = True):
+    """DATABASE_URL of the runner's child must be the scenario's database.
+    activate=False stops after the wallet cutover (before P9a)."""
     stack.enter_context(patch.dict(os.environ, {"DATABASE_URL": engine.url.render_as_string(hide_password=False)}))
-    return build(label, engine, stack)
+    return build(label, engine, stack, activate=activate)

@@ -76,6 +76,31 @@ def deactivate_runtime_mode(db: Session = Depends(get_db), _confirm=Depends(requ
     return {**result, "runtime": runtime.describe(db)}
 
 
+class ProductDecisionConfirm(BaseModel):
+    version: str
+    content_hash: str
+
+
+@router.get("/product-decisions")
+def get_product_decisions(db: Session = Depends(get_db)):
+    """The exact text of Product decisions 15/16/18/19 the activation
+    depends on, its version and hash, and whether that version is confirmed."""
+    from ..services import product_decisions
+    if not receipt_void_schema.is_ready():
+        raise HTTPException(status_code=503, detail="receipt_void_schema_not_ready")
+    return product_decisions.describe(db)
+
+
+@router.post("/product-decisions/confirm")
+def confirm_product_decisions(payload: ProductDecisionConfirm, db: Session = Depends(get_db),
+                              admin=Depends(require_confirm_password)):
+    """A superadmin confirms the version and hash they read (never implied)."""
+    from ..services import product_decisions
+    if not receipt_void_schema.is_ready():
+        raise HTTPException(status_code=503, detail="receipt_void_schema_not_ready")
+    return product_decisions.confirm(db, admin.id, version=payload.version, content_hash=payload.content_hash)
+
+
 # ---------------------------------------------------------------- registration (bots)
 # Called by the sales bots (X-API-Key, or in-process), never by a panel
 # admin session - hence a router of its own with no superadmin dependency.

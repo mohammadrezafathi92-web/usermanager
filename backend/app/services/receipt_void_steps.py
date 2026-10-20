@@ -60,7 +60,11 @@ def block(db, ctx: dict) -> dict:
     user.purchases_blocked_reason = f"receipt_void:{ctx['approval_uuid']}"
     user.purchases_blocked_at = _now()
     query = select(models.Connection).where(models.Connection.user_id == user.id)
-    if ctx["shape"] in ("new_user", "renew_purchase", "renew_user"):
+    if ctx["shape"] == "renew_purchase":
+        # a renewal void takes back that renewal only: no service of the
+        # account is disabled here (the purchase hold above still applies)
+        query = None
+    elif ctx["shape"] in ("new_user", "renew_user"):
         user.status = models.UserStatus.disabled
     elif ctx["shape"] == "existing_user":
         query = query.where(models.Connection.purchase_id == (ctx["delete"] or {}).get("id", -1))
@@ -226,6 +230,8 @@ def ledger(db, ctx: dict, operation_id: int, forced: frozenset) -> dict:
                 before_was_unlimited=unlimited, operation_id=operation_id,
                 user_id_snapshot=int(ctx["user_id"] or 0), effect_id=effect["id"],
                 forced=void_effects.forced(key, forced))
+        elif kind == "purchase_renewed" and ctx["shape"] == "renew_purchase":
+            continue                                # renewal_reversal takes back exactly this renewal
         elif kind in LIFECYCLE:
             if db.get(_MODEL[effect["resource_type"]], int(effect["resource_id"] or 0)) is not None:
                 if ctx["delete"] is not None:

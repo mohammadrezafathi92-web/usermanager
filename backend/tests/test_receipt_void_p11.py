@@ -224,6 +224,9 @@ def scenario(label, engine):
     with Session() as db:
         db.query(models.PanelSettings).update({"loyalty_purchase_threshold": 2, "loyalty_reward_credit": 100})
         db.commit()
+    with Session() as db:
+        from app.services import product_decisions
+        product_decisions.confirm(db, ROOT, version=product_decisions.VERSION, content_hash=product_decisions.CONTENT_HASH)
     with Session() as db, ready:
         check(L + "joint activation", loyalty_activation.activate(db, ROOT)["activated"], True)
     with Session() as db:
@@ -467,7 +470,7 @@ def scenario(label, engine):
     check(L + "...the audit of the void shows the other approval's reversed effect",
           [e["approval_uuid"] for e in audit["other_approvals_effects_reversed"]], [bought[3]])
 
-    # ================================================================ renew: the whole account, others warned
+    # ================================================================ renew: only that renewal (owner decision 2026-10-20)
     first = begin("new", "renewer", 1000, package_id=SHARED, claimed_telegram_id=7003)
     run(lambda db: bot_router.purchase_package("renewer", schemas.BotPurchasePackageRequest(
         package_id=SHARED, paid_amount=1000, payment_method="card", approval_uuid=first["approval_uuid"],
@@ -478,34 +481,23 @@ def scenario(label, engine):
         approval_uuid=renewal["approval_uuid"], execution_token=renewal["execution_token"], list_price=1000),
         db=db, owner_admin_id=None, principal=internal))
     shown = preview(renewal["approval_uuid"])
-    check(L + "preview renew: the whole account, the other approval on it warned",
-          (approval(renewal["approval_uuid"])["state"], shown["resources"]["delete"]["kind"],
-           [a["approval_uuid"] for a in shown["other_approvals_on_account"]]),
-          ("completed", "user", [first["approval_uuid"]]))
-
-    # ---- an unverified absence: cleanup_required, nothing deleted; retry converges
-    ABSENT["mode"] = "unverified"
+    check(L + "preview renew: nothing deleted, no other approval at stake, the queued renewal taken back",
+          (approval(renewal["approval_uuid"])["state"], shown["resources"]["delete"], shown["other_approvals_on_account"],
+           shown["resources"]["renewal"]["case"], shown["resources"]["renewal"]["after"]["reserved_quota_bytes"]),
+          ("completed", None, [], "queued", None))
     done = void(shown["preview_token"], "renewer")
     op_renew = done["operation_id"]
-    renew_steps = steps_of(op_renew)
-    verify = next(k for k in renew_steps if k.startswith("verify:"))
-    check(L + "void renew with an unverified absence: cleanup_required, the verify step blocked 'unverified'",
-          (done["state"], approval(renewal["approval_uuid"])["state"], renew_steps[verify], renew_steps["db_delete"][0]),
-          ("cleanup_required", "cleanup_required", ("blocked", "unverified"), "pending"))
-    check(L + "...the user and its rows are NOT deleted; the sale not yet voided",
-          (user_id("renewer") is not None, run(lambda db: db.query(models.LedgerEntry).filter_by(
-              approval_uuid=renewal["approval_uuid"], kind="sale_renew").one().voided_at)), (True, None))
     with Session() as db:
-        check(L + "the worker cannot go off with a void in cleanup_required",
-              code(lambda: (flags.set_flag(db, "execute", False), flags.set_flag(db, "worker", False))[1]),
-              (409, "receipt_void_operations_active"))
-        flags.set_flag(db, "execute", True)
-    ABSENT["mode"] = "absent"
-    retried = code(lambda: operator.retry(Session, ROOT_ADMIN, op_renew))
-    check(L + "retry after the node answers: completed, the account deleted",
-          (retried["state"], approval(renewal["approval_uuid"])["state"], user_id("renewer")), ("completed", "voided", None))
-    check(L + "...the other approval (healthy, deleted with the account) stays completed",
-          approval(first["approval_uuid"])["state"], "completed")
+        purchase = db.get(models.Purchase, renewal["renew_purchase_id"])
+        kept = (purchase is not None, purchase.reserved_quota_bytes, purchase.quota_bytes,
+                db.query(models.Connection).filter_by(purchase_id=purchase.id, enabled=True).count() > 0)
+    check(L + "void renew: completed; the account, the service and its connections kept; only the queue removed",
+          (done["state"], approval(renewal["approval_uuid"])["state"], user_id("renewer") is not None, kept),
+          ("completed", "voided", True, (True, None, 10 * 1024 ** 3, True)))
+    check(L + "...the other approval stays completed; the renewal's sale voided",
+          (approval(first["approval_uuid"])["state"], run(lambda db: db.query(models.LedgerEntry).filter_by(
+              approval_uuid=renewal["approval_uuid"], kind="sale_renew").one().voided_at is not None)),
+          ("completed", True))
     with Session() as db:
         reward = db.execute(select(rv.loyalty_reward_events).where(
             rv.loyalty_reward_events.c.causation_approval_uuid == renewal["approval_uuid"])).mappings().one()
@@ -517,6 +509,33 @@ def scenario(label, engine):
           ("voided", "receipt_void", "fully_reversed", "fully_reversed"))
     check(L + "retry of a completed void: 409", code(lambda: operator.retry(Session, ROOT_ADMIN, op_renew)),
           (409, "receipt_void_not_retryable"))
+
+    # ---- an unverified absence (a new-customer void deletes): cleanup_required, nothing deleted; retry converges
+    unverified = begin("new", "scamu", 1000, package_id=SHARED, claimed_telegram_id=7104)
+    run(lambda db: bot_router.create_user(schemas.BotCreateUserRequest(
+        username="scamu", telegram_id=7104, package_id=SHARED, paid_amount=1000, payment_method="card",
+        approval_uuid=unverified["approval_uuid"], execution_token=unverified["execution_token"], list_price=1000),
+        db=db, principal=internal))
+    ABSENT["mode"] = "unverified"
+    done = void(preview(unverified["approval_uuid"])["preview_token"], "scamu")
+    op_unverified = done["operation_id"]
+    unverified_steps = steps_of(op_unverified)
+    verify = next(k for k in unverified_steps if k.startswith("verify:"))
+    check(L + "void with an unverified absence: cleanup_required, the verify step blocked 'unverified'",
+          (done["state"], approval(unverified["approval_uuid"])["state"], unverified_steps[verify],
+           unverified_steps["db_delete"][0]), ("cleanup_required", "cleanup_required", ("blocked", "unverified"), "pending"))
+    check(L + "...the user and its rows are NOT deleted; the sale not yet voided",
+          (user_id("scamu") is not None, run(lambda db: db.query(models.LedgerEntry).filter_by(
+              approval_uuid=unverified["approval_uuid"], kind="sale_new").one().voided_at)), (True, None))
+    with Session() as db:
+        check(L + "the worker cannot go off with a void in cleanup_required",
+              code(lambda: (flags.set_flag(db, "execute", False), flags.set_flag(db, "worker", False))[1]),
+              (409, "receipt_void_operations_active"))
+        flags.set_flag(db, "execute", True)
+    ABSENT["mode"] = "absent"
+    retried = code(lambda: operator.retry(Session, ROOT_ADMIN, op_unverified))
+    check(L + "retry after the node answers: completed, the account deleted",
+          (retried["state"], approval(unverified["approval_uuid"])["state"], user_id("scamu")), ("completed", "voided", None))
 
     # ---- forced: an orphan for manual cleanup, then the void finishes
     forced = begin("new", "scam2", 1000, package_id=SHARED, claimed_telegram_id=7102)

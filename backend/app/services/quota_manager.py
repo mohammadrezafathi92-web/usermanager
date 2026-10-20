@@ -418,7 +418,7 @@ def _enforce_purchase_limits(db: Session, purchase: models.Purchase):
     exceeded = purchase.quota_bytes and purchase.used_bytes >= purchase.quota_bytes
     expired = purchase.expire_at and purchase.expire_at < dt.datetime.utcnow()
 
-    if (exceeded or expired) and _maybe_activate_reserved_purchase_renewal(db, purchase):
+    if (exceeded or expired) and _maybe_activate_reserved_purchase_renewal(db, purchase, "poller"):
         exceeded = purchase.quota_bytes and purchase.used_bytes >= purchase.quota_bytes
         expired = purchase.expire_at and purchase.expire_at < dt.datetime.utcnow()
 

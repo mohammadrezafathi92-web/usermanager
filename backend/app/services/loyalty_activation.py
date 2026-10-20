@@ -7,7 +7,9 @@ rollback, 409 with the precondition's code and the list):
   wallet_not_enforced          P9 done (wallet_runtime_state.phase)
   key_identity_not_ready       fresh readiness (recheck before the transaction)
   ha_requires_external_fencing HA off (no coordinator exists)
-  loyalty_cutover_blocked      no User / Purchase with a reserved renewal
+  loyalty_cutover_blocked      no User with a reserved renewal (locked)
+  product_decisions_unconfirmed  this version of Product decisions 15/16/18/19
+                               confirmed by a superadmin (product_decisions)
   approval_protocol_outdated   every enabled managed remote key reported the protocol
   provisioning_not_ready       p6_ready(), every type durable
   provisioning_operations_in_flight  no durable operation between T1 and its end
@@ -15,7 +17,13 @@ A T_final holds the approval runtime row shared from its start
 (loyalty_service.pin_mode), so the activation's exclusive lock waits for a
 sale being finalized; the sale's count is then in the baseline.
 Lock order: wallet_runtime_state (shared) -> receipt_approval_runtime_state
-(exclusive). Already active -> 200 without change (no second generation).
+(exclusive) -> reserved users -> reserved purchases (id order). A Purchase
+reservation does not block: it gets an immutable snapshot in the same
+transaction and stays exactly as it is (reservation_transition; addendum
+receipt-void-addendum-p9a-reservations-2026-10-19.md). Already active -> 200
+without change (no second generation). A MariaDB deadlock / lock wait
+rolls the WHOLE transaction back and runs it again from the start, at most
+ACTIVATION_ATTEMPTS times; then 503 activation_retry_required.
 
 deactivate(): only while this generation has neither an approval nor a
 loyalty purchase event (both counted under the exclusive lock); otherwise
@@ -24,12 +32,17 @@ loyalty purchase event (both counted under the exclusive lock); otherwise
 from __future__ import annotations
 
 import datetime as dt
+import time
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select, text
+from sqlalchemy.exc import OperationalError
 
 from .. import models, models_receipt_void as rv
-from . import bot_auth, loyalty_service, receipt_void_schema
+from . import bot_auth, loyalty_service, product_decisions, receipt_void_schema, reservation_transition
+
+ACTIVATION_ATTEMPTS = 3
+TRANSIENT_MARIADB_ERRORS = (1205, 1213)
 
 LIST_LIMIT = 50
 
@@ -66,17 +79,15 @@ def _preconditions(db, wallet, state) -> None:
     panel = db.get(models.PanelSettings, 1)
     if panel is not None and panel.ha_enabled and wallet["external_fencing"] != "coordinator":
         _refuse("ha_requires_external_fencing")
-    reserved_users = db.query(models.User.id, models.User.username).filter(or_(
+    # Locked: a User reservation is counted when it starts under legacy
+    # loyalty, so none may exist (or appear) across the switch.
+    reserved_users = db.execute(select(models.User.id, models.User.username).where(or_(
         models.User.reserved_quota_bytes > 0, models.User.reserved_duration_days > 0,
-        models.User.reserved_package_id.isnot(None))).limit(LIST_LIMIT).all()
-    reserved_purchases = db.query(models.Purchase.id, models.User.username).join(
-        models.User, models.User.id == models.Purchase.user_id).filter(or_(
-            models.Purchase.reserved_quota_bytes > 0, models.Purchase.reserved_duration_days > 0,
-            models.Purchase.reserved_package_id.isnot(None))).limit(LIST_LIMIT).all()
-    if reserved_users or reserved_purchases:
+        models.User.reserved_package_id.isnot(None))).order_by(models.User.id).with_for_update()).all()
+    if reserved_users:
         _refuse("loyalty_cutover_blocked",
-                [{"type": "User", "id": uid, "username": name} for uid, name in reserved_users]
-                + [{"type": "Purchase", "id": pid, "username": name} for pid, name in reserved_purchases])
+                [{"type": "User", "id": uid, "username": name} for uid, name in reserved_users[:LIST_LIMIT]])
+    product_decisions.require_confirmed(db)
     from .receipt_approval_registration import APPROVAL_PROTOCOL_VERSION
     outdated = db.query(models.ApiKey.id, models.ApiKey.label).filter(
         models.ApiKey.enabled.is_(True), models.ApiKey.key_type == bot_auth.KeyType.REMOTE_SHARED_BOT,
@@ -101,8 +112,26 @@ def _preconditions(db, wallet, state) -> None:
         _refuse("provisioning_operations_in_flight", [int(i) for i in inflight])
 
 
+def _transient(exc) -> bool:
+    code = getattr(getattr(exc, "orig", None), "args", (None,))[0]
+    return code in TRANSIENT_MARIADB_ERRORS
+
+
 def activate(db, actor_admin_id) -> dict:
     receipt_void_schema.assert_ready()
+    for attempt in range(1, ACTIVATION_ATTEMPTS + 1):
+        try:
+            return _activate_once(db, actor_admin_id)
+        except OperationalError as exc:
+            # _activate_once rolled the whole transaction back; start over.
+            if db.get_bind().dialect.name not in ("mysql", "mariadb") or not _transient(exc):
+                raise
+            if attempt == ACTIVATION_ATTEMPTS:
+                raise HTTPException(503, "activation_retry_required") from exc
+            time.sleep(0.2 * attempt)
+
+
+def _activate_once(db, actor_admin_id) -> dict:
     _begin(db)
     try:
         wallet, state = _lock(db)
@@ -112,6 +141,7 @@ def activate(db, actor_admin_id) -> dict:
                     "completeness_generation": int(state["completeness_generation"])}
         _preconditions(db, wallet, state)
         generation = int(state["completeness_generation"]) + 1
+        snapshots = reservation_transition.snapshot_purchases(db, generation)
         settings = db.get(models.PanelSettings, 1) or models.PanelSettings(id=1)
         threshold, credit, quota = loyalty_service._policy_values(settings)
         epoch = loyalty_service._new_epoch(db, threshold=threshold, credit=credit, quota_bytes=quota,
@@ -128,7 +158,8 @@ def activate(db, actor_admin_id) -> dict:
     except BaseException:
         db.rollback()
         raise
-    return {"activated": True, "completeness_generation": generation, "epoch_id": epoch, "baselines": baselines}
+    return {"activated": True, "completeness_generation": generation, "epoch_id": epoch, "baselines": baselines,
+            "purchase_reservation_snapshots": snapshots}
 
 
 def deactivate(db) -> dict:

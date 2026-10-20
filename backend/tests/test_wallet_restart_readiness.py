@@ -54,6 +54,9 @@ def run(engine):
     with Session() as db, ready:
         assert wallet_cutover.cutover(db)["baseline_lots"] == 1
     restart("post-P9 restart preserves epoch, baseline and balance")
+    with Session() as db:
+        from app.services import product_decisions
+        product_decisions.confirm(db, actor, version=product_decisions.VERSION, content_hash=product_decisions.CONTENT_HASH)
     with Session() as db, ready:
         assert loyalty_activation.activate(db, actor)["activated"]
     restart("post-P9a restart preserves required/payment_event and generation")

@@ -32,7 +32,10 @@ from ..config import settings
 from . import accounting, payment_card_events, wallet_lots
 
 TOKEN_SECONDS = 600
-FULL_ACCOUNT = ("new_user", "renew_purchase", "renew_user")
+FULL_ACCOUNT = ("new_user", "renew_user")
+# A renewal void takes back only that payment's right on that service
+# (owner decision 2026-10-20; services/receipt_void_renewal.py).
+RENEWAL = ("renew_purchase",)
 
 
 # ------------------------------------------------------------------ lookup and authorization (17)
@@ -69,6 +72,10 @@ def eligible(approval: dict) -> None:
         raise HTTPException(409, "approval_not_voidable_generation")
     if approval["state"] != "completed":
         raise HTTPException(409, "approval_not_voidable_state")
+    if approval["target_shape"] == "renew_user":
+        # a user-level renewal is never registered (receipt_approval_intent),
+        # and a renewal void may not delete the account
+        raise HTTPException(409, "renewal_void_user_level_unsupported")
 
 
 # ------------------------------------------------------------------ the approval's own rows
@@ -99,15 +106,19 @@ def scope(db, approval: dict, rows: list[dict]) -> dict:
         # else (SQLite reuses the highest rowid): never touch that customer.
         user = None
     out = {"shape": shape, "user_id": user_id, "user_exists": user is not None, "delete": None,
-           "user": None, "purchases": [], "connections": [],
+           "user": None, "purchases": [], "connections": [], "prior_rights": None,
            "customer_identity_id": _identity(db, user_id, approval["target_username_snapshot"], user is not None)}
     if user is None:
         return out
     out["user"] = {"id": user.id, "username": user.username, "status": getattr(user.status, "value", user.status),
                    "owner_admin_id": user.owner_admin_id, "telegram_id": user.telegram_id,
-                   "total_quota_bytes": int(user.total_quota_bytes or 0), "expire_at": user.expire_at}
+                   "total_quota_bytes": int(user.total_quota_bytes or 0), "expire_at": user.expire_at,
+                   "reserved_quota_bytes": user.reserved_quota_bytes, "reserved_duration_days": user.reserved_duration_days,
+                   "reserved_package_id": user.reserved_package_id}
     if shape == "topup":
         return out
+    if shape in RENEWAL:
+        return _renewal_scope(db, approval, user, out)
     if shape in FULL_ACCOUNT:
         purchases = db.query(models.Purchase).filter(models.Purchase.user_id == user.id).order_by(models.Purchase.id).all()
         connections = db.query(models.Connection).filter(models.Connection.user_id == user.id).order_by(
@@ -127,10 +138,61 @@ def scope(db, approval: dict, rows: list[dict]) -> dict:
     out["purchases"] = [{"id": p.id, "package_id": p.package_id, "package_name": packages.get(p.package_id),
                          "comment": p.comment, "status": getattr(p.status, "value", p.status),
                          "quota_bytes": int(p.quota_bytes or 0), "used_bytes": int(p.used_bytes or 0),
-                         "expire_at": p.expire_at} for p in purchases]
+                         "expire_at": p.expire_at, "created_at": p.created_at,
+                         "max_concurrent_sessions": p.max_concurrent_sessions,
+                         "reserved_quota_bytes": p.reserved_quota_bytes,
+                         "reserved_duration_days": p.reserved_duration_days,
+                         "reserved_package_id": p.reserved_package_id,
+                         "reserved_max_concurrent_sessions": p.reserved_max_concurrent_sessions,
+                         "reserved_replace_package_limits": p.reserved_replace_package_limits,
+                         "reservation_activation_seq": int(p.reservation_activation_seq or 0)} for p in purchases]
+    # Option A of the P9a reservation addendum: the deletion scope is the
+    # contract's own (13.1); every purchase, connection and queued renewal in
+    # it, and the cutover snapshots of those purchases, are shown and bound
+    # to the confirmation (fingerprint). A snapshot is what was queued at the
+    # cutover - NOT a record of every right acquired before it.
+    from . import reservation_transition
+    out["prior_rights"] = {"cutover_snapshots": reservation_transition.snapshots_of(db, purchases),
+                           "note": reservation_transition.PRIOR_RIGHTS_NOTE}
     out["connections"] = [{"id": c.id, "purchase_id": c.purchase_id, "protocol": getattr(c.type, "value", c.type),
                            "node_id": c.node_id, "node_name": nodes.get(c.node_id), "enabled": bool(c.enabled)}
                           for c in connections]
+    return out
+
+
+def _purchase_view(p, packages) -> dict:
+    return {"id": p.id, "package_id": p.package_id, "package_name": packages.get(p.package_id),
+            "comment": p.comment, "status": getattr(p.status, "value", p.status),
+            "quota_bytes": int(p.quota_bytes or 0), "used_bytes": int(p.used_bytes or 0),
+            "expire_at": p.expire_at, "created_at": p.created_at,
+            "max_concurrent_sessions": p.max_concurrent_sessions,
+            "reserved_quota_bytes": p.reserved_quota_bytes,
+            "reserved_duration_days": p.reserved_duration_days,
+            "reserved_package_id": p.reserved_package_id,
+            "reserved_max_concurrent_sessions": p.reserved_max_concurrent_sessions,
+            "reserved_replace_package_limits": p.reserved_replace_package_limits,
+            "reservation_activation_seq": int(p.reservation_activation_seq or 0)}
+
+
+def _renewal_scope(db, approval: dict, user, out: dict) -> dict:
+    """Nothing is deleted: the plan of taking back this renewal's right on
+    its service, that service shown, and every other service shown as kept."""
+    from . import receipt_void_renewal, reservation_transition
+    try:
+        plan = receipt_void_renewal.plan(db, approval)
+        out["renewal"] = receipt_void_renewal.public(plan)
+        target_id = plan["purchase"].id if plan["purchase"] is not None else None
+    except receipt_void_renewal.RenewalRefused as exc:
+        out["renewal"] = {"refused": exc.code, "note": receipt_void_renewal.SCOPE_NOTE}
+        target_id = None
+    purchases = db.query(models.Purchase).filter(models.Purchase.user_id == user.id).order_by(models.Purchase.id).all()
+    packages = {pkg.id: pkg.name for pkg in db.query(models.Package).filter(
+        models.Package.id.in_({p.package_id for p in purchases if p.package_id})).all()} if purchases else {}
+    out["purchases"] = [_purchase_view(p, packages) for p in purchases if p.id == target_id]
+    out["preserved_purchases"] = [_purchase_view(p, packages) for p in purchases if p.id != target_id]
+    out["connections"] = []                                # none is deleted or disabled
+    out["prior_rights"] = {"cutover_snapshots": reservation_transition.snapshots_of(
+        db, [p for p in purchases if p.id == target_id]), "note": reservation_transition.PRIOR_RIGHTS_NOTE}
     return out
 
 
@@ -139,8 +201,8 @@ def other_approvals(db, approval: dict, resources: dict) -> list[dict]:
     new_user / renew, the created purchase (its renewals) for existing_user."""
     approvals, effects_table = rv.receipt_approvals, rv.receipt_approval_effects
     user_id, delete = resources["user_id"], resources["delete"]
-    if user_id is None:
-        return []
+    if user_id is None or approval["target_shape"] in RENEWAL:
+        return []                                  # a renewal void deletes nothing
     if delete is not None and delete["kind"] == "purchase":
         on_it = select(effects_table.c.approval_uuid).where(
             effects_table.c.resource_type == "Purchase", effects_table.c.resource_id == delete["id"])
@@ -312,6 +374,9 @@ def blockers(db, approval: dict, rows: list[dict], resources: dict) -> list[str]
         out.append("receipt_void_deletion_not_durable")
     if resources["user_exists"] and resources["customer_identity_id"] is None:
         out.append("wallet_account_not_ready")
+    refused = (resources.get("renewal") or {}).get("refused")
+    if refused:
+        out.append(refused)                        # the share cannot be proven: fail closed
     return out
 
 
@@ -353,6 +418,8 @@ def fingerprint(db, approval: dict, rows: list[dict], resources: dict) -> str:
         "purchases": [{k: v for k, v in p.items() if k != "used_bytes"} for p in resources["purchases"]],
         "connections": [{k: v for k, v in c.items() if k not in ("enabled", "node_name")}
                         for c in resources["connections"]],
+        "prior_rights": (resources.get("prior_rights") or {}).get("cutover_snapshots"),
+        "renewal": (resources.get("renewal") or {}).get("bound_hash") or (resources.get("renewal") or {}).get("refused"),
         "other_approvals": [(a["approval_uuid"], a["state"], int(a["version"])) for a in
                             other_approvals(db, approval, resources)],
         "effects": [(r["id"], r["effect_type"], r["effect_key"], r["resource_id"], r["voided_at"] is None) for r in rows],

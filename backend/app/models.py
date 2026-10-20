@@ -1159,6 +1159,14 @@ class Connection(Base):
     node_id = Column(Integer, ForeignKey("nodes.id"), nullable=False, index=True)
     type = Column(Enum(ConnectionType), nullable=False)
     enabled = Column(Boolean, default=True)
+    # Licence suspension is NOT the administrator's enabled intent and
+    # never changes quota, expiry, session-cap state or ownership. Marked
+    # before remote stop so a crash/unknown result can safely be retried.
+    # Restoration is automatic under the runtime fence, subject to current
+    # administrator, quota, expiry, session and financial-hold checks.
+    license_suspended = Column(Boolean, nullable=False, default=False)
+    license_cut_applied = Column(Boolean, nullable=False, default=False)
+    license_target_hash = Column(String(64), nullable=True)
 
     # WireGuard specific
     wg_peer_name = Column(String(128), nullable=True, index=True)

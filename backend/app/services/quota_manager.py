@@ -5,21 +5,28 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import hashlib
+import json
+import time
 import logging
 
 from sqlalchemy import update
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, selectinload, joinedload
+from fastapi import HTTPException
 
 from .. import models
 from ..database import SessionLocal
 from .mikrotik_client import MikrotikClient, MikrotikError, parse_ros_duration_seconds
 from .node_gate import writer_gate
 from . import legacy_remote, session_cap_mode, session_cap_rule
+from . import license_guard, license_fence
 from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
 from .xray_client import XrayError, client_for_node
 from .softether_client import SoftEtherError, client_for_node as softether_client_for_node
 
 logger = logging.getLogger("quota_manager")
+_license_node_retry_after = {}
+LICENSE_TRANSITIONS_PER_PASS = 16
 
 PPP_TYPES = (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.ikev2, models.ConnectionType.sstp)
 
@@ -714,6 +721,15 @@ def _set_connection_enabled(db: Session, connection: models.Connection, enabled:
     Anything that didn't apply is picked up again by
     _reconcile_connection_enabled_state on the next poll cycle instead of
     being silently forgotten forever."""
+    # Licence suspension has its own marker; ordinary quota/session passes
+    # must not reopen a cut peer or clear that marker behind the operator.
+    if connection.license_suspended:
+        # Preserve the pre-cut connection switch while its remote state is
+        # owned by licensing. Eligibility still reads current quota/expiry
+        # and session limits; quota expiry cannot strand a later renewal.
+        return
+    if enabled and license_guard.current().cut_services:
+        return
     from .reseller_refund_fence import enabled as _refund_enabled
     if _refund_enabled() and connection.purchase_id:
         from ..models_reseller_refund import ResellerRefundOperation
@@ -764,6 +780,271 @@ def _set_connection_enabled(db: Session, connection: models.Connection, enabled:
             connection.enabled = enabled
     except (MikrotikError, XrayError, SoftEtherError) as exc:
         logger.warning("failed to toggle connection %s: %s", connection.id, exc)
+
+
+def _license_connection(db: Session, connection_id: int):
+    return db.query(models.Connection).options(
+        joinedload(models.Connection.node), joinedload(models.Connection.user),
+        joinedload(models.Connection.purchase),
+    ).filter(models.Connection.id == connection_id).one_or_none()
+
+
+def _license_remote_state(conn: models.Connection, enabled: bool) -> bool:
+    """Detached snapshot only: caller has closed its database transaction.
+
+    Every mutation still passes through the existing ownership/node runner.
+    PPP stop preserves accounting rows/counters for the final Acct-Stop.
+    """
+    node = conn.node
+    if conn.type in PPP_TYPES or conn.type == models.ConnectionType.pptp:
+        if not enabled:
+            legacy_remote.run(node, "ppp_kick", factory=MikrotikClient.for_node,
+                              username=conn.ppp_username, hard_deadline_seconds=3)
+        return True  # False from ppp_kick is a verified already-absent session.
+    if conn.type == models.ConnectionType.wireguard:
+        return bool(legacy_remote.run(node, "wg_set_enabled", factory=MikrotikClient.for_node,
+            interface=node.mt_wireguard_interface, peer_name=conn.wg_peer_name, enabled=enabled, hard_deadline_seconds=3))
+    if conn.type == models.ConnectionType.xray:
+        return bool(legacy_remote.run(node, "xray_set_enabled", factory=client_for_node,
+            inbound_tag=node.xr_inbound_tag, email=conn.xr_email, client_uuid=conn.xr_uuid,
+            flow=conn.xr_flow or "", enabled=enabled, hard_deadline_seconds=3))
+    if conn.type == models.ConnectionType.softether:
+        return bool(legacy_remote.run(node, "softether_set_enabled", factory=softether_client_for_node,
+            username=conn.ppp_username, password=conn.ppp_password, enabled=enabled, hard_deadline_seconds=3))
+    return False
+
+
+def _license_target_hash(conn):
+    """Bind a suspension to its customer, credential and node endpoint.
+
+    Ordinary quota/expiry/usage updates are deliberately not identity changes.
+    Never return this internal fingerprint or any credential in public output.
+    """
+    target = (conn.id, conn.created_at, conn.user_id, conn.user.created_at,
+              conn.user.owner_admin_id, conn.user.username, conn.node_id, conn.type.value,
+              conn.purchase_id, conn.purchase.created_at if conn.purchase is not None else None,
+              legacy_remote.endpoint(conn.node), conn.wg_peer_name,
+              conn.ppp_username, conn.ppp_password, conn.xr_email, conn.xr_uuid, conn.xr_flow)
+    return hashlib.sha256(json.dumps(target, default=str, sort_keys=True).encode()).hexdigest()
+
+
+def enforce_license_services() -> dict:
+    """One short-lived exclusive fence per connection, never a whole batch."""
+    with SessionLocal() as db:
+        if not license_fence.ready(db.get_bind()):
+            raise HTTPException(503, "license_runtime_fence_unavailable")
+        panel = db.get(models.PanelSettings, 1)
+        if panel is not None and panel.ha_enabled:
+            raise HTTPException(409, "license_runtime_requires_single_host")
+        query = db.query(models.Connection.id, models.Connection.node_id)
+        if license_guard.current().cut_services:
+            query = query.filter(
+                models.Connection.enabled.is_(True) | models.Connection.license_suspended.is_(True),
+                models.Connection.license_suspended.is_(False) | models.Connection.license_cut_applied.is_(False))
+        else:
+            query = query.filter(models.Connection.license_suspended.is_(True))
+        ids = query.order_by(models.Connection.id).all()
+    totals = {"cut_services": license_guard.current().cut_services, "applied": 0, "restoration_pending": 0}
+    attempted = 0
+    started = time.monotonic()
+    for cid, node_id in ids:
+        if (_license_node_retry_after.get(node_id, 0) > time.monotonic() or
+                attempted >= LICENSE_TRANSITIONS_PER_PASS or time.monotonic() - started >= 10):
+            totals["restoration_pending"] += 1
+            continue
+        try:
+            with license_fence.exclusive():
+                result = _enforce_license_services([cid])
+            attempted += result["remote_attempted"]
+            for key in ("applied", "restoration_pending"):
+                totals[key] += result[key]
+        except HTTPException:
+            totals["restoration_pending"] += 1
+    return totals
+
+
+def _enforce_license_services(ids) -> dict:
+    """Separate, retryable stop pass; no DB transaction survives node I/O.
+
+    Renewal retries eligible connections under the installation fence.
+    No customer transaction or node database transaction spans remote I/O.
+    """
+    cut = license_guard.current().cut_services
+    applied = pending = remote_attempted = 0
+    for cid in ids:
+        with SessionLocal() as db:
+            conn = _license_connection(db, cid)
+            if conn is None:
+                continue
+            panel = db.get(models.PanelSettings, 1)
+            if panel is not None and panel.ha_enabled:
+                raise HTTPException(409, "license_runtime_requires_single_host")
+            if not cut:
+                suspended = conn.license_suspended
+                db.close()
+                if suspended:
+                    try:
+                        restore_license_connection(cid)
+                        applied += 1
+                        remote_attempted += 1
+                    except HTTPException as exc:
+                        if exc.detail in ("license_restore_unverified", "license_restore_state_changed"):
+                            remote_attempted += 1
+                            _license_node_retry_after[conn.node_id] = time.monotonic() + 60
+                        pending += 1
+                continue
+            if not conn.enabled and not conn.license_suspended:
+                continue
+            if conn.license_suspended and conn.license_cut_applied:
+                continue
+            if not conn.license_suspended:
+                conn.license_target_hash = _license_target_hash(conn)
+            elif conn.license_target_hash != _license_target_hash(conn):
+                pending += 1
+                continue
+            conn.license_suspended = True
+            db.flush()
+            # Fully load and detach before commit expiration/closing; node
+            # credentials never enter a public result or an error message.
+            node = conn.node
+            db.expunge(conn)
+            db.expunge(node)
+            db.commit()
+        if not node.enabled:
+            pending += 1
+            continue
+        # A renewed licence can arrive while a large stop pass is running.
+        # Do not continue cutting the rest of the installation on its old
+        # verdict. Keep the marker for explicit outcome reconciliation.
+        if not license_guard.current().cut_services:
+            pending += 1
+            continue
+        try:
+            remote_attempted += 1
+            stopped = _license_remote_state(conn, False)
+        except Exception:
+            # Ownership unavailable, timeout and unknown are all pending,
+            # never recorded as a known remote stop.
+            logger.warning("licence suspension pending for connection %s", cid)
+            stopped = False
+        if not stopped:
+            _license_node_retry_after[node.id] = time.monotonic() + 60
+            pending += 1
+            continue
+        with SessionLocal() as db:
+            db.query(models.Connection).filter_by(id=cid, license_suspended=True).update(
+                {"license_cut_applied": True}, synchronize_session=False)
+            db.commit()
+        applied += 1
+    return {"cut_services": cut, "applied": applied, "restoration_pending": pending,
+            "remote_attempted": remote_attempted}
+
+
+def _license_restore_snapshot(conn: models.Connection, now: dt.datetime):
+    user, purchase = conn.user, conn.purchase
+    if not conn.enabled or conn.session_limited or not conn.node.enabled:
+        return None
+    if user.status == models.UserStatus.disabled:
+        return None
+    subject = purchase if purchase is not None else user
+    quota = purchase.quota_bytes if purchase is not None else user.total_quota_bytes
+    if subject.status != models.UserStatus.active or (quota and subject.used_bytes >= quota):
+        return None
+    if subject.expire_at is not None and subject.expire_at <= now:
+        return None
+    return (conn.created_at, conn.user_id, user.created_at, user.owner_admin_id, user.username,
+            conn.enabled, conn.session_limited, conn.node_id, conn.type, conn.purchase_id,
+            user.status, subject.status, quota, subject.used_bytes,
+            subject.expire_at, conn.wg_peer_name, conn.ppp_username, conn.ppp_password,
+            conn.xr_uuid, conn.xr_email, conn.xr_flow)
+
+
+def restore_license_connection(connection_id: int, *, expected_target=None) -> dict:
+    """Automatic or authenticated recovery; serialize before the first read."""
+    with SessionLocal() as probe:
+        bind = probe.get_bind()
+    if not license_fence.ready(bind):
+        raise HTTPException(503, "license_runtime_fence_unavailable")
+    with license_fence.exclusive():
+        return _restore_license_connection(connection_id, expected_target=expected_target)
+
+
+def _restore_license_connection(connection_id: int, *, expected_target=None) -> dict:
+    if license_guard.current().cut_services:
+        raise HTTPException(409, "license_services_still_suspended")
+    with SessionLocal() as db:
+        conn = _license_connection(db, connection_id)
+        if conn is None:
+            raise HTTPException(404, "connection_not_found")
+        target = (conn.created_at, conn.user_id, conn.user.created_at, conn.user.owner_admin_id, conn.user.username)
+        if expected_target is not None and target != expected_target:
+            raise HTTPException(409, "license_restore_target_changed")
+        if not conn.license_suspended:
+            return {"restored": False, "reason": "not_license_suspended"}
+        if conn.license_target_hash != _license_target_hash(conn):
+            raise HTTPException(409, "license_restore_target_changed")
+        _license_restore_holds(db, conn)
+        snapshot = _license_restore_snapshot(conn, dt.datetime.utcnow())
+        if snapshot is None:
+            raise HTTPException(409, "license_restore_not_eligible")
+        db.expunge_all()
+    try:
+        enabled = _license_remote_state(conn, True)
+    except Exception:
+        enabled = False
+    with SessionLocal() as db:
+        current = _license_connection(db, connection_id)
+        held = False
+        if current is not None:
+            try:
+                _license_restore_holds(db, current)
+            except HTTPException:
+                held = True
+        valid = enabled and not held and not license_guard.current().cut_services and current is not None and (
+            current.license_target_hash == _license_target_hash(current)) and (
+            _license_restore_snapshot(current, dt.datetime.utcnow()) == snapshot)
+        if valid:
+            current.license_suspended = False
+            current.license_cut_applied = False
+            current.license_target_hash = None
+            db.commit()
+            return {"restored": True, "connection_id": connection_id}
+    # Even an unknown enable can have reached the node. Re-cut outside the
+    # DB transaction and retain the marker irrespective of its outcome.
+    try:
+        stopped = _license_remote_state(conn, False)
+    except Exception:
+        stopped = False
+    with SessionLocal() as db:
+        db.query(models.Connection).filter_by(id=connection_id, license_suspended=True).update(
+            {"license_cut_applied": bool(stopped)}, synchronize_session=False)
+        db.commit()
+    raise HTTPException(409 if enabled else 503, "license_restore_state_changed" if enabled else "license_restore_unverified")
+
+
+def _license_restore_holds(db, conn):
+    from . import provisioning_schema, receipt_void_schema, reservation_transition
+    from .reseller_refund_fence import enabled as refund_enabled
+    if not provisioning_schema.is_ready() or not receipt_void_schema.is_ready():
+        raise HTTPException(503, "license_restore_schema_not_ready")
+    if db.get(models.PanelSettings, 1) is not None and db.get(models.PanelSettings, 1).ha_enabled:
+        raise HTTPException(409, "license_restore_requires_single_host")
+    if conn.purchase is not None and receipt_void_schema.is_ready() and reservation_transition.is_held(
+            db, conn.purchase.history_key):
+        raise HTTPException(409, "purchase_void_in_progress")
+    if provisioning_schema.is_ready():
+        from ..models_provisioning import ProvisioningOperation
+        if db.query(ProvisioningOperation.id).filter(
+                (ProvisioningOperation.target_user_id == conn.user_id) |
+                (ProvisioningOperation.result_user_id == conn.user_id),
+                ProvisioningOperation.state.notin_(("completed", "compensated"))).first():
+            # Accepted durable work can be between DB transactions while
+            # its child owns remote I/O. Let it settle before restoration.
+            raise HTTPException(409, "license_restore_operation_pending")
+    if refund_enabled():
+        from ..models_reseller_refund import ResellerRefundOperation
+        if db.query(ResellerRefundOperation.id).filter_by(user_id=conn.user_id, state="pending").first():
+            raise HTTPException(409, "reseller_cancellation_pending")
 
 
 def _reconcile_connection_enabled_state(db: Session, now: dt.datetime) -> int:
@@ -1216,6 +1497,10 @@ def poll_all():
         db.rollback()
     finally:
         db.close()
+    try:
+        enforce_license_services()
+    except Exception:
+        logger.error("licence service suspension pass failed; will retry next poll")
     # Its own transaction, after the cycle's: a shadow record never delays
     # or fails enforcement (session_cap_mode.flush_shadow).
     session_cap_mode.flush_shadow(SessionLocal)

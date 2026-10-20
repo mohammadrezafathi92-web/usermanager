@@ -796,6 +796,10 @@ def _create_schema() -> None:
 
 @app.on_event("startup")
 def on_startup():
+    # Install before schema work, requests, poller, RADIUS and bot threads.
+    # No application SQL transaction may overlap automatic licence recovery.
+    from .services import license_fence
+    license_fence.install(engine)
     _warn_if_insecure_defaults()
     _admin_node_access_is_new = "admin_node_access" not in set(inspect(engine).get_table_names())
     _create_schema()

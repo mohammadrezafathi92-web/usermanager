@@ -173,6 +173,8 @@ def begin_approval(db: Session, principal: bot_auth.BotPrincipal, payload: Appro
         principal,
         bot_auth.RECEIPT_MANUAL_APPROVAL_WRITE if approval_mode == registration.MANUAL else bot_auth.RECEIPT_AUTO_APPROVAL_WRITE,
         endpoint=f"receipt_approval_{approval_mode}")
+    from ..services import license_guard
+    license_guard.require_bot_write()
     try:
         return registration.begin(
             db, principal, payload.to_intent(), approval_mode=approval_mode,

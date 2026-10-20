@@ -26,7 +26,7 @@ import logging
 
 import requests
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -45,16 +45,21 @@ router = APIRouter(prefix="/api/miniapp", tags=["miniapp"])
 def current_visitor(
     x_telegram_init_data: str = Header(None, alias="X-Telegram-InitData"),
     db: Session = Depends(get_db),
+    request: Request = None,
 ) -> dict:
     """The one door in. Returns {"telegram_id", "owner_admin_id", "user"}."""
     try:
-        return telegram_webapp.verify(db, x_telegram_init_data or "")
+        visitor = telegram_webapp.verify(db, x_telegram_init_data or "")
     except telegram_webapp.WebAppAuthError as exc:
         # Logged with the reason, answered without it. An unauthenticated
         # caller learning WHICH part of their forgery failed is being helped
         # to fix it.
         logger.warning("miniapp: initData rejected (%s)", exc)
         raise HTTPException(401, "این صفحه باید از داخل ربات تلگرام باز شود.")
+    if request is not None:
+        from ..services import license_guard
+        license_guard.require_bot_http_access(path=request.url.path, method=request.method)
+    return visitor
 
 
 def _shop_packages(db: Session, owner: int | None) -> list:

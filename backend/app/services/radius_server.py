@@ -34,7 +34,7 @@ from ..config import settings
 from ..database import SessionLocal
 from ..telegram_bot import runner as telegram_bot_runner
 from .quota_manager import add_usage, _enforce_user_limits, _enforce_purchase_limits, active_session_count
-from . import session_cap_mode, session_cap_rule
+from . import session_cap_mode, session_cap_rule, license_guard
 from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
 from . import mschapv2
 from . import ip_guard
@@ -384,6 +384,13 @@ class UserManagerRadiusServer(Server):
         db = SessionLocal()
         try:
             reply = self.CreateReplyPacket(pkt)
+            if license_guard.current().cut_services:
+                # Licence scope is independent of customer quota, bans and
+                # accounting: do not punish the client's IP or consume a
+                # queued renewal while service access is suspended.
+                reply.code = packet.AccessReject
+                _send_reply(self, pkt, reply)
+                return
             username = _to_str(pkt.get("User-Name", [None])[0])
             # Best-effort caller IP for RadiusLimitEventLog below - prefer
             # Calling-Station-Id (the client's real remote IP for PPP-based

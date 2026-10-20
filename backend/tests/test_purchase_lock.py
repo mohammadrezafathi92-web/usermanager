@@ -28,6 +28,11 @@ from app import models, schemas
 from app.routers import bot as bot_router
 from app.routers import users as users_router
 from app.services.bot_auth import BotPrincipal
+from app.config import settings
+
+# Purchase restrictions are tested on a licensed installation; the
+# independent runtime-admission suite covers expired/revoked licences.
+settings.license_master_install = True
 
 # Phase C (docs/api-key-scope-audit-2026-09-27.md): every routers/bot.py
 # endpoint now takes `principal` (via @bot_route_policy) - this test calls

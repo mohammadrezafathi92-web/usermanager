@@ -316,6 +316,8 @@ class ConnectionOut(BaseModel):
     node_id: int
     type: ConnectionType
     enabled: bool
+    license_suspended: bool = False
+    license_cut_applied: bool = False
     wg_peer_name: Optional[str] = None
     wg_public_key: Optional[str] = None
     wg_private_key: Optional[str] = None

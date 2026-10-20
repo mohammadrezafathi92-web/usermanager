@@ -1,37 +1,14 @@
-"""«بروزرسانی پنل» - pull the latest code from GitHub and rebuild, from the
-panel itself instead of over SSH.
+"""«بروزرسانی پنل» - check for and queue a panel update from the panel itself.
 
-Reuses the plumbing services/local_deploy.py already established for the
-panel-port feature: the repository is bind-mounted into this container at
-the SAME absolute path the host's docker daemon sees, and that daemon is
-reachable over its socket. See local_deploy's module docstring for why both
-of those are required.
-
-The design point that matters most here is that this runs INSIDE the very
-container it is about to replace. Three consequences shaped the code:
-
-1. `git pull` happens first and is checked on its own. If the pull fails
-   (no network, a conflict, a dirty tree) nothing has been rebuilt and the
-   running panel is untouched - the admin gets an error and keeps working.
-
-2. The build runs BEFORE anything is restarted. A failed build leaves the
-   old images in place and the old containers running, so a syntax error in
-   a new commit cannot take the panel down. Only a successful build gets as
-   far as `up -d`.
-
-3. The restart kills this process - and the recreate command itself must
-   NOT run as a subprocess of this process, because it too lives inside the
-   container about to be replaced. `docker compose up -d` issued that way
-   gets killed mid-recreate the moment the daemon stops this container,
-   leaving a container that never finished coming down - and the NEXT
-   update then fails with "name already in use" (this happened for real on
-   2026-08-2x and needed a manual `docker rm -f` over SSH). So this last
-   step is handed to a throwaway SIBLING container instead (see
-   local_deploy.spawn_sibling_container) - it shares the docker socket and
-   the project mount but is not part of the compose project being
-   recreated, so it survives this container's death and finishes the job.
-   The frontend polls the version endpoint to find out when the new panel
-   is up; anything else looks to the admin like the update "hung".
+check_for_update() fetches and reports what main would bring, without
+touching the working tree. apply_update() no longer pulls, builds, resets or
+restarts anything in this process: it validates the request and queues the
+SAME safe update.sh the SSH path runs, in a pinned sibling container (see
+services/panel_safe_update.py and scripts/panel_update_runner.py). That
+worker shares update.sh's lock with the CLI, makes and verifies the backup,
+deploys exactly the requested main SHA, builds before restarting, checks
+health and compares the modes - and it outlives this container's
+replacement. Server-side changes to tracked files are never discarded here.
 """
 from __future__ import annotations
 
@@ -39,23 +16,17 @@ import logging
 import os
 import re
 import subprocess
-import threading
-import time
 
 from .local_deploy import (
     HOST_PROJECT_DIR,
     DeployError,
-    ensure_docker_compose_cli,
-    spawn_sibling_container,
     verify_host_path,
 )
 
 logger = logging.getLogger("self_update")
 
-# A build with no cache can take a couple of minutes on a small VPS; a pull
-# should be near-instant unless the network is bad.
+# A fetch should be near-instant unless the network is bad.
 GIT_TIMEOUT = 120
-BUILD_TIMEOUT = 900
 
 
 def _git(*args: str, timeout: int = GIT_TIMEOUT) -> tuple[int, str]:
@@ -83,74 +54,6 @@ def _git(*args: str, timeout: int = GIT_TIMEOUT) -> tuple[int, str]:
         )
     except subprocess.TimeoutExpired:
         return 124, "زمان اجرای git تمام شد"
-
-
-_COMPOSE_PORT_RE = re.compile(r'"(\d+):80"')
-
-
-def _compose_path() -> str:
-    return os.path.join(HOST_PROJECT_DIR, "docker-compose.yml")
-
-
-def _frontend_port() -> str | None:
-    """The host-side port the frontend is published on, read straight from
-    docker-compose.yml - the same single mapping local_deploy.py rewrites."""
-    try:
-        with open(_compose_path(), encoding="utf-8") as f:
-            match = _COMPOSE_PORT_RE.search(f.read())
-    except OSError:
-        return None
-    return match.group(1) if match else None
-
-
-def _restore_frontend_port(port: str) -> None:
-    """Re-applies a custom panel port after a pull discarded a locally
-    modified docker-compose.yml (see apply_update below).
-
-    Two generations of this feature, both handled here:
-      - Pre-2026-09-08 installs: the port lived as a literal "PORT:80" in
-        docker-compose.yml itself, which is exactly the locally-modified
-        file this whole code path exists to rescue. If the FRESHLY PULLED
-        file still has that literal pattern (i.e. this update itself
-        predates the .env migration below), rewrite it the same way as
-        before.
-      - Post-migration installs (this fix and anything after it): the
-        freshly pulled docker-compose.yml maps "${PANEL_WEB_PORT:-80}:80"
-        instead - no literal digits left to match - so the port is written
-        into the repo-root .env instead (see local_deploy.py's
-        change_panel_port_local for why: an untracked file can never
-        conflict with a `git pull` again). This is also what silently
-        completes the one-time migration for an install that had an old
-        literal port when this exact update landed - nothing manual
-        required.
-
-    Failure here is logged, never raised: the update itself has already
-    succeeded at this point, and the worst case is that the panel comes back
-    on the default port - recoverable from the panel's own port setting,
-    unlike a half-finished update.
-    """
-    try:
-        path = _compose_path()
-        with open(path, encoding="utf-8") as f:
-            content = f.read()
-        match = _COMPOSE_PORT_RE.search(content)
-        if match:
-            if match.group(1) != port:
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(content.replace(match.group(0), f'"{port}:80"', 1))
-                logger.info("بروزرسانی: پورت پنل %s دوباره اعمال شد (docker-compose.yml)", port)
-            return
-        # New format: no literal port left in docker-compose.yml at all -
-        # persist it via .env instead, same mechanism local_deploy.py uses.
-        from .local_deploy import _read_env_var, _write_env_var, _root_env_path
-
-        env_path = _root_env_path()
-        if _read_env_var(env_path, "PANEL_WEB_PORT") == port:
-            return
-        _write_env_var(env_path, "PANEL_WEB_PORT", port)
-        logger.info("بروزرسانی: پورت پنل %s دوباره اعمال شد (.env)", port)
-    except OSError:
-        logger.exception("بروزرسانی: اعمال دوباره‌ی پورت پنل ناموفق بود")
 
 
 def _porcelain_name(line: str) -> str:
@@ -224,8 +127,11 @@ def check_for_update() -> dict:
 
     code, log = _git("log", "--oneline", f"HEAD..origin/{branch}")
     count = int(behind.strip() or 0)
+    _, target = _git("rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}")
     return {
         **info,
+        # the exact commit an update would deploy (the UI sends it back)
+        "target": target.strip() if re.fullmatch(r"[0-9a-f]{40}", target.strip()) else None,
         "behind": count,
         "up_to_date": count == 0,
         # The actual commit subjects, so the admin can see WHAT the update
@@ -234,118 +140,32 @@ def check_for_update() -> dict:
     }
 
 
-def _compose(*args: str, timeout: int) -> tuple[int, str]:
-    binary = ensure_docker_compose_cli()
-    try:
-        proc = subprocess.run(
-            [binary, "-f", os.path.join(HOST_PROJECT_DIR, "docker-compose.yml"), *args],
-            cwd=HOST_PROJECT_DIR, capture_output=True, text=True, timeout=timeout,
-        )
-        return proc.returncode, (proc.stdout + proc.stderr).strip()
-    except subprocess.TimeoutExpired:
-        return 124, "زمان اجرای docker compose تمام شد"
-
-
-def apply_update() -> dict:
-    """Pull, build, then restart in the background. Raises DeployError with
-    the captured log if either of the first two steps fails - in which case
-    the running panel has not been touched."""
+def apply_update(target: str, actor_id) -> dict:
+    """Queues the SAME safe update.sh the SSH path runs (services/
+    panel_safe_update.py): shared lock with the CLI, verified backup, the
+    exact target, build, health checks, modes compared. Nothing is pulled,
+    reset, discarded or restarted in this process - the answer only says the
+    job was queued; the UI follows the job's own state to its real end."""
     if not _repo_is_git():
         raise DeployError(NOT_A_CLONE, "")
-
-    # Before anything is pulled or built: if the daemon would resolve this
-    # project to a different host directory than the one we are about to
-    # hand it, stop here. See local_deploy.verify_host_path.
+    if not isinstance(target, str) or not re.fullmatch(r"[0-9a-f]{40}", target):
+        raise DeployError("نسخهٔ مقصد باید SHA کامل ۴۰ کاراکتری main باشد", "")
+    # Before anything is queued: if the daemon would resolve this project to
+    # a different host directory than the one the worker is handed, stop.
     verify_host_path()
-
     info = current_revision()
-    # docker-compose.yml is a special case, and the reason this whole branch
-    # exists: the panel's OWN "پورت پنل وب" feature rewrites that tracked
-    # file (services/local_deploy.change_panel_port_local). So an admin who
-    # ever changed the port from the panel had permanently disabled the
-    # panel's update button - one feature silently switching another off.
-    # The port is preserved across the pull rather than the update refused.
-    saved_port = None
-    dirty_files = list(info.get("dirty_files") or [])
-    if dirty_files == ["docker-compose.yml"]:
-        saved_port = _frontend_port()
-        code, out = _git("checkout", "--", "docker-compose.yml")
-        if code != 0:
-            raise DeployError("بازگرداندن docker-compose.yml ناموفق بود", out)
-        logger.info("بروزرسانی: تغییر پورت پنل (%s) کنار گذاشته شد تا بعد از دریافت کد دوباره اعمال شود", saved_port)
-        info = current_revision()
-
     if info["dirty"]:
+        # Never discarded here (the CLI refuses them the same way).
         raise DeployError(
-            "روی سرور این فایل‌ها دستی تغییر کرده‌اند و بروزرسانی روی آن‌ها می‌نویسد:\n"
+            "روی سرور این فایل‌ها دستی تغییر کرده‌اند؛ آپدیت انجام نمی‌شود:\n"
             + "\n".join(f"• {f}" for f in (info.get("dirty_files") or [])[:15])
-            + "\n\nاگر تغییرات لازم نیستند، با SSH این را اجرا کنید و دوباره امتحان کنید:\n"
-            "cd /root/usermanager && git checkout -- .",
+            + "\n\nتغییرات را خودتان روی سرور بررسی کنید؛ پنل آن‌ها را کنار نمی‌گذارد.",
             "",
         )
-
-    before = info["commit"]
-    branch = info["branch"] or "main"
-
-    code, pull_log = _git("pull", "--ff-only", "origin", branch)
-    if code != 0:
-        # --ff-only rather than a merge: this is a deployment, not a place to
-        # resolve history. A non-fast-forward means the server has diverged
-        # and needs a human, not an automatic merge commit.
-        raise DeployError("دریافت کد جدید ناموفق بود", pull_log)
-
-    after = current_revision()["commit"]
-    if after == before:
-        return {"updated": False, "commit": after, "message": "همین حالا آخرین نسخه است"}
-
-    if saved_port:
-        _restore_frontend_port(saved_port)
-
-    # Build first, restart second - a broken commit must not be able to take
-    # the panel down, and a failed build here leaves everything running.
-    code, build_log = _compose("build", timeout=BUILD_TIMEOUT)
-    if code != 0:
-        _git("reset", "--hard", before or "HEAD@{1}")
-        raise DeployError(
-            "ساخت نسخه‌ی جدید ناموفق بود - پنل روی نسخه‌ی قبلی باقی ماند و کد هم برگردانده شد.",
-            build_log[-4000:],
-        )
-
-    def _restart_soon() -> None:
-        # The restart terminates this process, so it has to happen after the
-        # HTTP response has been flushed. A couple of seconds is plenty and
-        # keeps the admin from seeing a dead connection instead of a result.
-        time.sleep(2)
-        logger.info("بروزرسانی: در حال راه‌اندازی مجدد سرویس‌ها (از طریق کانتینر کمکی)")
-        try:
-            # ensure_docker_compose_cli() downloads/caches the binary and
-            # returns its path AS SEEN FROM THIS CONTAINER (/app/data/...).
-            # The sibling container below does not have that /app/data
-            # mount - it only mounts the project directory at HOST_PROJECT_DIR
-            # (same convention docker-compose.yml itself uses elsewhere) - so
-            # the SAME file has to be addressed by its path under that mount
-            # instead: ./backend/data/.docker-cli/docker-compose, which is
-            # exactly where docker-compose.yml's `./backend/data:/app/data`
-            # bind puts it on the host.
-            ensure_docker_compose_cli()
-            compose_bin_for_sibling = os.path.join(
-                HOST_PROJECT_DIR, "backend", "data", ".docker-cli", "docker-compose")
-            log_path = os.path.join(HOST_PROJECT_DIR, "backend", "data", ".self_update_restart.log")
-            spawn_sibling_container(
-                [compose_bin_for_sibling, "-f", os.path.join(HOST_PROJECT_DIR, "docker-compose.yml"),
-                 "up", "-d", "--remove-orphans"],
-                log_path=log_path,
-            )
-        except DeployError as exc:
-            logger.error("بروزرسانی: راه‌اندازی مجدد ناموفق بود: %s (%s)", exc, exc.log)
-        except Exception:
-            logger.exception("بروزرسانی: راه‌اندازی مجدد با خطای غیرمنتظره مواجه شد")
-
-    threading.Thread(target=_restart_soon, daemon=True).start()
-
-    return {
-        "updated": True,
-        "from": before,
-        "commit": after,
-        "message": "نسخه‌ی جدید ساخته شد و سرویس در حال راه‌اندازی مجدد است",
-    }
+    if info["branch"] != "main":
+        raise DeployError("آپدیت فقط روی شاخهٔ main انجام می‌شود", "")
+    code, remote = _git("rev-parse", "--verify", "-q", "refs/remotes/origin/main")
+    if code != 0 or remote.strip() != target:
+        raise DeployError("نسخهٔ مقصد با آخرین main بررسی‌شده یکی نیست؛ دوباره «بررسی» بزنید", "")
+    from . import panel_safe_update
+    return panel_safe_update.queue(target, actor_id)

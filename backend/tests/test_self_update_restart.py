@@ -11,12 +11,12 @@ that never finished coming down - so the panel goes dark and the NEXT
 update attempt fails with "name already in use" (needed a manual
 `docker rm -f` over SSH to clear, on the live server).
 
-The fix hands that one step to a throwaway SIBLING container instead (see
-local_deploy.spawn_sibling_container) - independent of the container being
-replaced, so it survives. These tests pin two things: that the sibling
-container is built correctly (right image, right mounts, right command),
-and that apply_update() actually uses it instead of ever running
-`docker compose up` in-process again.
+The first fix handed that step to a throwaway SIBLING container (see
+local_deploy.spawn_sibling_container, still used elsewhere). The button now
+goes further: apply_update() only queues the same safe update.sh the SSH
+path runs, in a pinned worker (services/panel_safe_update.py). These tests
+pin that the sibling container is built correctly, and that apply_update()
+never pulls, resets, discards server changes, builds or restarts in-process.
 """
 from __future__ import annotations
 
@@ -136,75 +136,79 @@ except local_deploy.DeployError as exc:
 
 restore_local_deploy()
 
-print("\n--- apply_update(): the actual wiring - no more in-process 'up' ---")
+print("\n--- apply_update(): only queues the safe update.sh - nothing pulled, built, reset or restarted here ---")
 
-compose_calls = []
-sibling_calls = []
-
-_git_responses = iter([
-    (0, "old1234"), (0, "main"), (0, ""),   # current_revision() BEFORE the pull
-    (0, "pulled ok"),                        # git pull
-    (0, "new5678"), (0, "main"), (0, ""),   # current_revision() AFTER the pull
-])
-
-_orig = {
-    "_git": self_update._git,
-    "_repo_is_git": self_update._repo_is_git,
-    "verify_host_path": self_update.verify_host_path,
-    "_compose": self_update._compose,
-    "spawn_sibling_container": self_update.spawn_sibling_container,
-    "ensure_docker_compose_cli": self_update.ensure_docker_compose_cli,
-    "Thread": self_update.threading.Thread,
-    "sleep": self_update.time.sleep,
-}
+TARGET = "a" * 40
+queued = []
+git_calls = []
+state = {"dirty": False, "dirty_files": [], "branch": "main", "remote": TARGET}
 
 
-class SyncThread:
-    """Runs the target immediately instead of on a real thread, so the test
-    doesn't have to sleep/poll to observe what the background restart step
-    did."""
+def fake_git(*args, timeout=None):
+    git_calls.append(args)
+    if args[:2] == ("rev-parse", "--short"):
+        return 0, "old1234"
+    if args[:2] == ("rev-parse", "--abbrev-ref"):
+        return 0, state["branch"]
+    if args[0] == "status":
+        return 0, "\n".join(f" M {f}" for f in state["dirty_files"])
+    if args[:2] == ("rev-parse", "--verify"):
+        return 0, state["remote"]
+    return 0, ""
 
-    def __init__(self, target=None, daemon=None):
-        self._target = target
 
-    def start(self):
-        self._target()
+from app.services import panel_safe_update
+
+_orig = {"_git": self_update._git, "_repo_is_git": self_update._repo_is_git,
+         "verify_host_path": self_update.verify_host_path, "queue": panel_safe_update.queue}
+
+
+def attempt():
+    try:
+        return self_update.apply_update(TARGET, 7)
+    except local_deploy.DeployError as exc:
+        return f"refused: {exc}"
 
 
 try:
-    self_update._git = lambda *a, timeout=None: next(_git_responses, (0, ""))
+    self_update._git = fake_git
     self_update._repo_is_git = lambda: True
     self_update.verify_host_path = lambda: local_deploy.HOST_PROJECT_DIR
-    self_update._compose = lambda *args, timeout=None: (compose_calls.append(args), (0, "build ok"))[1]
-    self_update.spawn_sibling_container = lambda cmd, log_path=None: sibling_calls.append((cmd, log_path))
-    self_update.ensure_docker_compose_cli = lambda: "/app/data/.docker-cli/docker-compose"
-    self_update.threading.Thread = SyncThread
-    self_update.time.sleep = lambda *_: None
+    panel_safe_update.queue = lambda target, actor: (queued.append((target, actor)),
+                                                     {"job_id": "j" * 32, "status": "queued", "updated": False})[1]
 
-    result = self_update.apply_update()
+    result = attempt()
+    check("a clean main at the checked target: the job is queued, not reported as updated",
+          (result.get("status"), result.get("updated")), ("queued", False))
+    check("...with exactly that target and the acting admin", queued, [(TARGET, 7)])
+    mutating = [c for c in git_calls if c[0] in ("pull", "reset", "checkout", "merge", "fetch")]
+    check("...no pull, reset, checkout, merge or fetch in the API process", mutating, [])
+    check("...no compose / sibling restart helpers left in self_update",
+          [name for name in ("_compose", "spawn_sibling_container", "_restore_frontend_port") if hasattr(self_update, name)], [])
 
-    check("reports the update as applied", result.get("updated"), True)
-    check("the build still ran in-process (safe - old container is still up)",
-          any(c and c[0] == "build" for c in compose_calls), True)
-    check("but 'up' NEVER ran in-process again - that was the whole bug",
-          any(c and c[0] == "up" for c in compose_calls), False)
-    check("the recreate ran through the sibling container instead", len(sibling_calls), 1)
+    queued.clear(); git_calls.clear()
+    state.update(dirty_files=["docker-compose.yml"])
+    result = attempt()
+    check("a locally changed docker-compose.yml is refused, NOT checked out / discarded",
+          (str(result).startswith("refused"), queued, [c for c in git_calls if c[0] == "checkout"]), (True, [], []))
+    state.update(dirty_files=[])
 
-    cmd, log_path = sibling_calls[0]
-    check("...addressing the compose binary via HOST_PROJECT_DIR, not /app/data "
-          "(the sibling container has no /app/data mount)",
-          cmd[0].startswith(local_deploy.HOST_PROJECT_DIR), True)
-    check("...running 'up -d'", "up" in cmd and "-d" in cmd, True)
-    check("...with a log file so a stuck restart is still debuggable", bool(log_path), True)
+    state.update(remote="b" * 40)
+    check("a target that is not the checked main is refused", (str(attempt()).startswith("refused"), queued), (True, []))
+    state.update(remote=TARGET, branch="feature")
+    check("a checkout off main is refused", (str(attempt()).startswith("refused"), queued), (True, []))
+    state.update(branch="main")
+    try:
+        self_update.apply_update("abc1234", 7)
+        short = "accepted"
+    except local_deploy.DeployError:
+        short = "refused"
+    check("a short SHA is refused", (short, queued), ("refused", []))
 finally:
     self_update._git = _orig["_git"]
     self_update._repo_is_git = _orig["_repo_is_git"]
     self_update.verify_host_path = _orig["verify_host_path"]
-    self_update._compose = _orig["_compose"]
-    self_update.spawn_sibling_container = _orig["spawn_sibling_container"]
-    self_update.ensure_docker_compose_cli = _orig["ensure_docker_compose_cli"]
-    self_update.threading.Thread = _orig["Thread"]
-    self_update.time.sleep = _orig["sleep"]
+    panel_safe_update.queue = _orig["queue"]
 
 print("\n" + "=" * 60)
 if failures:

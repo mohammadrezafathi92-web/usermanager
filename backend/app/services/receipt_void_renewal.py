@@ -118,11 +118,13 @@ def _own_quota_grants(db, approval_uuid: str, purchase_id: int) -> int:
     by the loyalty step before the renewal step)."""
     rewards = rv.loyalty_reward_events
     total = 0
-    for row in db.execute(select(rewards.c.quota_before, rewards.c.quota_after).where(
-            rewards.c.causation_approval_uuid == approval_uuid, rewards.c.state == "active",
+    # what of it is still on the service: granted minus what a reversal
+    # (this void's loyalty step, possibly only the unused part) took back
+    for row in db.execute(select(rewards.c.quota_before, rewards.c.quota_after, rewards.c.quota_reversed_bytes).where(
+            rewards.c.causation_approval_uuid == approval_uuid,
             rewards.c.quota_target_type == "Purchase", rewards.c.quota_target_id == purchase_id)):
         if row.quota_after is not None and row.quota_before is not None:
-            total += int(row.quota_after) - int(row.quota_before)
+            total += int(row.quota_after) - int(row.quota_before) - int(row.quota_reversed_bytes or 0)
     return total
 
 
@@ -160,13 +162,23 @@ def plan(db, approval: dict, *, locked: bool = False) -> dict:
                 "after": None, "consumption": _consumption(0, None, False), "purchase": None}
     contributions = _rows(db, table, c["purchase_key"])
     activations = _rows(db, rt.purchase_reservation_activations, c["purchase_key"])
+    # Earlier completed renewal voids of this service are part of its history:
+    # a queued share they removed never reached a term, and a term start they
+    # undid no longer ends the term before it. The usage they recorded stays.
+    earlier = [dict(r) for r in db.execute(select(rt.receipt_void_renewal_reversals).where(
+        rt.receipt_void_renewal_reversals.c.purchase_key == c["purchase_key"],
+        rt.receipt_void_renewal_reversals.c.approval_uuid != approval_uuid)).mappings()]
+    removed = {r["approval_uuid"] for r in earlier if r["reversal_case"] == "queued"}
+    undone = {r["term_start"] for r in earlier if r["reversal_case"] == "current_term" and r["term_start"]}
+    effective = [x for x in contributions if x["approval_uuid"] is None or x["approval_uuid"] not in removed]
     live = {**_live_limits(purchase), **{name: getattr(purchase, name) for name in QUEUE_FIELDS},
             "reserved_created_at": purchase.reserved_created_at, "used_bytes": int(purchase.used_bytes or 0),
             "status": getattr(purchase.status, "value", purchase.status)}
 
     def later_starts(after_seq):
-        return [("activation", a) for a in activations if a["event_seq"] > after_seq] + [
-            ("contribution", x) for x in contributions if x["mode"] == "immediate_reset" and x["event_seq"] > after_seq]
+        starts = [("activation", a) for a in activations if a["event_seq"] > after_seq] + [
+            ("contribution", x) for x in effective if x["mode"] == "immediate_reset" and x["event_seq"] > after_seq]
+        return [s for s in starts if f"{s[0]}:{s[1]['id']}" not in undone]
 
     def first_start(after_seq):
         starts = later_starts(after_seq)
@@ -181,11 +193,12 @@ def plan(db, approval: dict, *, locked: bool = False) -> dict:
     if c["mode"] == "reserved":
         batch = int(c["batch_seq"])
         consumed_by = next((a for a in activations if int(a["seq_before"]) == batch), None)
-        batch_rows = [x for x in contributions if x["mode"] in ("reserved", "transfer") and x["batch_seq"] == batch]
+        batch_all = [x for x in contributions if x["mode"] in ("reserved", "transfer") and x["batch_seq"] == batch]
+        batch_rows = [x for x in batch_all if x in effective]
         if consumed_by is None:
             if int(purchase.reservation_activation_seq or 0) != batch:
                 raise RenewalRefused("renewal_history_inconsistent")
-            if not _empty(_queue_of(json.loads(batch_rows[0]["before_json"]))):
+            if not _empty(_queue_of(json.loads(batch_all[0]["before_json"]))):
                 raise RenewalRefused("renewal_queue_base_unknown")
             if _norm_queue(_replay(batch_rows)) != _norm_queue(_queue_of(live)):
                 raise RenewalRefused("renewal_queue_changed_outside_history")
@@ -193,7 +206,7 @@ def plan(db, approval: dict, *, locked: bool = False) -> dict:
             queue = _replay(remaining)
             if _empty(queue):
                 queue, created = {name: None for name in QUEUE_FIELDS}, None
-            elif batch_rows[0]["id"] == c["id"]:
+            elif batch_rows[0]["id"] == c["id"]:          # the queue's time is its first remaining payment's
                 created = remaining[0]["created_at"]
             else:
                 created = purchase.reserved_created_at
@@ -251,7 +264,36 @@ def bound_hash(p: dict) -> str:
     return hashlib.sha256(json.dumps(p["bound"], sort_keys=True, default=str).encode()).hexdigest()
 
 
-# ------------------------------------------------------------------ the step
+# ------------------------------------------------------------------ the hold (block step) and the step
+def hold(db, ctx: dict, operation_id: int) -> dict:
+    """In the block step, before any reversal: the plan again under the
+    purchase row lock, the same as confirmed, and - for a queue or a current
+    term - a hold on the service until the renewal step commits: the poller
+    and RADIUS do not start its queue, and it is not renewed (409
+    purchase_void_in_progress), so nothing the reversal depends on moves
+    between the void's own steps. A stop in between keeps the hold; the
+    operation's retry resumes it."""
+    approval = db.execute(select(rv.receipt_approvals).where(
+        rv.receipt_approvals.c.approval_uuid == ctx["approval_uuid"])).mappings().one()
+    current = plan(db, dict(approval), locked=True)
+    if bound_hash(current) != (ctx.get("renewal") or {}).get("bound_hash"):
+        raise RenewalRefused("renewal_state_changed")
+    if current["case"] not in ("queued", "current_term"):
+        return {"held": False, "case": current["case"]}
+    table = rt.purchase_void_holds
+    exists = db.execute(select(table.c.id).where(table.c.approval_uuid == ctx["approval_uuid"])).first()
+    if exists is None:
+        db.execute(table.insert().values(purchase_key=current["bound"]["purchase_key"], approval_uuid=ctx["approval_uuid"],
+                                         void_operation_id=operation_id, state="active", created_at=dt.datetime.utcnow()))
+    return {"held": True, "case": current["case"]}
+
+
+def _release(db, approval_uuid: str, now) -> None:
+    table = rt.purchase_void_holds
+    db.execute(table.update().where(table.c.approval_uuid == approval_uuid, table.c.state == "active").values(
+        state="released", released_at=now))
+
+
 def apply(db, ctx: dict, operation_id: int) -> dict:
     """In the void's step transaction: the plan again under the purchase row
     lock, the same as confirmed, then the change and its durable record."""
@@ -293,12 +335,15 @@ def apply(db, ctx: dict, operation_id: int) -> dict:
         state, value = "unrecoverable", 0                     # the term had already been replaced
     else:
         state, value = "resource_deleted", None
+    start = current["bound"].get("term_start")
     row_id = db.execute(rt.receipt_void_renewal_reversals.insert().values(
         approval_uuid=ctx["approval_uuid"], void_operation_id=operation_id, purchase_id=current["bound"]["purchase_id"],
         purchase_key=current["bound"]["purchase_key"], reversal_case=case,
+        term_start=f"{start[0]}:{start[1]}" if case == "current_term" and start else None,
         before_json=json.dumps(current["before"], sort_keys=True, default=str),
         after_json=json.dumps(current["after"], sort_keys=True, default=str), created_at=now,
         **consumption)).inserted_primary_key[0]
+    _release(db, ctx["approval_uuid"], now)
     effects = rv.receipt_approval_effects
     for effect in db.execute(select(effects).where(effects.c.approval_uuid == ctx["approval_uuid"],
                                                    effects.c.effect_type == "purchase_renewed",

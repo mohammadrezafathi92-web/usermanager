@@ -2033,6 +2033,9 @@ def renew_purchase_core(
     if is_real_renewal:
         # the row locked and the history columns current before deciding
         reservation_transition.lock_history(db, purchase)
+        if reservation_transition.is_held(db, purchase.history_key):
+            # a renewal void of this service runs between its steps; retry after it
+            raise HTTPException(409, "purchase_void_in_progress")
     before = _renewal_state(purchase)
     history_before = reservation_transition.full_state(purchase)
     add_quota_bytes = gb_to_bytes(add_gb) if add_gb else 0

@@ -7,17 +7,30 @@ import { formatDateTime } from "../utils.js";
 // usage kept apart, the other services kept - and the reason when the share
 // cannot be proven. It decides nothing.
 
-function Value({ v, kind, t, gb, language }) {
+// What zero means depends on the field: usage 0 is 0 GB; a service quota 0
+// is unlimited; a QUEUED quota or duration 0 is unlimited only for a
+// complete package (reserved_replace_package_limits) - in a historical or
+// manual queue it means "unchanged".
+export function queuedLimit(value, row, unit, t, gb) {
+  if (value === null || value === undefined) return "-";
+  if (value) return unit === "bytes" ? gb(value) : t("void.days", { days: value });
+  return row?.reserved_replace_package_limits ? t("void.unlimited") : t("void.unchanged");
+}
+
+function Value({ v, kind, row, t, gb, language }) {
   if (v === null || v === undefined || v === "") return <span>-</span>;
-  if (kind === "bytes") return <bdi dir="ltr">{v ? gb(v) : t("void.unlimited")}</bdi>;
+  if (kind === "used") return <bdi dir="ltr">{gb(v)}</bdi>;
+  if (kind === "quota") return <bdi dir="ltr">{v ? gb(v) : t("void.unlimited")}</bdi>;
+  if (kind === "rquota") return <bdi dir="ltr">{queuedLimit(v, row, "bytes", t, gb)}</bdi>;
+  if (kind === "rdays") return <bdi dir="ltr">{queuedLimit(v, row, "days", t, gb)}</bdi>;
   if (kind === "date") return <bdi dir="ltr">{formatDateTime(v, language)}</bdi>;
   return <bdi dir="ltr">{String(v)}</bdi>;
 }
 
 const ROWS = {
-  queued: [["reserved_quota_bytes", "void.quota", "bytes"], ["reserved_duration_days", "void.expiry", "days"],
+  queued: [["reserved_quota_bytes", "void.quota", "rquota"], ["reserved_duration_days", "void.expiry", "rdays"],
            ["reserved_package_id", "void.package", "plain"], ["reserved_max_concurrent_sessions", "void.cap", "plain"]],
-  current_term: [["quota_bytes", "void.quota", "bytes"], ["used_bytes", "void.used", "bytes"],
+  current_term: [["quota_bytes", "void.quota", "quota"], ["used_bytes", "void.used", "used"],
                  ["expire_at", "void.expiry", "date"], ["package_id", "void.package", "plain"],
                  ["max_concurrent_sessions", "void.cap", "plain"]],
 };
@@ -26,8 +39,8 @@ export function Reserved({ p, t, gb }) {
   const queued = p.reserved_quota_bytes || p.reserved_duration_days || p.reserved_package_id != null;
   if (!queued) return null;
   return <span className="text-xs text-gray-600 dark:text-gray-400"> - {t("void.reserved", {
-    quota: p.reserved_quota_bytes ? gb(p.reserved_quota_bytes) : t("void.unlimited"),
-    days: p.reserved_duration_days ?? 0, package: p.reserved_package_id ?? "-",
+    quota: queuedLimit(p.reserved_quota_bytes, p, "bytes", t, gb),
+    days: queuedLimit(p.reserved_duration_days, p, "days", t, gb), package: p.reserved_package_id ?? "-",
     cap: p.reserved_max_concurrent_sessions ?? "-",
   })}</span>;
 }
@@ -47,8 +60,8 @@ export default function RenewalSection({ resources, t, gb, language }) {
         <thead><tr><th>{renewal.case === "queued" ? t("void.queue") : ""}</th><th>{t("void.before")}</th><th>{t("void.after")}</th></tr></thead>
         <tbody>{rows.map(([key, label, kind]) => <tr key={key}>
           <td>{t(label)}</td>
-          <td><Value v={renewal.before[key]} kind={kind} t={t} gb={gb} language={language} /></td>
-          <td><Value v={renewal.after[key]} kind={kind} t={t} gb={gb} language={language} /></td>
+          <td><Value v={renewal.before[key]} kind={kind} row={renewal.before} t={t} gb={gb} language={language} /></td>
+          <td><Value v={renewal.after[key]} kind={kind} row={renewal.after} t={t} gb={gb} language={language} /></td>
         </tr>)}</tbody>
       </table>
     </div>}

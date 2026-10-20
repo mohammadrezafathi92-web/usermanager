@@ -149,6 +149,20 @@ def next_event(purchase) -> int:
     return seq
 
 
+# ------------------------------------------------------------------ void hold
+def is_held(db, purchase_key) -> bool:
+    """A renewal void of this service is between its block and renewal steps.
+    Read with a locking read on MariaDB (the hold's insert committed under
+    the purchase row lock this caller now holds); SQLite reads the last commit."""
+    if not purchase_key or not receipt_void_schema.is_ready():
+        return False
+    table = rt.purchase_void_holds
+    query = select(table.c.id).where(table.c.purchase_key == purchase_key, table.c.state == "active").limit(1)
+    if not _sqlite(db):
+        query = query.with_for_update(read=True)
+    return db.execute(query).first() is not None
+
+
 # ------------------------------------------------------------------ consumption
 def lock_for_consumption(db, purchase) -> Optional[int]:
     """The purchase row locked; the queue and limits re-read from it under
@@ -167,6 +181,8 @@ def lock_for_consumption(db, purchase) -> Optional[int]:
             setattr(purchase, name, getattr(live, name))
     if not is_reserved(purchase):
         return None
+    if is_held(db, live.history_key or purchase.history_key):
+        return None                     # a renewal void of this service is running: the queue waits
     purchase.renewal_event_seq = live.renewal_event_seq
     if live.history_key:
         purchase.history_key = live.history_key

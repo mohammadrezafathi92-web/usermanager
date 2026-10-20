@@ -184,6 +184,9 @@ def _local_once(session_factory, operation, step, leases):
                 # and only a fresh preview re-plans this operation.
                 engine.revalidate_scope(db, locked)
                 result = steps.block(db, ctx)
+                if ctx["shape"] == "renew_purchase":
+                    from . import receipt_void_renewal
+                    result["renewal_hold"] = receipt_void_renewal.hold(db, ctx, operation["id"])
             elif name == "loyalty_reconciliation":
                 result = steps.loyalty(db, ctx, operation["id"], forced)
             elif name == "wallet_reversal":

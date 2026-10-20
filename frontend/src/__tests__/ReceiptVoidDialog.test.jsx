@@ -288,3 +288,32 @@ describe("receipt void dialog - a renewal", () => {
     expect(api.executeReceiptVoid).not.toHaveBeenCalled();
   });
 });
+
+describe("receipt void dialog - what zero means", () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { cleanup(); });
+
+  it("shows usage 0 as 0 GB, a service quota 0 as unlimited, a historical queued 0 as unchanged (en)", async () => {
+    const t = (key, vars) => translate("en", key, vars);
+    const current = { ...RENEWAL.resources.renewal,
+      before: { quota_bytes: 0, used_bytes: 0, expire_at: null, package_id: 2, max_concurrent_sessions: 1 },
+      after: { quota_bytes: 10 * GBYTES, used_bytes: 0, expire_at: null, package_id: 1, max_concurrent_sessions: 1 } };
+    const historical = { ...RENEWAL.resources.preserved_purchases[0], reserved_quota_bytes: 0, reserved_duration_days: 30,
+                         reserved_package_id: 3, reserved_replace_package_limits: null };
+    const complete = { ...historical, id: 7, reserved_replace_package_limits: true };
+    api.previewReceiptVoid.mockResolvedValue({ data: { ...RENEWAL, resources: { ...RENEWAL.resources,
+      renewal: current, preserved_purchases: [historical, complete] } } });
+    const user = userEvent.setup();
+    await openDialog(user, { lang: "en" });
+    const table = await screen.findByRole("region", { name: `${t("void.before")} / ${t("void.after")}` });
+    const used = [...table.querySelectorAll("tr")].find((tr) => tr.textContent.startsWith(t("void.used")));
+    expect(used.textContent).toContain("0.0 GB");
+    expect(used.textContent).not.toContain(t("void.unlimited"));
+    const quota = [...table.querySelectorAll("tr")].find((tr) => tr.textContent.startsWith(t("void.quota")));
+    expect(quota.textContent).toContain(t("void.unlimited"));
+    const kept = screen.getByRole("list", { name: t("void.preservedTitle") }).querySelectorAll("li");
+    expect(kept[0].textContent).toContain(t("void.unchanged"));
+    expect(kept[0].textContent).not.toContain(t("void.unlimited"));
+    expect(kept[1].textContent).toContain(t("void.unlimited"));
+  });
+});

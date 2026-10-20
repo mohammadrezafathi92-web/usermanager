@@ -20,6 +20,9 @@ a Purchase / User may be deleted normally, and its history must stay.
         days, package, cap, queued or immediate, with the state before and
         after), in the renewing transaction; with the consumptions above it
         orders the purchase's history by event_seq (Purchase.renewal_event_seq).
+  purchase_void_holds
+        while a renewal void runs, its service's queue is not consumed and the
+        service is not renewed (from its block step to its renewal step);
   receipt_void_renewal_reversals
         the one durable result of voiding one renewal: what was restored,
         and - kept apart - the volume the voided term really consumed, its
@@ -129,6 +132,8 @@ receipt_void_renewal_reversals = Table(
     Column("purchase_id", Integer, nullable=False),
     Column("purchase_key", String(36), nullable=True),
     Column("reversal_case", String(20), nullable=False),
+    # the term start this reversal undid ("activation:<id>" / "contribution:<id>"), current_term only
+    Column("term_start", String(48), nullable=True),
     Column("before_json", Text, nullable=False),
     Column("after_json", Text, nullable=False),
     Column("consumed_bytes", BigInteger, nullable=True),
@@ -137,6 +142,20 @@ receipt_void_renewal_reversals = Table(
     _created(),
     uq("uq_renewalreversal_approval", "approval_uuid"),
     ck("ck_renewalreversal_case", _in("reversal_case", REVERSAL_CASES)),
+)
+
+purchase_void_holds = Table(
+    "purchase_void_holds", _md,
+    _pk(),
+    Column("purchase_key", String(36), nullable=False),
+    Column("approval_uuid", String(36), nullable=False),
+    Column("void_operation_id", Integer, nullable=False),
+    Column("state", String(10), nullable=False),
+    _created(),
+    Column("released_at", _dt6(), nullable=True),
+    uq("uq_purchasevoidhold_approval", "approval_uuid"),
+    ck("ck_purchasevoidhold_state", _in("state", ("active", "released"))),
+    ck("ck_purchasevoidhold_released", "(state = 'released') = (released_at IS NOT NULL)"),
 )
 
 product_decision_confirmations = Table(

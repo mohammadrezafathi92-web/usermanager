@@ -3036,11 +3036,11 @@ def get_connection_share(connection: models.Connection) -> dict:
             if session is not None:
                 template_pkg = session.get(models.Package, connection.user.package_id)
         if template_pkg is not None:
-            from .link_builder import render_ovpn_template
+            from .link_builder import ovpn_download_filename, render_ovpn_template
             for tpl in sorted(
                 template_pkg.ovpn_templates or [], key=lambda t: (t.sort_order or 0, t.id)
             ):
-                name = tpl.name if tpl.name.lower().endswith(".ovpn") else f"{tpl.name}.ovpn"
+                name = ovpn_download_filename(tpl.name, connection, tpl.id)
                 ovpn_files.append({
                     "name": name,
                     "content": render_ovpn_template(
@@ -3195,6 +3195,7 @@ def build_subscription_connections(user: models.User) -> list[dict]:
             "created_at": conn.created_at,
             "node_name": conn.node.name if conn.node else None,
             "purchase_batch": conn.purchase_batch,
+            "purchase_id": conn.purchase_id,
             "package_name_snapshot": conn.package_name_snapshot,
             # Customer/admin-written label for the owning service (see
             # models.Purchase.comment) - lets a customer tell two otherwise

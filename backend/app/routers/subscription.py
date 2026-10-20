@@ -71,6 +71,18 @@ def get_subscription_info(token: str, db: Session = Depends(get_db)):
             balance=u.balance,
             referral_code=u.referral_code,
             connections=user_ops.build_subscription_connections(u),
+            purchases=[schemas.SubscriptionPurchaseOut(
+                id=p.id,
+                package_name=p.package.name if p.package else None,
+                comment=p.comment,
+                status=p.status,
+                quota_bytes=p.quota_bytes,
+                used_bytes=p.used_bytes,
+                remaining_bytes=max(0, p.quota_bytes - p.used_bytes) if p.quota_bytes else None,
+                expire_at=p.expire_at,
+                max_concurrent_sessions=p.max_concurrent_sessions,
+                created_at=p.created_at,
+            ) for p in u.purchases],
         )
         for u in _linked_users(user, db)
     ]

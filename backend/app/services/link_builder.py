@@ -1,5 +1,6 @@
 """Builds client-facing config text / share links for a connection."""
 from __future__ import annotations
+import re
 from urllib.parse import quote
 
 from .. import models
@@ -107,6 +108,19 @@ def _fallback_host(node: models.Node) -> str:
         from urllib.parse import urlparse
         return urlparse(node.xr_panel_base_url or "").hostname or ""
     return node.xr_ssh_host or ""
+
+
+def ovpn_download_filename(template_name: str, connection: models.Connection, template_id: int) -> str:
+    """Stable, ASCII-only profile name, unique per service and template.
+
+    A shared package template name is not a profile identity: importing the
+    same name for several purchases can replace/confuse the earlier profile.
+    Never put credentials or user-written comments in a response header.
+    """
+    stem = template_name[:-5] if template_name.lower().endswith(".ovpn") else template_name
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("._-")[:60] or "openvpn"
+    service = f"p{connection.purchase_id}" if connection.purchase_id is not None else f"u{connection.user_id}"
+    return f"{stem}-{service}-c{connection.id}-t{template_id}.ovpn"
 
 
 def render_ovpn_template(template: str, username: str, password: str) -> str:

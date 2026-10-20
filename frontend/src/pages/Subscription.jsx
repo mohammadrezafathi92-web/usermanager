@@ -23,16 +23,20 @@ function buildTypeMeta() {
 
 const FILE_EXT = { wireguard: "conf", openvpn: "txt", l2tp: "txt", ikev2: "txt", sstp: "txt" };
 
-// Mirrors UserDetail.jsx's groupConnectionsByPurchase (same purchase_batch
-// field), kept as a local copy for the same "public page, no shared admin
-// imports" reason as buildTypeMeta above.
-function groupByPurchase(connections) {
+// Purchase is the quota boundary, not purchase_batch or a sum of protocol
+// counters. Keep services with no remaining connections visible as well.
+function groupByPurchase(connections, purchases = []) {
   const groups = new Map();
   const order = [];
+  for (const p of purchases) {
+    const key = `purchase:${p.id}`;
+    groups.set(key, { key, purchase: p, connections: [], packageName: p.package_name, comment: p.comment, createdAt: p.created_at || "" });
+    order.push(key);
+  }
   for (const c of connections) {
-    const key = c.purchase_batch || `c${c.id}`;
+    const key = c.purchase_id != null ? `purchase:${c.purchase_id}` : c.purchase_batch || `c${c.id}`;
     if (!groups.has(key)) {
-      groups.set(key, { key, connections: [], packageName: c.purchase_batch ? c.package_name_snapshot : null, createdAt: c.created_at || "" });
+      groups.set(key, { key, purchase: null, connections: [], packageName: c.package_name_snapshot, comment: c.comment, createdAt: c.created_at || "" });
       order.push(key);
     }
     const g = groups.get(key);
@@ -117,8 +121,8 @@ function ServiceCard({ conn, meta, token }) {
               {/* A package can ship several ready-made files (one per
                   server/port variant) - each gets its own download. */}
               {ovpnFiles.map((f, i) => (
-                <a key={i} className="btn-primary w-full justify-center" href={fileUrl(i)} download={f.name}>
-                  <Download size={14} /> {f.name || t("subscription.downloadOvpn")}
+                <a key={i} className="btn-primary w-full justify-center whitespace-normal" href={fileUrl(i)} download={f.name}>
+                  <Download size={14} className="shrink-0" /> <span className="min-w-0 break-all" dir="auto">{f.name || t("subscription.downloadOvpn")}</span>
                 </a>
               ))}
             </div>
@@ -169,23 +173,48 @@ function ServiceCard({ conn, meta, token }) {
 // account, instead of every one of that account's services being dumped
 // flat as soon as the account itself is opened.
 function PurchaseGroupSection({ group, token, TYPE_META, defaultOpen }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const [open, setOpen] = useState(defaultOpen);
+  const purchase = group.purchase;
+  const used = Math.max(0, Number(purchase?.used_bytes || 0));
+  const quota = Math.max(0, Number(purchase?.quota_bytes || 0));
+  const percent = quota ? Math.min(100, Math.max(0, Math.round(used / quota * 100))) : 0;
+  const title = group.comment || group.packageName || t("subscription.myServices");
 
   return (
-    <div className="rounded-xl border border-gray-100 overflow-hidden">
+    <section aria-label={purchase ? `${title} #${purchase.id}` : title} className="rounded-xl border border-gray-200 overflow-hidden">
       <button
         type="button"
-        className="w-full flex items-center justify-between gap-2 px-3 py-2.5 text-right bg-gray-50 hover:bg-gray-100"
+        className="w-full min-h-11 flex items-center justify-between gap-2 px-3 py-2.5 text-start bg-gray-50 hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-600"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
       >
         <div className="min-w-0">
-          {group.packageName && <div className="text-xs text-gray-600 font-medium truncate">{group.packageName}</div>}
-          <div className="text-[11px] text-gray-400">{t("subscription.servicesCount", { count: group.connections.length })}</div>
+          <div className="text-sm text-gray-800 font-medium break-words">{title}</div>
+          <div className="text-xs text-gray-600 flex flex-wrap gap-x-2 gap-y-1">
+            {purchase && <bdi>#{purchase.id}</bdi>}
+            {group.comment && group.packageName && <span>{group.packageName}</span>}
+            <span>{t("subscription.servicesCount", { count: group.connections.length })}</span>
+          </div>
         </div>
         {open ? <ChevronUp size={16} className="text-gray-400 shrink-0" /> : <ChevronDown size={16} className="text-gray-400 shrink-0" />}
       </button>
+      {purchase && (
+        <div className="px-3 py-3 space-y-2 text-xs border-t border-gray-100">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className={`px-2 py-1 rounded-full ${STATUS_STYLES[purchase.status] || "bg-gray-100 text-gray-600"}`}>{statusLabel(purchase.status, language)}</span>
+            {purchase.max_concurrent_sessions != null && <span className="text-gray-600">{t("subscription.sessionCap", { count: purchase.max_concurrent_sessions })}</span>}
+          </div>
+          <dl className="flex flex-wrap justify-between gap-x-4 gap-y-2 text-gray-600">
+            <div><dt className="inline">{t("subscription.usage")}: </dt><dd className="inline text-gray-900"><bdi>{formatBytes(used)} / {quota ? formatBytes(quota) : t("subscription.unlimited")}</bdi></dd></div>
+            <div><dt className="inline">{t("subscription.remaining")}: </dt><dd className="inline text-gray-900"><bdi>{quota ? formatBytes(Math.max(0, quota - used)) : t("subscription.unlimited")}</bdi></dd></div>
+          </dl>
+          {quota > 0 && <div role="progressbar" aria-label={t("subscription.usage")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} className="h-2 rounded-full bg-gray-100 overflow-hidden">
+            <div className={`h-full ${used >= quota ? "bg-red-600" : "bg-brand-600"}`} style={{ width: `${percent}%` }} />
+          </div>}
+          <div className="text-gray-600">{t("subscription.expiry")}: {purchase.expire_at ? <bdi>{formatDateTime(purchase.expire_at, language)}</bdi> : t("subscription.noExpiry")}</div>
+        </div>
+      )}
       {open && (
         <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
           {group.connections.map((conn) => (
@@ -193,7 +222,7 @@ function PurchaseGroupSection({ group, token, TYPE_META, defaultOpen }) {
           ))}
         </div>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -207,7 +236,8 @@ function PurchaseGroupSection({ group, token, TYPE_META, defaultOpen }) {
 function AccountSection({ account, token, TYPE_META, defaultOpen }) {
   const { t, language } = useLanguage();
   const [open, setOpen] = useState(defaultOpen);
-  const groups = groupByPurchase(account.connections || []);
+  const groups = groupByPurchase(account.connections || [], account.purchases || []);
+  const showLegacyUsage = !account.purchases?.length || groups.some((group) => !group.purchase);
 
   return (
     <div className="card overflow-hidden">
@@ -231,9 +261,9 @@ function AccountSection({ account, token, TYPE_META, defaultOpen }) {
 
       {open && (
         <div className="px-5 pb-5 space-y-4 border-t border-gray-100 pt-4">
-          <div>
+          {showLegacyUsage && <div>
             <div className="flex justify-between text-xs text-gray-500 mb-1">
-              <span>{t("subscription.usage")}</span>
+              <span>{account.purchases?.length ? t("subscription.legacyUsage") : t("subscription.usage")}</span>
               <span>{account.total_quota_bytes ? `${formatBytes(account.used_bytes)} / ${formatBytes(account.total_quota_bytes)}` : t("subscription.unlimited")}</span>
             </div>
             <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
@@ -246,13 +276,13 @@ function AccountSection({ account, token, TYPE_META, defaultOpen }) {
                 <div className="h-full bg-gray-200 w-1/4" />
               )}
             </div>
-          </div>
+          </div>}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-            <div className="flex items-center gap-2 text-gray-600">
+            {showLegacyUsage && <div className="flex items-center gap-2 text-gray-600">
               <CalendarClock size={16} className="text-gray-400" />
               <span>{account.expire_at ? formatDateTime(account.expire_at, language) : t("subscription.noExpiry")}</span>
-            </div>
+            </div>}
             <div className="flex items-center gap-2 text-gray-600">
               <Wallet size={16} className="text-gray-400" />
               <span>{(account.balance || 0).toLocaleString()} {t("subscription.toman")}</span>
@@ -268,19 +298,9 @@ function AccountSection({ account, token, TYPE_META, defaultOpen }) {
           <div className="space-y-3">
             <div className="font-medium text-sm text-gray-800 px-1">{t("subscription.myServices")}</div>
             {groups.length === 0 && <div className="text-sm text-gray-400 text-center py-4">{t("subscription.noServices")}</div>}
-            {groups.length === 1 ? (
-              // A single purchase on this account - a nested collapse would
-              // just be one more tap to see the only thing there is to see.
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {groups[0].connections.map((conn) => (
-                  <ServiceCard key={conn.id} conn={conn} meta={TYPE_META[conn.type] || TYPE_META.xray} token={token} />
-                ))}
-              </div>
-            ) : (
-              groups.map((g) => (
-                <PurchaseGroupSection key={g.key} group={g} token={token} TYPE_META={TYPE_META} defaultOpen={false} />
-              ))
-            )}
+            {groups.map((g) => (
+              <PurchaseGroupSection key={g.key} group={g} token={token} TYPE_META={TYPE_META} defaultOpen={groups.length === 1} />
+            ))}
           </div>
         </div>
       )}

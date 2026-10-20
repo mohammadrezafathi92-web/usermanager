@@ -388,6 +388,7 @@ class SubscriptionConnectionOut(BaseModel):
     # group connections the same way UserDetail.jsx / the bot's "اکانت من"
     # screen do.
     purchase_batch: Optional[str] = None
+    purchase_id: Optional[int] = None
     package_name_snapshot: Optional[str] = None
     # Customer/admin-written label for the owning service (models.Purchase.
     # comment) - shown next to the service name on the public page.
@@ -412,6 +413,20 @@ class SubscriptionConnectionOut(BaseModel):
     share_error: Optional[str] = None
 
 
+class SubscriptionPurchaseOut(BaseModel):
+    """A service's own quota/usage; never a sum of protocol counters."""
+    id: int
+    package_name: Optional[str] = None
+    comment: Optional[str] = None
+    status: UserStatus
+    quota_bytes: int = 0
+    used_bytes: int = 0
+    remaining_bytes: Optional[int] = None
+    expire_at: Optional[dt.datetime] = None
+    max_concurrent_sessions: Optional[int] = None
+    created_at: dt.datetime
+
+
 class SubscriptionAccountOut(BaseModel):
     """One User row's worth of the public subscription page - status,
     usage, expiry, balance and its own services, all independent per
@@ -430,6 +445,7 @@ class SubscriptionAccountOut(BaseModel):
     balance: int = 0
     referral_code: Optional[str] = None
     connections: List[SubscriptionConnectionOut] = []
+    purchases: List[SubscriptionPurchaseOut] = []
 
 
 class SubscriptionInfo(BaseModel):

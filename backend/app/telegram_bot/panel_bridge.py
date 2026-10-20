@@ -34,7 +34,11 @@ from .config import config, current_bot_owner_admin_id
 
 
 class ApiError(Exception):
-    pass
+    def __init__(self, detail, *, status_code=None, headers=None):
+        super().__init__(str(detail))
+        self.detail = detail
+        self.status_code = status_code
+        self.headers = headers or {}
 
 
 def _build_principal(db) -> BotPrincipal:
@@ -90,7 +94,7 @@ async def _call(fn, *args, **kwargs):
     try:
         return await asyncio.to_thread(_run)
     except HTTPException as exc:
-        raise ApiError(exc.detail) from exc
+        raise ApiError(exc.detail, status_code=exc.status_code, headers=exc.headers) from exc
     except ApiError:
         raise
     except Exception as exc:  # unexpected - still surface it to the chat instead of crashing the bot
@@ -507,6 +511,10 @@ class PanelBridge:
         )
         return _dump(await _call(bot_router.purchase_package, username, payload, owner_admin_id=_scope(owner_admin_id),
                                  x_idempotency_key=idempotency_key))
+
+    async def get_approval_mode(self) -> dict:
+        from ..routers import receipt_approvals
+        return await _call(receipt_approvals.bot_runtime)
 
     async def begin_approval(self, intent: dict, mode: str) -> dict:
         """Registers the approval of one pending request with the panel

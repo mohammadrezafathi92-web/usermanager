@@ -170,7 +170,7 @@ async def cmd_admin_pending(message: Message) -> None:
 
 
 async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: Optional[int] = None,
-                           auto: bool = False) -> tuple[bool, str]:
+                           auto: bool = False, registered_session: Optional[dict] = None) -> tuple[bool, str]:
     """Everything an approval actually DOES - provisioning, crediting,
     accounting, and messaging the customer - with no UI in it.
 
@@ -191,8 +191,9 @@ async def perform_approval(pending: dict, bot: Bot, *, approved_by_telegram_id: 
     # is in a mode that permits legacy behavior. An explicit fail-closed
     # response (blocked/required) must release the claimed receipt and stop.
     try:
-        session = await approval_session.begin(pending, approved_by_telegram_id=approved_by_telegram_id, auto=auto,
-                                               local_decision="allowed" if auto else None)
+        session = registered_session if registered_session is not None else await approval_session.begin(
+            pending, approved_by_telegram_id=approved_by_telegram_id, auto=auto,
+            local_decision="allowed" if auto else None)
     except approval_session.ApprovalBlocked as exc:
         storage.release_pending(pending["id"])
         return False, f"تأیید متوقف شد؛ وضعیت سامانه نیاز به بررسی دارد ({exc})."

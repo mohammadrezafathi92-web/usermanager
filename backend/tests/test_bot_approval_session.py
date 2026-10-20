@@ -135,7 +135,8 @@ check("perform_approval begins the session before it provisions anything",
       0 < source.index("approval_session.begin(") < source.index("api.list_packages()"), True)
 check("the manual button passes who tapped it; the automatic path says auto",
       ("approved_by_telegram_id=call.from_user.id" in inspect.getsource(admin_pending.cb_approval),
-       "perform_approval(pending, bot, auto=True)" in inspect.getsource(auto_approve.try_auto_approve)), (True, True))
+       "perform_approval(pending, bot, auto=True, registered_session=session)" in
+       inspect.getsource(auto_approve.try_auto_approve)), (True, True))
 
 print("--- finish ---")
 calls = []

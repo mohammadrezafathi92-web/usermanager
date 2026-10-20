@@ -71,6 +71,10 @@ def scenario(label, engine):
         host.ownership_epoch, host.gate_mode = 1, "enforced"
         host.lock_backend = "flock" if engine.dialect.name == "sqlite" else "flock+get_lock"
         db.add(models.PanelSettings(id=1))
+        # This execution fixture permits auto approvals explicitly; policy denial
+        # is covered separately by the central auto-approval tests.
+        db.add(models.BotSettings(id=1, auto_approve_enabled=True,
+                                  auto_approve_ignore_hours=True, auto_approve_returning_only=False))
         root = models.AdminUser(username="root", hashed_password="x", is_superadmin=True, telegram_id=1000)
         reseller = models.AdminUser(username="res", hashed_password="x", balance=5000)
         key = models.ApiKey(key=f"remote-{label}", label="remote", key_type=bot_auth.KeyType.REMOTE_SHARED_BOT)

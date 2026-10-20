@@ -229,23 +229,23 @@ docker compose up -d --build
 
 ## آپدیت پروژه روی سرور (workflow روزمره)
 
-```powershell
-# روی سیستم خودتان (ویندوز/PowerShell)
-Compress-Archive -Path "usermanager\*" -DestinationPath "usermanager_update.zip" -Force
-scp usermanager_update.zip root@SERVER_IP:/root/
-```
-
 ```bash
-# روی سرور، از طریق SSH
-cd /root/usermanager
-unzip -o /root/usermanager_update.zip -d /root/usermanager
-rm /root/usermanager_update.zip
-sudo bash backend/scripts/ensure_host_identity.sh  # اگر قبلاً ساخته شده باشد، تغییر نمی‌کند
-docker compose up -d --build
-# اگر فقط یک سمت تغییر کرده: docker compose up -d --build backend  (یا frontend)
+cd /opt/usermanager
+sudo bash update.sh
+# برای نسخه‌ای که دقیقاً بازبینی شده است:
+# sudo bash update.sh --target <full-40-character-main-SHA>
 ```
 
-اگر تغییری روی مدل‌های دیتابیس (`backend/app/models.py`) داده‌اید که یک **ستون جدید** به جدول **موجود** اضافه می‌کند، `Base.metadata.create_all()` آن را به جدول قبلا ساخته‌شده اضافه نمی‌کند - باید دستی `ALTER TABLE` بزنید (بخش [آپدیت از نسخه قدیمی‌تر](#آپدیت-از-نسخه-قدیمی‌تر--تغییرات-دیتابیس) را ببینید). جدول کاملا جدید نیاز به این کار ندارد.
+آپدیت امن فقط روی شاخهٔ `main` بدون تغییر فایل‌های tracked اجرا می‌شود:
+بکاپ تازهٔ دیتابیس پنل و بات را می‌گیرد، صحت نسخهٔ کپی‌شده را بررسی می‌کند،
+فقط fast-forward می‌کند، هر دو image را پیش از restart می‌سازد و سلامت را
+می‌سنجد. فقط backend و frontend راه‌اندازی مجدد می‌شوند؛ license-server
+دست‌نخورده می‌ماند. modeهای فعلی P6، کیف‌پول، وفاداری، ابطال رسید و سقف نشست
+حفظ می‌شوند؛ claim، probe، cutover یا فعال‌سازی تازه خودکار انجام نمی‌شود.
+
+در صورت خطا متوقف می‌شود؛ دیتابیس را خودکار از بکاپ برنمی‌گرداند. پیش از
+نسخهٔ دارای این updater، نصب اولیهٔ helper لازم است. محدودیت‌های بکاپ،
+ترافیک هم‌زمان و مراحل بازگشت در [راهنمای آپدیت امن](docs/safe-update.md) آمده‌اند.
 
 ## نصب دستی (بدون Docker)
 
@@ -504,21 +504,17 @@ curl -X POST http://SERVER_IP:8000/api/bot/users \
 
 ## آپدیت از نسخه قدیمی‌تر / تغییرات دیتابیس
 
-جدول‌ها و ستون‌های جدید (`radius_active_sessions`، `packages`/`package_connections`/`package_files`، `tutorials`/`tutorial_media`، `bot_settings`، `connections.max_concurrent_sessions`/`banned_until`، `users.telegram_id`/`balance`/`max_concurrent_sessions`، ایندکس‌های جدید و غیره) با `Base.metadata.create_all()` فقط برای **جدول‌های کاملا جدید** به‌صورت خودکار ساخته می‌شوند - SQLAlchemy جدول از قبل موجود را alter نمی‌کند. برای هر آپدیتی که یک **ستون جدید** به جدول **موجود** اضافه می‌کند (مثلا زمانی که این README به‌روز شد، آخرین مورد افزودن ایندکس‌ها روی `connections`/`usage_logs`/`package_files`/`package_connections`/`tutorial_media` بود)، باید دستی روی دیتابیس در حال اجرا این کار را انجام دهید - یا با `ALTER TABLE`، یا (برای ایندکس‌ها) با یک یک‌خطی مشابه این از داخل کانتینر:
+startup جدول‌های جدید را می‌سازد و ستون‌ها و ایندکس‌های افزایشیِ پشتیبانی‌شده
+را با migration خودکار بررسی می‌کند. برای آپدیت عادی نیازی به اجرای دستی
+`ALTER TABLE` نیست. schemaهای مالی و provisioning هم بررسی آمادگی جدا دارند
+و ناسازگاری آن‌ها نباید با حذف دیتابیس یا دستکاری دستی دور زده شود.
 
-```bash
-docker compose exec -T backend python3 -c "
-from app.database import engine
-from app import models
-models.Base.metadata.create_all(bind=engine)  # فقط جدول‌های کاملا جدید را می‌سازد
-with engine.connect() as conn:
-    # نمونه: ساخت ایندکس روی یک ستون موجود که قبلا ایندکس نداشت
-    conn.execute('CREATE INDEX IF NOT EXISTS ix_connections_user_id ON connections (user_id)')
-    conn.commit()
-"
-```
-
-اگر از یک نسخه‌ی خیلی قدیمی (قبل از این‌همه فیچر) مستقیم آپدیت می‌کنید و برایتان مهم نیست دیتای فعلی نگه داشته شود، ساده‌ترین راه حذف `backend/data/usermanager.db` قبل از بالا آوردن نسخه جدید است (و بازسازی/ایمپورت دوباره‌ی کاربرها).
+ابتدا بکاپ تأییدشده بگیرید و از updater استفاده کنید. اگر بررسی schema یا
+حفظ modeها متوقف شد، خروجی را بررسی کنید؛ دیتابیس زنده را پاک یا از بکاپ
+جایگزین نکنید، چون فروش‌های بعد از بکاپ ممکن است از دست بروند. فعال‌سازی
+یک‌بارهٔ قابلیت‌های حساس با تأیید احراز هویت‌شده انجام می‌شود، نه صرفاً با
+نصب نسخهٔ جدید. قاعدهٔ تأیید خودکار ۶۰ دقیقه‌ای در
+[راهنمای P9b](docs/hourly-auto-approval.md) توضیح داده شده است.
 
 ## عیب‌یابی
 

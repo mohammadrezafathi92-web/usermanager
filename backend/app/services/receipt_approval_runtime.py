@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from .. import models
 from . import receipt_void_schema
 
 log = logging.getLogger(__name__)
@@ -228,6 +229,14 @@ def set_requested_mode(db: Session, *, registration_mode: Optional[str] = None,
     """PUT .../runtime-mode: off <-> shadow only, in the caller's
     transaction. Raises ModeChangeRejected with the contract's code."""
     receipt_void_schema.assert_ready()
+    # Same global order as activation and HA changes: wallet -> runtime ->
+    # panel. SQLite acquires its writer before reading either singleton.
+    from .. import models_receipt_void as rv
+    wallet = rv.wallet_runtime_state
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(wallet.update().where(wallet.c.id == 1).values(epoch=wallet.c.epoch))
+    else:
+        db.execute(select(wallet.c.id).where(wallet.c.id == 1).with_for_update(read=True)).one()
     state = read_state(db, lock=True)
     if state is None:
         raise ModeChangeRejected("runtime_state_missing")
@@ -243,6 +252,18 @@ def set_requested_mode(db: Session, *, registration_mode: Optional[str] = None,
     new_rate = auto_rate_limit_mode if auto_rate_limit_mode is not None else state["auto_rate_limit_mode"]
     if new_rate == ENFORCED and new_registration != REQUIRED:
         raise ModeChangeRejected("enforced_requires_required")
+    if new_rate == ENFORCED:
+        if effective_registration_mode(state) != REQUIRED:
+            raise ModeChangeRejected("key_identity_not_ready")
+        panel = db.execute(select(models.PanelSettings.ha_enabled).where(
+            models.PanelSettings.id == 1).with_for_update(read=True)).scalar_one_or_none()
+        if panel:
+            # No external coordinator is implemented; do not accept a
+            # string claiming one as proof of distributed fencing.
+            raise ModeChangeRejected("ha_requires_external_fencing")
+        if state["auto_rate_limit_mode"] != ENFORCED:
+            from . import receipt_approval_auto
+            receipt_approval_auto.seed_recent(db, receipt_approval_auto.database_now(db))
     if new_registration == OFF and new_rate != OFF:
         if auto_rate_limit_mode is not None:
             raise ModeChangeRejected("rate_limit_requires_registration")

@@ -62,6 +62,8 @@ fi
 CLI_ACTION="install"
 CLI_SOURCE_PATH=""
 CLI_SOURCE_URL=""
+CLI_PORT_SET=0
+CLI_UNKNOWN_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -72,7 +74,7 @@ while [[ $# -gt 0 ]]; do
         --repo)
             CLI_SOURCE_URL="$2"; shift 2 ;;
         --port)
-            USERMANAGER_PANEL_PORT="$2"; shift 2 ;;
+            CLI_PORT_SET=1; USERMANAGER_PANEL_PORT="$2"; shift 2 ;;
         --dir)
             USERMANAGER_DIR="$2"; shift 2 ;;
         --yes|-y)
@@ -95,6 +97,7 @@ Database engine (first install only - see env vars in the header comment):
 EOF
             exit 0 ;;
         *)
+            CLI_UNKNOWN_ARGS+=("$1")
             log_warn "Unknown argument: $1"; shift ;;
     esac
 done
@@ -130,6 +133,20 @@ else
     INSTALL_DIR="/opt/usermanager"
 fi
 log_info "Install directory: ${INSTALL_DIR}"
+
+# Existing installations update through the same reviewed safety workflow.
+# This branch MUST precede all .env/state/source/install mutations below.
+if [[ "$CLI_ACTION" == "update" ]]; then
+    if [[ -n "$CLI_SOURCE_PATH" || -n "$CLI_SOURCE_URL" || "$CLI_PORT_SET" == "1" || ${#CLI_UNKNOWN_ARGS[@]} -ne 0 ]]; then
+        log_err "Safe update does not accept source/repo/port or unknown options; use --dir only to select the existing installation."
+        exit 1
+    fi
+    if [[ ! -f "$INSTALL_DIR/update.sh" || ! -f "$INSTALL_DIR/backend/scripts/update_preflight.py" ]]; then
+        log_err "Safe updater is not installed here. Deploy the reviewed updater/helper first; no installer changes made."
+        exit 1
+    fi
+    exec bash "$INSTALL_DIR/update.sh"
+fi
 
 # docker-compose.yml bind-mounts the project at $HOST_PROJECT_DIR *inside*
 # the container, and the panel's own update/port features hand that same

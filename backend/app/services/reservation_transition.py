@@ -42,6 +42,7 @@ import logging
 from fastapi import HTTPException
 from sqlalchemy import event, exists, func, inspect as sa_inspect, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from .. import models, models_reservation_transition as rt
 from . import receipt_void_schema
@@ -125,8 +126,20 @@ def _not_held(purchase_key):
     return ~exists().where(hold.c.purchase_key == purchase_key, hold.c.state == "active")
 
 
+class ConsumptionConflict(RuntimeError):
+    """Another transaction consumed this queue first, and this transaction
+    had its own unflushed changes to the purchase from before its consumption
+    (e.g. usage it set): they were made on the term that ended, so they can
+    neither be written onto the new term nor be silently dropped. The flush
+    refuses; the caller rolls the transaction back and the next cycle (poller)
+    or attempt (RADIUS) runs on the committed state."""
+
+
 def snapshot_for_restore(purchase) -> dict:
-    return {name: getattr(purchase, name) for name in RESTORE_FIELDS}
+    """The purchase as this transaction sees it before the consumption, and
+    which of those fields are its own unflushed changes (not committed)."""
+    values = {name: getattr(purchase, name) for name in RESTORE_FIELDS}
+    return {"values": values, "own": sorted(name for name in RESTORE_FIELDS if _pending(purchase, name))}
 
 
 def guard_consumption(db, purchase, seq: int, restore: dict, log_values: Optional[dict]) -> None:
@@ -135,8 +148,17 @@ def guard_consumption(db, purchase, seq: int, restore: dict, log_values: Optiona
     conditional UPDATE in the transaction's own flush - on SQLite under the
     single writer it takes, on MariaDB under the row lock already held - so
     a hold committed between this transaction's check and its commit wins.
-    Otherwise the purchase is put back exactly as it was (this transaction's
-    other changes, e.g. usage, are kept) and no history row is written."""
+    No history row is written when it does not apply, and:
+      held      the same term is still the committed one: the purchase is put
+                back exactly as this transaction had it (its own changes, e.g.
+                usage, are kept - they belong to that term);
+      consumed  another transaction consumed the queue first (its sequence
+                moved): nothing this consumption computed is valid any more.
+                Without own earlier changes to the purchase, the consumption's
+                fields are dropped from this transaction (expired: they read
+                back the winner's committed term; nothing stale is written,
+                the transaction's other changes stay). With them, the flush
+                raises ConsumptionConflict and the transaction rolls back."""
     db.info.setdefault(PENDING, []).append(("consume", purchase, seq, restore, log_values))
 
 
@@ -184,12 +206,22 @@ def _write_pending(session, _context, _instances):
                 if log_values is not None:
                     connection.execute(rt.purchase_reservation_activations.insert().values(**log_values))
                 continue
-            logger.info("purchase %s: queue consumption withdrawn at commit (a renewal void holds it, or it was "
-                        "consumed elsewhere)", purchase.id)
-            for name, value in restore.items():
-                setattr(purchase, name, value)
             pending = session.info.get(AFTER_COMMIT) or []
             session.info[AFTER_COMMIT] = [pid for pid in pending if pid != purchase.id]
+            # under the writer / row lock the failed UPDATE took: the cause is current
+            current = connection.execute(select(func.coalesce(P.c.reservation_activation_seq, 0))
+                                         .where(P.c.id == purchase.id)).scalar()
+            if current == seq:
+                logger.info("purchase %s: queue consumption withdrawn at commit (a renewal void holds it)", purchase.id)
+                for name, value in restore["values"].items():
+                    setattr(purchase, name, value)
+                continue
+            if restore["own"]:
+                logger.warning("purchase %s: queue consumed elsewhere meanwhile; this transaction changed %s on the "
+                               "ended term - rolled back", purchase.id, ", ".join(restore["own"]))
+                raise ConsumptionConflict(f"purchase {purchase.id}: queue consumed by another transaction")
+            logger.info("purchase %s: queue consumed elsewhere meanwhile; this consumption dropped", purchase.id)
+            session.expire(purchase, list(RESTORE_FIELDS))
 
 
 @event.listens_for(Session, "after_soft_rollback")
@@ -264,14 +296,16 @@ def lock_for_consumption(db, purchase) -> Optional[int]:
     if seq != int(purchase.reservation_activation_seq or 0):
         return None
     for name in RESERVED_FIELDS + ("quota_bytes", "expire_at"):
-        # the committed value, unless this transaction wrote its own
+        # the committed value (as loaded, not a change of this transaction),
+        # unless this transaction wrote its own
         if not _pending(purchase, name) and getattr(purchase, name) != getattr(live, name):
-            setattr(purchase, name, getattr(live, name))
+            set_committed_value(purchase, name, getattr(live, name))
     if not is_reserved(purchase):
         return None
     if is_held(db, live.history_key or purchase.history_key):
         return None                     # a renewal void of this service is running: the queue waits
-    purchase.renewal_event_seq = live.renewal_event_seq
+    if not _pending(purchase, "renewal_event_seq"):
+        set_committed_value(purchase, "renewal_event_seq", live.renewal_event_seq)
     if live.history_key:
         purchase.history_key = live.history_key
     ensure_key(db, purchase)

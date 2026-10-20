@@ -490,6 +490,8 @@ export const fetchWalletReconcile = () => client.get("/wallet/reconcile");
 export const walletCutover = () => client.post("/wallet/cutover", {}, { _pwForce: true });
 export const walletRollback = () => client.post("/wallet/rollback", {}, { _pwForce: true });
 export const fetchApprovalRuntime = () => client.get("/accounting/receipt-approvals/runtime-mode");
+export const updateAutoApprovalRateMode = (mode) =>
+  client.put("/accounting/receipt-approvals/runtime-mode", { auto_rate_limit_mode: mode }, { _pwForce: true });
 export const activateApprovalRuntime = () =>
   client.post("/accounting/receipt-approvals/runtime-mode/activate", {}, { _pwForce: true });
 export const deactivateApprovalRuntime = () =>

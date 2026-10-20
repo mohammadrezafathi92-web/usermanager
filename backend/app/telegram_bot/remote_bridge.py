@@ -49,7 +49,8 @@ class RemoteBridge:
                 detail = resp.json().get("detail", resp.text)
             except ValueError:
                 detail = resp.text
-            raise ApiError(str(detail))
+            raise ApiError(detail, status_code=resp.status_code, headers={
+                "Retry-After": resp.headers.get("Retry-After", "")})
 
         if not resp.content:
             return None
@@ -309,6 +310,11 @@ class RemoteBridge:
         params = {"owner_admin_id": owner_admin_id} if owner_admin_id is not None else {}
         return await self._call("POST", f"/users/{username}/purchase-package", json=payload, params=params,
                                 extra_headers=_key_header(idempotency_key))
+
+    async def get_approval_mode(self) -> dict:
+        root = self.base_url[:-len("/bot")] if self.base_url.endswith("/api/bot") else self.base_url
+        return await asyncio.to_thread(self._request, "GET", "/accounting/receipt-approvals/bot-runtime",
+                                       base_url=root)
 
     async def begin_approval(self, intent: dict, mode: str) -> dict:
         """Same as PanelBridge.begin_approval, over HTTP. The endpoint lives

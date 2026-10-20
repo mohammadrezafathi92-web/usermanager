@@ -102,6 +102,8 @@ def build(label, engine, stack: contextlib.ExitStack, activate: bool = True):
         host.lock_backend = "flock" if engine.dialect.name == "sqlite" else "flock+get_lock"
         db.add(models.PanelSettings(id=1, loyalty_purchase_threshold=0, loyalty_reward_credit=0,
                                     referral_referrer_reward_credit=3000, referral_new_user_reward_credit=1000))
+        db.add(models.BotSettings(id=1, auto_approve_enabled=True, auto_approve_ignore_hours=True,
+                                  auto_approve_returning_only=False))
         root = models.AdminUser(username="root", hashed_password="x", is_superadmin=True, telegram_id=1000)
         reseller = models.AdminUser(username="res", hashed_password="x", balance=5000, telegram_id=1001)
         other = models.AdminUser(username="other", hashed_password="x", balance=0, telegram_id=1002)

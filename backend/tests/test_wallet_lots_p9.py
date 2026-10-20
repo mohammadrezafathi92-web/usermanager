@@ -82,6 +82,10 @@ with SessionLocal() as db:
     host.owner_claimed_at = host.owner_heartbeat_at = host.lock_verified_at = dt.datetime.utcnow()
     host.ownership_epoch, host.gate_mode, host.lock_backend = 1, "enforced", "flock"
     db.add(models.PanelSettings(id=1, loyalty_purchase_threshold=0, loyalty_reward_credit=0))   # loyalty set before P9a
+    # This execution fixture permits auto approvals explicitly; policy denial
+    # is covered separately by the central auto-approval tests.
+    db.add(models.BotSettings(id=1, auto_approve_enabled=True,
+                              auto_approve_ignore_hours=True, auto_approve_returning_only=False))
     root = models.AdminUser(username="root", hashed_password="x", is_superadmin=True, telegram_id=1000)
     reseller = models.AdminUser(username="res", hashed_password="x", balance=100_000)
     remote_key = models.ApiKey(key="remote-key", label="remote bot", key_type=bot_auth.KeyType.REMOTE_SHARED_BOT)

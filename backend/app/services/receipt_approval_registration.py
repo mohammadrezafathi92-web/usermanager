@@ -41,10 +41,22 @@ OPEN_STATES = ("registered", "failed")
 
 
 class RegistrationRejected(Exception):
-    def __init__(self, status: int, code: str):
+    def __init__(self, status: int, code: str, retry_after_seconds=None):
         super().__init__(code)
         self.status = status
         self.code = code
+        self.retry_after_seconds = retry_after_seconds
+
+
+class AutoDenied(RegistrationRejected):
+    """No approval/grant is written; begin persists only this diagnostic."""
+    def __init__(self, code, *, target, intent, reason, retry_after=None, local_decision=None):
+        super().__init__(429 if retry_after is not None else 403, code, retry_after)
+        self.event = dict(tenant_scope_key=target.tenant_scope_key, telegram_id=target.telegram_id,
+                          outcome="rate_limited" if retry_after is not None else "policy_denied",
+                          reason_code=reason, local_decision=local_decision, approval_uuid=None,
+                          pending_source_instance_id=intent.pending_source_instance_id,
+                          pending_local_id=intent.pending_local_id, retry_after=retry_after)
 
 
 @dataclass(frozen=True)
@@ -289,14 +301,23 @@ def _register_once(db: Session, principal: bot_auth.BotPrincipal, intent: ri.App
         # The central decision and the 60-minute cap. In shadow neither gates
         # anything: the bot's local decision stays the reference and this
         # is only recorded next to it.
+        subject = auto_policy.lock_subject(db, target.tenant_scope_key, target.telegram_id)
+        now = auto_policy.database_now(db)
         settings = auto_policy.load_settings(db, target.owner_admin_id)
         returning = auto_policy.history_returning(db, target.tenant_scope_key, target.telegram_id)
         allowed, reason = auto_policy.evaluate(
             kind=intent.kind, amount=intent.amount, telegram_id=target.telegram_id, settings=settings,
             returning=returning, hour=auto_policy.local_hour(now))
         policy = auto_policy.policy_snapshot(settings, allowed, reason, returning)
-        subject = auto_policy.lock_subject(db, target.tenant_scope_key, target.telegram_id)
         retry_after = auto_policy.retry_after_seconds(subject["last_granted_at"] if subject else None, now)
+        if registered_under_mode == runtime.REQUIRED:
+            if not allowed:
+                raise AutoDenied("auto_approval_policy_denied", target=target, intent=intent,
+                                 reason=reason, local_decision=local_decision)
+            if retry_after is not None and rate_limit_mode == runtime.ENFORCED:
+                raise AutoDenied("auto_approval_rate_limited", target=target, intent=intent,
+                                 reason="within_60_minutes", retry_after=retry_after,
+                                 local_decision=local_decision)
         if not allowed:
             outcome = "policy_denied"
         elif retry_after is not None and rate_limit_mode != runtime.OFF:
@@ -402,6 +423,7 @@ def begin(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalInte
     """The structured answer of design 5.6. Commits. Only the backend
     decides the mode; nothing in the request can claim one."""
     for attempt in range(1, WRITE_ATTEMPTS + 1):
+        mode = runtime.BLOCKED  # unreadable runtime must never permit legacy execution
         try:
             take_write_lock(db)
             state = runtime.read_state(db, lock=True, shared_lock=True)
@@ -423,6 +445,13 @@ def begin(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalInte
                                       registered_under_mode=runtime.REQUIRED, local_decision=local_decision,
                                       rate_limit_mode=runtime.effective_auto_rate_limit_mode(state),
                                       completeness_generation=int(state["completeness_generation"]))
+                except AutoDenied as exc:
+                    # The savepoint discarded any tentative registration.
+                    # Keep the runtime lock until the refusal audit commits.
+                    auto_policy.record_event(db, **exc.event, now=auto_policy.database_now(db))
+                    db.commit()
+                    raise RegistrationRejected(exc.status, f"approval_registration_refused:{exc.code}",
+                                               exc.retry_after_seconds) from None
                 except RegistrationRejected as exc:
                     db.rollback()
                     raise RegistrationRejected(exc.status, f"approval_registration_refused:{exc.code}") from None
@@ -463,6 +492,8 @@ def begin(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalInte
         except OperationalError as exc:              # database busy: wait and try again
             db.rollback()
             if attempt == WRITE_ATTEMPTS:
+                if mode in (runtime.REQUIRED, runtime.BLOCKED):
+                    raise RegistrationRejected(503, "receipt_approval_blocked") from None
                 log.warning("receipt approval registration unavailable after %s attempts: %s", attempt,
                             getattr(exc, "orig", exc))
                 error = describe_error(exc)
@@ -470,6 +501,8 @@ def begin(db: Session, principal: bot_auth.BotPrincipal, intent: ri.ApprovalInte
                 time.sleep(0.3 * attempt)
         except Exception as exc:
             db.rollback()
+            if mode in (runtime.REQUIRED, runtime.BLOCKED):
+                raise RegistrationRejected(503, "receipt_approval_blocked") from exc
             log.exception("receipt approval shadow registration failed (%s)", describe_error(exc))
             error = describe_error(exc)
     runtime.record_shadow_event(db, pending_source_instance_id=str(intent.pending_source_instance_id or "?"),

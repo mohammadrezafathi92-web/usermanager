@@ -17,7 +17,7 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models
@@ -27,6 +27,38 @@ from .jalali import get_display_offset
 WINDOW = dt.timedelta(minutes=60)
 UNKNOWN = "unknown"
 SALE_KINDS = ("sale_new", "sale_renew")
+
+
+def database_now(db: Session) -> dt.datetime:
+    """Central UTC clock, read AFTER locking the subject (never a bot clock)."""
+    if db.get_bind().dialect.name in ("mysql", "mariadb"):
+        value = db.scalar(select(func.utc_timestamp(6)))
+    else:
+        value = db.scalar(select(func.strftime("%Y-%m-%d %H:%M:%f", "now")))
+    return dt.datetime.fromisoformat(value) if isinstance(value, str) else value
+
+
+def seed_recent(db: Session, now: dt.datetime) -> int:
+    """Activation holds runtime exclusive, so no grant can race this seed.
+
+    Do not move an existing subject backwards, including a grant outside
+    this window. Failed/cancelled/voided grants still consumed their slot.
+    """
+    approvals, subjects, _events = _tables()
+    rows = db.execute(select(approvals.c.tenant_scope_key, approvals.c.telegram_id_snapshot,
+                             approvals.c.auto_granted_at, approvals.c.approval_uuid).where(
+        approvals.c.auto_granted_at > now - WINDOW,
+        approvals.c.telegram_id_snapshot.isnot(None)).order_by(
+            approvals.c.auto_granted_at, approvals.c.id)).mappings()
+    count = 0
+    for row in rows:
+        existing = lock_subject(db, row["tenant_scope_key"], row["telegram_id_snapshot"])
+        if existing and existing["last_granted_at"] >= row["auto_granted_at"]:
+            continue
+        record_grant(db, row["tenant_scope_key"], row["telegram_id_snapshot"],
+                     row["approval_uuid"], row["auto_granted_at"], existing)
+        count += 1
+    return count
 
 
 @dataclass(frozen=True)

@@ -23,11 +23,14 @@ logger = logging.getLogger(__name__)
 # 'approval_registration_refused:...' is every refusal under 'required' (P9a):
 # the approval stops there, it never runs the legacy path.
 FAIL_CLOSED_CODES = ("receipt_approval_blocked", "required_mode_not_available", "execution_token_not_supported",
-                     "approval_registration_refused")
+                     "auto_approval_rate_limited", "auto_approval_policy_denied", "approval_registration_refused")
 
 
 class ApprovalBlocked(RuntimeError):
     """A backend fail-closed decision must never fall back to legacy work."""
+    def __init__(self, code, retry_after_seconds=None):
+        super().__init__(code)
+        self.retry_after_seconds = retry_after_seconds
 
 LEGACY = {"mode": "off", "approval_uuid": None, "proceed_legacy": True}
 APPROVAL_PROTOCOL_VERSION = 1
@@ -78,7 +81,20 @@ async def begin(pending: dict, *, approved_by_telegram_id: Optional[int] = None,
             intent["approved_by_telegram_id"] = int(approved_by_telegram_id)
             answer = await api.begin_approval(intent, "manual")
         if not isinstance(answer, dict):
+            if auto:
+                raise ApprovalBlocked("auto_approval_unavailable")
             return dict(LEGACY)
+        if auto:
+            mode = answer.get("mode")
+            legacy = answer.get("proceed_legacy")
+            registered = isinstance(answer.get("approval_uuid"), str) and bool(answer["approval_uuid"]) \
+                and type(answer.get("execution_token")) is int
+            valid = (mode == "off" and legacy is True and not answer.get("approval_uuid")) or \
+                (mode == "shadow" and (legacy is True or (legacy is False and registered))) or \
+                (mode == "required" and legacy is False and registered
+                 and isinstance(answer.get("central_decision"), dict))
+            if not valid:
+                raise ApprovalBlocked("auto_approval_unavailable")
         if answer.get("shadow_error"):
             logger.info("pending request %s: approval not registered (%s)", pending.get("id"), answer["shadow_error"])
         if pending.get("kind") == "renew" and answer.get("renew_purchase_id") and not pending.get("renew_purchase_id"):
@@ -87,10 +103,22 @@ async def begin(pending: dict, *, approved_by_telegram_id: Optional[int] = None,
             pending["renew_purchase_id"] = answer["renew_purchase_id"]
         return answer
     except Exception as exc:
+        if isinstance(exc, ApprovalBlocked):
+            raise
         detail = str(getattr(exc, "detail", "") or exc)
         code = next((candidate for candidate in FAIL_CLOSED_CODES if candidate in detail), None)
         if code:
+            # Safe diagnostic codes only; never forward raw HTTP bodies or
+            # credentials from a remote error into the receipt message.
+            if "auto_approval_rate_limited" in detail:
+                payload = getattr(exc, "detail", None)
+                retry = payload.get("retry_after_seconds") if isinstance(payload, dict) else None
+                raise ApprovalBlocked("auto_approval_rate_limited", retry) from exc
+            if "auto_approval_policy_denied" in detail:
+                raise ApprovalBlocked("auto_approval_policy_denied") from exc
             raise ApprovalBlocked(code) from exc
+        if auto:
+            raise ApprovalBlocked("auto_approval_unavailable") from exc
         logger.warning("pending request %s: approval registration unavailable (%s) - proceeding as before",
                        pending.get("id"), exc)
         return dict(LEGACY)

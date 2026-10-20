@@ -170,6 +170,34 @@ async def try_auto_approve(pending: dict, bot) -> tuple[bool, str]:
     where nobody was going to look for it.
     """
     allowed, reason = decide(pending)
+    if pending.get("kind") not in AUTO_APPROVABLE_KINDS:
+        return False, reason
+    from ..telegram_bot import approval_session
+    if not allowed:
+        # Do not create shadow grants for requests the local policy never
+        # attempted. Under required only CENTRAL history/policy can veto.
+        from ..telegram_bot.panel_bridge import api
+        try:
+            mode = await api.get_approval_mode()
+        except Exception:
+            return False, "تأیید خودکار در دسترس نیست؛ درخواست برای بررسی دستی ثبت شد."
+        if not isinstance(mode, dict) or mode.get("mode") != "required":
+            return False, reason
+    try:
+        session = await approval_session.begin(pending, auto=True,
+                                               local_decision="allowed" if allowed else "denied")
+    except approval_session.ApprovalBlocked as exc:
+        if str(exc) == "auto_approval_rate_limited":
+            seconds = exc.retry_after_seconds
+            wait = f" ({max(1, (seconds + 59) // 60)} دقیقه باقی‌مانده)" if type(seconds) is int and seconds > 0 else ""
+            return False, "سهمیهٔ تأیید خودکار این مشتری در ۶۰ دقیقهٔ اخیر مصرف شده" + wait + "؛ درخواست برای بررسی دستی ثبت شد."
+        if str(exc) == "auto_approval_policy_denied":
+            return False, "شرایط تأیید خودکار مرکزی برقرار نیست؛ درخواست برای بررسی دستی ثبت شد."
+        return False, "تأیید خودکار در دسترس نیست؛ درخواست برای بررسی دستی ثبت شد."
+    if session.get("mode") == "required":
+        # A remote bot's empty local history must not veto central history.
+        allowed = session.get("central_decision", {}).get("central_allowed") is True
+        reason = "شرایط تأیید خودکار در سامانهٔ مرکزی بررسی شد"
     if not allowed:
         logger.info("درخواست %s تایید خودکار نشد: %s", pending.get("id"), reason)
         return False, reason
@@ -181,7 +209,7 @@ async def try_auto_approve(pending: dict, bot) -> tuple[bool, str]:
         logger.info("درخواست %s همین الان توسط ادمین رسیدگی شد", pending.get("id"))
         return False, "همین الان توسط ادمین رسیدگی شد"
 
-    ok, result = await perform_approval(pending, bot, auto=True)
+    ok, result = await perform_approval(pending, bot, auto=True, registered_session=session)
     if not ok:
         # perform_approval already released the claim on failure, so the
         # request is back in the admins' queue rather than lost.

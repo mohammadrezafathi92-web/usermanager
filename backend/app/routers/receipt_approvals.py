@@ -114,6 +114,18 @@ from ..services import receipt_approval_registration as registration  # noqa: E4
 bot_router = APIRouter(prefix="/api/accounting/receipt-approvals", tags=["receipt-approvals"])
 
 
+@bot_router.get("/bot-runtime")
+def bot_runtime(db: Session = Depends(get_db),
+                principal: bot_auth.BotPrincipal = Depends(get_bot_principal)):
+    """Only the mode needed to choose central vs legacy auto policy.
+
+    No superadmin session, customer data or mode mutation is exposed.
+    """
+    bot_auth.require_bot_capability(principal, bot_auth.RECEIPT_AUTO_APPROVAL_WRITE,
+                                    endpoint="receipt_approval_auto_runtime")
+    return {"mode": runtime.effective_registration_mode(runtime.read_state(db))}
+
+
 class ConnectionSpecIn(BaseModel):
     node_id: int
     protocol: str
@@ -168,7 +180,12 @@ def begin_approval(db: Session, principal: bot_auth.BotPrincipal, payload: Appro
             approved_by_telegram_id=payload.approved_by_telegram_id if approval_mode == registration.MANUAL else None,
             local_decision=payload.local_decision if approval_mode == registration.AUTO else None)
     except registration.RegistrationRejected as exc:
-        raise HTTPException(status_code=exc.status, detail=exc.code)
+        detail = exc.code
+        headers = None
+        if exc.retry_after_seconds is not None:
+            detail = {"error": exc.code, "retry_after_seconds": exc.retry_after_seconds}
+            headers = {"Retry-After": str(exc.retry_after_seconds)}
+        raise HTTPException(status_code=exc.status, detail=detail, headers=headers)
 
 
 @bot_router.post("/auto")

@@ -425,10 +425,18 @@ except HTTPException as exc:
     status = exc.status_code
 check("an invalid principal is refused before anything else", status, 403)
 paths = sorted((r.path, tuple(r.methods)) for r in router.bot_router.routes)
-check("bot router: the two registration endpoints and finalize, with no superadmin dependency",
+check("bot router: runtime read, two registration endpoints and finalize, with no superadmin dependency",
       (paths, router.bot_router.dependencies),
-      ([("/api/accounting/receipt-approvals/auto", ("POST",)), ("/api/accounting/receipt-approvals/manual", ("POST",)),
+      ([("/api/accounting/receipt-approvals/auto", ("POST",)),
+        ("/api/accounting/receipt-approvals/bot-runtime", ("GET",)), ("/api/accounting/receipt-approvals/manual", ("POST",)),
         ("/api/accounting/receipt-approvals/{approval_uuid}/finalize", ("POST",))], []))
+try:
+    router.bot_runtime(db=db, principal=invalid)
+    status = None
+except HTTPException as exc:
+    status = exc.status_code
+check("runtime read still requires an authorized managed bot", status, 403)
+check("runtime read exposes mode only", router.bot_runtime(db=db, principal=internal), {"mode": "shadow"})
 
 db.close()
 print()

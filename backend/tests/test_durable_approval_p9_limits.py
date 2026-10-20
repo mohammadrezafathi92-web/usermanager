@@ -57,6 +57,10 @@ with SessionLocal() as db:
     host.owner_claimed_at = host.owner_heartbeat_at = host.lock_verified_at = dt.datetime.utcnow()
     host.ownership_epoch, host.gate_mode, host.lock_backend = 1, "enforced", "flock"
     db.add(models.PanelSettings(id=1, loyalty_purchase_threshold=1, loyalty_reward_credit=77))
+    # This execution fixture permits auto approvals explicitly; policy denial
+    # is covered separately by the central auto-approval tests.
+    db.add(models.BotSettings(id=1, auto_approve_enabled=True,
+                              auto_approve_ignore_hours=True, auto_approve_returning_only=False))
     root = models.AdminUser(username="root", hashed_password="x", is_superadmin=True, telegram_id=1000)
     db.add(root)
     db.flush()

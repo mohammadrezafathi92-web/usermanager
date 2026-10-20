@@ -37,13 +37,22 @@ import json
 import uuid
 from typing import Optional
 
-from sqlalchemy import event, inspect as sa_inspect, or_, select
+import logging
+
+from fastapi import HTTPException
+from sqlalchemy import event, exists, func, inspect as sa_inspect, or_, select
 from sqlalchemy.orm import Session
 
 from .. import models, models_reservation_transition as rt
 from . import receipt_void_schema
 
 PENDING = "reservation_history_pending"
+AFTER_COMMIT = "reservation_reconcile_after_commit"
+RESTORE_FIELDS = ("quota_bytes", "used_bytes", "expire_at", "package_id", "max_concurrent_sessions", "status",
+                  "reserved_quota_bytes", "reserved_duration_days", "reserved_package_id",
+                  "reserved_max_concurrent_sessions", "reserved_replace_package_limits", "reserved_created_at",
+                  "reservation_activation_seq", "renewal_event_seq")
+logger = logging.getLogger(__name__)
 RESERVED_FIELDS = ("reserved_quota_bytes", "reserved_duration_days", "reserved_package_id",
                    "reserved_max_concurrent_sessions", "reserved_replace_package_limits", "reserved_created_at")
 LIMIT_FIELDS = ("quota_bytes", "expire_at", "package_id", "max_concurrent_sessions")
@@ -108,24 +117,103 @@ def _pending(purchase, name) -> bool:
 
 
 def _queue(db, table, values: dict) -> None:
-    db.info.setdefault(PENDING, []).append((table, values))
+    db.info.setdefault(PENDING, []).append(("insert", table, values))
+
+
+def _not_held(purchase_key):
+    hold = rt.purchase_void_holds
+    return ~exists().where(hold.c.purchase_key == purchase_key, hold.c.state == "active")
+
+
+def snapshot_for_restore(purchase) -> dict:
+    return {name: getattr(purchase, name) for name in RESTORE_FIELDS}
+
+
+def guard_consumption(db, purchase, seq: int, restore: dict, log_values: Optional[dict]) -> None:
+    """The consumption is applied only if, AT ITS COMMIT, the queue was not
+    consumed by anyone else (seq) and no renewal void holds the service: one
+    conditional UPDATE in the transaction's own flush - on SQLite under the
+    single writer it takes, on MariaDB under the row lock already held - so
+    a hold committed between this transaction's check and its commit wins.
+    Otherwise the purchase is put back exactly as it was (this transaction's
+    other changes, e.g. usage, are kept) and no history row is written."""
+    db.info.setdefault(PENDING, []).append(("consume", purchase, seq, restore, log_values))
+
+
+def guard_renewal(db, purchase) -> None:
+    """A renewal's commit refuses (409 purchase_void_in_progress) if a renewal
+    void holds the service at that instant - the same check as at its start,
+    now under the writer / row lock of the flush itself. A legacy installation
+    without the Receipt Void schema has no hold to check."""
+    if not receipt_void_schema.is_ready():
+        return
+    db.info.setdefault(PENDING, []).append(("renewal", purchase))
+
+
+def reconcile_after_commit(db, purchase) -> None:
+    """The node reconciliation of a consumed queue, after the commit, in its
+    own short transaction: no writer transaction is open during a node call,
+    and a consumption that did not survive its guard reconciles nothing."""
+    db.info.setdefault(AFTER_COMMIT, []).append(purchase.id)
 
 
 @event.listens_for(Session, "before_flush")
 def _write_pending(session, _context, _instances):
     """History rows go to the database with the change they describe, in the
     same flush of the same transaction (never earlier)."""
-    rows = session.info.pop(PENDING, None)
-    if rows:
-        connection = session.connection()
-        for table, values in rows:
-            connection.execute(table.insert().values(**values))
+    items = session.info.pop(PENDING, None)
+    if not items:
+        return
+    connection = session.connection()
+    P = models.Purchase.__table__
+    for item in items:
+        if item[0] == "insert":
+            connection.execute(item[1].insert().values(**item[2]))
+        elif item[0] == "renewal":
+            purchase = item[1]
+            changed = connection.execute(P.update().where(P.c.id == purchase.id, _not_held(purchase.history_key))
+                                         .values(renewal_event_seq=P.c.renewal_event_seq)).rowcount
+            if changed != 1:
+                raise HTTPException(409, "purchase_void_in_progress")
+        else:
+            _kind, purchase, seq, restore, log_values = item
+            changed = connection.execute(P.update().where(
+                P.c.id == purchase.id, func.coalesce(P.c.reservation_activation_seq, 0) == seq,
+                _not_held(purchase.history_key)).values(reservation_activation_seq=seq + 1)).rowcount
+            if changed == 1:
+                if log_values is not None:
+                    connection.execute(rt.purchase_reservation_activations.insert().values(**log_values))
+                continue
+            logger.info("purchase %s: queue consumption withdrawn at commit (a renewal void holds it, or it was "
+                        "consumed elsewhere)", purchase.id)
+            for name, value in restore.items():
+                setattr(purchase, name, value)
+            pending = session.info.get(AFTER_COMMIT) or []
+            session.info[AFTER_COMMIT] = [pid for pid in pending if pid != purchase.id]
 
 
 @event.listens_for(Session, "after_soft_rollback")
 def _drop_pending(session, _previous_transaction):
-    """A rolled-back change takes its history rows with it."""
+    """A rolled-back change takes its history rows (and reconciliations) with it."""
     session.info.pop(PENDING, None)
+    session.info.pop(AFTER_COMMIT, None)
+
+
+@event.listens_for(Session, "after_commit")
+def _reconcile_after_commit(session):
+    ids = session.info.pop(AFTER_COMMIT, None)
+    if not ids:
+        return
+    from . import user_ops
+    for purchase_id in dict.fromkeys(ids):
+        try:
+            with Session(bind=session.get_bind(), autoflush=False) as fresh:
+                purchase = fresh.get(models.Purchase, purchase_id)
+                if purchase is not None:
+                    user_ops.reconcile_purchase_connections(fresh, purchase)
+                    fresh.commit()
+        except Exception:  # noqa: BLE001 - the consumption is committed; the poller converges
+            logger.exception("purchase %s: reconciliation after the queue started failed", purchase_id)
 
 
 def lock_history(db, purchase) -> None:
@@ -191,12 +279,13 @@ def lock_for_consumption(db, purchase) -> Optional[int]:
 
 
 def log_consumption(db, purchase, seq_before: int, trigger: str, before: dict, used_before: int,
-                    event_seq: int) -> None:
-    """In the consuming transaction. A legacy installation without the
-    Receipt Void schema keeps consuming (no history exists there)."""
+                    event_seq: int, restore: dict) -> None:
+    """In the consuming transaction, guarded at its commit (guard_consumption).
+    A legacy installation without the Receipt Void schema keeps consuming
+    (no history or hold exists there)."""
     if not receipt_void_schema.is_ready():
         return
-    _queue(db, rt.purchase_reservation_activations, dict(
+    guard_consumption(db, purchase, seq_before, restore, dict(
         purchase_id=purchase.id, purchase_key=purchase.history_key, event_seq=event_seq,
         user_id_snapshot=purchase.user_id, seq_before=seq_before, used_bytes_before=int(used_before or 0),
         activated_by=trigger if trigger in rt.ACTIVATION_TRIGGERS else "other",

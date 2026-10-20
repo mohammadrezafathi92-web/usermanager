@@ -2036,6 +2036,7 @@ def renew_purchase_core(
         if reservation_transition.is_held(db, purchase.history_key):
             # a renewal void of this service runs between its steps; retry after it
             raise HTTPException(409, "purchase_void_in_progress")
+        reservation_transition.guard_renewal(db, purchase)          # and again, atomically, at the commit
     before = _renewal_state(purchase)
     history_before = reservation_transition.full_state(purchase)
     add_quota_bytes = gb_to_bytes(add_gb) if add_gb else 0
@@ -2121,6 +2122,7 @@ def _maybe_activate_reserved_purchase_renewal(db: Session, purchase: models.Purc
             or (purchase.expire_at and purchase.expire_at < now)):
         return False
     before = reservation_transition.full_state(purchase)
+    restore = reservation_transition.snapshot_for_restore(purchase)
     used_before = int(purchase.used_bytes or 0)
     event_seq = reservation_transition.next_event(purchase)
     purchase.used_bytes = 0
@@ -2150,9 +2152,11 @@ def _maybe_activate_reserved_purchase_renewal(db: Session, purchase: models.Purc
         # gap, scoped to a single Purchase, also reachable live from
         # radius_server.py's login check.
         purchase.status = _resolve_status_after_reset(purchase.quota_bytes, purchase.used_bytes, purchase.expire_at, now)
-        reconcile_purchase_connections(db, purchase)
+        # after this transaction's commit, and only if the consumption
+        # survives its guard there (no writer is held during the node call)
+        reservation_transition.reconcile_after_commit(db, purchase)
     purchase.reservation_activation_seq = seq + 1
-    reservation_transition.log_consumption(db, purchase, seq, trigger, before, used_before, event_seq)
+    reservation_transition.log_consumption(db, purchase, seq, trigger, before, used_before, event_seq, restore)
     return True
 
 

@@ -21,6 +21,11 @@ class ResellerSaleBasis(Base):
     baseline_used_bytes = Column(BigInteger, nullable=False, default=0)
     connection_baselines = Column(Text, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    # SQLite reuses the id of the last deleted row: once settled, purchase_id
+    # is retired (-id) so a later service with the same id has its own basis;
+    # the original id and the Purchase.history_key stay for the record.
+    retired_purchase_id = Column(Integer, nullable=True)
+    purchase_key = Column(String(36), nullable=True)
     __table_args__ = (
         CheckConstraint("charged_amount > 0", name="ck_reseller_basis_positive_charge"),
         CheckConstraint("quota_bytes >= 0", name="ck_reseller_basis_quota"),
@@ -44,6 +49,10 @@ class ResellerRefundOperation(Base):
     completed_at = Column(DateTime, nullable=True)
     refund_amount = Column(BigInteger, nullable=True)
     refund_entry_id = Column(Integer, nullable=True, unique=True)
+    # As on the basis: a completed operation no longer answers for a reused
+    # purchase id. Pending operations keep the live id (the service exists).
+    retired_purchase_id = Column(Integer, nullable=True)
+    purchase_key = Column(String(36), nullable=True)
     __table_args__ = (
         CheckConstraint("baseline_used_bytes >= 0", name="ck_reseller_op_usage"),
         CheckConstraint("state IN ('pending', 'completed')", name="ck_reseller_op_state"),

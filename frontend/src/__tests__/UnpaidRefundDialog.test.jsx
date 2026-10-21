@@ -133,6 +133,18 @@ describe("unpaid cancellation dialog", () => {
     expect(screen.getByRole("button", { name: t("refund.retry") }).disabled).toBe(false);
   });
 
+  it("an answer for a finished operation is matched by its service key, not a reused id", async () => {
+    api.fetchUnpaidRefundPreview.mockResolvedValue({ data: { ...PREVIEW, target: { ...TARGET, purchase_key: "new-key" } } });
+    api.cancelUnpaidPurchase.mockRejectedValue(new Error("Network Error"));
+    api.fetchUnpaidCancellations.mockResolvedValue({ data: [{ ...PENDING, state: "completed", refund_amount: 5,
+                                                              purchase_key: "old-key" }] });
+    const user = userEvent.setup();
+    open();
+    await user.click(await confirmAndRun(user));
+    expect(await screen.findByText(new RegExp(t("refund.pending").slice(0, 20)))).toBeTruthy();
+    expect(screen.queryByText(/به اعتبار فروشنده برگشت/)).toBeNull();
+  });
+
   it("a busy refusal says nothing changed", async () => {
     api.cancelUnpaidPurchase.mockRejectedValue(httpError(503, "reseller_cancellation_busy"));
     const user = userEvent.setup();

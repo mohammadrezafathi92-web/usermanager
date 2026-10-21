@@ -62,13 +62,16 @@ export default function UnpaidRefundDialog({ userId, purchase, onClose, onDone }
 
   const reasonText = (code) => t(REFUND_REASONS[code] || "refund.unavailable");
 
+  const purchaseKey = preview?.target?.purchase_key;
   const refresh = useCallback(async () => {
     // The server's record is the only truth after a lost or failed response.
+    // A deleted service's id can be reused, so match its stable key first.
     const { data } = await fetchUnpaidCancellations(userId);
-    const op = (data || []).find((o) => o.purchase_id === purchaseId) || null;
+    const op = (data || []).find((o) => (purchaseKey && o.purchase_key
+      ? o.purchase_key === purchaseKey : o.purchase_id === purchaseId)) || null;
     setOperation(op);
     return op;
-  }, [userId, purchaseId]);
+  }, [userId, purchaseId, purchaseKey]);
 
   useEffect(() => {
     let active = true;
@@ -94,10 +97,11 @@ export default function UnpaidRefundDialog({ userId, purchase, onClose, onDone }
       }
     } catch (e) {
       const { code, reason } = errorOf(e);
-      if (!e?.response || code === "reseller_cancellation_pending") {
-        // Possibly half done (or done, with the answer lost): read the record.
-        const op = await refresh().catch(() => null);
-        if (op?.state === "completed") { onDone(); return; }
+      // Possibly half done, or done with the answer lost (a retry of a
+      // finished operation can even answer 404): read the record first.
+      const op = await refresh().catch(() => null);
+      if (op?.state === "completed") { onDone(); return; }
+      if (!e?.response || code === "reseller_cancellation_pending" || op?.state === "pending") {
         setMessage({ tone: "warn", text: `${t("refund.pending")} ${reason ? reasonText(reason) : ""}`.trim() });
       } else {
         setMessage({ tone: "error", text: code ? reasonText(code) : t("refund.failed") });

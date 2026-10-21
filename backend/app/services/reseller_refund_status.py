@@ -14,7 +14,7 @@ def target(db, purchase: models.Purchase) -> dict:
     charged = db.get(models.AdminUser, basis.charged_admin_id) if basis else None
     user = purchase.user
     return {
-        "purchase_id": purchase.id,
+        "purchase_id": purchase.id, "purchase_key": purchase.history_key,
         "package_name": purchase.package_name_snapshot or (purchase.package.name if purchase.package else None),
         "comment": purchase.comment,
         "created_at": purchase.created_at.isoformat() if purchase.created_at else None,
@@ -33,7 +33,8 @@ def operation(db, op: Operation) -> dict:
     steps = db.query(Step).filter_by(operation_id=op.id).all()
     requester = db.get(models.AdminUser, op.requested_by)
     return {
-        "operation_id": op.id, "purchase_id": op.purchase_id, "state": op.state,
+        "operation_id": op.id, "purchase_id": op.retired_purchase_id or op.purchase_id,
+        "purchase_key": op.purchase_key, "state": op.state,
         "requested_at": op.requested_at.isoformat() if op.requested_at else None,
         "requested_by": requester.username if requester else None,
         "completed_at": op.completed_at.isoformat() if op.completed_at else None,
@@ -49,6 +50,10 @@ def for_user(db, user_id: int) -> list[dict]:
     return [operation(db, op) for op in rows]
 
 
-def for_purchase(db, purchase_id: int):
-    op = db.query(Operation).filter_by(purchase_id=purchase_id).one_or_none()
-    return operation(db, op) if op is not None else None
+def for_purchase(db, purchase: models.Purchase):
+    """The pending operation of this live service (a completed one has
+    retired its purchase id); never another service's under a reused id."""
+    op = db.query(Operation).filter_by(purchase_id=purchase.id).one_or_none()
+    if op is None or (op.purchase_key is not None and op.purchase_key != purchase.history_key):
+        return None
+    return operation(db, op)

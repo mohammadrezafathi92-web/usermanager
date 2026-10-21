@@ -71,6 +71,7 @@ def bind_sale(db: Session, purchase: models.Purchase, debit: models.LedgerEntry 
         baseline_used_bytes=int(purchase.used_bytes or 0),
         connection_baselines=json.dumps({str(c.id): int(c.total_bytes or 0)
                                         for c in purchase.connections}, sort_keys=True),
+        purchase_key=purchase.history_key,
     ))
 
 
@@ -84,6 +85,8 @@ def preview(db: Session, purchase: models.Purchase, *, now: dt.datetime | None =
             or int(purchase.quota_bytes or 0) != basis.quota_bytes
             or purchase.expire_at != basis.expire_at):
         raise HTTPException(409, "reseller_entitlement_changed")
+    if basis.purchase_key is not None and basis.purchase_key != purchase.history_key:
+        raise HTTPException(409, "reseller_charge_unproven")  # another service under a reused id
     if not db.get(models.AdminUser, basis.charged_admin_id):
         raise HTTPException(409, "reseller_refund_account_missing")
     now = now or dt.datetime.utcnow()

@@ -49,6 +49,18 @@ def _identity(connection):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+def find_operation(db: Session, purchase_id: int, purchase, *, lock: bool = False):
+    """The operation answering for this purchase id: the live one, or - only
+    while no service holds the id - the completed one that retired it."""
+    query = select(Operation).where(Operation.purchase_id == purchase_id)
+    op = db.execute(query.with_for_update() if lock else query).scalar_one_or_none()
+    if op is None and purchase is None:
+        query = (select(Operation).where(Operation.retired_purchase_id == purchase_id)
+                 .order_by(Operation.id.desc()).limit(1))
+        op = db.execute(query.with_for_update() if lock else query).scalar_one_or_none()
+    return op
+
+
 def prepare(db: Session, *, purchase_id: int, actor: models.AdminUser) -> int:
     """Persist the exact set of connections. Retrying returns the same ID.
 
@@ -57,9 +69,8 @@ def prepare(db: Session, *, purchase_id: int, actor: models.AdminUser) -> int:
     """
     try:
         _begin(db)
-        existing = db.execute(select(Operation).where(Operation.purchase_id == purchase_id)
-                              .with_for_update()).scalar_one_or_none()
         purchase = _locked(db, models.Purchase, purchase_id)
+        existing = find_operation(db, purchase_id, purchase, lock=True)
         user_id = existing.user_id if existing is not None else (purchase.user_id if purchase else None)
         user = db.get(models.User, user_id) if user_id is not None else None
         owned = hierarchy.owned_admin_ids(db, actor)
@@ -68,10 +79,20 @@ def prepare(db: Session, *, purchase_id: int, actor: models.AdminUser) -> int:
         if existing is not None:
             db.commit()
             return existing.id
+        # Payment/renewal/operation holds again, inside this writer
+        # transaction (SQLite BEGIN IMMEDIATE / row locks): a renewal or a
+        # durable operation that committed after the caller's availability
+        # check cannot slip in before the operation row exists. From then on
+        # the pending operation itself refuses the customer's mutations.
+        from . import reseller_refund_holds
+        held = reseller_refund_holds.reason(db, purchase, user)
+        if held:
+            raise HTTPException(409, held)
         preview(db, purchase)  # refuses missing source / changed entitlement
         basis = db.query(Basis).filter_by(purchase_id=purchase_id).one()
         op = Operation(basis_id=basis.id, purchase_id=purchase.id, user_id=user.id,
-                       requested_by=actor.id, baseline_used_bytes=int(purchase.used_bytes or 0))
+                       requested_by=actor.id, baseline_used_bytes=int(purchase.used_bytes or 0),
+                       purchase_key=purchase.history_key)
         db.add(op)
         db.flush()
         for connection in purchase.connections:
@@ -171,8 +192,8 @@ def settle(db: Session, *, operation_id: int) -> dict:
         if op is None:
             raise HTTPException(404, "refund_not_found")
         if op.state == "completed":
-            result = {"operation_id": op.id, "refund_amount": op.refund_amount,
-                      "state": "completed"}
+            result = {"operation_id": op.id, "refund_amount": op.refund_amount, "state": "completed",
+                      "purchase_id": op.retired_purchase_id or op.purchase_id}
             db.commit()
             return result
         basis = _locked(db, Basis, op.basis_id)
@@ -234,8 +255,12 @@ def settle(db: Session, *, operation_id: int) -> dict:
         # Use the same DB-only primitive as the future Receipt Void step.
         from .user_ops import finalize_purchase_deletion_after_deprovision
         finalize_purchase_deletion_after_deprovision(db, purchase)
+        # Free the id for a future service (see the models' retired_purchase_id).
+        original = op.purchase_id
+        op.retired_purchase_id, op.purchase_id = original, -op.id
+        basis.retired_purchase_id, basis.purchase_id = basis.purchase_id, -basis.id
         db.commit()
-        return {"operation_id": op.id, "refund_amount": amount, "state": "completed"}
+        return {"operation_id": op.id, "refund_amount": amount, "state": "completed", "purchase_id": original}
     except Exception:
         db.rollback()
         raise

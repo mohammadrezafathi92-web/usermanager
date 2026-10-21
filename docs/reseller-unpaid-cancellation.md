@@ -48,6 +48,12 @@ service or other work owns it (`services/reseller_refund_holds.py`):
 - an unfinished durable provisioning operation or a reserved payment hold
   on the customer.
 
+These holds are checked again inside the transaction that creates the
+operation (SQLite `BEGIN IMMEDIATE`), so a renewal or operation committed
+after the first check cannot slip in; afterwards the pending operation
+refuses the customer's mutations, and a renewal racing the remote delete
+waits behind the cancellation barrier and then finds the service gone.
+
 The operator resolves that item first (approve or reject the receipt, let
 the operation finish); the cancellation never decides between them. Once an
 operation exists it is resumed, not re-judged: its connections may already
@@ -59,6 +65,11 @@ credited. `GET /api/users/{id}/unpaid-cancellations` lists each operation
 with its state and how many connections were stopped/verified removed, so a
 lost response or a reload shows where it stands; the customer page keeps an
 unfinished one visible until it is resumed.
+
+SQLite reuses the id of the last deleted row. A settled operation and its
+sale basis therefore retire their purchase id (stored as `-id`, the original
+in `retired_purchase_id`, plus the service's `history_key`): a later service
+under the same id gets its own basis and is never answered by the old result.
 
 ## Recovery and accounting
 

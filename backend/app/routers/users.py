@@ -1445,7 +1445,7 @@ def unpaid_refund_preview(
         raise HTTPException(404, "سرویس پیدا نشد")
     from ..services import reseller_refund_status
     out = {"target": reseller_refund_status.target(db, purchase),
-           "operation": reseller_refund_status.for_purchase(db, purchase.id)}
+           "operation": reseller_refund_status.for_purchase(db, purchase)}
     try:
         result = reseller_refund.preview(db, purchase)
     except HTTPException as exc:
@@ -1485,9 +1485,11 @@ def cancel_unpaid_purchase(
     user = _get_owned_user(db, admin, user_id)
     if not payload.confirm_unpaid:
         raise HTTPException(422, "confirm_unpaid_required")
-    from ..models_reseller_refund import ResellerRefundOperation
+    from ..services.reseller_refund_settlement import find_operation
     purchase = db.get(models.Purchase, purchase_id)
-    existing = db.query(ResellerRefundOperation).filter_by(purchase_id=purchase_id, user_id=user.id).first()
+    existing = find_operation(db, purchase_id, purchase)
+    if existing is not None and existing.user_id != user.id:
+        existing = None
     if (purchase is None and existing is None) or (purchase is not None and purchase.user_id != user.id):
         raise HTTPException(404, "service_not_found")
     return reseller_refund_worker.execute(db, purchase_id=purchase_id, actor=admin)

@@ -18,7 +18,7 @@ from .mikrotik_client import MikrotikClient
 from .reseller_refund import preview
 from .reseller_refund_fence import barrier, enabled
 from . import reseller_refund_holds as holds
-from .reseller_refund_settlement import prepare, capture_counters, verify_stopped, settle
+from .reseller_refund_settlement import prepare, capture_counters, verify_stopped, settle, find_operation
 
 
 def availability(db, purchase, *, starting=True):
@@ -82,12 +82,16 @@ def _prove_no_reboot(mt, connection, basis):
 
 def execute(db, *, purchase_id, actor):
     with barrier(exclusive=True):
-        existing = db.query(Operation).filter_by(purchase_id=purchase_id).one_or_none()
+        purchase = db.get(models.Purchase, purchase_id)
+        existing = find_operation(db, purchase_id, purchase)
         # prepare() performs scope checks even when the Purchase is gone.
         if existing and existing.state == "completed":
+            # Its purchase was deleted: a live row under this id (a reused
+            # SQLite id, before ids were retired) is another service.
+            if purchase is not None:
+                raise HTTPException(409, "reseller_charge_unproven")
             op_id = prepare(db, purchase_id=purchase_id, actor=actor)
             return settle(db, operation_id=op_id)
-        purchase = db.get(models.Purchase, purchase_id)
         if purchase is None:
             raise HTTPException(404, "service_not_found")
         reason = availability(db, purchase, starting=existing is None)

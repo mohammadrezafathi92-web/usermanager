@@ -80,10 +80,29 @@ def _prove_no_reboot(mt, connection, basis):
         raise AdapterError("wg_usage_continuity_unverified")
 
 
-def execute(db, *, purchase_id, actor):
+def execute(db, *, purchase_id, actor, purchase_key=None, user_id=None):
+    """purchase_key is the Purchase.history_key the operator's preview
+    showed. With it, a retry is answered by ITS operation even after the
+    numeric id was reused by another service, and nothing ever targets a
+    different service than the one previewed."""
     with barrier(exclusive=True):
         purchase = db.get(models.Purchase, purchase_id)
+        if purchase_key is not None:
+            keyed = (db.query(Operation).filter(Operation.purchase_key == purchase_key)
+                     .order_by(Operation.id.desc()).first())
+            if keyed is not None and user_id is not None and keyed.user_id != user_id:
+                keyed = None
+            if keyed is not None and keyed.state == "completed":
+                return settle(db, operation_id=keyed.id)  # the stored result; nothing runs again
+            if purchase is None or purchase.history_key != purchase_key:
+                if keyed is None and purchase is None:
+                    raise HTTPException(404, "service_not_found")
+                raise HTTPException(409, "reseller_service_changed")
         existing = find_operation(db, purchase_id, purchase)
+        if (existing is not None and existing.state == "pending" and purchase is not None
+                and existing.purchase_key is not None and existing.purchase_key != purchase.history_key):
+            # A pending operation never continues against another service.
+            raise HTTPException(409, "reseller_service_changed")
         # prepare() performs scope checks even when the Purchase is gone.
         if existing and existing.state == "completed":
             # Its purchase was deleted: a live row under this id (a reused

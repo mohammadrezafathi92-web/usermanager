@@ -143,6 +143,7 @@ describe("unpaid cancellation dialog", () => {
     await user.click(await confirmAndRun(user));
     expect(await screen.findByText(new RegExp(t("refund.pending").slice(0, 20)))).toBeTruthy();
     expect(screen.queryByText(/به اعتبار فروشنده برگشت/)).toBeNull();
+    expect(api.cancelUnpaidPurchase).toHaveBeenCalledWith(1, 7, "new-key");
   });
 
   it("a busy refusal says nothing changed", async () => {

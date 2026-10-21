@@ -28,6 +28,7 @@ export const REFUND_REASONS = {
   reseller_operation_pending: "refund.operationPending",
   reseller_cancellation_busy: "refund.busy",
   reseller_cancellation_pending: "refund.otherPending",
+  reseller_service_changed: "refund.serviceChanged",
   wg_usage_continuity_unverified: "refund.reasonReboot",
   wg_uptime_unverified: "refund.reasonReboot",
   wg_refund_identity_unverified: "refund.reasonIdentity",
@@ -87,7 +88,7 @@ export default function UnpaidRefundDialog({ userId, purchase, onClose, onDone }
     sending.current = true;
     setBusy(true); setMessage(null);
     try {
-      const { data } = await cancelUnpaidPurchase(userId, purchaseId);
+      const { data } = await cancelUnpaidPurchase(userId, purchaseId, purchaseKey);
       if (data?.state === "completed") {
         setOperation({ ...(operation || {}), state: "completed", refund_amount: data.refund_amount });
         onDone();

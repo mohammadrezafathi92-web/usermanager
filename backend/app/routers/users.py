@@ -22,7 +22,7 @@ from ..services import reseller_refund
 from ..services import reseller_refund_worker
 from ..services import wallet_identity
 from ..services.reseller_refund_fence import executor as _refund_executor
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/users", tags=["users"], dependencies=[Depends(get_current_admin)])
 
@@ -1472,6 +1472,9 @@ def unpaid_cancellations(
 
 class UnpaidCancellationRequest(BaseModel):
     confirm_unpaid: bool
+    # The previewed service's stable key (Purchase.history_key): the request
+    # then names exactly that service, never whatever reuses its id later.
+    purchase_key: Optional[str] = Field(default=None, max_length=36)
 
 
 @router.post("/{user_id}/purchases/{purchase_id}/cancel-unpaid")
@@ -1490,9 +1493,14 @@ def cancel_unpaid_purchase(
     existing = find_operation(db, purchase_id, purchase)
     if existing is not None and existing.user_id != user.id:
         existing = None
-    if (purchase is None and existing is None) or (purchase is not None and purchase.user_id != user.id):
+    if payload.purchase_key is None and (
+            (purchase is None and existing is None) or (purchase is not None and purchase.user_id != user.id)):
         raise HTTPException(404, "service_not_found")
-    return reseller_refund_worker.execute(db, purchase_id=purchase_id, actor=admin)
+    if payload.purchase_key is not None and purchase is not None and purchase.user_id != user.id \
+            and purchase.history_key == payload.purchase_key:
+        raise HTTPException(404, "service_not_found")
+    return reseller_refund_worker.execute(db, purchase_id=purchase_id, actor=admin,
+                                          purchase_key=payload.purchase_key, user_id=user.id)
 
 
 @router.delete("/{user_id}/purchases/{purchase_id}")

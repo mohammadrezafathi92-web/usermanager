@@ -70,6 +70,11 @@ SQLite reuses the id of the last deleted row. A settled operation and its
 sale basis therefore retire their purchase id (stored as `-id`, the original
 in `retired_purchase_id`, plus the service's `history_key`): a later service
 under the same id gets its own basis and is never answered by the old result.
+The panel sends the previewed service's `history_key` with the request: a
+retry of that request returns its own operation's stored result even after
+the id was reused, and an operation never resumes against a service whose
+key differs (`reseller_service_changed`); the newer service is untouched.
+Operation, basis, refund ledger entry and sale void marker stay for audit.
 
 ## Recovery and accounting
 

@@ -10,7 +10,11 @@
   E. resume after a failed delete continues the SAME operation: one remote
      delete, one refund, and a further retry changes nothing;
   F. SQLite reuses the deleted service's id: the settled operation and its
-     basis retire it, so the next service under that id is judged alone.
+     basis retire it, so the next service under that id is judged alone,
+     and a retry of the old request (its service key) gets the old result
+     while the new service stays untouched;
+  G. a pending operation whose service was removed outside it and whose
+     id went to a new service is never resumed onto that service.
 
 Real SQLite, real file locks, fake router. No network."""
 import os
@@ -197,6 +201,8 @@ with TemporaryDirectory() as directory:
 
         print("--- C/E: renewal while pending; resume continues the same operation ---")
         aid, uid, pid = seed(engine, router, 3)
+        with Session(engine) as db:
+            old_key = db.get(models.Purchase, pid).history_key
         router.fail_delete = True
         first = run_cancel(engine, aid, pid)
         check("a failed remote delete leaves the operation pending",
@@ -217,7 +223,7 @@ with TemporaryDirectory() as directory:
                   (router.deleted, refunds, db.get(models.AdminUser, aid).balance, again), (1, 1, 75000, done))
 
         print("--- D: a renewal racing the remote delete waits, then finds the service gone ---")
-        previous_pid, previous_op = pid, op_id
+        previous_pid, previous_op, previous_aid, previous_uid = pid, op_id, aid, uid
         aid, uid, pid = seed(engine, router, 4)
         check("SQLite reused the deleted service's id for a new, unrelated service", pid, previous_pid)
         with Session(engine) as db:
@@ -227,6 +233,20 @@ with TemporaryDirectory() as directory:
             new = db.get(models.Purchase, pid)
             check("...and the old result does not answer for the new service",
                   worker.availability(db, new), None)
+            peers_before, deleted_before = dict(router.peers), router.deleted
+        with Session(engine) as db:
+            retry = worker.execute(db, purchase_id=pid, actor=db.get(models.AdminUser, previous_aid),
+                                   purchase_key=old_key, user_id=previous_uid)
+        with Session(engine) as db:
+            check("a retry of the OLD request (its service key) returns that operation's stored result",
+                  (retry["operation_id"], retry["state"], retry["refund_amount"]), (previous_op, "completed", 75000))
+            check("...and leaves the new service under the reused id untouched",
+                  (db.get(models.Purchase, pid) is not None, router.peers == peers_before, router.deleted,
+                   db.query(Operation).filter_by(purchase_id=pid).count(),
+                   db.query(models.LedgerEntry).filter_by(kind="admin_credit_refund").count()),
+                  (True, True, deleted_before, 0, 1))
+            new_key = db.get(models.Purchase, pid).history_key
+        check("the reused id carries a different service key", new_key != old_key, True)
         router.in_delete.clear()
         router.release = threading.Event()
         out = {}
@@ -245,6 +265,38 @@ with TemporaryDirectory() as directory:
         with Session(engine) as db:
             check("no renewal applied to anything, one refund", (db.get(models.Purchase, pid),
                   db.query(models.LedgerEntry).filter_by(kind="admin_credit_refund", admin_id=aid).count()), (None, 1))
+
+        print("--- G: a pending operation whose id another service took is never resumed onto it ---")
+        aid, uid, pid = seed(engine, router, 5)
+        router.fail_delete = True
+        first = run_cancel(engine, aid, pid)
+        check("pending after a failed delete", first["code"], "reseller_cancellation_pending")
+        with Session(engine) as db:
+            key5 = db.get(models.Purchase, pid).history_key
+            # Removed outside the cancellation (e.g. by hand in the database)
+            # and the id handed to a new service of the same customer.
+            for c in db.get(models.Purchase, pid).connections:
+                db.delete(c)
+            db.delete(db.get(models.Purchase, pid))
+            db.commit()
+            db.add(models.Purchase(id=pid, user_id=uid, quota_bytes=500, used_bytes=0,
+                                   expire_at=datetime.utcnow() + timedelta(days=30)))
+            db.commit()
+            disabled_before = router.disabled
+        resumed = run_cancel(engine, aid, pid)
+        check("resume refuses: the id now names another service", resumed, "reseller_service_changed")
+        with Session(engine) as db:
+            try:
+                worker.execute(db, purchase_id=pid, actor=db.get(models.AdminUser, aid), purchase_key=key5, user_id=uid)
+                keyed = "executed"
+            except HTTPException as exc:
+                keyed = exc.detail
+            check("...also when retried with the old service key", keyed, "reseller_service_changed")
+            fresh = db.get(models.Purchase, pid)
+            check("...the new service is untouched, nothing stopped, nothing credited",
+                  (fresh.quota_bytes, router.disabled, db.get(models.AdminUser, aid).balance), (500, disabled_before, 0))
+            check("...and the old operation stays pending for the record",
+                  db.query(Operation).filter_by(purchase_key=key5).one().state, "pending")
     engine.dispose()
 
 print("\n" + "=" * 60)

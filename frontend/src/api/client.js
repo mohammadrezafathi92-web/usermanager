@@ -664,5 +664,8 @@ export const fetchUnpaidRefundPreview = (userId, purchaseId) =>
   client.get(`/users/${userId}/purchases/${purchaseId}/unpaid-refund-preview`);
 export const fetchUnpaidCancellations = (userId) =>
   client.get(`/users/${userId}/unpaid-cancellations`);
-export const cancelUnpaidPurchase = (userId, purchaseId) =>
-  client.post(`/users/${userId}/purchases/${purchaseId}/cancel-unpaid`, { confirm_unpaid: true }, { _pwForce: true });
+// purchaseKey (the previewed service's history_key) makes a retry name that
+// exact service, even if its numeric id is later reused by another one.
+export const cancelUnpaidPurchase = (userId, purchaseId, purchaseKey) =>
+  client.post(`/users/${userId}/purchases/${purchaseId}/cancel-unpaid`,
+    { confirm_unpaid: true, ...(purchaseKey ? { purchase_key: purchaseKey } : {}) }, { _pwForce: true });

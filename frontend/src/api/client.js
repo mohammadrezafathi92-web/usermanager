@@ -584,9 +584,15 @@ export const uploadAdPostImage = (id, file) => {
 };
 export const deleteAdPostImage = (id) => client.delete(`/ads/posts/${id}/image`);
 
-// ---------- بروزرسانی پنل (see backend services/self_update.py) ----------
+// ---------- بروزرسانی پنل (backend services/self_update.py + panel_safe_update.py) ----------
+// apply/resolve carry the superadmin's password typed in the card itself
+// (withPassword: never the interceptor's cached one).
 export const checkPanelUpdate = () => client.get("/settings/update/check");
-export const applyPanelUpdate = () => client.post("/settings/update/apply", {}, { timeout: 900000 });
+export const fetchPanelUpdateStatus = () => client.get("/settings/update/status", { timeout: 15000 });
+export const applyPanelUpdate = (target, password) =>
+  client.post("/settings/update/apply", { target, confirm: true }, { ...withPassword(password), timeout: 60000 });
+export const resolvePanelUpdate = (jobId, password) =>
+  client.post("/settings/update/resolve", { job_id: jobId, confirm: true }, withPassword(password));
 
 // دامنه و SSL (see backend services/panel_tls.py). Superadmin-only.
 export const fetchTlsState = () => client.get("/settings/tls");

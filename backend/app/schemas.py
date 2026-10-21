@@ -1345,6 +1345,18 @@ class PanelPortChangeResult(BaseModel):
     message: str
 
 
+class PanelUpdateApply(BaseModel):
+    """The panel update button: the full main SHA the check showed, and the
+    admin's explicit second confirmation (the password goes in a header)."""
+    target: str = Field(pattern=r"^[0-9a-f]{40}$")
+    confirm: bool = False
+
+
+class PanelUpdateResolve(BaseModel):
+    job_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    confirm: bool = False
+
+
 # ---------- Built-in Telegram bot settings (runs in-process, no .env/SSH) ----------
 class BotSettingsOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)

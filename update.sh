@@ -16,9 +16,11 @@ set -euo pipefail
 umask 077
 
 main() {
-cd "$(dirname "$0")"
+cd "${UM_UPDATE_PROJECT_DIR:-$(dirname "$0")}"
 
 die() { echo "STOP: $*" >&2; exit 1; }
+stage() { echo "UPDATE_STAGE=$1"; }
+stage preflight
 target_arg=""
 if [[ $# -gt 0 ]]; then
     [[ $# == 2 && $1 == --target && $2 =~ ^[0-9a-f]{40}$ ]] || die "usage: bash update.sh [--target <full SHA>]"
@@ -39,13 +41,14 @@ target=$(git rev-parse refs/remotes/origin/main)
 git merge-base --is-ancestor "$previous" "$target" || die "main cannot fast-forward"
 docker compose exec -T backend python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/api/health",timeout=5).close()' >/dev/null 2>&1 || die "backend unhealthy"
 tag="update_$(date -u +%Y%m%dT%H%M%SZ)_$$"
+stage backup
 backup_root=${UM_UPDATE_BACKUP_DIR:-/var/backups/usermanager}
 [[ $backup_root == /* ]] || die "backup directory must be absolute"
 mkdir -p "$backup_root"
 python3 -c 'import shutil,sys; sys.exit(0 if shutil.disk_usage(sys.argv[1]).free >= 2*1024**3 else 1)' "$backup_root" || die "less than 2 GiB free at backup destination"
 backup_dir="$backup_root/$tag"
 mkdir -m 700 "$backup_dir"
-cp backend/scripts/update_preflight.py "$backup_dir/helper.py"
+cp "${UM_UPDATE_HELPER_PATH:-backend/scripts/update_preflight.py}" "$backup_dir/helper.py"
 printf '%s\n' "$previous" > "$backup_dir/previous_commit"
 printf '%s\n' "$target" > "$backup_dir/target_commit"
 echo "BACKUP_DIRECTORY=$backup_dir"
@@ -59,14 +62,17 @@ for service in backend frontend; do
     image=$(docker inspect --format '{{.Image}}' "$container")
     docker image tag "$image" "usermanager-$service:pre-$tag"
 done
+stage checkout
 echo "PREVIOUS_COMMIT=$previous"
 echo "ROLLBACK_IMAGES=usermanager-backend:pre-$tag usermanager-frontend:pre-$tag"
 git merge --ff-only "$target"
 [[ $(git rev-parse HEAD) == "$target" ]] || die "unexpected checkout head"
 bash backend/scripts/ensure_host_identity.sh
+stage build
 docker compose build backend frontend
 docker compose exec -T backend python - snapshot < "$backup_dir/helper.py" > "$backup_dir/before_restart.json"
 python3 "$backup_dir/helper.py" compare "$backup_dir/runtime.json" "$backup_dir/before_restart.json"
+stage backend
 docker compose up -d --no-build --no-deps backend
 healthy=false
 for attempt in $(seq 1 60); do
@@ -78,6 +84,7 @@ done
 $healthy || die "backend health failed; no automatic rollback or DB restore"
 docker compose exec -T backend python - snapshot < "$backup_dir/helper.py" > "$backup_dir/after_restart.json"
 python3 "$backup_dir/helper.py" compare "$backup_dir/runtime.json" "$backup_dir/after_restart.json"
+stage frontend
 docker compose up -d --no-build --no-deps frontend
 healthy=false
 for attempt in $(seq 1 30); do

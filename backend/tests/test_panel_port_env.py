@@ -1,5 +1,5 @@
-"""services/local_deploy.py's panel-port-change feature, and self_update.py's
-handling of it across a `git pull`.
+"""services/local_deploy.py's panel-port-change feature, and that the panel
+update leaves a hand-changed docker-compose.yml alone.
 
 Run:  python3 backend/tests/test_panel_port_env.py
 
@@ -107,22 +107,13 @@ finally:
     local_deploy.ensure_docker_compose_cli = original_ensure
     local_deploy._run = original_run
 
-print("\n--- self_update._restore_frontend_port: old literal-port installs still get rewritten in place ---")
-with open(compose_path, "w", encoding="utf-8") as fh:
-    fh.write('services:\n  frontend:\n    ports:\n      - "8081:80"\n')
-self_update._restore_frontend_port("9091")
-with open(compose_path, encoding="utf-8") as fh:
-    check("old-format compose file gets the literal port rewritten", '"9091:80"' in fh.read(), True)
-
-print("\n--- self_update._restore_frontend_port: new-format installs fall back to .env (the migration path) ---")
-with open(compose_path, "w", encoding="utf-8") as fh:
-    fh.write('services:\n  frontend:\n    ports:\n      - "${PANEL_WEB_PORT:-80}:80"\n')
-if os.path.exists(env_path):
-    os.remove(env_path)
-self_update._restore_frontend_port("8082")
-check("no literal port to rewrite -> written to .env instead", local_deploy._read_env_var(env_path, "PANEL_WEB_PORT"), "8082")
-with open(compose_path, encoding="utf-8") as fh:
-    check("...and docker-compose.yml itself stays untouched", "${PANEL_WEB_PORT:-80}" in fh.read(), True)
+print("\n--- the panel update no longer discards a hand-changed docker-compose.yml ---")
+# It used to check the file out before pulling and re-apply the port after;
+# the safe update refuses tracked changes instead (the CLI does the same),
+# and the port lives in .env, which no update touches. See
+# tests/test_self_update_restart.py for the refusal itself.
+check("no checkout-and-restore helper is left in self_update",
+      hasattr(self_update, "_restore_frontend_port"), False)
 
 print("\n" + "=" * 60)
 if failures:

@@ -719,17 +719,47 @@ def check_update():
         raise HTTPException(400, f"{exc} - {exc.log[-300:]}" if exc.log else str(exc))
 
 
-@router.post("/update/apply", dependencies=[Depends(require_superadmin)])
-def apply_update():
-    """Pulls, rebuilds, and restarts. The response is returned BEFORE the
-    restart happens (see services/self_update.py) - the restart kills this
-    very process, so a response sent afterwards could never arrive. The
-    frontend polls /api/auth/me until the commit it reports changes."""
-    from ..services import self_update
+@router.get("/update/status", dependencies=[Depends(require_superadmin)])
+def update_status():
+    """The active update job's durable state (it survives this backend being
+    replaced). Success is reported only from the worker's own final state."""
+    from ..services import panel_safe_update
 
     try:
-        return self_update.apply_update()
+        return panel_safe_update.status()
     except DeployError as exc:
-        raise HTTPException(400, str(exc), headers={"X-Update-Log": ""}) if not exc.log else HTTPException(
-            400, f"{exc}\n\n{exc.log[-1500:]}"
-        )
+        raise HTTPException(409, str(exc))
+
+
+@router.post("/update/apply", status_code=202)
+def apply_update(payload: schemas.PanelUpdateApply,
+                 admin: models.AdminUser = Depends(require_superadmin),
+                 _confirm=Depends(require_confirm_password)):
+    """Queues the safe update.sh for exactly `target` (the full main SHA the
+    check showed). Superadmin, own password (X-Confirm-Password) and an
+    explicit second confirmation. Nothing is deployed in this process; the
+    answer is the queued job, followed through /update/status."""
+    from ..services import self_update
+
+    if payload.confirm is not True:
+        raise HTTPException(400, "آپدیت باید جداگانه تأیید شود")
+    try:
+        return self_update.apply_update(payload.target, admin.id)
+    except DeployError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@router.post("/update/resolve")
+def resolve_update(payload: schemas.PanelUpdateResolve,
+                   admin: models.AdminUser = Depends(require_superadmin),
+                   _confirm=Depends(require_confirm_password)):
+    """Closes an update whose result is unknown, after the operator checked
+    the server: never rolls anything back and never starts an update."""
+    from ..services import panel_safe_update
+
+    if payload.confirm is not True:
+        raise HTTPException(400, "بستن آپدیت باید جداگانه تأیید شود")
+    try:
+        return panel_safe_update.resolve(payload.job_id, admin.id)
+    except DeployError as exc:
+        raise HTTPException(409, str(exc))

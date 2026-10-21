@@ -10,6 +10,7 @@ import WalletCard from "../components/WalletCard.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import PanelTlsCard from "../components/PanelTlsCard.jsx";
+import PanelUpdateCard from "../components/PanelUpdateCard.jsx";
 import { useConfirm } from "../components/ConfirmDialog.jsx";
 import {
   changePassword,
@@ -56,7 +57,6 @@ import {
   stopRemoteBot,
   resolveHaFailover,
   changePanelPort,
-  checkPanelUpdate, applyPanelUpdate, fetchMe,
   fetchIpBans, addIpBan, removeIpBan,
 } from "../api/client.js";
 import { formatDateTime, formatBytes, copyText, downloadBlob, getDisplayOffset, setDisplayOffset, errorText } from "../utils.js";
@@ -95,98 +95,6 @@ const CUSTOMER_MENU_ITEM_KEYS = [
   "cust_agent",
   "cust_prices",
 ];
-
-function UpdateCard({ t }) {
-  const { build } = useAuth();
-  const [info, setInfo] = useState(null);
-  const [state, setState] = useState("");     // "" | checking | building | restarting
-  const [error, setError] = useState("");
-
-  const check = async () => {
-    setState("checking"); setError("");
-    try {
-      const res = await checkPanelUpdate();
-      setInfo(res.data);
-    } catch (err) {
-      setError(err?.response?.data?.detail || "خطا");
-    } finally { setState(""); }
-  };
-
-  const apply = async () => {
-    setState("building"); setError("");
-    try {
-      const res = await applyPanelUpdate();
-      if (!res.data.updated) { setInfo({ ...info, up_to_date: true, behind: 0 }); setState(""); return; }
-      setState("restarting");
-      // The backend restarts itself moments after answering, so the page is
-      // reloaded once it comes back rather than left showing a stale build.
-      const started = Date.now();
-      const poll = setInterval(async () => {
-        try {
-          // /me is the lightest authenticated endpoint - it answering at
-          // all means the new backend is up and serving.
-          await fetchMe();
-          clearInterval(poll);
-          window.location.reload();
-        } catch {
-          if (Date.now() - started > 180000) clearInterval(poll);
-        }
-      }, 4000);
-    } catch (err) {
-      setError(err?.response?.data?.detail || "خطا");
-      setState("");
-    }
-  };
-
-  return (
-    <div className="card mb-4">
-      <div className="flex items-center gap-2 mb-3">
-        <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
-          <RefreshCw size={15} />
-        </span>
-        <h3 className="font-bold text-gray-700">{t("settings.updateTitle")}</h3>
-      </div>
-      <p className="text-xs text-gray-400 mb-4">{t("settings.updateHint")}</p>
-
-      <div className="text-xs text-gray-500 mb-3" dir="ltr">
-        {t("settings.updateCurrent")}: v{build?.version || "?"}{build?.commit ? ` · ${build.commit}` : ""}
-      </div>
-
-      {info?.dirty && (
-        <div className="text-xs text-amber-700 bg-amber-50 dark:bg-amber-950 rounded-lg px-3 py-2 mb-3">
-          {t("settings.updateDirty")}
-        </div>
-      )}
-      {info && !info.dirty && (
-        <div className={`text-sm mb-3 ${info.up_to_date ? "text-emerald-600" : "text-gray-700 dark:text-gray-200"}`}>
-          {info.up_to_date ? t("settings.updateUpToDate") : t("settings.updateBehind", { count: info.behind })}
-        </div>
-      )}
-      {info?.pending?.length > 0 && (
-        <ul className="card-muted text-xs space-y-1 mb-3 max-h-40 overflow-y-auto" dir="ltr">
-          {info.pending.map((line, i) => <li key={i} className="truncate">{line}</li>)}
-        </ul>
-      )}
-
-      {state === "building" && <div className="text-sm text-amber-600 mb-3">{t("settings.updateRunning")}</div>}
-      {state === "restarting" && <div className="text-sm text-emerald-600 mb-3">{t("settings.updateRestarting")}</div>}
-      {error && <div className="text-xs text-red-600 bg-red-50 dark:bg-red-950 rounded-lg px-3 py-2 mb-3 whitespace-pre-wrap" dir="ltr">{error}</div>}
-
-      <div className="flex flex-wrap gap-2">
-        <button type="button" className="btn-secondary" disabled={!!state} onClick={check}>
-          {state === "checking" ? "..." : t("settings.updateCheck")}
-        </button>
-        <button
-          type="button" className="btn-primary"
-          disabled={!!state || info?.dirty || (info && info.up_to_date)}
-          onClick={apply}
-        >
-          {t("settings.updateApply")}
-        </button>
-      </div>
-    </div>
-  );
-}
 
 function TimezoneCard({ t }) {
   // Common offsets rather than a free-form number: the value is minutes from
@@ -1639,7 +1547,7 @@ export default function Settings() {
           the licence, since it is the same kind of decision: it changes
           the address everyone reaches this panel on. */}
       {isSuperadmin && <PanelTlsCard />}
-      {isSuperadmin && <UpdateCard t={t} />}
+      {isSuperadmin && <PanelUpdateCard t={t} />}
       {isSuperadmin && <TimezoneCard t={t} />}
       {/* Folded out of the old combined "growth" card on the General tab
           (2026-09-10 design pass, item #4) - this is the panel's own

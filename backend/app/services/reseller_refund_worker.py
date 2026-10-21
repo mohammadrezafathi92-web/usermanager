@@ -17,10 +17,14 @@ from .adapter_base import AdapterError
 from .mikrotik_client import MikrotikClient
 from .reseller_refund import preview
 from .reseller_refund_fence import barrier, enabled
-from .reseller_refund_settlement import prepare, capture_counters, verify_stopped, settle
+from . import reseller_refund_holds as holds
+from .reseller_refund_settlement import prepare, capture_counters, verify_stopped, settle, find_operation
 
 
-def availability(db, purchase):
+def availability(db, purchase, *, starting=True):
+    """None when this purchase may be cancelled; otherwise a stable code.
+    starting=False is the resume of an existing operation: payment and
+    operation holds only stop a NEW cancellation (see reseller_refund_holds)."""
     if not enabled():
         return "reseller_cancellation_disabled"
     if not sys.platform.startswith("linux") or db.bind.dialect.name != "sqlite":
@@ -44,6 +48,8 @@ def availability(db, purchase):
         return "reseller_discount_requires_full_void"
     if sale.voided_at is not None:
         return "reseller_sale_already_cancelled"
+    if starting:
+        return holds.reason(db, purchase, purchase.user)
     return None
 
 
@@ -74,18 +80,44 @@ def _prove_no_reboot(mt, connection, basis):
         raise AdapterError("wg_usage_continuity_unverified")
 
 
-def execute(db, *, purchase_id, actor):
+def execute(db, *, purchase_id, actor, purchase_key=None, user_id=None):
+    """purchase_key is the Purchase.history_key the operator's preview
+    showed. With it, a retry is answered by ITS operation even after the
+    numeric id was reused by another service, and nothing ever targets a
+    different service than the one previewed."""
     with barrier(exclusive=True):
-        existing = db.query(Operation).filter_by(purchase_id=purchase_id).one_or_none()
+        purchase = db.get(models.Purchase, purchase_id)
+        if purchase_key is not None:
+            keyed = (db.query(Operation).filter(Operation.purchase_key == purchase_key)
+                     .order_by(Operation.id.desc()).first())
+            if keyed is not None and user_id is not None and keyed.user_id != user_id:
+                keyed = None
+            if keyed is not None and keyed.state == "completed":
+                return settle(db, operation_id=keyed.id)  # the stored result; nothing runs again
+            if purchase is None or purchase.history_key != purchase_key:
+                if keyed is None and purchase is None:
+                    raise HTTPException(404, "service_not_found")
+                raise HTTPException(409, "reseller_service_changed")
+        existing = find_operation(db, purchase_id, purchase)
+        if (existing is not None and existing.state == "pending" and purchase is not None
+                and existing.purchase_key is not None and existing.purchase_key != purchase.history_key):
+            # A pending operation never continues against another service.
+            raise HTTPException(409, "reseller_service_changed")
         # prepare() performs scope checks even when the Purchase is gone.
         if existing and existing.state == "completed":
+            # Its purchase was deleted: a live row under this id (a reused
+            # SQLite id, before ids were retired) is another service.
+            if purchase is not None:
+                raise HTTPException(409, "reseller_charge_unproven")
             op_id = prepare(db, purchase_id=purchase_id, actor=actor)
             return settle(db, operation_id=op_id)
-        purchase = db.get(models.Purchase, purchase_id)
         if purchase is None:
             raise HTTPException(404, "service_not_found")
-        reason = availability(db, purchase)
+        reason = availability(db, purchase, starting=existing is None)
         if reason:
+            if existing is not None:
+                raise HTTPException(409, {"code": "reseller_cancellation_pending",
+                                          "operation_id": existing.id, "reason": reason})
             raise HTTPException(409, reason)
         preview(db, purchase)
         op_id = prepare(db, purchase_id=purchase_id, actor=actor)
@@ -127,9 +159,14 @@ def execute(db, *, purchase_id, actor):
             db.rollback()
             raise HTTPException(409, {"code": "reseller_cancellation_pending",
                                       "operation_id": op_id, "reason": exc.code}) from None
-        except HTTPException:
+        except HTTPException as exc:
             db.rollback()
-            raise
+            if isinstance(exc.detail, dict):
+                raise
+            # The operation exists from prepare() on: report it as what it
+            # is - pending, with the reason - not as a plain failure.
+            raise HTTPException(409, {"code": "reseller_cancellation_pending",
+                                      "operation_id": op_id, "reason": exc.detail}) from None
         except Exception:
             db.rollback()
             raise HTTPException(503, {"code": "reseller_cancellation_pending",

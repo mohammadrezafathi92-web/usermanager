@@ -34,6 +34,48 @@ tree scope. Execution requires password confirmation and an explicit unpaid
 confirmation. Before enabling on a real installation, verify stop/read/delete
 against a staging RouterOS node; fake-router tests are not hardware verification.
 
+## What "unpaid" excludes
+
+A new cancellation is refused while anything says the customer paid for this
+service or other work owns it (`services/reseller_refund_holds.py`):
+
+- a paid renewal queued on the service (or an old customer-level queue);
+- a renewal receipt for this service (or the customer's only service) still
+  `pending`/`processing` in the bot's queue - an unreadable queue counts as
+  a hold, not as "unpaid";
+- a receipt approval still registered/mutating/voiding for the customer;
+- a receipt-void hold on the service;
+- an unfinished durable provisioning operation or a reserved payment hold
+  on the customer.
+
+These holds are checked again inside the transaction that creates the
+operation (SQLite `BEGIN IMMEDIATE`), so a renewal or operation committed
+after the first check cannot slip in; afterwards the pending operation
+refuses the customer's mutations, and a renewal racing the remote delete
+waits behind the cancellation barrier and then finds the service gone.
+
+The operator resolves that item first (approve or reject the receipt, let
+the operation finish); the cancellation never decides between them. Once an
+operation exists it is resumed, not re-judged: its connections may already
+be stopped or deleted.
+
+The preview shows the exact target service (package, connections, node,
+usage, expiry), how many other services stay untouched, and the reseller
+credited. `GET /api/users/{id}/unpaid-cancellations` lists each operation
+with its state and how many connections were stopped/verified removed, so a
+lost response or a reload shows where it stands; the customer page keeps an
+unfinished one visible until it is resumed.
+
+SQLite reuses the id of the last deleted row. A settled operation and its
+sale basis therefore retire their purchase id (stored as `-id`, the original
+in `retired_purchase_id`, plus the service's `history_key`): a later service
+under the same id gets its own basis and is never answered by the old result.
+The panel sends the previewed service's `history_key` with the request: a
+retry of that request returns its own operation's stored result even after
+the id was reused, and an operation never resumes against a service whose
+key differs (`reseller_service_changed`); the newer service is untouched.
+Operation, basis, refund ledger entry and sale void marker stay for audit.
+
 ## Recovery and accounting
 
 RouterOS uptime must prove that the node did not reboot since the sale/

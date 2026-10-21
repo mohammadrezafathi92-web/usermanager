@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { ShieldAlert } from "lucide-react";
 import { setPasswordPrompt } from "../api/client.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
@@ -49,8 +50,14 @@ export default function ConfirmPasswordGate() {
     setPassword("");
   };
 
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4">
+  // Rendered into document.body, beside any open Modal: a Modal makes the
+  // app root inert while it is open, and a prompt left inside the root could
+  // not be typed into - so a password-gated action started from a dialog
+  // could never be confirmed. role/aria-modal make it the topmost dialog,
+  // which Modal's keyboard handling defers to.
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+         role="dialog" aria-modal="true" aria-label={t("confirmDelete.title")}>
       <form
         onSubmit={submit}
         className="bg-white dark:bg-slate-900 rounded-2xl shadow-xl w-full max-w-sm p-5 space-y-4"
@@ -83,6 +90,7 @@ export default function ConfirmPasswordGate() {
           </button>
         </div>
       </form>
-    </div>
+    </div>,
+    document.body,
   );
 }

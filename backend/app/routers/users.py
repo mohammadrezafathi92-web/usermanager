@@ -22,7 +22,7 @@ from ..services import reseller_refund
 from ..services import reseller_refund_worker
 from ..services import wallet_identity
 from ..services.reseller_refund_fence import executor as _refund_executor
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/users", tags=["users"], dependencies=[Depends(get_current_admin)])
 
@@ -1443,13 +1443,38 @@ def unpaid_refund_preview(
     purchase = db.get(models.Purchase, purchase_id)
     if purchase is None or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
-    result = reseller_refund.preview(db, purchase)
-    reason = reseller_refund_worker.availability(db, purchase)
-    return {**result, "execution_available": reason is None, "unavailable_reason": reason}
+    from ..services import reseller_refund_status
+    out = {"target": reseller_refund_status.target(db, purchase),
+           "operation": reseller_refund_status.for_purchase(db, purchase)}
+    try:
+        result = reseller_refund.preview(db, purchase)
+    except HTTPException as exc:
+        # An ineligible sale still shows WHAT it is and WHY, not a bare error.
+        return {**out, "estimate_available": False, "execution_available": False,
+                "unavailable_reason": exc.detail if isinstance(exc.detail, str) else "reseller_proration_unavailable"}
+    reason = reseller_refund_worker.availability(db, purchase, starting=out["operation"] is None)
+    return {**result, **out, "estimate_available": True, "execution_available": reason is None,
+            "unavailable_reason": reason}
+
+
+@router.get("/{user_id}/unpaid-cancellations")
+def unpaid_cancellations(
+    user_id: int, db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+    _perm=Depends(require_permission("cancel_unpaid_services")),
+):
+    """This customer's cancellation operations, pending first-class: after a
+    lost response or a reload the operator sees exactly where each stands."""
+    user = _get_owned_user(db, admin, user_id)
+    from ..services import reseller_refund_status
+    return reseller_refund_status.for_user(db, user.id)
 
 
 class UnpaidCancellationRequest(BaseModel):
     confirm_unpaid: bool
+    # The previewed service's stable key (Purchase.history_key): the request
+    # then names exactly that service, never whatever reuses its id later.
+    purchase_key: Optional[str] = Field(default=None, max_length=36)
 
 
 @router.post("/{user_id}/purchases/{purchase_id}/cancel-unpaid")
@@ -1463,12 +1488,19 @@ def cancel_unpaid_purchase(
     user = _get_owned_user(db, admin, user_id)
     if not payload.confirm_unpaid:
         raise HTTPException(422, "confirm_unpaid_required")
-    from ..models_reseller_refund import ResellerRefundOperation
+    from ..services.reseller_refund_settlement import find_operation
     purchase = db.get(models.Purchase, purchase_id)
-    existing = db.query(ResellerRefundOperation).filter_by(purchase_id=purchase_id, user_id=user.id).first()
-    if (purchase is None and existing is None) or (purchase is not None and purchase.user_id != user.id):
+    existing = find_operation(db, purchase_id, purchase)
+    if existing is not None and existing.user_id != user.id:
+        existing = None
+    if payload.purchase_key is None and (
+            (purchase is None and existing is None) or (purchase is not None and purchase.user_id != user.id)):
         raise HTTPException(404, "service_not_found")
-    return reseller_refund_worker.execute(db, purchase_id=purchase_id, actor=admin)
+    if payload.purchase_key is not None and purchase is not None and purchase.user_id != user.id \
+            and purchase.history_key == payload.purchase_key:
+        raise HTTPException(404, "service_not_found")
+    return reseller_refund_worker.execute(db, purchase_id=purchase_id, actor=admin,
+                                          purchase_key=payload.purchase_key, user_id=user.id)
 
 
 @router.delete("/{user_id}/purchases/{purchase_id}")

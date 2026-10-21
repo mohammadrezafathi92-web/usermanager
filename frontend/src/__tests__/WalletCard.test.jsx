@@ -1,6 +1,7 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import AutoApprovalRateCard from "../components/AutoApprovalRateCard.jsx";
 import WalletCard from "../components/WalletCard.jsx";
 import { translate } from "../i18n/translations.js";
 import * as api from "../api/client.js";
@@ -15,7 +16,7 @@ const current = (changes = {}) => ({
   key_identity_ready: true, requested_auto_rate_limit_mode: "shadow",
   effective_auto_rate_limit_mode: "shadow", loyalty_timing_mode: "payment_event", ...changes,
 });
-const show = (lang = "en") => render(<WalletCard t={(key, vars) => translate(lang, key, vars)} />);
+const show = (lang = "en") => render(<AutoApprovalRateCard t={(key, vars) => translate(lang, key, vars)} />);
 const save = () => screen.getByRole("button", { name: "Save automatic approval limit" });
 
 beforeEach(() => {

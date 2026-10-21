@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from "react";
-import { KeyRound, Info, Plus, Trash2, Copy, Power, CreditCard, Bot, RefreshCw, DatabaseBackup, Download, Server, Eye, EyeOff, Upload, Repeat, ChevronDown, Clock, ShieldAlert, ShieldCheck } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { KeyRound, Info, Plus, Trash2, Copy, Power, CreditCard, Bot, RefreshCw, DatabaseBackup, Download, Server, Eye, EyeOff, Upload, Repeat, ChevronDown, Clock, ShieldAlert, ShieldCheck, UserCog, Globe, Wrench, AlertTriangle } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
 import TelegramTunnelCard from "../components/TelegramTunnelCard.jsx";
@@ -7,6 +7,7 @@ import LicenseCard from "../components/LicenseCard.jsx";
 import DbHealthCard from "../components/DbHealthCard.jsx";
 import ProvisioningCard from "../components/ProvisioningCard.jsx";
 import WalletCard from "../components/WalletCard.jsx";
+import AutoApprovalRateCard from "../components/AutoApprovalRateCard.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import PanelTlsCard from "../components/PanelTlsCard.jsx";
@@ -137,8 +138,8 @@ function TimezoneCard({ t }) {
       <p className="text-xs text-gray-400 mb-4">{t("settings.timezoneHint")}</p>
       <div className="flex flex-wrap items-end gap-3">
         <div>
-          <label className="block text-xs text-gray-500 mb-1">{t("settings.timezoneLabel")}</label>
-          <select className="input w-auto" value={value} onChange={(e) => setValue(Number(e.target.value))}>
+          <label htmlFor="set-timezoneLabel" className="block text-xs text-gray-500 mb-1">{t("settings.timezoneLabel")}</label>
+          <select id="set-timezoneLabel" className="input w-auto" value={value} onChange={(e) => setValue(Number(e.target.value))}>
             {OPTIONS.map((o) => (
               <option key={o.v} value={o.v}>{o.label}</option>
             ))}
@@ -156,6 +157,43 @@ function TimezoneCard({ t }) {
 // BotSaleChargeCard removed (2026-09-05): bot sales now always charge the
 // reseller's credit - see backend/app/routers/bot.py's _charge_seller -
 // so there is no longer a switch here to show.
+
+export function maskSecret(value) {
+  const text = String(value || "");
+  if (text.length <= 10) return "•".repeat(Math.max(text.length, 8));
+  return `${text.slice(0, 4)}${"•".repeat(8)}${text.slice(-4)}`;
+}
+
+function SettingsPanel({ id, active, visited, children }) {
+  return (
+    <div role="tabpanel" id={`settings-panel-${id}`} aria-labelledby={`settings-tab-${id}`}
+         hidden={active !== id} tabIndex={-1} className="focus:outline-none">
+      {visited.has(id) ? children : null}
+    </div>
+  );
+}
+
+// Shown until the first read of panel-wide settings arrived: the forms that
+// depend on it stay disabled, so nothing can be saved over unloaded values.
+function LoadState({ t, loaded, error, onRetry, loadingKey, errorKey }) {
+  if (loaded) return null;
+  return (
+    <div role={error ? "alert" : "status"}
+         className={`text-sm rounded-lg px-3 py-2 mb-4 flex flex-wrap items-center gap-2 ${error
+           ? "text-red-700 bg-red-50 dark:bg-red-500/10 dark:text-red-300"
+           : "text-gray-600 bg-gray-50 dark:bg-slate-800/60 dark:text-gray-300"}`}>
+      {error && <AlertTriangle size={16} aria-hidden="true" />}
+      <span className="flex-1">{t(error ? errorKey : loadingKey)}</span>
+      {error && <button type="button" className="btn-secondary" onClick={onRetry}>{t("settings.retryLoad")}</button>}
+    </div>
+  );
+}
+const PanelSettingsLoadState = (props) => (
+  <LoadState {...props} loadingKey="settings.panelSettingsLoading" errorKey="settings.panelSettingsLoadError" />
+);
+const BotSettingsLoadState = (props) => (
+  <LoadState {...props} loadingKey="settings.botSettingsLoading" errorKey="settings.botSettingsLoadError" />
+);
 
 export default function Settings() {
   const { isSuperadmin, isAdminOrAbove, username, telegramId, refreshMe } = useAuth();
@@ -175,23 +213,53 @@ export default function Settings() {
   // superadmins rather than showing an empty page. "general" stays
   // unconditionally visible (password change is universal) - the
   // payment/referral forms inside it are separately gated below.
+  // Grouped by what an operator is doing, not by where a value is stored
+  // (2026-10). Every card keeps its own permission check below; a tab is
+  // listed only when its role has something real in it: network, security
+  // and operations are panel-wide superadmin settings, everyone else has an
+  // account, their own payment/support, their own bot and their own backup.
   const ALL_SETTINGS_TABS = [
-    { id: "general", label: t("settings.tabGeneral"), icon: KeyRound, visible: true },
-    { id: "bot", label: t("settings.tabBot"), icon: Bot, visible: true },
-    { id: "server", label: t("settings.tabServer"), icon: Server, visible: isSuperadmin },
-    // Always visible: a superadmin sees the full-DB backup + API keys
-    // cards, every non-superadmin sees their own scoped OwnBackupCard
-    // unconditionally (no permission checkbox gates it) - manage_api_keys
-    // is no longer a grantable checkbox at all (routers/api_keys.py is
-    // superadmin-only now, see its docstring).
-    { id: "data", label: t("settings.tabData"), icon: DatabaseBackup, visible: true },
+    { id: "account", label: t("settings.tabAccount"), icon: UserCog, visible: true },
+    { id: "payment", label: t("settings.tabPayment"), icon: CreditCard, visible: true },
+    { id: "bot", label: t("settings.tabBotApproval"), icon: Bot, visible: true },
+    { id: "network", label: t("settings.tabNetwork"), icon: Globe, visible: isSuperadmin },
+    { id: "data", label: t("settings.tabDataRecovery"), icon: DatabaseBackup, visible: true },
+    { id: "security", label: t("settings.tabSecurity"), icon: ShieldCheck, visible: isSuperadmin },
+    { id: "ops", label: t("settings.tabOps"), icon: Wrench, visible: isSuperadmin },
   ];
   const SETTINGS_TABS = ALL_SETTINGS_TABS.filter((t) => t.visible);
-  const [activeTab, setActiveTab] = useState("general");
+  const initialTab = () => {
+    const fromHash = (typeof window !== "undefined" && window.location.hash.replace("#", "")) || "";
+    return ALL_SETTINGS_TABS.some((tab) => tab.id === fromHash) ? fromHash : "account";
+  };
+  const [activeTab, setActiveTab] = useState(initialTab);
+  // A tab's cards mount on first visit and then stay mounted (hidden), so
+  // switching tabs never throws away a half-typed form or re-shows a
+  // stale "saved" message as if it were new.
+  const [visitedTabs, setVisitedTabs] = useState(() => new Set([initialTab()]));
+  const tabRefs = useRef({});
+  const selectTab = (id, focus = false) => {
+    setActiveTab(id);
+    setVisitedTabs((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+    try { window.history.replaceState(null, "", `#${id}`); } catch { /* not in a browser */ }
+    if (focus) tabRefs.current[id]?.focus();
+  };
+  const onTabKeyDown = (event, index) => {
+    const rtl = (document.documentElement.getAttribute("dir") || "rtl") === "rtl";
+    const count = SETTINGS_TABS.length;
+    let next = null;
+    if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = count - 1;
+    else if (event.key === (rtl ? "ArrowLeft" : "ArrowRight")) next = (index + 1) % count;
+    else if (event.key === (rtl ? "ArrowRight" : "ArrowLeft")) next = (index - 1 + count) % count;
+    if (next === null) return;
+    event.preventDefault();
+    selectTab(SETTINGS_TABS[next].id, true);
+  };
 
   useEffect(() => {
     if (!SETTINGS_TABS.some((tab) => tab.id === activeTab) && SETTINGS_TABS.length > 0) {
-      setActiveTab(SETTINGS_TABS[0].id);
+      selectTab(SETTINGS_TABS[0].id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [SETTINGS_TABS.map((t) => t.id).join(",")]);
@@ -221,6 +289,14 @@ export default function Settings() {
   const [keyError, setKeyError] = useState("");
   const [savingKey, setSavingKey] = useState(false);
   const [copiedId, setCopiedId] = useState(null);
+  // Keys are shown masked; each is revealed only on its own explicit click
+  // and hidden again on reload. Nothing about the key itself changes.
+  const [revealedKeys, setRevealedKeys] = useState(() => new Set());
+  const toggleRevealKey = (id) => setRevealedKeys((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
 
   const loadKeys = () => fetchApiKeys().then((res) => setKeys(res.data));
 
@@ -332,16 +408,12 @@ export default function Settings() {
   // below (disabled until true) so there's no window where the user can
   // type before the merge happens.
   const [settingsLoaded, setSettingsLoaded] = useState(false);
-
-  useEffect(() => {
-    // routers/panel_settings.py's whole router is now require_admin_or_above
-    // (task #26 - PanelSettings is one panel-wide row, editing it as a
-    // Seller could affect every other Admin's/Seller's checkout, HA, and
-    // panel port) - calling this as a Seller would just 403, so skip it
-    // entirely and leave payment/ha/port at their (unused-by-a-Seller)
-    // defaults instead of logging a console error on every page load.
-    if (!isAdminOrAbove) return;
-    fetchPanelSettings().then((res) => {
+  // A failed first read leaves every panel-wide form disabled with a retry,
+  // never editable with empty defaults that a save would write back.
+  const [settingsLoadError, setSettingsLoadError] = useState(false);
+  const loadPanelSettings = () => {
+    setSettingsLoadError(false);
+    return fetchPanelSettings().then((res) => {
       setPayment({
         payment_card_number: "", payment_card_holder: "", payment_instructions: "", topup_presets: "",
         support_contact_text: "",
@@ -351,7 +423,18 @@ export default function Settings() {
       setPortForm((p) => ({ ...p, ...res.data }));
       setNewPort(String(res.data.panel_web_port || 80));
       setSettingsLoaded(true);
-    });
+    }).catch(() => setSettingsLoadError(true));
+  };
+
+  useEffect(() => {
+    // routers/panel_settings.py's whole router is now require_admin_or_above
+    // (task #26 - PanelSettings is one panel-wide row, editing it as a
+    // Seller could affect every other Admin's/Seller's checkout, HA, and
+    // panel port) - calling this as a Seller would just 403, so skip it
+    // entirely and leave payment/ha/port at their (unused-by-a-Seller)
+    // defaults instead of logging a console error on every page load.
+    if (!isAdminOrAbove) return;
+    loadPanelSettings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdminOrAbove]);
 
@@ -601,13 +684,22 @@ export default function Settings() {
   const [restartingBot, setRestartingBot] = useState(false);
   const [showBotToken, setShowBotToken] = useState(false);
 
-  const loadBotSettings = () =>
-    fetchTelegramBotSettings().then((res) => {
+  // botSaved is the last state read back from the server - what is in
+  // effect - as opposed to botForm, the draft on screen.
+  const [botSaved, setBotSaved] = useState(null);
+  const [botLoaded, setBotLoaded] = useState(false);
+  const [botLoadError, setBotLoadError] = useState(false);
+  const loadBotSettings = () => {
+    setBotLoadError(false);
+    return fetchTelegramBotSettings().then((res) => {
       const { running, last_error, bot_username, remote_mode, remote_host, remote_ssh_port, remote_ssh_username, remote_status, remote_deployed_at, ...form } = res.data;
       setBotForm((f) => ({ ...f, ...form }));
+      setBotSaved(form);
       setBotStatus({ running, last_error, bot_username });
       setRemoteStatus({ remote_mode, remote_host, remote_ssh_port, remote_ssh_username, remote_status, remote_deployed_at });
-    });
+      setBotLoaded(true);
+    }).catch(() => setBotLoadError(true));
+  };
 
   useEffect(() => {
     // The shared/global bot's GET is now superadmin-only server-side (3-tier
@@ -797,29 +889,36 @@ export default function Settings() {
     <Layout>
       <Topbar title={t("settings.title")} subtitle={t("settings.subtitle")} />
 
-      <div className="flex items-center gap-1 border-b border-gray-100 dark:border-slate-800 mb-4 overflow-x-auto">
-        {SETTINGS_TABS.map((tab) => {
+      <div role="tablist" aria-label={t("settings.title")}
+           className="flex items-center gap-1 border-b border-gray-100 dark:border-slate-800 mb-4 overflow-x-auto">
+        {SETTINGS_TABS.map((tab, index) => {
           const TabIcon = tab.icon;
           const active = activeTab === tab.id;
           return (
             <button
               key={tab.id}
+              ref={(el) => { tabRefs.current[tab.id] = el; }}
               type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+              role="tab"
+              id={`settings-tab-${tab.id}`}
+              aria-selected={active}
+              aria-controls={`settings-panel-${tab.id}`}
+              tabIndex={active ? 0 : -1}
+              onClick={() => selectTab(tab.id)}
+              onKeyDown={(e) => onTabKeyDown(e, index)}
+              className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-t-lg ${
                 active
-                  ? "border-brand-600 text-brand-600"
+                  ? "border-brand-600 text-brand-600 dark:text-brand-400 dark:border-brand-400"
                   : "border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
               }`}
             >
-              <TabIcon size={16} /> {tab.label}
+              <TabIcon size={16} aria-hidden="true" /> {tab.label}
             </button>
           );
         })}
       </div>
 
-      {activeTab === "general" && (
-        <>
+      <SettingsPanel id="account" active={activeTab} visited={visitedTabs}>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
         <div className="card">
           <div className="flex items-center gap-2 mb-4">
@@ -830,12 +929,12 @@ export default function Settings() {
           </div>
           <form onSubmit={submit} className="space-y-4">
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.currentPassword")}</label>
-              <input type="password" className="input" required value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} />
+              <label htmlFor="set-currentPassword" className="block text-sm text-gray-600 mb-1">{t("settings.currentPassword")}</label>
+              <input id="set-currentPassword" type="password" className="input" required value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} />
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.newPassword")}</label>
-              <input type="password" className="input" required minLength={6} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+              <label htmlFor="set-newPassword" className="block text-sm text-gray-600 mb-1">{t("settings.newPassword")}</label>
+              <input id="set-newPassword" type="password" className="input" required minLength={6} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
             </div>
             {message && (
               <div className={`text-sm rounded-lg px-3 py-2 ${message.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
@@ -860,12 +959,12 @@ export default function Settings() {
               {t("settings.currentUsername")}: <span dir="ltr">{username}</span>
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.newUsername")}</label>
-              <input type="text" className="input" required dir="ltr" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} />
+              <label htmlFor="set-newUsername" className="block text-sm text-gray-600 mb-1">{t("settings.newUsername")}</label>
+              <input id="set-newUsername" type="text" className="input" required dir="ltr" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} />
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.currentPassword")}</label>
-              <input type="password" className="input" required value={usernamePassword} onChange={(e) => setUsernamePassword(e.target.value)} />
+              <label htmlFor="set-currentPassword-2" className="block text-sm text-gray-600 mb-1">{t("settings.currentPassword")}</label>
+              <input id="set-currentPassword-2" type="password" className="input" required value={usernamePassword} onChange={(e) => setUsernamePassword(e.target.value)} />
             </div>
             {usernameMessage && (
               <div className={`text-sm rounded-lg px-3 py-2 ${usernameMessage.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
@@ -888,8 +987,8 @@ export default function Settings() {
           <p className="text-xs text-gray-400 mb-4">{t("settings.myTelegramIdHint")}</p>
           <form onSubmit={submitTelegramId} className="space-y-4">
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.telegramIdLabel")}</label>
-              <input
+              <label htmlFor="set-telegramIdLabel" className="block text-sm text-gray-600 mb-1">{t("settings.telegramIdLabel")}</label>
+              <input id="set-telegramIdLabel"
                 type="number"
                 className="input"
                 dir="ltr"
@@ -924,7 +1023,10 @@ export default function Settings() {
           </ul>
         </div>
       </div>
+      </SettingsPanel>
 
+      <SettingsPanel id="payment" active={activeTab} visited={visitedTabs}>
+      {isSuperadmin && <PanelSettingsLoadState t={t} loaded={settingsLoaded} error={settingsLoadError} onRetry={loadPanelSettings} />}
       {/* Every level-2 Admin AND level-3 Seller now has their own dedicated
           bot with their own customers, who need to deposit into THAT
           reseller's card - not the superadmin's global one. Superadmin
@@ -945,8 +1047,8 @@ export default function Settings() {
         </p>
         <form onSubmit={submitPayment} className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.cardNumber")}</label>
-            <input
+            <label htmlFor="set-cardNumber" className="block text-sm text-gray-600 mb-1">{t("settings.cardNumber")}</label>
+            <input id="set-cardNumber"
               className="input"
               dir="ltr"
               placeholder="6037-XXXX-XXXX-XXXX"
@@ -955,16 +1057,16 @@ export default function Settings() {
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.cardHolder")}</label>
-            <input
+            <label htmlFor="set-cardHolder" className="block text-sm text-gray-600 mb-1">{t("settings.cardHolder")}</label>
+            <input id="set-cardHolder"
               className="input"
               value={payment.payment_card_holder || ""}
               onChange={(e) => setPayment((p) => ({ ...p, payment_card_holder: e.target.value }))}
             />
           </div>
           <div className="md:col-span-2">
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.extraInstructions")}</label>
-            <textarea
+            <label htmlFor="set-extraInstructions" className="block text-sm text-gray-600 mb-1">{t("settings.extraInstructions")}</label>
+            <textarea id="set-extraInstructions"
               className="input"
               rows={2}
               placeholder={t("settings.extraInstructionsPlaceholder")}
@@ -973,8 +1075,8 @@ export default function Settings() {
             />
           </div>
           <div className="md:col-span-2">
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.topupPresets")}</label>
-            <input
+            <label htmlFor="set-topupPresets" className="block text-sm text-gray-600 mb-1">{t("settings.topupPresets")}</label>
+            <input id="set-topupPresets"
               className="input"
               dir="ltr"
               placeholder="50000, 100000, 200000"
@@ -989,7 +1091,7 @@ export default function Settings() {
             </div>
           )}
           <div className="md:col-span-2">
-            <button type="submit" disabled={savingPayment} className="btn-primary">
+            <button type="submit" disabled={savingPayment || !settingsLoaded} className="btn-primary">
               {savingPayment ? t("settings.saving") : t("settings.savePaymentInfo")}
             </button>
           </div>
@@ -1036,8 +1138,8 @@ export default function Settings() {
         <p className="text-xs text-gray-400 mb-4">{t("settings.growthHint")}</p>
         <form onSubmit={submitPayment} className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="md:col-span-2">
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.supportText")}</label>
-            <textarea
+            <label htmlFor="set-supportText" className="block text-sm text-gray-600 mb-1">{t("settings.supportText")}</label>
+            <textarea id="set-supportText"
               className="input"
               rows={2}
               placeholder={t("settings.supportTextPlaceholder")}
@@ -1047,23 +1149,22 @@ export default function Settings() {
           </div>
 
           <div className="md:col-span-2">
-            <button type="submit" disabled={savingPayment} className="btn-primary">
-              {savingPayment ? t("settings.saving") : t("settings.savePaymentInfo")}
+            <button type="submit" disabled={savingPayment || !settingsLoaded} className="btn-primary">
+              {savingPayment ? t("settings.saving") : t("settings.saveSupportText")}
             </button>
           </div>
         </form>
       </div>
       )}
-        </>
-      )}
+      </SettingsPanel>
 
-      {activeTab === "bot" && isSuperadmin && (
+      <SettingsPanel id="bot" active={activeTab} visited={visitedTabs}>
+      {isSuperadmin && (
         <div className="mb-5">
           <TelegramTunnelCard />
         </div>
       )}
-      {activeTab === "bot" && (
-        <>
+      {isSuperadmin && <BotSettingsLoadState t={t} loaded={botLoaded} error={botLoadError} onRetry={loadBotSettings} />}
       {isSuperadmin && (
         <>
       <div className="card mb-4">
@@ -1086,9 +1187,9 @@ export default function Settings() {
         )}
         <form onSubmit={submitBot} className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="md:col-span-2">
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.botToken")}</label>
+            <label htmlFor="set-botToken" className="block text-sm text-gray-600 mb-1">{t("settings.botToken")}</label>
             <div className="relative">
-              <input
+              <input id="set-botToken"
                 className="input pl-10"
                 dir="ltr"
                 type={showBotToken ? "text" : "password"}
@@ -1101,6 +1202,9 @@ export default function Settings() {
                 className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-brand-600"
                 onClick={() => setShowBotToken((v) => !v)}
                 title={showBotToken ? t("settings.hide") : t("settings.show")}
+                aria-label={showBotToken ? t("settings.hide") : t("settings.show")}
+                aria-pressed={showBotToken}
+                aria-controls="set-botToken"
               >
                 {showBotToken ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
@@ -1112,8 +1216,8 @@ export default function Settings() {
               way to end up with a bot that starts and then receives
               nothing. */}
           <div className="md:col-span-2">
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.telegramProxyUrl")}</label>
-            <input
+            <label htmlFor="set-telegramProxyUrl" className="block text-sm text-gray-600 mb-1">{t("settings.telegramProxyUrl")}</label>
+            <input id="set-telegramProxyUrl"
               className="input"
               dir="ltr"
               placeholder="http://1.2.3.4:8081"
@@ -1123,8 +1227,8 @@ export default function Settings() {
             <div className="hint">{t("settings.telegramProxyUrlHint")}</div>
           </div>
           <div className="md:col-span-2">
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.telegramSocksUrl")}</label>
-            <input
+            <label htmlFor="set-telegramSocksUrl" className="block text-sm text-gray-600 mb-1">{t("settings.telegramSocksUrl")}</label>
+            <input id="set-telegramSocksUrl"
               className="input"
               dir="ltr"
               placeholder="socks5://user:pass@1.2.3.4:1080"
@@ -1140,8 +1244,8 @@ export default function Settings() {
               could not deliver. The two fields above still accept a proxy
               URL typed in by hand, which is the path that does work. */}
           <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.adminIds")}</label>
-            <input
+            <label htmlFor="set-adminIds" className="block text-sm text-gray-600 mb-1">{t("settings.adminIds")}</label>
+            <input id="set-adminIds"
               className="input"
               dir="ltr"
               placeholder="123456789, 987654321"
@@ -1163,8 +1267,8 @@ export default function Settings() {
             )}
           </div>
           <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.approvalChatIds")}</label>
-            <input
+            <label htmlFor="set-approvalChatIds" className="block text-sm text-gray-600 mb-1">{t("settings.approvalChatIds")}</label>
+            <input id="set-approvalChatIds"
               className="input"
               dir="ltr"
               placeholder={t("settings.approvalChatIdsPlaceholder")}
@@ -1198,23 +1302,23 @@ export default function Settings() {
               rather than in @BotFather because it applies to EVERY bot this
               panel runs, and doing it by hand per reseller never ends. */}
           <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.requiredChannelId")}</label>
-            <input
+            <label htmlFor="set-requiredChannelId" className="block text-sm text-gray-600 mb-1">{t("settings.requiredChannelId")}</label>
+            <input id="set-requiredChannelId"
               className="input" dir="ltr" placeholder="@my_channel or -1001234567890"
               value={botForm.required_channel_id || ""}
               onChange={(e) => setBotForm((f) => ({ ...f, required_channel_id: e.target.value }))}
             />
             <div className="hint">{t("settings.requiredChannelHint")}</div>
-            <label className="block text-sm text-gray-600 mb-1 mt-3">{t("settings.requiredChannelUrl")}</label>
-            <input
+            <label htmlFor="set-requiredChannelUrl" className="block text-sm text-gray-600 mb-1 mt-3">{t("settings.requiredChannelUrl")}</label>
+            <input id="set-requiredChannelUrl"
               className="input" dir="ltr" placeholder="https://t.me/my_channel"
               value={botForm.required_channel_url || ""}
               onChange={(e) => setBotForm((f) => ({ ...f, required_channel_url: e.target.value }))}
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.customerTerms")}</label>
-            <textarea
+            <label htmlFor="set-customerTerms" className="block text-sm text-gray-600 mb-1">{t("settings.customerTerms")}</label>
+            <textarea id="set-customerTerms"
               className="input min-h-40" maxLength={3500} rows={8}
               value={botForm.customer_terms_text || ""}
               onChange={(e) => setBotForm((f) => ({ ...f, customer_terms_text: e.target.value }))}
@@ -1223,8 +1327,8 @@ export default function Settings() {
             <div className="hint">{t("settings.customerTermsHint")}</div>
           </div>
           <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.miniappButtonLabel")}</label>
-            <input
+            <label htmlFor="set-miniappButtonLabel" className="block text-sm text-gray-600 mb-1">{t("settings.miniappButtonLabel")}</label>
+            <input id="set-miniappButtonLabel"
               className="input"
               maxLength={32}
               placeholder="🛍 فروشگاه"
@@ -1299,8 +1403,8 @@ export default function Settings() {
                   chose is still visible, and turning the limit back on
                   restores it instead of starting from a default. */}
               <div className={botForm.auto_approve_ignore_hours ? "opacity-40 pointer-events-none" : ""}>
-                <label className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveFromHour")}</label>
-                <select
+                <label htmlFor="set-autoApproveFromHour" className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveFromHour")}</label>
+                <select id="set-autoApproveFromHour"
                   className="input input-sm"
                   value={botForm.auto_approve_from_hour ?? 9}
                   onChange={(e) => setBotForm((f) => ({ ...f, auto_approve_from_hour: Number(e.target.value) }))}
@@ -1309,8 +1413,8 @@ export default function Settings() {
                 </select>
               </div>
               <div className={botForm.auto_approve_ignore_hours ? "opacity-40 pointer-events-none" : ""}>
-                <label className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveToHour")}</label>
-                <select
+                <label htmlFor="set-autoApproveToHour" className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveToHour")}</label>
+                <select id="set-autoApproveToHour"
                   className="input input-sm"
                   value={botForm.auto_approve_to_hour ?? 23}
                   onChange={(e) => setBotForm((f) => ({ ...f, auto_approve_to_hour: Number(e.target.value) }))}
@@ -1319,8 +1423,8 @@ export default function Settings() {
                 </select>
               </div>
               <div>
-                <label className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveMaxAmount")}</label>
-                <MoneyInput
+                <label htmlFor="set-autoApproveMaxAmount" className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveMaxAmount")}</label>
+                <MoneyInput id="set-autoApproveMaxAmount"
                   small
                   value={botForm.auto_approve_max_amount ?? 0}
                   onChange={(v) => setBotForm((f) => ({ ...f, auto_approve_max_amount: v === "" ? 0 : Number(v) }))}
@@ -1348,7 +1452,7 @@ export default function Settings() {
             </div>
           )}
           <div className="md:col-span-2 flex gap-2">
-            <button type="submit" disabled={savingBot} className="btn-primary">
+            <button type="submit" disabled={savingBot || !botLoaded} className="btn-primary">
               {savingBot ? t("settings.saving") : t("settings.saveAndApply")}
             </button>
             <button type="button" disabled={restartingBot} className="btn-secondary" onClick={onRestartBot}>
@@ -1357,6 +1461,8 @@ export default function Settings() {
           </div>
         </form>
       </div>
+
+      <AutoApprovalRateCard t={t} summary={botSaved} />
 
       <div className="card mb-4">
         <div className="flex items-center justify-between mb-4">
@@ -1382,8 +1488,8 @@ export default function Settings() {
         {!remoteStatus.remote_mode ? (
           <form onSubmit={onDeployRemoteBot} className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.secondServerIp")}</label>
-              <input
+              <label htmlFor="set-secondServerIp" className="block text-sm text-gray-600 mb-1">{t("settings.secondServerIp")}</label>
+              <input id="set-secondServerIp"
                 className="input"
                 dir="ltr"
                 required
@@ -1393,8 +1499,8 @@ export default function Settings() {
               />
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.sshPort")}</label>
-              <input
+              <label htmlFor="set-sshPort" className="block text-sm text-gray-600 mb-1">{t("settings.sshPort")}</label>
+              <input id="set-sshPort"
                 className="input"
                 dir="ltr"
                 type="number"
@@ -1403,8 +1509,8 @@ export default function Settings() {
               />
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.sshUsername")}</label>
-              <input
+              <label htmlFor="set-sshUsername" className="block text-sm text-gray-600 mb-1">{t("settings.sshUsername")}</label>
+              <input id="set-sshUsername"
                 className="input"
                 dir="ltr"
                 value={deployForm.ssh_username}
@@ -1412,8 +1518,8 @@ export default function Settings() {
               />
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.sshPassword")}</label>
-              <input
+              <label htmlFor="set-sshPassword" className="block text-sm text-gray-600 mb-1">{t("settings.sshPassword")}</label>
+              <input id="set-sshPassword"
                 className="input"
                 dir="ltr"
                 type="password"
@@ -1423,8 +1529,8 @@ export default function Settings() {
               />
             </div>
             <div className="md:col-span-2">
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.panelPublicUrl")}</label>
-              <input
+              <label htmlFor="set-panelPublicUrl" className="block text-sm text-gray-600 mb-1">{t("settings.panelPublicUrl")}</label>
+              <input id="set-panelPublicUrl"
                 className="input"
                 dir="ltr"
                 placeholder={t("settings.panelPublicUrlPlaceholder")}
@@ -1448,8 +1554,8 @@ export default function Settings() {
               )}
             </div>
             <div className="max-w-md">
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.stopSshPasswordLabel")}</label>
-              <input
+              <label htmlFor="set-stopSshPasswordLabel" className="block text-sm text-gray-600 mb-1">{t("settings.stopSshPasswordLabel")}</label>
+              <input id="set-stopSshPasswordLabel"
                 className="input"
                 dir="ltr"
                 type="password"
@@ -1483,22 +1589,13 @@ export default function Settings() {
           (they have the shared/global bot instead). */}
       {!isSuperadmin && <OwnBotCard t={t} />}
       {!isSuperadmin && <OwnAutoApproveCard t={t} />}
-        </>
-      )}
+      </SettingsPanel>
 
-      {activeTab === "server" && (
-        <>
-      {/* Design review item #6 (2026-09-10, user request): same 2-column
-          grid as General/Data, all the way down this tab - except
-          IpBansCard below, which stays full-width on its own (it's a
-          growing list of banned IPs, not a fixed-size settings form, so
-          pairing it with anything else would look wrong the moment the
-          list gets long). */}
+      <SettingsPanel id="network" active={activeTab} visited={visitedTabs}>
+      {isSuperadmin && (
+      <>
+      {isSuperadmin && <PanelSettingsLoadState t={t} loaded={settingsLoaded} error={settingsLoadError} onRetry={loadPanelSettings} />}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      {/* License swapped with Panel Port (2026-09-10, user request) - pairs
-          the two tallest cards (License, HA) together in the second
-          column instead of License+Update / HA+Port, which left a lot of
-          empty space under the short Port card next to HA. */}
       {isSuperadmin && (
         <div className="card mb-4">
           <div className="flex items-center gap-2 mb-4">
@@ -1519,8 +1616,8 @@ export default function Settings() {
 
           <div className="bg-gray-50 rounded-lg p-3 space-y-3">
             <div>
-              <label className="block text-xs text-gray-500 mb-1">{t("settings.newPort")}</label>
-              <input
+              <label htmlFor="set-newPort" className="block text-xs text-gray-500 mb-1">{t("settings.newPort")}</label>
+              <input id="set-newPort"
                 type="number"
                 className="input"
                 dir="ltr"
@@ -1528,7 +1625,7 @@ export default function Settings() {
                 onChange={(e) => setNewPort(e.target.value)}
               />
             </div>
-            <button type="button" className="btn-primary w-full" disabled={changingPort} onClick={onChangePort}>
+            <button type="button" className="btn-primary w-full" disabled={changingPort || !settingsLoaded} onClick={onChangePort}>
               {changingPort ? t("settings.applyingPort") : t("settings.changePanelPort")}
             </button>
             {portForm.panel_port_changed_at && (
@@ -1537,22 +1634,7 @@ export default function Settings() {
           </div>
         </div>
       )}
-      {/* Moved here from the "general" tab (2026-09-10 design pass, item
-          #3 of the panel owner's requested review) - both are panel-wide
-          server/infrastructure concerns (what version is running, the
-          server's display timezone), the same family as License/HA/port
-          below, not personal-account settings like the cards above this
-          tab. */}
-      {/* دامنه و SSL - on the Server tab, next to the panel port and
-          the licence, since it is the same kind of decision: it changes
-          the address everyone reaches this panel on. */}
       {isSuperadmin && <PanelTlsCard />}
-      {isSuperadmin && <PanelUpdateCard t={t} />}
-      {isSuperadmin && <TimezoneCard t={t} />}
-      {/* Folded out of the old combined "growth" card on the General tab
-          (2026-09-10 design pass, item #4) - this is the panel's own
-          public address, same "server identity" family as License/
-          Update/Timezone right above, not a support/growth concept. */}
       {isSuperadmin && (
         <div className="card mb-4">
           <div className="flex items-center gap-2 mb-4">
@@ -1575,12 +1657,236 @@ export default function Settings() {
                 {publicUrlMsg.text}
               </div>
             )}
-            <button type="submit" disabled={savingPublicUrl} className="btn-primary mt-3">
+            <button type="submit" disabled={savingPublicUrl || !settingsLoaded} className="btn-primary mt-3">
               {savingPublicUrl ? t("settings.saving") : t("common.save")}
             </button>
           </form>
         </div>
       )}
+      </div>
+      </>
+      )}
+      </SettingsPanel>
+
+      <SettingsPanel id="data" active={activeTab} visited={visitedTabs}>
+      {!isSuperadmin && <OwnBackupCard t={t} />}
+      {isSuperadmin && (
+      <div className="card mb-4">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+              <DatabaseBackup size={15} />
+            </span>
+            <h3 className="font-bold text-gray-700">{t("settings.dbBackupTitle")}</h3>
+          </div>
+          <button className="btn-primary" disabled={runningBackup} onClick={onRunBackup}>
+            {runningBackup ? t("settings.creatingBackup") : t("settings.getInstantBackup")}
+          </button>
+        </div>
+        <p className="text-xs text-gray-400 mb-4">
+          {t("settings.backupDescription")}
+        </p>
+        {backupMsg && (
+          <div className={`text-sm rounded-lg px-3 py-2 mb-4 ${backupMsg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
+            {backupMsg.text}
+          </div>
+        )}
+        <button
+          type="button"
+          className="w-full flex items-center justify-between border border-gray-100 rounded-xl px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 transition"
+          onClick={() => setBackupsOpen((v) => !v)}
+        >
+          <span className="font-bold">{t("settings.backupListToggle", { count: backups.length })}</span>
+          <ChevronDown size={16} className={`transition-transform ${backupsOpen ? "rotate-180" : ""}`} />
+        </button>
+        {backupsOpen && (
+          <div className="space-y-2 mt-2">
+            {backups.map((b) => (
+              <div key={b.filename} className="flex items-center justify-between border border-gray-100 rounded-xl px-4 py-3">
+                <div>
+                  <div className="font-mono text-sm text-gray-800">{b.filename}</div>
+                  <div className="hint">
+                    {formatDateTime(b.created_at, language)} — {formatBytes(b.size_bytes)}
+                  </div>
+                </div>
+                <button
+                  className="btn-secondary"
+                  disabled={downloadingFile === b.filename}
+                  onClick={() => onDownloadBackup(b.filename)}
+                >
+                  <Download size={14} /> {downloadingFile === b.filename ? "..." : t("settings.download")}
+                </button>
+              </div>
+            ))}
+            {backups.length === 0 && <div className="text-center text-gray-400 py-6 text-sm">{t("settings.noBackupsYet")}</div>}
+          </div>
+        )}
+
+      </div>
+      )}
+      {isSuperadmin && (
+      <>
+      <DbHealthCard t={t} language={language} />
+      {isSuperadmin && (
+        <div className="card mb-4 border-red-200 dark:border-red-500/40" role="region" aria-labelledby="settings-restore-title">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-7 h-7 rounded-lg bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400 flex items-center justify-center shrink-0">
+              <Upload size={15} />
+            </span>
+            <h3 id="settings-restore-title" className="font-bold text-red-700 dark:text-red-400">{t("settings.restoreDbTitle")}</h3>
+          </div>
+          <p className="text-sm rounded-lg px-3 py-2 mb-3 text-red-700 bg-red-50 dark:bg-red-500/10 dark:text-red-300">{t("settings.restoreDangerWarning")}</p>
+          <p className="text-xs text-gray-400 mb-3">
+            {t("settings.restoreDbDescription1")}<span dir="ltr">.db.gz</span> {t("settings.restoreDbDescription2")} <span dir="ltr">.db</span>{t("settings.restoreDbDescription3")}
+          </p>
+          {restoreMsg && (
+            <div className={`text-sm rounded-lg px-3 py-2 mb-3 ${restoreMsg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
+              {restoreMsg.text}
+            </div>
+          )}
+          <label className={`btn-secondary inline-flex cursor-pointer ${restoring ? "opacity-60 pointer-events-none" : ""}`}>
+            <Upload size={14} aria-hidden="true" /> {restoring ? t("settings.uploadingRestoring") : t("settings.selectBackupFile")}
+            <input type="file" multiple className="sr-only" onChange={onRestoreFile} disabled={restoring}
+              aria-label={t("settings.selectBackupFile")} />
+          </label>
+        </div>
+      )}
+      </>
+      )}
+      </SettingsPanel>
+
+      <SettingsPanel id="security" active={activeTab} visited={visitedTabs}>
+      {isSuperadmin && (
+      <>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="card">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+              <KeyRound size={15} />
+            </span>
+            <h3 className="font-bold text-gray-700">{t("settings.apiKeysTitle")}</h3>
+          </div>
+          <button className="btn-primary" onClick={() => { setKeyError(""); setKeyModalOpen(true); }}>
+            <Plus size={16} /> {t("settings.newKey")}
+          </button>
+        </div>
+
+        <div className="text-xs text-gray-500 bg-gray-50 dark:bg-slate-800/60 rounded-xl p-3 mb-4 space-y-1 min-w-0">
+          <div>{t("settings.apiBaseUrl", { value: "" })}<span dir="ltr" className="font-mono break-all">{apiBase}</span></div>
+          <div>{t("settings.requiredHeader")} <span className="font-mono">X-API-Key: &lt;key&gt;</span></div>
+          <div>{t("settings.docsHint")}</div>
+        </div>
+
+        <div className="space-y-2">
+          {keys.map((k) => (
+            <div key={k.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border border-gray-100 dark:border-slate-800 rounded-xl px-4 py-3">
+              <div className="min-w-0">
+                <div className="font-medium text-gray-800 text-sm">{k.label}</div>
+                <div className="flex flex-wrap items-center gap-1 mt-1">
+                  <span className="badge-neutral">{t(`settings.apiKeyType.${k.key_type}`)}</span>
+                  {k.owner_admin_username && (
+                    <span className="text-xs text-gray-500">{t("settings.apiKeyOwner", { owner: k.owner_admin_username })}</span>
+                  )}
+                  {k.key_type === "tenant_integration" && !k.scope_enforced && (
+                    <span className="text-xs text-amber-600">{t("settings.apiKeyPendingPhaseC")}</span>
+                  )}
+                </div>
+                <div className="text-xs text-gray-500 dark:text-gray-400 font-mono mt-1 flex flex-wrap items-center gap-1 min-w-0">
+                  <span dir="ltr" className="break-all" data-testid={`api-key-value-${k.id}`}>
+                    {revealedKeys.has(k.id) ? k.key : maskSecret(k.key)}
+                  </span>
+                  <button type="button" onClick={() => toggleRevealKey(k.id)} aria-pressed={revealedKeys.has(k.id)}
+                    aria-label={t(revealedKeys.has(k.id) ? "settings.hideApiKey" : "settings.showApiKey", { label: k.label })}
+                    className="p-2 rounded-lg text-gray-400 hover:text-brand-600 hover:bg-gray-50 dark:hover:bg-slate-800">
+                    {revealedKeys.has(k.id) ? <EyeOff size={14} aria-hidden="true" /> : <Eye size={14} aria-hidden="true" />}
+                  </button>
+                  <button type="button" onClick={() => onCopyKey(k.id, k.key)} aria-label={t("settings.copyApiKey", { label: k.label })}
+                    className="p-2 rounded-lg text-gray-400 hover:text-brand-600 hover:bg-gray-50 dark:hover:bg-slate-800">
+                    <Copy size={14} aria-hidden="true" />
+                  </button>
+                  {copiedId === k.id && <span role="status" className="text-emerald-600">{t("userDetail.copied")}</span>}
+                </div>
+                <div className="text-xs text-gray-300 mt-1">
+                  {t("settings.createdLabel", { created: formatDateTime(k.created_at, language), lastUsed: k.last_used_at ? formatDateTime(k.last_used_at, language) : t("settings.neverUsed") })}
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <span className={`${k.enabled ? "badge-success" : "badge-neutral"}`}>
+                  {k.enabled ? t("status.active") : t("status.disabled")}
+                </span>
+                {k.key_type === "tenant_integration" && !k.enabled ? (
+                  <button
+                    className="btn-secondary"
+                    onClick={() => onActivateKey(k.id)}
+                    title={t("settings.activateKeyHint")}
+                  >
+                    <ShieldCheck size={14} /> {t("settings.activateKey")}
+                  </button>
+                ) : (
+                  <button
+                    className="btn-secondary"
+                    onClick={() => onToggleKey(k.id)}
+                    title={k.enabled ? t("settings.disableKey") : t("settings.enableKey")}
+                    aria-label={`${k.enabled ? t("settings.disableKey") : t("settings.enableKey")}: ${k.label}`}
+                  >
+                    <Power size={14} />
+                  </button>
+                )}
+                <button type="button" className="btn-danger" onClick={() => onDeleteKey(k.id)}
+                  aria-label={t("settings.deleteApiKey", { label: k.label })}>
+                  <Trash2 size={14} aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          ))}
+          {keys.length === 0 && <div className="text-center text-gray-400 py-6 text-sm">{t("settings.noKeysYet")}</div>}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
+            <ShieldAlert size={15} />
+          </span>
+          <h3 className="font-bold text-gray-700">{t("settings.packageNodeScopeTitle")}</h3>
+        </div>
+        <p className="text-xs text-gray-400 mb-4">{t("settings.packageNodeScopeDescription")}</p>
+
+        {packageNodeScopeError && (
+          <div className="text-xs text-rose-600 bg-rose-50 dark:bg-rose-500/10 rounded-lg px-3 py-2 mb-3">
+            {packageNodeScopeError}
+          </div>
+        )}
+
+        <div className="flex items-center justify-between">
+          <span className={packageNodeScopeEnabled ? "badge-success" : "badge-neutral"}>
+            {packageNodeScopeEnabled ? t("status.active") : t("status.disabled")}
+          </span>
+          {packageNodeScopeEnabled ? (
+            <button className="btn-secondary" disabled={packageNodeScopeBusy} onClick={onDisablePackageNodeScope}>
+              {t("settings.packageNodeScopeDisable")}
+            </button>
+          ) : (
+            <button className="btn-primary" disabled={packageNodeScopeBusy} onClick={onEnablePackageNodeScope}>
+              <ShieldCheck size={14} /> {t("settings.packageNodeScopeEnable")}
+            </button>
+          )}
+        </div>
+      </div>
+      </div>
+      <IpBansCard t={t} language={language} />
+      </>
+      )}
+      </SettingsPanel>
+
+      <SettingsPanel id="ops" active={activeTab} visited={visitedTabs}>
+      {isSuperadmin && (
+      <>
+      {isSuperadmin && <PanelSettingsLoadState t={t} loaded={settingsLoaded} error={settingsLoadError} onRetry={loadPanelSettings} />}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {isSuperadmin && <PanelUpdateCard t={t} />}
+      {isSuperadmin && <TimezoneCard t={t} />}
       {isSuperadmin && (
         <div className="card mb-4">
           <div className="flex items-center justify-between mb-4">
@@ -1650,8 +1956,8 @@ export default function Settings() {
               <label htmlFor="ha_enabled" className="text-sm text-gray-600">{t("settings.haEnabledLabel")}</label>
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.thisServerRole")}</label>
-              <select
+              <label htmlFor="set-thisServerRole" className="block text-sm text-gray-600 mb-1">{t("settings.thisServerRole")}</label>
+              <select id="set-thisServerRole"
                 className="input"
                 disabled={!settingsLoaded}
                 value={ha.ha_mode || "standby"}
@@ -1662,8 +1968,8 @@ export default function Settings() {
               </select>
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.peerServerAddress")}</label>
-              <input
+              <label htmlFor="set-peerServerAddress" className="block text-sm text-gray-600 mb-1">{t("settings.peerServerAddress")}</label>
+              <input id="set-peerServerAddress"
                 className="input"
                 dir="ltr"
                 disabled={!settingsLoaded}
@@ -1673,8 +1979,8 @@ export default function Settings() {
               />
             </div>
             <div className="md:col-span-2">
-              <label className="block text-sm text-gray-600 mb-1">{t("settings.peerApiKey")}</label>
-              <input
+              <label htmlFor="set-peerApiKey" className="block text-sm text-gray-600 mb-1">{t("settings.peerApiKey")}</label>
+              <input id="set-peerApiKey"
                 className="input"
                 dir="ltr"
                 disabled={!settingsLoaded}
@@ -1695,227 +2001,24 @@ export default function Settings() {
           </form>
         </div>
       )}
-
       {isSuperadmin && <LicenseCard t={t} language={language} />}
-      </div>
-
-      <IpBansCard t={t} language={language} />
-        </>
-      )}
-
-      {activeTab === "data" && (
-        <>
-      {!isSuperadmin && <OwnBackupCard t={t} />}
-      {/* Design review item #5 (2026-09-10): this tab used to be one long
-          single-column scroll (DB health -> backups+restore -> API keys)
-          while the "general" tab paired its smaller cards side by side.
-          Backups stays full-width first (the main point of this tab, and
-          the tallest card once the backup list/restore section are open);
-          DB Health and API Keys are both shorter, summary-style cards, so
-          they're now paired in the same 2-column grid "general" uses,
-          right below - less scrolling to reach API keys, and a consistent
-          layout language across tabs. */}
-      {isSuperadmin && (
-      <div className="card mb-4">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
-              <DatabaseBackup size={15} />
-            </span>
-            <h3 className="font-bold text-gray-700">{t("settings.dbBackupTitle")}</h3>
-          </div>
-          <button className="btn-primary" disabled={runningBackup} onClick={onRunBackup}>
-            {runningBackup ? t("settings.creatingBackup") : t("settings.getInstantBackup")}
-          </button>
-        </div>
-        <p className="text-xs text-gray-400 mb-4">
-          {t("settings.backupDescription")}
-        </p>
-        {backupMsg && (
-          <div className={`text-sm rounded-lg px-3 py-2 mb-4 ${backupMsg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
-            {backupMsg.text}
-          </div>
-        )}
-        <button
-          type="button"
-          className="w-full flex items-center justify-between border border-gray-100 rounded-xl px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 transition"
-          onClick={() => setBackupsOpen((v) => !v)}
-        >
-          <span className="font-bold">{t("settings.backupListToggle", { count: backups.length })}</span>
-          <ChevronDown size={16} className={`transition-transform ${backupsOpen ? "rotate-180" : ""}`} />
-        </button>
-        {backupsOpen && (
-          <div className="space-y-2 mt-2">
-            {backups.map((b) => (
-              <div key={b.filename} className="flex items-center justify-between border border-gray-100 rounded-xl px-4 py-3">
-                <div>
-                  <div className="font-mono text-sm text-gray-800">{b.filename}</div>
-                  <div className="hint">
-                    {formatDateTime(b.created_at, language)} — {formatBytes(b.size_bytes)}
-                  </div>
-                </div>
-                <button
-                  className="btn-secondary"
-                  disabled={downloadingFile === b.filename}
-                  onClick={() => onDownloadBackup(b.filename)}
-                >
-                  <Download size={14} /> {downloadingFile === b.filename ? "..." : t("settings.download")}
-                </button>
-              </div>
-            ))}
-            {backups.length === 0 && <div className="text-center text-gray-400 py-6 text-sm">{t("settings.noBackupsYet")}</div>}
-          </div>
-        )}
-
-        {isSuperadmin && (
-          <div className="mt-6 pt-5 border-t border-gray-100">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="w-7 h-7 rounded-lg bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400 flex items-center justify-center shrink-0">
-                <Upload size={15} />
-              </span>
-              <h4 className="font-bold text-gray-700 text-sm">{t("settings.restoreDbTitle")}</h4>
-            </div>
-            <p className="text-xs text-gray-400 mb-3">
-              {t("settings.restoreDbDescription1")}<span dir="ltr">.db.gz</span> {t("settings.restoreDbDescription2")} <span dir="ltr">.db</span>{t("settings.restoreDbDescription3")}
-            </p>
-            {restoreMsg && (
-              <div className={`text-sm rounded-lg px-3 py-2 mb-3 ${restoreMsg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
-                {restoreMsg.text}
-              </div>
-            )}
-            <label className={`btn-secondary inline-flex cursor-pointer ${restoring ? "opacity-60 pointer-events-none" : ""}`}>
-              <Upload size={14} /> {restoring ? t("settings.uploadingRestoring") : t("settings.selectBackupFile")}
-              <input type="file" multiple className="hidden" onChange={onRestoreFile} disabled={restoring} />
-            </label>
-          </div>
-        )}
-      </div>
-      )}
-
-      {isSuperadmin && (
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <DbHealthCard t={t} language={language} />
       <ProvisioningCard t={t} language={language} />
       <WalletCard t={t} />
-      <div className="card">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
-              <KeyRound size={15} />
-            </span>
-            <h3 className="font-bold text-gray-700">{t("settings.apiKeysTitle")}</h3>
-          </div>
-          <button className="btn-primary" onClick={() => { setKeyError(""); setKeyModalOpen(true); }}>
-            <Plus size={16} /> {t("settings.newKey")}
-          </button>
-        </div>
-
-        <div className="text-xs text-gray-500 bg-gray-50 rounded-xl p-3 mb-4 space-y-1">
-          <div>{t("settings.apiBaseUrl", { value: "" })}<span className="font-mono">{apiBase}</span></div>
-          <div>{t("settings.requiredHeader")} <span className="font-mono">X-API-Key: &lt;key&gt;</span></div>
-          <div>{t("settings.docsHint")}</div>
-        </div>
-
-        <div className="space-y-2">
-          {keys.map((k) => (
-            <div key={k.id} className="flex items-center justify-between border border-gray-100 rounded-xl px-4 py-3">
-              <div>
-                <div className="font-medium text-gray-800 text-sm">{k.label}</div>
-                <div className="flex flex-wrap items-center gap-1 mt-1">
-                  <span className="badge-neutral">{t(`settings.apiKeyType.${k.key_type}`)}</span>
-                  {k.owner_admin_username && (
-                    <span className="text-xs text-gray-500">{t("settings.apiKeyOwner", { owner: k.owner_admin_username })}</span>
-                  )}
-                  {k.key_type === "tenant_integration" && !k.scope_enforced && (
-                    <span className="text-xs text-amber-600">{t("settings.apiKeyPendingPhaseC")}</span>
-                  )}
-                </div>
-                <div className="text-xs text-gray-400 font-mono mt-1 flex items-center gap-2">
-                  {k.key}
-                  <button onClick={() => onCopyKey(k.id, k.key)} className="text-gray-400 hover:text-brand-600">
-                    <Copy size={12} />
-                  </button>
-                  {copiedId === k.id && <span className="text-emerald-600">{t("userDetail.copied")}</span>}
-                </div>
-                <div className="text-xs text-gray-300 mt-1">
-                  {t("settings.createdLabel", { created: formatDateTime(k.created_at, language), lastUsed: k.last_used_at ? formatDateTime(k.last_used_at, language) : t("settings.neverUsed") })}
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className={`${k.enabled ? "badge-success" : "badge-neutral"}`}>
-                  {k.enabled ? t("status.active") : t("status.disabled")}
-                </span>
-                {k.key_type === "tenant_integration" && !k.enabled ? (
-                  <button
-                    className="btn-secondary"
-                    onClick={() => onActivateKey(k.id)}
-                    title={t("settings.activateKeyHint")}
-                  >
-                    <ShieldCheck size={14} /> {t("settings.activateKey")}
-                  </button>
-                ) : (
-                  <button
-                    className="btn-secondary"
-                    onClick={() => onToggleKey(k.id)}
-                    title={k.enabled ? t("settings.disableKey") : t("settings.enableKey")}
-                  >
-                    <Power size={14} />
-                  </button>
-                )}
-                <button className="btn-danger" onClick={() => onDeleteKey(k.id)}>
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            </div>
-          ))}
-          {keys.length === 0 && <div className="text-center text-gray-400 py-6 text-sm">{t("settings.noKeysYet")}</div>}
-        </div>
       </div>
-
-      <div className="card">
-        <div className="flex items-center gap-2 mb-2">
-          <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center shrink-0">
-            <ShieldAlert size={15} />
-          </span>
-          <h3 className="font-bold text-gray-700">{t("settings.packageNodeScopeTitle")}</h3>
-        </div>
-        <p className="text-xs text-gray-400 mb-4">{t("settings.packageNodeScopeDescription")}</p>
-
-        {packageNodeScopeError && (
-          <div className="text-xs text-rose-600 bg-rose-50 dark:bg-rose-500/10 rounded-lg px-3 py-2 mb-3">
-            {packageNodeScopeError}
-          </div>
-        )}
-
-        <div className="flex items-center justify-between">
-          <span className={packageNodeScopeEnabled ? "badge-success" : "badge-neutral"}>
-            {packageNodeScopeEnabled ? t("status.active") : t("status.disabled")}
-          </span>
-          {packageNodeScopeEnabled ? (
-            <button className="btn-secondary" disabled={packageNodeScopeBusy} onClick={onDisablePackageNodeScope}>
-              {t("settings.packageNodeScopeDisable")}
-            </button>
-          ) : (
-            <button className="btn-primary" disabled={packageNodeScopeBusy} onClick={onEnablePackageNodeScope}>
-              <ShieldCheck size={14} /> {t("settings.packageNodeScopeEnable")}
-            </button>
-          )}
-        </div>
-      </div>
-      </div>
+      </>
       )}
-        </>
-      )}
+      </SettingsPanel>
+
 
       <Modal open={keyModalOpen} onClose={() => setKeyModalOpen(false)} title={t("settings.createApiKeyModalTitle")}>
         <form onSubmit={submitKey} className="space-y-4">
           <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.labelField")}</label>
-            <input className="input" required value={newLabel} onChange={(e) => setNewLabel(e.target.value)} />
+            <label htmlFor="set-labelField" className="block text-sm text-gray-600 mb-1">{t("settings.labelField")}</label>
+            <input id="set-labelField" className="input" required value={newLabel} onChange={(e) => setNewLabel(e.target.value)} />
           </div>
           <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("settings.apiKeyTypeLabel")}</label>
-            <select className="input" value={newKeyType} onChange={(e) => setNewKeyType(e.target.value)}>
+            <label htmlFor="set-apiKeyTypeLabel" className="block text-sm text-gray-600 mb-1">{t("settings.apiKeyTypeLabel")}</label>
+            <select id="set-apiKeyTypeLabel" className="input" value={newKeyType} onChange={(e) => setNewKeyType(e.target.value)}>
               <option value="tenant_integration">{t("settings.apiKeyType.tenant_integration")}</option>
               <option value="global_integration">{t("settings.apiKeyType.global_integration")}</option>
             </select>
@@ -1926,8 +2029,8 @@ export default function Settings() {
                 {t("settings.apiKeyTenantDisabledWarning")}
               </div>
               <div>
-                <label className="block text-sm text-gray-600 mb-1">{t("settings.apiKeyOwnerLabel")}</label>
-                <select className="input" required value={newOwnerAdminId} onChange={(e) => setNewOwnerAdminId(e.target.value)}>
+                <label htmlFor="set-apiKeyOwnerLabel" className="block text-sm text-gray-600 mb-1">{t("settings.apiKeyOwnerLabel")}</label>
+                <select id="set-apiKeyOwnerLabel" className="input" required value={newOwnerAdminId} onChange={(e) => setNewOwnerAdminId(e.target.value)}>
                   <option value="">{t("settings.apiKeyOwnerPlaceholder")}</option>
                   {keyOwners.map((owner) => (
                     <option key={owner.id} value={owner.id}>{owner.username} ({owner.role})</option>
@@ -1935,8 +2038,8 @@ export default function Settings() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm text-gray-600 mb-2">{t("settings.apiKeyCapabilitiesLabel")}</label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div id="set-apiKeyCapabilities" className="block text-sm text-gray-600 mb-2">{t("settings.apiKeyCapabilitiesLabel")}</div>
+                <div role="group" aria-labelledby="set-apiKeyCapabilities" className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {API_KEY_CAPABILITIES.map((capability) => (
                     <label key={capability} className="flex items-start gap-2 text-sm text-gray-600 rounded-lg border border-gray-100 px-3 py-2 cursor-pointer">
                       <input
@@ -2035,9 +2138,9 @@ function OwnBotCard({ t }) {
       {status.last_error && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2 mb-4">{status.last_error}</div>}
       <div className="space-y-3">
         <div>
-          <label className="block text-sm text-gray-600 mb-1">{t("settings.botToken")}</label>
+          <label htmlFor="set-myBotToken" className="block text-sm text-gray-600 mb-1">{t("settings.botToken")}</label>
           <div className="relative">
-            <input
+            <input id="set-myBotToken"
               className="input pl-10"
               dir="ltr"
               type={showToken ? "text" : "password"}
@@ -2049,6 +2152,9 @@ function OwnBotCard({ t }) {
               type="button"
               className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-brand-600"
               onClick={() => setShowToken((v) => !v)}
+              aria-label={showToken ? t("settings.hide") : t("settings.show")}
+              aria-pressed={showToken}
+              aria-controls="set-myBotToken"
             >
               {showToken ? <EyeOff size={16} /> : <Eye size={16} />}
             </button>
@@ -2189,20 +2295,20 @@ function OwnAutoApproveCard({ t }) {
 
         <div className={`grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4 ${enabled ? "" : "opacity-50 pointer-events-none"}`}>
           <div className={ignoreHours ? "opacity-40 pointer-events-none" : ""}>
-            <label className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveFromHour")}</label>
-            <select className="input input-sm" value={fromHour} onChange={(e) => setFromHour(Number(e.target.value))}>
+            <label htmlFor="set-autoApproveFromHour-2" className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveFromHour")}</label>
+            <select id="set-autoApproveFromHour-2" className="input input-sm" value={fromHour} onChange={(e) => setFromHour(Number(e.target.value))}>
               {HOURS.map((h) => <option key={h} value={h}>{String(h).padStart(2, "0")}:00</option>)}
             </select>
           </div>
           <div className={ignoreHours ? "opacity-40 pointer-events-none" : ""}>
-            <label className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveToHour")}</label>
-            <select className="input input-sm" value={toHour} onChange={(e) => setToHour(Number(e.target.value))}>
+            <label htmlFor="set-autoApproveToHour-2" className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveToHour")}</label>
+            <select id="set-autoApproveToHour-2" className="input input-sm" value={toHour} onChange={(e) => setToHour(Number(e.target.value))}>
               {HOURS.map((h) => <option key={h} value={h}>{String(h).padStart(2, "0")}:00</option>)}
             </select>
           </div>
           <div>
-            <label className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveMaxAmount")}</label>
-            <MoneyInput small value={maxAmount} onChange={(v) => setMaxAmount(v === "" ? 0 : Number(v))} />
+            <label htmlFor="set-autoApproveMaxAmount-2" className="block text-xs text-gray-600 mb-1">{t("settings.autoApproveMaxAmount")}</label>
+            <MoneyInput id="set-autoApproveMaxAmount-2" small value={maxAmount} onChange={(v) => setMaxAmount(v === "" ? 0 : Number(v))} />
             <div className="hint">{t("settings.autoApproveMaxAmountHint")}</div>
           </div>
           <div className="flex items-start pt-5">
@@ -2375,12 +2481,12 @@ function IpBansCard({ t, language }) {
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={t("ipBans.addModalTitle")}>
         <form onSubmit={submitBan} className="space-y-4">
           <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("ipBans.ipField")}</label>
-            <input className="input" dir="ltr" required value={newIp} onChange={(e) => setNewIp(e.target.value)} />
+            <label htmlFor="set-ipField" className="block text-sm text-gray-600 mb-1">{t("ipBans.ipField")}</label>
+            <input id="set-ipField" className="input" dir="ltr" required value={newIp} onChange={(e) => setNewIp(e.target.value)} />
           </div>
           <div>
-            <label className="block text-sm text-gray-600 mb-1">{t("ipBans.reasonField")}</label>
-            <input className="input" value={newReason} onChange={(e) => setNewReason(e.target.value)} />
+            <label htmlFor="set-reasonField" className="block text-sm text-gray-600 mb-1">{t("ipBans.reasonField")}</label>
+            <input id="set-reasonField" className="input" value={newReason} onChange={(e) => setNewReason(e.target.value)} />
           </div>
           {saveError && <div className="text-sm text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400 rounded-lg px-3 py-2">{saveError}</div>}
           <div className="flex justify-end gap-2 pt-2">
@@ -2476,8 +2582,8 @@ function PaymentCardsManager({
 
       <div className="flex flex-wrap items-end gap-3 mb-4">
         <div>
-          <label className="block text-xs text-gray-500 mb-1">{t("settings.cardModeLabel")}</label>
-          <select className="input w-auto" value={localMode} onChange={(e) => setLocalMode(e.target.value)}>
+          <label htmlFor="set-cardModeLabel" className="block text-xs text-gray-500 mb-1">{t("settings.cardModeLabel")}</label>
+          <select id="set-cardModeLabel" className="input w-auto" value={localMode} onChange={(e) => setLocalMode(e.target.value)}>
             <option value="manual">{t("settings.cardModeManual")}</option>
             <option value="rotate">{t("settings.cardModeRotate")}</option>
             <option value="threshold">{t("settings.cardModeThreshold")}</option>
@@ -2485,8 +2591,8 @@ function PaymentCardsManager({
         </div>
         {localMode === "threshold" && (
           <div>
-            <label className="block text-xs text-gray-500 mb-1">{t("settings.cardThresholdLabel")}</label>
-            <MoneyInput
+            <label htmlFor="set-cardThresholdLabel" className="block text-xs text-gray-500 mb-1">{t("settings.cardThresholdLabel")}</label>
+            <MoneyInput id="set-cardThresholdLabel"
               className="w-auto"
               placeholder={t("settings.cardThresholdPlaceholder")}
               value={localThreshold}
@@ -2570,8 +2676,8 @@ function PaymentCardsManager({
               </div>
             </div>
             <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-100">
-              <label className="text-xs text-gray-500 whitespace-nowrap">{t("settings.cardApprovalIdLabel")}</label>
-              <input
+              <label htmlFor="set-cardApprovalIdLabel" className="text-xs text-gray-500 whitespace-nowrap">{t("settings.cardApprovalIdLabel")}</label>
+              <input id="set-cardApprovalIdLabel"
                 type="text"
                 inputMode="numeric"
                 dir="ltr"
@@ -2595,8 +2701,8 @@ function PaymentCardsManager({
 
       <form onSubmit={submitAdd} className="flex flex-wrap gap-2 items-end">
         <div>
-          <label className="block text-xs text-gray-500 mb-1">{t("settings.cardNumber")}</label>
-          <input
+          <label htmlFor="set-cardNumber-2" className="block text-xs text-gray-500 mb-1">{t("settings.cardNumber")}</label>
+          <input id="set-cardNumber-2"
             className="input"
             dir="ltr"
             placeholder="6037-XXXX-XXXX-XXXX"
@@ -2605,12 +2711,12 @@ function PaymentCardsManager({
           />
         </div>
         <div>
-          <label className="block text-xs text-gray-500 mb-1">{t("settings.cardHolder")}</label>
-          <input className="input" value={newHolder} onChange={(e) => setNewHolder(e.target.value)} />
+          <label htmlFor="set-cardHolder-2" className="block text-xs text-gray-500 mb-1">{t("settings.cardHolder")}</label>
+          <input id="set-cardHolder-2" className="input" value={newHolder} onChange={(e) => setNewHolder(e.target.value)} />
         </div>
         <div>
-          <label className="block text-xs text-gray-500 mb-1">{t("settings.cardApprovalIdLabel")}</label>
-          <input
+          <label htmlFor="set-cardApprovalIdLabel-2" className="block text-xs text-gray-500 mb-1">{t("settings.cardApprovalIdLabel")}</label>
+          <input id="set-cardApprovalIdLabel-2"
             type="text"
             inputMode="numeric"
             dir="ltr"
@@ -2719,8 +2825,8 @@ function OwnPaymentCard({ t }) {
       <p className="text-xs text-gray-400 mb-4">{t("settings.myPaymentDescription")}</p>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
-          <label className="block text-sm text-gray-600 mb-1">{t("settings.cardNumber")}</label>
-          <input
+          <label htmlFor="set-cardNumber-3" className="block text-sm text-gray-600 mb-1">{t("settings.cardNumber")}</label>
+          <input id="set-cardNumber-3"
             className="input"
             dir="ltr"
             placeholder="6037-XXXX-XXXX-XXXX"
@@ -2729,16 +2835,16 @@ function OwnPaymentCard({ t }) {
           />
         </div>
         <div>
-          <label className="block text-sm text-gray-600 mb-1">{t("settings.cardHolder")}</label>
-          <input
+          <label htmlFor="set-cardHolder-3" className="block text-sm text-gray-600 mb-1">{t("settings.cardHolder")}</label>
+          <input id="set-cardHolder-3"
             className="input"
             value={form.payment_card_holder || ""}
             onChange={(e) => set("payment_card_holder", e.target.value)}
           />
         </div>
         <div className="md:col-span-2">
-          <label className="block text-sm text-gray-600 mb-1">{t("settings.extraInstructions")}</label>
-          <textarea
+          <label htmlFor="set-extraInstructions-2" className="block text-sm text-gray-600 mb-1">{t("settings.extraInstructions")}</label>
+          <textarea id="set-extraInstructions-2"
             className="input"
             rows={2}
             placeholder={t("settings.extraInstructionsPlaceholder")}
@@ -2747,8 +2853,8 @@ function OwnPaymentCard({ t }) {
           />
         </div>
         <div className="md:col-span-2">
-          <label className="block text-sm text-gray-600 mb-1">{t("settings.topupPresets")}</label>
-          <input
+          <label htmlFor="set-topupPresets-2" className="block text-sm text-gray-600 mb-1">{t("settings.topupPresets")}</label>
+          <input id="set-topupPresets-2"
             className="input"
             dir="ltr"
             placeholder="50000, 100000, 200000"
@@ -2758,8 +2864,8 @@ function OwnPaymentCard({ t }) {
           <p className="hint">{t("settings.topupPresetsHint")}</p>
         </div>
         <div className="md:col-span-2">
-          <label className="block text-sm text-gray-600 mb-1">{t("settings.supportContactLabel")}</label>
-          <textarea
+          <label htmlFor="set-supportContactLabel" className="block text-sm text-gray-600 mb-1">{t("settings.supportContactLabel")}</label>
+          <textarea id="set-supportContactLabel"
             className="input"
             rows={2}
             placeholder={t("settings.supportContactPlaceholder")}
@@ -2775,7 +2881,7 @@ function OwnPaymentCard({ t }) {
         )}
         <div className="md:col-span-2">
           <button type="button" disabled={saving} className="btn-primary" onClick={save}>
-            {saving ? t("settings.saving") : t("settings.savePaymentInfo")}
+            {saving ? t("settings.saving") : t("settings.savePaymentAndSupport")}
           </button>
         </div>
       </div>

@@ -8,7 +8,7 @@ import MoneyInput from "../components/MoneyInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import ResetUsageDialog from "../components/ResetUsageDialog.jsx";
-import UnpaidRefundDialog from "../components/UnpaidRefundDialog.jsx";
+import UnpaidRefundDialog, { UnpaidCancellationBanner } from "../components/UnpaidRefundDialog.jsx";
 import QuotaBar from "../components/QuotaBar.jsx";
 import { useConfirm } from "../components/ConfirmDialog.jsx";
 import {
@@ -970,6 +970,8 @@ export default function UserDetail() {
         </div>
       </div>
 
+      {can("cancel_unpaid_services") && <UnpaidCancellationBanner userId={id} purchases={user.purchases}
+        onResume={setRefundTarget} refreshKey={user.updated_at || user.purchases?.length} />}
       <div className="space-y-5">
         {connectionGroups.map((group) => {
           // Real, independently-enforced quota/usage/expiry for this

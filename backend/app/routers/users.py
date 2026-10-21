@@ -1443,9 +1443,31 @@ def unpaid_refund_preview(
     purchase = db.get(models.Purchase, purchase_id)
     if purchase is None or purchase.user_id != user.id:
         raise HTTPException(404, "سرویس پیدا نشد")
-    result = reseller_refund.preview(db, purchase)
-    reason = reseller_refund_worker.availability(db, purchase)
-    return {**result, "execution_available": reason is None, "unavailable_reason": reason}
+    from ..services import reseller_refund_status
+    out = {"target": reseller_refund_status.target(db, purchase),
+           "operation": reseller_refund_status.for_purchase(db, purchase.id)}
+    try:
+        result = reseller_refund.preview(db, purchase)
+    except HTTPException as exc:
+        # An ineligible sale still shows WHAT it is and WHY, not a bare error.
+        return {**out, "estimate_available": False, "execution_available": False,
+                "unavailable_reason": exc.detail if isinstance(exc.detail, str) else "reseller_proration_unavailable"}
+    reason = reseller_refund_worker.availability(db, purchase, starting=out["operation"] is None)
+    return {**result, **out, "estimate_available": True, "execution_available": reason is None,
+            "unavailable_reason": reason}
+
+
+@router.get("/{user_id}/unpaid-cancellations")
+def unpaid_cancellations(
+    user_id: int, db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+    _perm=Depends(require_permission("cancel_unpaid_services")),
+):
+    """This customer's cancellation operations, pending first-class: after a
+    lost response or a reload the operator sees exactly where each stands."""
+    user = _get_owned_user(db, admin, user_id)
+    from ..services import reseller_refund_status
+    return reseller_refund_status.for_user(db, user.id)
 
 
 class UnpaidCancellationRequest(BaseModel):

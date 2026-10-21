@@ -17,10 +17,14 @@ from .adapter_base import AdapterError
 from .mikrotik_client import MikrotikClient
 from .reseller_refund import preview
 from .reseller_refund_fence import barrier, enabled
+from . import reseller_refund_holds as holds
 from .reseller_refund_settlement import prepare, capture_counters, verify_stopped, settle
 
 
-def availability(db, purchase):
+def availability(db, purchase, *, starting=True):
+    """None when this purchase may be cancelled; otherwise a stable code.
+    starting=False is the resume of an existing operation: payment and
+    operation holds only stop a NEW cancellation (see reseller_refund_holds)."""
     if not enabled():
         return "reseller_cancellation_disabled"
     if not sys.platform.startswith("linux") or db.bind.dialect.name != "sqlite":
@@ -44,6 +48,8 @@ def availability(db, purchase):
         return "reseller_discount_requires_full_void"
     if sale.voided_at is not None:
         return "reseller_sale_already_cancelled"
+    if starting:
+        return holds.reason(db, purchase, purchase.user)
     return None
 
 
@@ -84,8 +90,11 @@ def execute(db, *, purchase_id, actor):
         purchase = db.get(models.Purchase, purchase_id)
         if purchase is None:
             raise HTTPException(404, "service_not_found")
-        reason = availability(db, purchase)
+        reason = availability(db, purchase, starting=existing is None)
         if reason:
+            if existing is not None:
+                raise HTTPException(409, {"code": "reseller_cancellation_pending",
+                                          "operation_id": existing.id, "reason": reason})
             raise HTTPException(409, reason)
         preview(db, purchase)
         op_id = prepare(db, purchase_id=purchase_id, actor=actor)
@@ -127,9 +136,14 @@ def execute(db, *, purchase_id, actor):
             db.rollback()
             raise HTTPException(409, {"code": "reseller_cancellation_pending",
                                       "operation_id": op_id, "reason": exc.code}) from None
-        except HTTPException:
+        except HTTPException as exc:
             db.rollback()
-            raise
+            if isinstance(exc.detail, dict):
+                raise
+            # The operation exists from prepare() on: report it as what it
+            # is - pending, with the reason - not as a plain failure.
+            raise HTTPException(409, {"code": "reseller_cancellation_pending",
+                                      "operation_id": op_id, "reason": exc.detail}) from None
         except Exception:
             db.rollback()
             raise HTTPException(503, {"code": "reseller_cancellation_pending",

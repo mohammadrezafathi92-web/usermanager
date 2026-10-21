@@ -5,44 +5,43 @@ Run locally:
     LICENSE_ADMIN_PASSWORD='choose-one' python3 -m uvicorn app:app --port 9000
 
 The public surface is exactly ONE route - POST /heartbeat - that customer
-panels call. Everything else lives under /console and requires the operator
-password. Kept minimal on purpose: this service exists to answer "is this
-install still allowed?" and to let the vendor flip that answer. It is not a
-second product.
+panels call. Its request and reply are a contract with every deployed panel
+and are unchanged here. Everything else lives under /console and requires
+the operator password: a session cookie (console_auth), a CSRF token on
+every change, and a confirmation step before anything that locks a panel or
+signs a licence. Every change is recorded (ledger.log_event).
 """
 from __future__ import annotations
 
 import datetime as dt
 import os
 import secrets
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi.responses import FileResponse
+from sqlalchemy import update
 
+import console_auth as auth
+import issue_routes
+from console_deps import (COOKIE, Ctx, _Session, _https, _same_origin, changing_ctx, client_ip, console_ctx, get_db, go,
+                          install_or_404, row_for)
+import detail_views
+import ledger
 import signing
 import store
+import views
+from ui import SCOPE_LABELS, notice, page
 
-DB_URL = os.environ.get("LICENSE_DB_URL", "sqlite:////data/license.db")
 # First-run console password. After first boot it is stored (hashed) and
-# this is ignored - rotate from inside the console instead.
+# this is ignored - rotate from inside the console instead (/console/password).
 DEFAULT_ADMIN_PASSWORD = os.environ.get("LICENSE_ADMIN_PASSWORD", "")
+STATIC = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(title="NetCip License Server", docs_url=None, redoc_url=None, openapi_url=None)
 
-_Session = store.make_session_factory(DB_URL)
-
-# Session cookies for the console - kept in memory. The operator is one
-# person on one browser; a restart just means logging in again.
-_SESSIONS: set[str] = set()
-COOKIE = "lic_console"
-
-
-def get_db():
-    db = _Session()
-    try:
-        yield db
-    finally:
-        db.close()
+CSP = ("default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:; "
+       "form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 
 
 @app.on_event("startup")
@@ -65,31 +64,44 @@ def _startup():
         db.close()
 
 
+@app.middleware("http")
+async def _headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/console"):
+        response.headers["Content-Security-Policy"] = CSP
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "same-origin"
+        # pages carry tokens and operator data; never keep them in a cache
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 # --------------------------------------------------------------------------
-# public: the heartbeat
+# public: the heartbeat (contract unchanged)
 # --------------------------------------------------------------------------
 @app.post("/heartbeat")
 async def heartbeat(request: Request, db=Depends(get_db)):
     """A customer panel checking in. Body is JSON:
 
         {"license_id": "...", "fingerprint": "...",
-         "panel_version": "...", "customers": 123}
+         "panel_version": "...", "customers": 123, "activated_at": "..."}
 
-    Returns {"revoked": bool, "lock_scope": str}. Deliberately answers even
-    for an unknown licence (by registering it) - a panel with a valid signed
-    licence we have simply never seen should not be told "unknown" and lock;
-    it self-registers as allowed and the operator sees it appear.
+    Returns {"revoked": bool, "lock_scope": str, "activated_at": str|None}.
+    Deliberately answers even for an unknown licence (by registering it) - a
+    panel with a valid signed licence we have simply never seen should not be
+    told "unknown" and lock; it self-registers as allowed and the operator
+    sees it appear.
     """
     try:
         body = await request.json()
     except Exception:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "expected JSON")
-    license_id = (body or {}).get("license_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "expected a JSON object")
+    license_id = body.get("license_id")
     if not license_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "license_id is required")
-
-    client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() \
-        or (request.client.host if request.client else None)
 
     activated_at = None
     raw_activated = (body.get("activated_at") or "").strip() if isinstance(body.get("activated_at"), str) else None
@@ -99,277 +111,245 @@ async def heartbeat(request: Request, db=Depends(get_db)):
         except ValueError:
             activated_at = None  # a malformed date is ignored, never fatal
 
+    customers = body.get("customers")
     _install, response = store.record_heartbeat(
         db,
-        license_id=str(license_id),
-        fingerprint=(body.get("fingerprint") or None),
-        ip=client_ip,
-        panel_version=(body.get("panel_version") or None),
-        reported_customers=body.get("customers"),
+        license_id=str(license_id)[:64],
+        fingerprint=(str(body.get("fingerprint"))[:64] if body.get("fingerprint") else None),
+        ip=client_ip(request),
+        panel_version=(str(body.get("panel_version"))[:64] if body.get("panel_version") else None),
+        reported_customers=customers if isinstance(customers, int) and not isinstance(customers, bool) else None,
         activated_at=activated_at,
     )
     return response
 
 
-# --------------------------------------------------------------------------
-# console auth
-# --------------------------------------------------------------------------
-def require_console(request: Request):
+@app.exception_handler(HTTPException)
+async def _http_error(request: Request, exc: HTTPException):
+    if exc.status_code == status.HTTP_303_SEE_OTHER or not request.url.path.startswith("/console"):
+        from fastapi.exception_handlers import http_exception_handler
+        return await http_exception_handler(request, exc)
     token = request.cookies.get(COOKIE)
-    if not token or token not in _SESSIONS:
-        raise HTTPException(status.HTTP_303_SEE_OTHER, headers={"Location": "/console/login"})
-    return True
+    session = auth.get(token)
+    back = '<p><a class="btn" href="/console">بازگشت به فهرست</a></p>'
+    return page("خطا", notice(str(exc.detail) if isinstance(exc.detail, str) else "درخواست انجام نشد.", "danger")
+                + back, csrf=session.csrf if session else None, status_code=exc.status_code)
 
 
-@app.get("/console/login", response_class=HTMLResponse)
+@app.get("/console/static/{name}")
+def static_file(name: str):
+    if name not in ("console.css", "console.js"):
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return FileResponse(STATIC / name)
+
+
+# --------------------------------------------------------------------------
+# login / logout / password
+# --------------------------------------------------------------------------
+@app.get("/console/login")
 def login_form(error: str = ""):
-    msg = f'<p style="color:#dc2626">{error}</p>' if error else ""
-    return _page("ورود", f"""
-      <form method="post" action="/console/login" style="max-width:320px;margin:15vh auto">
-        <h2>کنسول لایسنس</h2>
-        {msg}
-        <input name="password" type="password" placeholder="رمز عبور" autofocus
-               style="width:100%;padding:10px;margin:8px 0;box-sizing:border-box">
-        <button style="width:100%;padding:10px">ورود</button>
-      </form>
-    """)
+    return views.login_page(error)
 
 
 @app.post("/console/login")
-def login(response: Response, db=Depends(get_db), password: str = Form(...)):
-    if not store.check_admin_password(db, password):
-        return RedirectResponse("/console/login?error=رمز اشتباه است", status_code=303)
-    token = secrets.token_urlsafe(24)
-    _SESSIONS.add(token)
-    resp = RedirectResponse("/console", status_code=303)
-    resp.set_cookie(COOKIE, token, httponly=True, samesite="lax", max_age=86400)
+def login(request: Request, db=Depends(get_db), password: str = Form("")):
+    ip = client_ip(request) or "?"
+    if not _same_origin(request):
+        return go("/console/login?error=origin")
+    if auth.login_blocked(ip):
+        return go("/console/login?error=blocked")
+    if not password or not store.check_admin_password(db, password):
+        auth.login_failed(ip)
+        ledger.log_event(db, "login_failed", ip=ip)
+        return go("/console/login?error=wrong")
+    auth.login_succeeded(ip)
+    token, _session = auth.create()
+    ledger.log_event(db, "login", ip=ip, session=ledger.session_tag(token))
+    resp = go("/console")
+    resp.set_cookie(COOKIE, token, httponly=True, samesite="strict", secure=_https(request),
+                    path="/console", max_age=auth.ABSOLUTE_SECONDS)
     return resp
 
 
 @app.get("/console/logout")
-def logout(request: Request):
-    token = request.cookies.get(COOKIE)
-    _SESSIONS.discard(token)
-    resp = RedirectResponse("/console/login", status_code=303)
-    resp.delete_cookie(COOKIE)
+def logout_get():
+    # logging out changes state, so it is a POST (from the header button)
+    return go("/console")
+
+
+@app.post("/console/logout")
+def logout(db=Depends(get_db), ctx: Ctx = Depends(changing_ctx)):
+    auth.drop(ctx.token)
+    ledger.log_event(db, "logout", ip=ctx.ip, session=ctx.tag)
+    resp = go("/console/login")
+    resp.delete_cookie(COOKIE, path="/console")
+    return resp
+
+
+@app.get("/console/password")
+def password_form(done: str = "", ctx: Ctx = Depends(console_ctx)):
+    return views.password_page(ctx.csrf, done=done)
+
+
+@app.post("/console/password")
+def password_change(request: Request, db=Depends(get_db), ctx: Ctx = Depends(changing_ctx),
+                    current: str = Form(""), new: str = Form(""), repeat: str = Form("")):
+    if not store.check_admin_password(db, current):
+        ledger.log_event(db, "login_failed", ip=ctx.ip, session=ctx.tag, detail={"where": "password_change"})
+        return views.password_page(ctx.csrf, error="current")
+    if len(new) < auth.MIN_PASSWORD_LENGTH:
+        return views.password_page(ctx.csrf, error="short")
+    if new != repeat:
+        return views.password_page(ctx.csrf, error="mismatch")
+    if new == current:
+        return views.password_page(ctx.csrf, error="same")
+    store.set_admin_password(db, new)
+    ledger.log_event(db, "password_changed", ip=ctx.ip, session=ctx.tag)
+    auth.drop_all()
+    token, _session = auth.create()
+    resp = go("/console/password?done=password")
+    resp.set_cookie(COOKIE, token, httponly=True, samesite="strict", secure=_https(request),
+                    path="/console", max_age=auth.ABSOLUTE_SECONDS)
     return resp
 
 
 # --------------------------------------------------------------------------
-# console: the list + the levers
+# list, details, events
 # --------------------------------------------------------------------------
-@app.get("/console", response_class=HTMLResponse)
-def console(request: Request, db=Depends(get_db), _=Depends(require_console)):
-    import datetime as dt
-    now = dt.datetime.utcnow()
-    rows = []
-    for i in store.list_installs(db):
-        silent = now - i.last_seen
-        # A row that has not checked in for a while is worth seeing in
-        # colour; one whose fingerprint changed is the real alarm.
-        stale = silent.total_seconds() > 6 * 3600
-        moved = i.fingerprint_changed_at is not None
-        badge = ""
-        if moved:
-            badge = '<span style="background:#fee2e2;color:#b91c1c;padding:2px 6px;border-radius:6px">اثر انگشت عوض شد</span>'
-        status_cell = ('<span style="color:#b91c1c">قفل‌شده</span>' if i.revoked
-                       else '<span style="color:#059669">فعال</span>')
-        # A row created by صدور لایسنس (register_issued) before the panel's
-        # first heartbeat has heartbeat_count 0 - last_seen is just when it
-        # was issued, not a real check-in, so saying "چند لحظه پیش" would
-        # falsely claim it already reported home.
-        ping_cell = (
-            '<i style="color:#999">هنوز پینگ نزده</i>'
-            if not i.heartbeat_count
-            else f"{_ago(silent)} پیش<br>{_esc(i.last_ip) or ''}"
-        )
-        rows.append(f"""
-          <tr style="border-top:1px solid #eee{';background:#fff7ed' if stale else ''}">
-            <td>{_esc(i.label) or '<i style=color:#999>بی‌نام</i>'}<br>
-                <code style="font-size:11px;color:#666">{_esc(i.license_id)}</code></td>
-            <td>{status_cell}</td>
-            <td style="font-size:12px">{ping_cell}</td>
-            <td style="font-size:12px">{_esc(i.panel_version) or '?'}<br>{i.reported_customers if i.reported_customers is not None else ''} کاربر</td>
-            <td>{badge}</td>
-            <td>
-              <form method="post" action="/console/toggle" style="display:inline">
-                <input type="hidden" name="license_id" value="{_esc(i.license_id)}">
-                <input type="hidden" name="revoked" value="{'0' if i.revoked else '1'}">
-                <button>{'باز کن' if i.revoked else 'قفل کن'}</button>
-              </form>
-              <form method="post" action="/console/scope" style="display:inline">
-                <input type="hidden" name="license_id" value="{_esc(i.license_id)}">
-                <select name="scope" onchange="this.form.submit()" style="font-size:12px">
-                  {_scope_options(i.lock_scope)}
-                </select>
-              </form>
-              <form method="post" action="/console/label" style="display:inline">
-                <input type="hidden" name="license_id" value="{_esc(i.license_id)}">
-                <input name="label" value="{_esc(i.label) or ''}" placeholder="نام" style="width:90px;font-size:12px">
-                <button>ذخیره</button>
-              </form>
-              <form method="post" action="/console/forget" style="display:inline"
-                    onsubmit="return confirm('این ردیف از لیست حذف شود؟ اگر همین پنل دوباره پینگ بزند، از نو ثبت می‌شود.')">
-                <input type="hidden" name="license_id" value="{_esc(i.license_id)}">
-                <button style="color:#b91c1c;border-color:#fecaca">حذف</button>
-              </form>
-            </td>
-          </tr>
-        """)
-    body = f"""
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <h2>نصب‌های فعال ({len(rows)})</h2>
-        <div><a href="/console/issue" style="margin-left:16px">+ صدور لایسنس جدید</a> <a href="/console/logout">خروج</a></div>
-      </div>
-      <table style="width:100%;border-collapse:collapse;font-size:14px">
-        <tr style="text-align:right;color:#666">
-          <th>مشتری</th><th>وضعیت</th><th>آخرین پینگ</th><th>نسخه</th><th>هشدار</th><th>کنترل</th>
-        </tr>
-        {''.join(rows) or '<tr><td colspan=6 style="padding:24px;color:#999">هنوز پنلی پینگ نزده است.</td></tr>'}
-      </table>
-    """
-    return _page("کنسول لایسنس", body)
+@app.get("/console")
+def console(db=Depends(get_db), ctx: Ctx = Depends(console_ctx), q: str = "", access: str = "",
+            valid: str = "", contact: str = "", moved: str = "", done: str = ""):
+    rows = ledger.overview(db)
+    flag = moved == "1"
+    if contact == "quiet":
+        shown = [r for r in rows if ledger.matches(r, q=q, access=access, valid=valid, moved=flag)
+                 and r["contact"]["state"] in ("silent", "never")]
+    else:
+        shown = [r for r in rows if ledger.matches(r, q=q, access=access, contact_state=contact, valid=valid,
+                                                   moved=flag)]
+    # current licences first; ones a reported-in successor replaced go last
+    shown.sort(key=lambda r: r["replaced"])
+    return views.list_page(shown, ledger.counts(rows), {"q": q, "access": access, "valid": valid, "contact": contact},
+                           ctx.csrf, done)
 
 
-@app.post("/console/toggle")
-def toggle(db=Depends(get_db), _=Depends(require_console),
-           license_id: str = Form(...), revoked: str = Form(...)):
-    store.set_revoked(db, license_id, revoked == "1")
-    return RedirectResponse("/console", status_code=303)
+@app.get("/console/license")
+def license_detail(id: str = "", done: str = "", db=Depends(get_db), ctx: Ctx = Depends(console_ctx)):
+    install = install_or_404(db, id, ctx)
+    return detail_views.detail_page(db, row_for(db, install), ctx.csrf, done)
 
 
-@app.post("/console/scope")
-def scope(db=Depends(get_db), _=Depends(require_console),
-          license_id: str = Form(...), scope: str = Form(...)):
+@app.get("/console/events")
+def events(db=Depends(get_db), ctx: Ctx = Depends(console_ctx)):
+    return views.events_page(ledger.events(db, limit=500), ctx.csrf)
+
+
+# --------------------------------------------------------------------------
+# access: lock / unlock / scope - always through a confirmation page
+# --------------------------------------------------------------------------
+@app.get("/console/license/access")
+def access_confirm(id: str = "", revoked: str = "", scope: str = "", db=Depends(get_db),
+                   ctx: Ctx = Depends(console_ctx)):
+    install = install_or_404(db, id, ctx)
+    if revoked not in ("0", "1") or scope not in SCOPE_LABELS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "وضعیت یا دامنهٔ قفل نامعتبر است.")
+    if (revoked == "1") == bool(install.revoked) and scope == install.lock_scope:
+        return go(views.link(install.license_id) + "&done=nochange")
+    return detail_views.access_confirm_page(install, revoked == "1", scope, ctx.csrf)
+
+
+@app.post("/console/license/access")
+def access_apply(db=Depends(get_db), ctx: Ctx = Depends(changing_ctx), license_id: str = Form(""),
+                 revoked: str = Form(""), scope: str = Form(""), expect_revoked: str = Form(""),
+                 expect_scope: str = Form(""), reason: str = Form(""), ack: str = Form("")):
+    install = install_or_404(db, license_id, ctx)
+    if revoked not in ("0", "1") or scope not in SCOPE_LABELS or expect_revoked not in ("0", "1"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "وضعیت یا دامنهٔ قفل نامعتبر است.")
+    want_revoked = revoked == "1"
+    if (bool(install.revoked), install.lock_scope) != (expect_revoked == "1", expect_scope):
+        return detail_views.access_confirm_page(install, want_revoked, scope, ctx.csrf, error="stale")
+    if want_revoked and scope == store.SCOPE_EVERYTHING and ack != "yes":
+        return detail_views.access_confirm_page(install, want_revoked, scope, ctx.csrf, error="ack")
+    before = {"revoked": bool(install.revoked), "lock_scope": install.lock_scope}
+    if before == {"revoked": want_revoked, "lock_scope": scope}:
+        return go(views.link(license_id) + "&done=nochange")
+    # Compare-and-set: applies only if nobody changed it since the
+    # confirmation page was shown (another tab, a resend).
+    result = db.execute(update(store.Install)
+                        .where(store.Install.license_id == license_id,
+                               store.Install.revoked == (expect_revoked == "1"),
+                               store.Install.lock_scope == expect_scope)
+                        .values(revoked=want_revoked, lock_scope=scope))
+    if result.rowcount != 1:
+        db.rollback()
+        db.expire_all()
+        return detail_views.access_confirm_page(install_or_404(db, license_id, ctx), want_revoked, scope,
+                                                ctx.csrf, error="stale")
+    ledger.log_event(db, "access_changed", license_id=license_id,
+                     detail={"before": before, "after": {"revoked": want_revoked, "lock_scope": scope}},
+                     reason=reason, ip=ctx.ip, session=ctx.tag, commit=False)
+    db.commit()
+    return go(views.link(license_id) + "&done=access")
+
+
+@app.post("/console/license/label")
+def label(db=Depends(get_db), ctx: Ctx = Depends(changing_ctx), license_id: str = Form(""),
+          label: str = Form(""), note: str = Form("")):
+    install = install_or_404(db, license_id, ctx)
+    before = {"label": install.label, "note": install.note}
+    after = {"label": label.strip()[:200] or None, "note": note.strip()[:2000] or None}
+    if before != after:
+        install.label, install.note = after["label"], after["note"]
+        ledger.log_event(db, "label_changed", license_id=license_id, detail={"before": before, "after": after},
+                         ip=ctx.ip, session=ctx.tag, commit=False)
+        db.commit()
+    return go(views.link(license_id) + "&done=" + ("label" if before != after else "nochange"))
+
+
+@app.post("/console/license/import")
+def import_token(db=Depends(get_db), ctx: Ctx = Depends(changing_ctx), license_id: str = Form(""),
+                 token: str = Form("")):
+    install = install_or_404(db, license_id, ctx)
     try:
-        store.set_lock_scope(db, license_id, scope)
-    except ValueError:
-        pass
-    return RedirectResponse("/console", status_code=303)
+        payload = signing.read_token(token)
+    except signing.SigningKeyMissing:
+        raise HTTPException(status.HTTP_409_CONFLICT, "کلید امضا روی این سرور نیست؛ امضای توکن قابل بررسی نیست.")
+    except signing.TokenRejected as exc:
+        message = ("این توکن با کلید امضای این سرور امضا نشده است." if str(exc) == "signature"
+                   else "توکن خوانده نشد؛ متن کامل را دوباره کپی کنید.")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, message)
+    if payload["id"] != install.license_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "این توکن متعلق به لایسنس دیگری است.")
+    if ledger.get_issued(db, install.license_id) is not None:
+        return go(views.link(license_id) + "&done=nochange")
+    ledger.record_issued(db, payload, source="imported", commit=False)
+    ledger.log_event(db, "imported", license_id=license_id,
+                     detail={"expires_at": payload.get("exp"), "valid_days": payload.get("vd"),
+                             "bound": bool(payload.get("fp"))}, ip=ctx.ip, session=ctx.tag, commit=False)
+    db.commit()
+    return go(views.link(license_id) + "&done=imported")
 
 
-@app.post("/console/label")
-def label(db=Depends(get_db), _=Depends(require_console),
-          license_id: str = Form(...), label: str = Form("")):
-    store.set_label(db, license_id, label)
-    return RedirectResponse("/console", status_code=303)
+@app.get("/console/license/forget")
+def forget_confirm(id: str = "", db=Depends(get_db), ctx: Ctx = Depends(console_ctx)):
+    install = install_or_404(db, id, ctx)
+    return detail_views.forget_page(install, ctx.csrf, blocked=bool(install.revoked))
 
 
-@app.post("/console/forget")
-def forget(db=Depends(get_db), _=Depends(require_console), license_id: str = Form(...)):
-    """Removes a row from the list - store.forget_install already existed
-    (with its own tests) but had no console route calling it until now.
-    Not a ban: per its own docstring, this clears the row, it does not
-    block the license_id - a panel that heartbeats again afterward simply
-    re-registers, unnamed, as if seen for the first time. Use توگل قفل کن
-    to actually stop a panel from working; use this to tidy up a row from
-    an old test, a mistaken issue, or a decommissioned install."""
+@app.post("/console/license/forget")
+def forget(db=Depends(get_db), ctx: Ctx = Depends(changing_ctx), license_id: str = Form("")):
+    """Removes a row from the list (store.forget_install). Not a ban: a
+    panel that heartbeats again re-registers, unnamed and OPEN - which is
+    why a locked row cannot be removed: that would quietly unlock it."""
+    install = install_or_404(db, license_id, ctx)
+    if install.revoked:
+        return detail_views.forget_page(install, ctx.csrf, blocked=True)
+    snapshot = {"label": install.label, "lock_scope": install.lock_scope, "fingerprint": install.fingerprint,
+                "heartbeat_count": install.heartbeat_count}
     store.forget_install(db, license_id)
-    return RedirectResponse("/console", status_code=303)
+    ledger.log_event(db, "forgotten", license_id=license_id, detail={"before": snapshot, "after": {}},
+                     ip=ctx.ip, session=ctx.tag)
+    return go("/console?done=forgotten")
 
 
-# --------------------------------------------------------------------------
-# console: issue a new license (signing.py) - added 2026-09-07 so this does
-# not require running backend/scripts/license_tool.py by hand every time.
-# --------------------------------------------------------------------------
-@app.get("/console/issue", response_class=HTMLResponse)
-def issue_form(_=Depends(require_console)):
-    back = '<p><a href="/console">&larr; بازگشت</a></p>'
-    if not signing.has_signing_key():
-        return _page("صدور لایسنس", back + f"""
-          <p style="color:#b91c1c">کلید خصوصی امضا روی این سرور پیدا نشد
-          (مسیر مورد انتظار: <code>{_esc(signing.PRIVATE_KEY_PATH)}</code>).</p>
-          <p style="color:#666;font-size:13px">این کلید یک‌بار با
-          <code>backend/scripts/license_tool.py keygen</code> ساخته می‌شود و باید
-          دستی روی همین سرور، توی پوشه‌ی <code>license_server/data/</code>
-          (که همون مسیر بالا رو داخل کانتینر نشون میده) قرار بگیره - هرگز
-          توی گیت یا روی سرور مشتری نه.</p>
-        """)
-    return _page("صدور لایسنس", back + """
-      <form method="post" action="/console/issue" style="max-width:420px">
-        <h2>صدور لایسنس جدید</h2>
-        <label>نام مشتری</label><br>
-        <input name="customer" required style="width:100%;padding:8px;margin:4px 0 12px;box-sizing:border-box">
-        <label>اثر انگشت سرور مشتری (خالی = روی هر سروری کار می‌کند - فقط برای تست)</label><br>
-        <input name="fingerprint" style="width:100%;padding:8px;margin:4px 0 12px;box-sizing:border-box;font-family:monospace" dir="ltr">
-        <label>مدت اعتبار به روز (خالی = همیشگی)</label><br>
-        <input name="days" type="number" value="365" style="width:100%;padding:8px;margin:4px 0 12px;box-sizing:border-box">
-        <label>یادداشت داخلی (اختیاری)</label><br>
-        <input name="note" style="width:100%;padding:8px;margin:4px 0 12px;box-sizing:border-box">
-        <button style="padding:10px 20px">صدور لایسنس</button>
-      </form>
-    """)
-
-
-@app.post("/console/issue", response_class=HTMLResponse)
-def issue_submit(
-    db=Depends(get_db), _=Depends(require_console),
-    customer: str = Form(...), fingerprint: str = Form(""), days: str = Form(""), note: str = Form(""),
-):
-    back = '<p><a href="/console">&larr; بازگشت</a></p>'
-    days_int = int(days) if days.strip().isdigit() else None
-    try:
-        token, license_id = signing.issue(
-            customer=customer.strip(), fingerprint=fingerprint.strip(),
-            days=days_int, note=note.strip(),
-        )
-    except signing.SigningKeyMissing as exc:
-        return _page("صدور لایسنس", back + f'<p style="color:#b91c1c">{_esc(str(exc))}</p>')
-
-    # So the operator sees a named row immediately in the list, before the
-    # panel's first heartbeat - not a security boundary, just friendlier.
-    store.register_issued(
-        db, license_id=license_id, fingerprint=fingerprint.strip() or None, label=customer.strip(),
-    )
-
-    return _page("لایسنس صادر شد", back + f"""
-      <h2>لایسنس صادر شد</h2>
-      <p>مشتری: <b>{_esc(customer)}</b> &nbsp; شناسه: <code>{_esc(license_id)}</code></p>
-      <textarea readonly onclick="this.select()"
-        style="width:100%;height:140px;font-family:monospace;font-size:12px;padding:8px;box-sizing:border-box"
-        dir="ltr">{_esc(token)}</textarea>
-      <p style="color:#666;font-size:13px">این متن را کامل کپی کنید و در پنل مشتری،
-      تنظیمات &larr; کارت «لایسنس»، در کادر کلید بچسبانید و «ذخیره‌ی کلید» را بزنید.</p>
-    """)
-
-
-# --------------------------------------------------------------------------
-# tiny HTML helpers - no template engine, this is a one-operator console
-# --------------------------------------------------------------------------
-def _esc(text) -> str:
-    if not text:
-        return ""
-    return (str(text).replace("&", "&amp;").replace("<", "&lt;")
-            .replace(">", "&gt;").replace('"', "&quot;"))
-
-
-def _page(title: str, body: str) -> HTMLResponse:
-    return HTMLResponse(f"""<!doctype html><html lang=fa dir=rtl><head>
-      <meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-      <title>{_esc(title)}</title>
-      <style>body{{font-family:Tahoma,sans-serif;background:#f8fafc;color:#0f172a;margin:0;padding:24px}}
-      button{{cursor:pointer;padding:4px 10px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;margin:2px}}
-      td{{padding:8px;vertical-align:top}}</style></head><body>{body}</body></html>""")
-
-
-def _scope_options(current: str) -> str:
-    labels = {
-        store.SCOPE_PANEL_ONLY: "فقط پنل",
-        store.SCOPE_PANEL_AND_BOT: "پنل + ربات",
-        store.SCOPE_EVERYTHING: "همه‌چیز",
-    }
-    return "".join(
-        f'<option value="{s}"{" selected" if s == current else ""}>{labels[s]}</option>'
-        for s in store.LOCK_SCOPES
-    )
-
-
-def _ago(delta) -> str:
-    secs = int(delta.total_seconds())
-    if secs < 60:
-        return "چند لحظه"
-    if secs < 3600:
-        return f"{secs // 60} دقیقه"
-    if secs < 86400:
-        return f"{secs // 3600} ساعت"
-    return f"{secs // 86400} روز"
+app.include_router(issue_routes.router)

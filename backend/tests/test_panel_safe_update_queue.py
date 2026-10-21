@@ -226,6 +226,12 @@ result = attempt()
 check("create refused and no container of the job: failed, nothing changed",
       (str(result).startswith("refused"), ps.status()["status"], ps.status()["error_code"]),
       (True, "failed", "dispatch_failed"))
+failed_id = json.loads((ps.ROOT / "active.json").read_text())["job_id"]
+del daemon.behaviour[("POST", "create")]
+again = attempt()
+check("after a failed job, the SAME target can be requested again explicitly: a new job, nothing reused",
+      (isinstance(again, dict) and again["status"], again.get("job_id") != failed_id if isinstance(again, dict) else None,
+       json.loads((ps.ROOT / failed_id / "state.json").read_text())["status"]), ("queued", True, "failed"))
 fresh()
 
 

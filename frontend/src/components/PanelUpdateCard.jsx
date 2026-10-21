@@ -8,6 +8,9 @@ import { checkPanelUpdate, applyPanelUpdate, fetchPanelUpdateStatus, resolvePane
 // means nothing by itself: success is shown only when the worker's own final
 // state says completed for exactly the requested commit.
 const FOLLOW = new Set(["queued", "starting", "running"]);
+// a finished run that did not deploy: the same SHA may be installed again,
+// only by a new explicit confirmation and password (never automatically)
+const RETRYABLE = new Set(["failed", "abandoned"]);
 const POLL_MS = 4000;
 const detail = (err) => err?.response?.data?.detail || "خطا";
 
@@ -17,6 +20,7 @@ export default function PanelUpdateCard({ t }) {
   const [checking, setChecking] = useState(false);
   const [job, setJob] = useState(null);
   const [offline, setOffline] = useState(false);
+  const [readFailed, setReadFailed] = useState(false);  // the state is not known right now
   const [tick, setTick] = useState(0);              // every read, answered or not, schedules the next
   const [error, setError] = useState("");
   const [confirming, setConfirming] = useState(false);
@@ -28,11 +32,12 @@ export default function PanelUpdateCard({ t }) {
   const read = useCallback(async () => {
     try {
       const res = await fetchPanelUpdateStatus();
-      setOffline(false);
+      setOffline(false); setReadFailed(false);
       setJob(res.data);
       return res.data;
     } catch (err) {
       // the backend restarting or the network gone: keep following
+      setReadFailed(true);
       if (!err?.response || err.response.status >= 500) setOffline(true);
       else setError(detail(err));
       return null;
@@ -44,11 +49,16 @@ export default function PanelUpdateCard({ t }) {
   useEffect(() => { read(); }, [read]);
 
   const following = !!job && FOLLOW.has(job.status);
+  // Reading goes on while the state is not final or not known (a failed read,
+  // an unknown result such as Docker being unreachable): reads only - never
+  // a new apply, and an unknown state stays blocking until the server says
+  // otherwise.
+  const polling = following || job?.status === "unknown" || readFailed;
   useEffect(() => {
-    if (!following) return undefined;
+    if (!polling) return undefined;
     const timer = setTimeout(read, POLL_MS);
     return () => clearTimeout(timer);
-  }, [following, tick, read]);
+  }, [polling, tick, read]);
 
   const done = job?.status === "completed" && job.updated === true && !!job.commit && job.commit === job.target;
   useEffect(() => {
@@ -99,8 +109,11 @@ export default function PanelUpdateCard({ t }) {
     }
   };
 
-  const blocked = following || job?.status === "unknown";
-  const canStart = !!info?.target && !info.dirty && !info.up_to_date && !blocked;
+  const blocked = following || job?.status === "unknown" || readFailed;
+  // After a failed build the checkout can already be at the target (so the
+  // check says up to date) while that version was never deployed.
+  const retrySame = !!job && RETRYABLE.has(job.status) && !!info?.target && job.target === info.target;
+  const canStart = !!info?.target && !info.dirty && (!info.up_to_date || retrySame) && !blocked;
   const confirmForm = (onSubmit, label, ackText) => (
     <div className="card-muted text-xs space-y-2 mb-3">
       <label className="flex items-start gap-2">
@@ -171,6 +184,12 @@ export default function PanelUpdateCard({ t }) {
         </div>
       )}
       {job?.resolvable && confirmForm(resolve, t("settings.updateResolve"), t("settings.updateResolveAck"))}
+      {readFailed && !following && (
+        <div role="status" className="text-xs text-gray-500 mb-3">{t("settings.updateReconnecting")}</div>
+      )}
+      {retrySame && info.up_to_date && !blocked && (
+        <div className="text-xs text-amber-700 mb-3">{t("settings.updateRetryHint")}</div>
+      )}
       {error && <div className="text-xs text-red-600 bg-red-50 dark:bg-red-950 rounded-lg px-3 py-2 mb-3 whitespace-pre-wrap" dir="ltr">{error}</div>}
 
       {confirming && canStart && (

@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+from pathlib import Path
+import sqlite3
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -32,6 +35,61 @@ def check(label, got, expected):
 
 def fresh_db():
     return store.make_session_factory("sqlite://")()
+
+
+print("--- upgrading an old file database preserves operator decisions ---")
+with tempfile.TemporaryDirectory(prefix="license-store-upgrade-") as folder:
+    path = Path(folder) / "license.db"
+    password_hash = store._hash_password("existing-console-password")
+    with sqlite3.connect(path) as old:
+        old.execute("""CREATE TABLE installs (
+            id INTEGER PRIMARY KEY, license_id VARCHAR(64) UNIQUE NOT NULL,
+            fingerprint VARCHAR(64), label VARCHAR(200), revoked BOOLEAN NOT NULL,
+            lock_scope VARCHAR(20) NOT NULL, first_seen DATETIME NOT NULL,
+            last_seen DATETIME NOT NULL, last_ip VARCHAR(64),
+            fingerprint_changed_at DATETIME, heartbeat_count INTEGER NOT NULL,
+            panel_version VARCHAR(64), reported_customers INTEGER, note TEXT)""")
+        old.execute("CREATE TABLE settings (key VARCHAR(64) PRIMARY KEY, value TEXT)")
+        for i in range(6):
+            old.execute("INSERT INTO installs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+                i + 1, f"legacy_{i}", f"fingerprint_{i}", f"مشتری {i}",
+                i % 2, store.LOCK_SCOPES[i % 3], NOW.isoformat(), NOW.isoformat(),
+                "192.0.2.1", None, 10 + i, "old-build", 20 + i, "operator note"))
+        old.execute("INSERT INTO settings VALUES (?,?)", ("admin_password_hash", password_hash))
+        old.commit()
+        before = old.execute("SELECT * FROM installs ORDER BY id").fetchall()
+        before_settings = old.execute("SELECT * FROM settings ORDER BY key").fetchall()
+    url = "sqlite:///" + str(path)
+    factory = store.make_session_factory(url)
+    with factory() as upgraded:
+        rows = store.list_installs(upgraded)
+        check("all six installs remain readable", len(rows), 6)
+        check("old activation times stay unknown, not invented", all(r.activated_at is None for r in rows), True)
+        check("existing console password still verifies", store.check_admin_password(upgraded, "existing-console-password"), True)
+        check("startup cannot reset the console password", store.ensure_admin_password(upgraded, "replacement-password"), "(existing)")
+    for _ in range(2):
+        # Repeated boot must be harmless, including after activation data exists.
+        store.make_engine(url).dispose()
+    with sqlite3.connect(path) as upgraded:
+        columns = [r[1] for r in upgraded.execute("PRAGMA table_info(installs)")]
+        check("activation column is added exactly once", columns.count("activated_at"), 1)
+        original_columns = ",".join(c for c in columns if c != "activated_at")
+        check("all previous install values are unchanged", upgraded.execute(
+            "SELECT " + original_columns + " FROM installs ORDER BY id").fetchall(), before)
+        check("settings are byte-for-byte unchanged", upgraded.execute("SELECT * FROM settings ORDER BY key").fetchall(), before_settings)
+    with factory() as upgraded:
+        activation = NOW - dt.timedelta(days=2)
+        _, response = store.record_heartbeat(upgraded, license_id="legacy_1", fingerprint="fingerprint_1",
+                                            activated_at=activation, now=NOW + dt.timedelta(hours=1))
+        check("old revoked decision survives heartbeat", response["revoked"], True)
+        check("old scope survives heartbeat", response["lock_scope"], store.SCOPE_PANEL_AND_BOT)
+        check("activation anchor now works on upgraded DB", response["activated_at"], activation.isoformat())
+    reopened = store.make_session_factory(url)
+    with reopened() as upgraded:
+        check("restart preserves the activation anchor", store.get_install(upgraded, "legacy_1").activated_at, activation)
+        check("restart preserves all six installs", len(store.list_installs(upgraded)), 6)
+    reopened.kw["bind"].dispose()
+    factory.kw["bind"].dispose()
 
 
 print("--- a brand-new install self-registers as allowed ---")

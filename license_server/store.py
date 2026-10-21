@@ -18,10 +18,11 @@ import secrets
 from typing import Optional
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, Integer, String, Text, create_engine, func,
+    Boolean, Column, DateTime, Integer, String, Text, create_engine, func, inspect,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import StaticPool
+from sqlalchemy.schema import CreateColumn
 
 Base = declarative_base()
 
@@ -101,6 +102,18 @@ def make_engine(url: str):
             kwargs["poolclass"] = StaticPool
     engine = create_engine(url, **kwargs)
     Base.metadata.create_all(engine)
+    # create_all does not extend an existing table. The standalone vendor
+    # service has its own metadata/DB, so the panel's auto-migrate cannot
+    # add this nullable column for pre-activation installations. Never infer
+    # historical activation dates or rewrite operator decisions/passwords.
+    with engine.begin() as connection:
+        if engine.dialect.name == "sqlite":
+            # Serialize inspect + ADD across simultaneous startup attempts.
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+        columns = {column["name"] for column in inspect(connection).get_columns("installs")}
+        if "activated_at" not in columns:
+            declaration = str(CreateColumn(Install.__table__.c.activated_at).compile(dialect=engine.dialect))
+            connection.exec_driver_sql("ALTER TABLE installs ADD COLUMN " + declaration)
     return engine
 
 

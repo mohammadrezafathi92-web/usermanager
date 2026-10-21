@@ -26,6 +26,8 @@ import os
 import uuid
 from typing import Optional
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 TOKEN_PREFIX = "NETCIP1"
@@ -74,13 +76,39 @@ def issue(
     demo or the vendor's own testing, same warning license_tool.py's CLI
     gives.
     """
+    token, payload = issue_payload(customer=customer, fingerprint=fingerprint, days=days,
+                                   max_customers=max_customers, note=note)
+    return token, payload["id"]
+
+
+def issue_payload(
+    *,
+    customer: str,
+    fingerprint: str = "",
+    days: Optional[int] = None,
+    valid_days: Optional[int] = None,
+    until: Optional[dt.datetime] = None,
+    max_customers: Optional[int] = None,
+    note: str = "",
+    now: Optional[dt.datetime] = None,
+) -> tuple[str, dict]:
+    """The three clocks license_tool.py offers, one at a time:
+
+      days        - exp = now + days (the term starts at issue);
+      valid_days  - "vd": the term starts when the panel first sees the key;
+      until       - exp = that exact moment (UTC).
+
+    None of them = perpetual. The payload is byte-for-byte the panel's
+    LicensePayload.to_dict() layout, so nothing about the token changes.
+    """
+    if sum(x is not None for x in (days, valid_days, until)) > 1:
+        raise ValueError("only one validity basis may be given")
     private = _load_private_key()
-    now = dt.datetime.utcnow()
-    expires_at = now + dt.timedelta(days=days) if days else None
-    license_id = f"lic_{uuid.uuid4().hex[:12]}"
+    now = now or dt.datetime.utcnow()
+    expires_at = now + dt.timedelta(days=days) if days else until
     payload = {
         "v": 1,
-        "id": license_id,
+        "id": f"lic_{uuid.uuid4().hex[:12]}",
         "customer": customer,
         "fp": fingerprint or "",
         "iat": now.replace(microsecond=0).isoformat(),
@@ -88,8 +116,57 @@ def issue(
         "max_customers": max_customers,
         "features": [],
         "note": note,
+        "vd": valid_days,
     }
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     signature = private.sign(body)
     token = f"{TOKEN_PREFIX}.{_b64e(body)}.{_b64e(signature)}"
-    return token, license_id
+    return token, payload
+
+
+class TokenRejected(Exception):
+    pass
+
+
+def _b64d(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def read_token(token: str) -> dict:
+    """The payload of a token THIS server's key signed, or TokenRejected.
+
+    Used to record the facts of a licence issued elsewhere (the CLI, or
+    before this console kept records), so its validity is known from the
+    signed payload itself rather than guessed."""
+    token = (token or "").strip().replace("\n", "").replace(" ", "")
+    parts = token.split(".")
+    if len(parts) != 3 or parts[0] != TOKEN_PREFIX:
+        raise TokenRejected("format")
+    try:
+        body, signature = _b64d(parts[1]), _b64d(parts[2])
+    except Exception as exc:  # noqa: BLE001
+        raise TokenRejected("format") from exc
+    try:
+        _load_private_key().public_key().verify(signature, body)
+    except SigningKeyMissing:
+        raise
+    except InvalidSignature as exc:
+        raise TokenRejected("signature") from exc
+    try:
+        payload = json.loads(body.decode("utf-8"))
+        if not isinstance(payload, dict) or not payload.get("id"):
+            raise ValueError
+    except ValueError as exc:
+        raise TokenRejected("format") from exc
+    return payload
+
+
+def public_key_b64() -> Optional[str]:
+    """The verifying half - public by design; shown so the operator can
+    compare it with the key compiled into the panel build."""
+    try:
+        raw = _load_private_key().public_key().public_bytes(
+            encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
+    except SigningKeyMissing:
+        return None
+    return _b64e(raw)

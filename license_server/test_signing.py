@@ -88,6 +88,40 @@ check("valid", status.valid, True)
 check("no expiry payload", status.payload.expires_at, None)
 check("days_left is None (perpetual)", status.days_left, None)
 
+print("\n--- the three validity bases are the panel's own fields ---")
+import datetime as dt  # noqa: E402
+import json  # noqa: E402
+tok_vd, p_vd = signing.issue_payload(customer="نصب", fingerprint="fp9", valid_days=30)
+parsed, body, _sig = licensing.parse_token(tok_vd)
+check("from installation: vd set, no exp", (parsed.valid_days, parsed.expires_at), (30, None))
+check("the payload has exactly LicensePayload.to_dict()'s keys and values",
+      json.loads(body), parsed.to_dict())
+check("not started yet: valid, no expiry counted", licensing.verify(tok_vd, fingerprint="fp9").days_left, None)
+activated = dt.datetime.utcnow() - dt.timedelta(days=31)
+check("after its term from the reported activation: expired",
+      licensing.verify(tok_vd, fingerprint="fp9", activated_at=activated).reason, licensing.REASON_EXPIRED)
+until = dt.datetime(2030, 3, 20, 20, 29, 59)
+tok_until, _ = signing.issue_payload(customer="تاریخ", fingerprint="fp9", until=until)
+check("until a date: that exact exp", licensing.parse_token(tok_until)[0].expires_at, until)
+try:
+    signing.issue_payload(customer="x", days=3, valid_days=3)
+    check("two bases at once should be refused", "accepted", "ValueError")
+except ValueError:
+    check("two validity bases at once are refused", True, True)
+
+print("\n--- read_token: only this server's own signature is accepted ---")
+check("a token issued here reads back its payload", signing.read_token(tok_vd)["vd"], 30)
+other_key = Ed25519PrivateKey.generate()
+parts = tok_vd.split(".")
+forged = parts[0] + "." + parts[1] + "." + signing._b64e(other_key.sign(signing._b64d(parts[1])))
+for label, bad in (("a token signed by another key", forged), ("garbage", "NETCIP1.x.y"), ("empty", "")):
+    try:
+        signing.read_token(bad)
+        check(f"{label} should be rejected", "accepted", "rejected")
+    except signing.TokenRejected:
+        check(f"{label} is rejected", True, True)
+check("the public key shown is the one the panel verifies with", signing.public_key_b64(), pub_b64)
+
 print("\n--- missing private key file fails loudly, not silently ---")
 os.environ["LICENSE_PRIVATE_KEY_PATH"] = "/nonexistent/path/private.key"
 import importlib

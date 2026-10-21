@@ -77,6 +77,17 @@ with tempfile.TemporaryDirectory(prefix="license-store-upgrade-") as folder:
         check("all previous install values are unchanged", upgraded.execute(
             "SELECT " + original_columns + " FROM installs ORDER BY id").fetchall(), before)
         check("settings are byte-for-byte unchanged", upgraded.execute("SELECT * FROM settings ORDER BY key").fetchall(), before_settings)
+        tables = {r[0] for r in upgraded.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        check("the console's record tables are added", {"issued_licenses", "console_events"} <= tables, True)
+        check("...empty: no issue facts or history are invented for old rows",
+              [upgraded.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("issued_licenses", "console_events")],
+              [0, 0])
+    with factory() as upgraded:
+        import ledger
+        states = {r["validity"]["state"] for r in ledger.overview(upgraded, NOW)}
+        check("old licences show validity as unknown, never as valid", states, {"unknown"})
+        check("their lock delivery is unknown too (no recorded change)",
+              ledger.delivery(upgraded, store.get_install(upgraded, "legacy_1"))["state"], "unknown")
     with factory() as upgraded:
         activation = NOW - dt.timedelta(days=2)
         _, response = store.record_heartbeat(upgraded, license_id="legacy_1", fingerprint="fingerprint_1",

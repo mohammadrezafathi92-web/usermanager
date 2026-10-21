@@ -89,6 +89,50 @@ class Install(Base):
     note = Column(Text, nullable=True)
 
 
+class IssuedLicense(Base):
+    """What a licence this server signed (or verified) actually says.
+
+    The heartbeat only ever carries a licence id, so without this the
+    console cannot know when a licence expires. Only the signed payload's
+    facts are kept - never the token itself, which is a bearer credential.
+    A row exists only for a licence issued here, or one whose token the
+    operator pasted and this server's own key verified ("imported"). For
+    any other licence the console shows its validity as unknown instead of
+    guessing it.
+    """
+
+    __tablename__ = "issued_licenses"
+
+    license_id = Column(String(64), primary_key=True)
+    customer = Column(String(200), nullable=False, default="")
+    fingerprint = Column(String(64), nullable=False, default="")   # "" = any machine
+    issued_at = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime, nullable=True)
+    valid_days = Column(Integer, nullable=True)
+    note = Column(Text, nullable=True)
+    source = Column(String(16), nullable=False)                    # console | imported
+    # A renewal is a NEW licence (new id, new token) that continues an
+    # older one; this links the two so the console shows one history, not
+    # an unrelated new customer.
+    renews_license_id = Column(String(64), nullable=True, index=True)
+    recorded_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
+
+
+class ConsoleEvent(Base):
+    """Append-only record of what the operator did in the console."""
+
+    __tablename__ = "console_events"
+
+    id = Column(Integer, primary_key=True)
+    at = Column(DateTime, default=dt.datetime.utcnow, nullable=False, index=True)
+    action = Column(String(32), nullable=False)
+    license_id = Column(String(64), nullable=True, index=True)
+    detail = Column(Text, nullable=True)        # JSON: before/after, never a secret
+    reason = Column(Text, nullable=True)
+    ip = Column(String(64), nullable=True)
+    session = Column(String(16), nullable=True)  # a digest prefix, not the cookie
+
+
 def make_engine(url: str):
     kwargs: dict = {"future": True}
     if url.startswith("sqlite"):

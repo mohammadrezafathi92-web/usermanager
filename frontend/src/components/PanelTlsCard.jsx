@@ -33,6 +33,10 @@ export default function PanelTlsCard() {
   // the only way to see how it went is to read what it wrote.
   const [log, setLog] = useState("");
   const [watching, setWatching] = useState(false);
+  // Behind another web server the built-in HTTPS would compete for ports
+  // 80/443 that server holds. The form stays available, but only after the
+  // operator explicitly asks for it and has read what it would take.
+  const [takeover, setTakeover] = useState(false);
 
   const load = () =>
     fetchTlsState()
@@ -152,10 +156,26 @@ export default function PanelTlsCard() {
         </div>
       )}
 
+      {!state.enabled && state.behind_proxy && (
+        <div className="mb-4">
+          <button type="button" className="btn-secondary" aria-expanded={takeover} aria-controls="tls-takeover"
+            onClick={() => setTakeover((v) => !v)}>
+            {t(takeover ? "settings.tlsTakeoverHide" : "settings.tlsTakeoverShow")}
+          </button>
+          {takeover && (
+            <p className="text-sm rounded-lg px-3 py-2 mt-3 text-amber-800 bg-amber-50 dark:bg-amber-500/10 dark:text-amber-300">
+              {t("settings.tlsTakeoverHint")}
+            </p>
+          )}
+        </div>
+      )}
+
+      {(!state.behind_proxy || state.enabled || takeover) && (
+      <div id="tls-takeover">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
-          <label className="block text-sm text-gray-600 mb-1">{t("settings.tlsDomain")}</label>
-          <input
+          <label htmlFor="set-tlsDomain" className="block text-sm text-gray-600 mb-1">{t("settings.tlsDomain")}</label>
+          <input id="set-tlsDomain"
             className="input"
             dir="ltr"
             placeholder="panel.example.com"
@@ -165,8 +185,8 @@ export default function PanelTlsCard() {
           <div className="hint">{t("settings.tlsDomainHint")}</div>
         </div>
         <div>
-          <label className="block text-sm text-gray-600 mb-1">{t("settings.tlsEmail")}</label>
-          <input
+          <label htmlFor="set-tlsEmail" className="block text-sm text-gray-600 mb-1">{t("settings.tlsEmail")}</label>
+          <input id="set-tlsEmail"
             className="input"
             dir="ltr"
             type="email"
@@ -275,6 +295,8 @@ export default function PanelTlsCard() {
           </button>
         )}
       </div>
+      </div>
+      )}
     </div>
   );
 }

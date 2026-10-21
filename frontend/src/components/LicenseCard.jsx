@@ -173,8 +173,8 @@ export default function LicenseCard({ t, language, onChanged }) {
 
       {!status.master_install && (
         <form onSubmit={submitKey} className="space-y-2">
-          <label className="block text-sm text-gray-600">{t("license.keyField")}</label>
-          <textarea
+          <label htmlFor="set-keyField" className="block text-sm text-gray-600">{t("license.keyField")}</label>
+          <textarea id="set-keyField"
             className="input font-mono text-xs"
             dir="ltr"
             rows={3}

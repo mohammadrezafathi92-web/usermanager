@@ -84,6 +84,8 @@ async def _call(fn, *args, **kwargs):
     pass explicitly; `principal` is who is asking, never a substitute for
     it."""
     def _run():
+        from ..services import license_guard
+        license_guard.require_bot_operation(fn)
         db = SessionLocal()
         try:
             principal = _build_principal(db)

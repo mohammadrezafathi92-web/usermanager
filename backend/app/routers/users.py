@@ -1730,6 +1730,31 @@ def kick_connection_endpoint(
     return {"kicked": kicked}
 
 
+@router.post("/{user_id}/connections/{connection_id}/license-resume")
+def resume_license_connection(
+    user_id: int,
+    connection_id: int,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+    _confirm=Depends(require_confirm_password),
+    _perm=_may_manage_connections,
+):
+    """Explicit restoration of this owned connection after licence renewal.
+
+    Never bypass customer status/quota/session restrictions. Close the
+    request's read transaction before the independent node operation.
+    """
+    _get_owned_user(db, admin, user_id)
+    connection = db.get(models.Connection, connection_id)
+    if connection is None or connection.user_id != user_id:
+        raise HTTPException(404, "کانکشن پیدا نشد")
+    expected_target = (connection.created_at, connection.user_id, connection.user.created_at,
+                       connection.user.owner_admin_id, connection.user.username)
+    db.rollback()
+    from ..services import quota_manager
+    return quota_manager.restore_license_connection(connection_id, expected_target=expected_target)
+
+
 @router.delete("/{user_id}/connections/{connection_id}")
 def delete_connection(
     user_id: int,

@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Optional
@@ -39,8 +40,10 @@ logger = logging.getLogger("license")
 # a licence problem is blocking.
 _STATE_PATH = os.environ.get("LICENSE_STATE_PATH", "/app/data/.license_state.json")
 
-_lock = threading.Lock()
+_lock = threading.RLock()
 _cached: Optional[licensing.Enforcement] = None
+_cached_at = 0.0
+LOCAL_REFRESH_SECONDS = 60.0
 
 
 def _load_state() -> dict:
@@ -145,16 +148,21 @@ def _compute(now: Optional[dt.datetime] = None) -> licensing.Enforcement:
 
 def refresh() -> licensing.Enforcement:
     """Recompute and cache. Cheap - no network."""
-    global _cached
+    global _cached, _cached_at
     with _lock:
         _cached = _compute()
+        _cached_at = time.monotonic()
     return _cached
 
 
 def current_enforcement() -> licensing.Enforcement:
-    """What the panel acts on. Never touches the network; returns the cache,
-    computing it once on first use."""
-    if _cached is None:
+    """Network-free verdict, with local expiry recomputed at least each minute.
+
+    Heartbeats may be hours apart or offline; that cannot freeze a signed
+    expiry for bot/RADIUS traffic. The monotonic clock also catches wall-clock
+    rollback without depending on a backwards-moving cache timestamp.
+    """
+    if _cached is None or time.monotonic() - _cached_at >= LOCAL_REFRESH_SECONDS:
         return refresh()
     return _cached
 
@@ -162,11 +170,12 @@ def current_enforcement() -> licensing.Enforcement:
 # --------------------------------------------------------------------------
 # the heartbeat
 # --------------------------------------------------------------------------
-def _license_id() -> Optional[str]:
-    if not settings.license_key:
+def _license_id(token=None) -> Optional[str]:
+    token = settings.license_key if token is None else token
+    if not token:
         return None
     try:
-        payload, _b, _s = licensing.parse_token(settings.license_key)
+        payload, _b, _s = licensing.parse_token(token)
         return payload.license_id
     except licensing.LicenseError:
         return None
@@ -182,7 +191,8 @@ def heartbeat(timeout: float = 10.0) -> None:
     """
     if settings.license_master_install:
         return
-    license_id = _license_id()
+    token = settings.license_key
+    license_id = _license_id(token)
     if not license_id or not settings.license_server_url:
         return
 
@@ -210,6 +220,15 @@ def heartbeat(timeout: float = 10.0) -> None:
         logger.debug("licence heartbeat to %s failed: %s", url, exc)
         return
 
+    with _lock:
+        if settings.license_key != token:
+            return  # a response for a replaced key cannot revoke its successor
+        _apply_heartbeat(data, license_id)
+        refresh()
+
+
+def _apply_heartbeat(data, license_id):
+    """Caller owns _lock: do not race local-expiry read/modify/write."""
     state = _load_state()
     state["last_online_check"] = dt.datetime.utcnow().replace(microsecond=0).isoformat()
     if isinstance(data, dict):
@@ -237,7 +256,6 @@ def heartbeat(timeout: float = 10.0) -> None:
                 logger.info("licence %s activation anchored to %s from the control server",
                             license_id, server_activated.date())
     _save_state(state)
-    refresh()
 
 
 def heartbeat_job() -> None:
@@ -260,7 +278,8 @@ def set_license_key(token: str) -> licensing.Enforcement:
     itself lives in the environment/.env (config.license_key); this clears
     the cached revocation so a freshly-issued key gets a clean check, then
     recomputes."""
-    state = _load_state()
-    state.pop("revoked", None)
-    _save_state(state)
-    return refresh()
+    with _lock:
+        state = _load_state()
+        state.pop("revoked", None)
+        _save_state(state)
+        return refresh()

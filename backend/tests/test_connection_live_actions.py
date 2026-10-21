@@ -20,6 +20,11 @@ from app.database import engine, SessionLocal
 from app.routers import users
 from app.security import create_access_token
 from app.services import provisioning_schema, provisioning_durable, user_ops
+from app.config import settings
+
+# This suite exercises authenticated connection actions on a licensed
+# vendor install. Licence rejection/recovery has its own HTTP regressions.
+settings.license_master_install = True
 
 models.Base.metadata.create_all(engine)
 assert provisioning_schema.bootstrap(engine, SessionLocal)["ready"]

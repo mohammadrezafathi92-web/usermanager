@@ -82,17 +82,28 @@ def endpoint(node) -> dict:
     return values
 
 
-def run(node, block: str, *, factory=None, action_type: ActionType | None = None, **arguments) -> Any:
+def run(node, block: str, *, factory=None, action_type: ActionType | None = None,
+        hard_deadline_seconds: int | None = None, **arguments) -> Any:
     """`factory(node)` builds the legacy client for the inline path; each site
     passes its own module-level factory (the seam its tests replace)."""
     if block not in blocks.BLOCKS:
         raise ValueError(f"unknown legacy block {block!r}")
+    if hard_deadline_seconds is not None and (type(hard_deadline_seconds) is not int or
+                                             not 1 <= hard_deadline_seconds <= HARD_DEADLINE_SECONDS):
+        raise ValueError("invalid hard deadline")
     kind = blocks.CLIENT_KIND[block]
     with node_gate.writer_passage(node) as passage:
         if not isinstance(passage, node_gate.EnforcedPassage):
+            if hard_deadline_seconds is not None:
+                # A bounded licence transition may not silently fall back
+                # to unbounded inline network I/O under its local fence.
+                raise GateViolation("bounded_action_requires_enforced_gate")
             with (factory(node) if factory is not None else _legacy_client(node, kind)) as client:
                 return blocks.BLOCKS[block](client, **arguments)
-        return _dispatch(node, passage, block, kind, action_type or ACTION_FOR_BLOCK.get(block), arguments)
+        if hard_deadline_seconds is None:
+            return _dispatch(node, passage, block, kind, action_type or ACTION_FOR_BLOCK.get(block), arguments)
+        return _dispatch(node, passage, block, kind, action_type or ACTION_FOR_BLOCK.get(block), arguments,
+                         hard_deadline_seconds=hard_deadline_seconds)
 
 
 def _owner_snapshot(passage):
@@ -114,7 +125,7 @@ def _owner_snapshot(passage):
                     gate_mode_epoch=int(row.gate_mode_epoch))
 
 
-def _dispatch(node, passage, block, kind, action_type, arguments):
+def _dispatch(node, passage, block, kind, action_type, arguments, *, hard_deadline_seconds=None):
     if action_type is None:
         raise GateViolation(f"legacy block {block!r} has no runner action")
     owner = _owner_snapshot(passage)
@@ -130,7 +141,7 @@ def _dispatch(node, passage, block, kind, action_type, arguments):
                                        if name not in blocks.CREDENTIAL_ARGUMENTS}}
     dto = RemoteActionDTO(action_type=action_type, node_id=node.id, backend=binding["backend"], node_config=config,
                           node_secrets=secrets, credential=credential, params=params,
-                          timeouts={"hard_deadline": HARD_DEADLINE_SECONDS},
+                          timeouts={"hard_deadline": hard_deadline_seconds or HARD_DEADLINE_SECONDS},
                           fencing={"installation_uuid": owner["installation_uuid"], "binding": binding,
                                    "expected_parent_pid": os.getpid()})
     from . import remote_runner

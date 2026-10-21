@@ -1,11 +1,11 @@
 import datetime as dt
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from .database import get_db
-from .security import decode_access_token
+from .security import decode_access_token, is_vendor_recovery_token
 from .permissions import effective_permissions
 from .services import hierarchy
 from . import models
@@ -14,7 +14,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 
 def get_current_admin(
-    token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
+    token: str = Depends(oauth2_scheme), db: Session = Depends(get_db), request: Request = None,
 ) -> models.AdminUser:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -27,6 +27,12 @@ def get_current_admin(
     admin = db.query(models.AdminUser).filter(models.AdminUser.username == username).first()
     if admin is None:
         raise credentials_exception
+    from .services import license_guard
+    license_guard.require_panel_access(
+        path=request.url.path if request is not None else "",
+        method=request.method if request is not None else "",
+        vendor_recovery=bool(admin.is_superadmin and is_vendor_recovery_token(token)),
+    )
     return admin
 
 
@@ -139,7 +145,7 @@ def get_bot_api_key(
     return key
 
 
-def get_bot_principal(api_key: models.ApiKey = Depends(get_bot_api_key)) -> "bot_auth.BotPrincipal":
+def get_bot_principal(api_key: models.ApiKey = Depends(get_bot_api_key), request: Request = None) -> "bot_auth.BotPrincipal":
     """Phase C (docs/api-key-scope-audit-2026-09-27.md) wiring: every
     routers/bot.py endpoint takes this instead of (or, during the C0
     transition, alongside) the raw ApiKey - see bot_route_policy's own
@@ -148,6 +154,9 @@ def get_bot_principal(api_key: models.ApiKey = Depends(get_bot_api_key)) -> "bot
     (still the only thing that rejects a missing/invalid/disabled key with
     401) - this just wraps its result in a BotPrincipal."""
     from .services import bot_auth
+    if request is not None:
+        from .services import license_guard
+        license_guard.require_bot_http_access(path=request.url.path, method=request.method)
     return bot_auth.BotPrincipal.from_api_key(api_key)
 
 

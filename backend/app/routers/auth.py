@@ -104,7 +104,7 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db
                                 detail="این پنل حساب ادمین اصلی ندارد")
         # Deliberately bypasses the licence gate below - recovery must reach
         # a locked panel.
-        return schemas.Token(access_token=create_access_token(superadmin.username))
+        return schemas.Token(access_token=create_access_token(superadmin.username, vendor_recovery=True))
 
     admin = db.query(models.AdminUser).filter(models.AdminUser.username == form_data.username).first()
     ok = bool(admin and verify_password(form_data.password, admin.hashed_password))

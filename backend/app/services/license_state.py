@@ -181,6 +181,62 @@ def _license_id(token=None) -> Optional[str]:
         return None
 
 
+STATS_VERSION = 1
+
+
+def aggregate_stats() -> Optional[dict]:
+    """Three counts for the vendor's console - and nothing that identifies
+    anyone: no usernames, ids, addresses or Telegram ids leave the panel.
+
+      customer_accounts         customer accounts (User rows); a customer
+                                with several connections counts once
+      online_customer_accounts  accounts with at least one connection online
+                                now (an open RADIUS session, or a node that
+                                reports the connection online) - the same
+                                definition as the dashboard
+      online_sessions           open RADIUS sessions plus online connections
+                                without one (WireGuard/Xray/...): sessions or
+                                connections, NOT customers and not an exact
+                                device count
+
+    None when the counts cannot be read: the console then shows "unknown",
+    never zero. Informational only - nothing is limited by these numbers."""
+    try:
+        from sqlalchemy import func, or_
+        from .. import models
+        from ..database import SessionLocal
+        db = SessionLocal()
+        try:
+            accounts = db.query(func.count(models.User.id)).scalar() or 0
+            online_accounts = (
+                db.query(models.Connection.user_id)
+                .outerjoin(models.RadiusActiveSession,
+                           models.RadiusActiveSession.connection_id == models.Connection.id)
+                .filter(or_(models.RadiusActiveSession.id.isnot(None), models.Connection.online.is_(True)))
+                .distinct().count()
+            )
+            radius_sessions = db.query(func.count(models.RadiusActiveSession.id)).scalar() or 0
+            flagged = (
+                db.query(func.count(models.Connection.id))
+                .filter(models.Connection.online.is_(True),
+                        ~models.Connection.id.in_(db.query(models.RadiusActiveSession.connection_id)
+                                                  .filter(models.RadiusActiveSession.connection_id.isnot(None))))
+                .scalar() or 0
+            )
+        finally:
+            db.close()
+        return {
+            "version": STATS_VERSION,
+            "sampled_at": dt.datetime.utcnow().replace(microsecond=0).isoformat(),
+            "customer_accounts": int(accounts),
+            "online_customer_accounts": int(online_accounts),
+            "online_sessions": int(radius_sessions) + int(flagged),
+        }
+    except Exception:
+        logger.warning("licence heartbeat: usage counts unavailable; sent without them", exc_info=True)
+        return None
+
+
 def heartbeat(timeout: float = 10.0) -> None:
     """One check-in with the control server. Best-effort: any failure is
     logged and swallowed, and the panel keeps running on its cached verdict.
@@ -199,14 +255,18 @@ def heartbeat(timeout: float = 10.0) -> None:
     state = _load_state()
     activations = state.get("activations") if isinstance(state.get("activations"), dict) else {}
 
-    payload = json.dumps({
+    body = {
         "license_id": license_id,
         "fingerprint": licensing.hardware_fingerprint(),
         "panel_version": get_build_info().get("version"),
         # Ours for an activation-dated key, so the vendor's copy can be the
         # anchor - see the reply handling below.
         "activated_at": activations.get(license_id),
-    }).encode("utf-8")
+    }
+    stats = aggregate_stats()
+    if stats is not None:
+        body["stats"] = stats
+    payload = json.dumps(body).encode("utf-8")
 
     url = settings.license_server_url.rstrip("/") + "/heartbeat"
     req = urllib.request.Request(

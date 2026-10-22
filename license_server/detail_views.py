@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 import ledger
 from ui import SCOPE_EFFECTS, SCOPE_LABELS, badge, code, csrf_field, esc, fa, jdate, notice, page
-from views import access_view, contact_view, delivery_view, done_notice, events_table, link, validity_view
+from views import access_view, contact_view, delivery_view, done_notice, events_table, link, usage_view, validity_view
 
 
 def _fact(title: str, badge_html: str, text: str, extra: str = "") -> str:
@@ -64,6 +64,25 @@ def _chain_block(db, install, chain) -> str:
       <ol class="chain">{"".join(items)}</ol></section>"""
 
 
+def _usage_block(u: dict) -> str:
+    """The aggregate counts and exactly what each one counts."""
+    head, sub = usage_view(u)
+    if u["state"] == "unknown":
+        body = f"<p>{head} {sub}</p>"
+    else:
+        sampled = jdate(u["sampled_at"]) if u.get("sampled_at") else "نامشخص"
+        body = f"""<p>{head}</p><dl class="grid">
+          <dt>حساب‌های مشتری</dt><dd>{fa(f"{u['accounts']:,}")}</dd>
+          <dt>حساب‌های آنلاین</dt><dd>{fa(f"{u['online']:,}")}</dd>
+          <dt>نشست/اتصال آنلاین</dt><dd>{fa(f"{u['sessions']:,}")}</dd>
+          <dt>دریافت در این سرور</dt><dd>{jdate(u['received_at'])} ({sub})</dd>
+          <dt>زمان نمونه در پنل</dt><dd>{sampled}</dd></dl>"""
+    return f"""<section class="card"><h2>آمار مشتری‌ها</h2>{body}
+      <p class="muted small">حساب مشتری: هر حساب یک بار، هر چند اتصال داشته باشد. آنلاین: حساب‌هایی که دست‌کم یک اتصال
+        فعال دارند. نشست/اتصال آنلاین جدا شمرده می‌شود و تعداد مشتری یا دستگاه دقیق نیست. فقط همین اعداد از پنل
+        می‌آید و هیچ اطلاعات شناسایی مشتری ارسال نمی‌شود. این آمار فقط نمایشی است و محدودیتی اعمال نمی‌کند.</p></section>"""
+
+
 def detail_page(db, row: dict, csrf: str, done: str = ""):
     install, issued = row["install"], row["issued"]
     v_badge, v_text = validity_view(row["validity"])
@@ -118,6 +137,7 @@ def detail_page(db, row: dict, csrf: str, done: str = ""):
         {_fact("دسترسی", a_badge, a_text)}
         {_fact("آخرین ارتباط", c_badge, c_text)}
       </div>
+      {_usage_block(row["usage"])}
       <section class="card"><h2>آنچه پنل گزارش داده</h2><dl class="grid">
         <dt>اثر انگشت فعلی</dt><dd>{code(install.fingerprint) if install.fingerprint else '<span class="muted">نامشخص</span>'}</dd>
         <dt>نسخهٔ پنل</dt><dd>{esc(install.panel_version) or '<span class="muted">نامشخص</span>'}</dd>

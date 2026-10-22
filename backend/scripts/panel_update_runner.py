@@ -108,6 +108,51 @@ def docker_api(method, path):
         connection.close()
 
 
+IMAGE_REF = re.compile(r"[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9._-]+)?(@sha256:[0-9a-f]{64})?")
+PULL_TIMEOUT = 600
+
+
+def pull_params(ref):
+    """Query of POST /images/create for a reference exactly as written."""
+    if "@" in ref:
+        return {"fromImage": ref}
+    last = ref.rsplit("/", 1)[-1]
+    if ":" in last:
+        name, _, tag = ref.rpartition(":")
+        return {"fromImage": name, "tag": tag}
+    return {"fromImage": ref, "tag": "latest"}
+
+
+def pull_failed(stream):
+    """The daemon reports a failed pull INSIDE a 200 response, as a JSON
+    line with "error"; anything unparsable is ignored, not trusted."""
+    for line in stream.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("error"):
+            return True
+    return False
+
+
+def docker_pull(ref):
+    class UnixConnection(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.settimeout(PULL_TIMEOUT)
+            self.sock.connect("/var/run/docker.sock")
+    connection = UnixConnection("localhost", timeout=PULL_TIMEOUT)
+    try:
+        connection.request("POST", "/images/create?" + urlencode(pull_params(ref)))
+        response = connection.getresponse()
+        body = response.read()
+        if not 200 <= response.status < 300 or pull_failed(body):
+            raise RuntimeError("docker_pull_failed")
+    finally:
+        connection.close()
+
+
 def docker_shim(args, folder):
     """Only commands used by frozen update.sh; never arbitrary shell input."""
     if args and args[0] == "compose":
@@ -128,6 +173,20 @@ def docker_shim(args, folder):
             raise RuntimeError("invalid_rollback_reference")
         repo, tag = name.rsplit(":", 1)
         docker_api("POST", "/images/" + quote(image, safe="") + "/tag?" + urlencode({"repo": repo, "tag": tag}))
+        return
+    if len(args) == 3 and args[:2] == ["image", "inspect"]:
+        # update.sh's base-image check: exit status only (present or not).
+        if not IMAGE_REF.fullmatch(args[2]):
+            raise RuntimeError("invalid_image_reference")
+        try:
+            docker_api("GET", "/images/" + quote(args[2], safe="") + "/json")
+        except RuntimeError:
+            raise SystemExit(1)
+        return
+    if len(args) == 3 and args[:2] == ["pull", "--quiet"]:
+        if not IMAGE_REF.fullmatch(args[2]):
+            raise RuntimeError("invalid_image_reference")
+        docker_pull(args[2])
         return
     raise RuntimeError("unsupported_docker_command")
 

@@ -263,6 +263,7 @@ ADMIN_EXTRA_COMMANDS = [
     BotCommand(command="search", description="🔎 جستجوی کاربر"),
     BotCommand(command="pending", description="📥 درخواست‌های در انتظار"),
     BotCommand(command="history", description="🗂 تاریخچه درخواست‌ها"),
+    BotCommand(command="notices", description="📭 اعلان‌های تأیید خودکار ارسال‌نشده"),
     BotCommand(command="stats", description="📊 گزارش فروش"),
     BotCommand(command="broadcast", description="📢 پیام همگانی"),
     BotCommand(command="dm", description="✉️ پیام به یک کاربر"),
@@ -969,6 +970,10 @@ async def _main(
     dp.include_router(build_router())
 
     polling_task = asyncio.create_task(dp.start_polling(bot, handle_signals=False))
+    # Re-sends automatic-approval notices that could not be delivered at
+    # once (telegram_bot/approval_notices.py); stops with this bot.
+    from . import approval_notices
+    notice_task = asyncio.create_task(approval_notices.run_worker(bot, stop_event))
     try:
         while not stop_event.is_set():
             if polling_task.done():
@@ -980,12 +985,13 @@ async def _main(
                 break
             await asyncio.sleep(0.5)
     finally:
-        if not polling_task.done():
-            polling_task.cancel()
-            try:
-                await polling_task
-            except (asyncio.CancelledError, Exception):
-                pass
+        for task in (polling_task, notice_task):
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
         await bot.session.close()
         inst.bot = None
         inst.status.update(running=False)

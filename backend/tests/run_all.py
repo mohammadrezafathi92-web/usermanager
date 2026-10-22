@@ -21,6 +21,9 @@ import time
 
 TEST_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = TEST_DIR.parent
+# One script hanging is a FAILURE of that script, not a slow suite: the
+# slowest take ~35 s in CI, so 10 minutes is far above any real run.
+PER_TEST_TIMEOUT = int(os.environ.get("UM_TEST_TIMEOUT", "600"))
 
 
 def main() -> int:
@@ -36,23 +39,29 @@ def main() -> int:
     durations: list[tuple[float, str]] = []
     for test in tests:
         started = time.monotonic()
-        result = subprocess.run(
-            [sys.executable, str(test)],
-            cwd=BACKEND_DIR,
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
+        try:
+            result = subprocess.run(
+                [sys.executable, str(test)],
+                cwd=BACKEND_DIR,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=PER_TEST_TIMEOUT,
+            )
+            code, output = result.returncode, result.stdout
+        except subprocess.TimeoutExpired as exc:
+            partial = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+            code, output = "timeout", f"{partial}\nTIMED OUT after {PER_TEST_TIMEOUT}s"
         took = time.monotonic() - started
         durations.append((took, test.name))
         # flush: CI shows each line when it happens, so a slow test is
         # visible by its own timestamp instead of all lines at the end.
-        if result.returncode == 0:
+        if code == 0:
             print(f"PASS  {test.name}  ({took:.1f}s)", flush=True)
         else:
-            print(f"FAIL  {test.name}  ({took:.1f}s)", flush=True)
-            failures.append((test, result.stdout))
+            print(f"FAIL  {test.name}  ({took:.1f}s){'  TIMED OUT' if code == 'timeout' else ''}", flush=True)
+            failures.append((test, output))
 
     print("\n" + "=" * 72)
     print(f"{len(tests) - len(failures)} passed, {len(failures)} failed, {len(tests)} total")

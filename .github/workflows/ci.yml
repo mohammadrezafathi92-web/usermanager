@@ -17,7 +17,9 @@ jobs:
   backend:
     name: Backend checks
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The job took 14-18 min in its last runs and one healthy run was cut
+    # at 20; a hung test fails on its own (run_all.py per-test timeout).
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: backend

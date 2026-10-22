@@ -511,7 +511,7 @@ def _own_purchase_or_404(db: Session, owner: int | None, username: str, purchase
     return purchase
 
 
-async def _try_auto_approve(pending: dict) -> tuple[bool, str]:
+async def _try_auto_approve(pending: dict, image: bytes | None = None) -> tuple[bool, str]:
     """Gives a Mini App receipt the same «تایید خودکار» chance a receipt sent
     in chat gets (customer_purchase.py). It was never attempted here at all,
     so every Mini App receipt waited for a human no matter the settings.
@@ -524,7 +524,7 @@ async def _try_auto_approve(pending: dict) -> tuple[bool, str]:
 
     def _run():
         return runner.run_on_bot_loop(
-            pending.get("owner_admin_id"), lambda bot: auto_approve.try_auto_approve(pending, bot)
+            pending.get("owner_admin_id"), lambda bot: auto_approve.try_auto_approve(pending, bot, image)
         )
 
     try:
@@ -761,7 +761,7 @@ async def checkout_receipt(
     # Attempted BEFORE the admins are shown anything, like the bot's own
     # receipt flow: a qualifying receipt must not produce an approval prompt
     # that is already stale. Declined -> the normal prompt, with the reason.
-    approved, reason = await _try_auto_approve(pending_row)
+    approved, reason = await _try_auto_approve(pending_row, image)
     if approved:
         return {
             "status": "done",
@@ -770,6 +770,17 @@ async def checkout_receipt(
                 "پرداخت شما تایید شد و سرویس تمدید شد. جزئیات در ربات ارسال شد."
                 if renewing else "پرداخت شما تایید شد و سرویس فعال شد. جزئیات در ربات ارسال شد."
             ),
+        }
+
+    # An error AFTER the automatic approval went through (or while it is
+    # being applied) must not produce an approval prompt with an Approve
+    # button for that same request.
+    current = storage.get_pending(request_id)
+    if not current or current.get("status") != "pending":
+        return {
+            "status": "pending",
+            "request_id": request_id,
+            "message": "رسید شما ثبت شد و در حال رسیدگی است. نتیجه در همین ربات اطلاع داده می‌شود.",
         }
 
     title = "🧾 رسید تمدید (از مینی‌اپ)" if renewing else "🧾 رسید پرداخت جدید (از مینی‌اپ)"

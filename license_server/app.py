@@ -112,6 +112,7 @@ async def heartbeat(request: Request, db=Depends(get_db)):
             activated_at = None  # a malformed date is ignored, never fatal
 
     customers = body.get("customers")
+    stats = parse_stats(body.get("stats"))
     _install, response = store.record_heartbeat(
         db,
         license_id=str(license_id)[:64],
@@ -120,8 +121,36 @@ async def heartbeat(request: Request, db=Depends(get_db)):
         panel_version=(str(body.get("panel_version"))[:64] if body.get("panel_version") else None),
         reported_customers=customers if isinstance(customers, int) and not isinstance(customers, bool) else None,
         activated_at=activated_at,
+        stats=stats,
     )
     return response
+
+
+STATS_MAX = 10_000_000
+
+
+def parse_stats(raw) -> dict | None:
+    """The panel's aggregate counts (version 1), or None.
+
+    Anything incomplete, of another version or implausible is dropped as a
+    whole - a partial sample would read as a real one. Older panels send no
+    `stats` at all; their installs keep showing «نامشخص»."""
+    if not isinstance(raw, dict) or raw.get("version") != 1:
+        return None
+    out = {}
+    for key in ("customer_accounts", "online_customer_accounts", "online_sessions"):
+        value = raw.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= STATS_MAX:
+            return None
+        out[key] = value
+    if out["online_customer_accounts"] > out["customer_accounts"]:
+        return None
+    sampled = raw.get("sampled_at")
+    try:
+        out["sampled_at"] = dt.datetime.fromisoformat(sampled) if isinstance(sampled, str) else None
+    except ValueError:
+        out["sampled_at"] = None
+    return out
 
 
 @app.exception_handler(HTTPException)

@@ -64,6 +64,15 @@ def access_view(install) -> tuple[str, str]:
     return badge("باز", "ok"), "دامنه در صورت قفل: " + esc(scope)
 
 
+def usage_view(u: dict) -> tuple[str, str]:
+    """Customers and online accounts as last reported - with their age."""
+    if u["state"] == "unknown":
+        return badge("نامشخص", "muted"), "این پنل آماری گزارش نکرده است (نسخهٔ قدیمی یا خطای شمارش)."
+    tone, label = ("ok", "به‌روز") if u["state"] == "fresh" else ("warn", "قدیمی")
+    counts = fa(f"{u['accounts']:,} حساب مشتری · {u['online']:,} آنلاین")
+    return badge(label, tone) + " " + counts, "نمونه " + ago(u["age"])
+
+
 def contact_view(c: dict, install) -> tuple[str, str]:
     state = c["state"]
     if state == "never":
@@ -139,6 +148,7 @@ def list_page(rows, all_counts, filters: dict, csrf: str, done: str = ""):
         v_badge, v_text = validity_view(row["validity"])
         a_badge, a_text = access_view(install)
         c_badge, c_text = contact_view(row["contact"], install)
+        u_badge, u_text = usage_view(row["usage"])
         flags = []
         if row["moved"]:
             flags.append(badge("اثر انگشت عوض شد", "danger"))
@@ -155,12 +165,13 @@ def list_page(rows, all_counts, filters: dict, csrf: str, done: str = ""):
             <td data-label="اعتبار">{v_badge}<div class="sub">{v_text}</div></td>
             <td data-label="دسترسی">{a_badge}<div class="sub">{a_text}</div></td>
             <td data-label="آخرین ارتباط">{c_badge}<div class="sub">{c_text}</div></td>
+            <td data-label="مشتری‌ها">{u_badge}<div class="sub">{u_text}</div></td>
             <td data-label="نسخه">{esc(install.panel_version) or '<span class="muted">نامشخص</span>'}</td>
             <td class="go"><a class="btn small" href="{link(install.license_id)}">جزئیات</a></td>
           </tr>""")
-    empty = ('<tr><td colspan="6" class="empty">موردی با این فیلتر پیدا نشد.</td></tr>'
+    empty = ('<tr><td colspan="7" class="empty">موردی با این فیلتر پیدا نشد.</td></tr>'
              if all_counts["total"] else
-             '<tr><td colspan="6" class="empty">هنوز لایسنسی صادر نشده و پنلی گزارش نداده است.</td></tr>')
+             '<tr><td colspan="7" class="empty">هنوز لایسنسی صادر نشده و پنلی گزارش نداده است.</td></tr>')
     body = f"""
       <div class="head"><h1>لایسنس‌ها</h1><a class="btn primary" href="/console/issue">+ صدور لایسنس جدید</a></div>
       {done_notice(done)}
@@ -169,7 +180,7 @@ def list_page(rows, all_counts, filters: dict, csrf: str, done: str = ""):
       <p class="muted small">{fa(len(rows))} مورد نمایش داده شده. «اعتبار» از توکن امضاشده می‌آید؛
         «دسترسی» تصمیم شماست؛ «آخرین ارتباط» زمان heartbeat پنل است. این سه از هم مستقل‌اند.</p>
       <table class="list"><thead><tr><th>مشتری</th><th>اعتبار</th><th>دسترسی</th>
-        <th>آخرین ارتباط</th><th>نسخه</th><th></th></tr></thead>
+        <th>آخرین ارتباط</th><th>مشتری‌ها</th><th>نسخه</th><th></th></tr></thead>
         <tbody>{"".join(body_rows) or empty}</tbody></table>"""
     return page("لایسنس‌ها", body, csrf=csrf, active="list")
 

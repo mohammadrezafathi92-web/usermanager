@@ -385,6 +385,43 @@ p, errors = issue_views.plan({"customer": "x", "fingerprint": FP, "scope": "pane
                               "amount": "99999"}, None, dt.datetime(2026, 1, 1))
 check("an absurd day count is refused", "amount" in errors, True)
 
+print("\n--- aggregate usage counts from the heartbeat ---")
+console_auth._failures.clear()
+viewer = TestClient(appmod.app, base_url="https://license.test")
+viewer.post("/console/login", data={"password": "new-pass-1234"})
+good = {"version": 1, "sampled_at": "2026-10-22T08:00:00", "customer_accounts": 984,
+        "online_customer_accounts": 120, "online_sessions": 151}
+r = hb("lic_stats", stats=good)
+check("the heartbeat reply is unchanged (still exactly three fields)",
+      sorted(r.json()), ["activated_at", "lock_scope", "revoked"])
+row = install("lic_stats")
+check("the three counts are stored with this server's receive time",
+      (row.stats_customer_accounts, row.stats_online_accounts, row.stats_online_sessions,
+       row.stats_received_at is not None), (984, 120, 151, True))
+page = viewer.get("/console/license?id=lic_stats").text
+check("details show accounts, online and sessions as separate numbers",
+      all(x in page for x in ("۹۸۴", "۱۲۰", "۱۵۱", "نشست/اتصال آنلاین")), True)
+check("...say the sample is current", "به‌روز" in page, True)
+for label, bad in (("negative", {**good, "online_sessions": -1}),
+                   ("more online than accounts", {**good, "online_customer_accounts": 2000}),
+                   ("a missing count", {k: v for k, v in good.items() if k != "online_sessions"}),
+                   ("a boolean", {**good, "customer_accounts": True}),
+                   ("another version", {**good, "version": 2}),
+                   ("not an object", ["x"])):
+    hb("lic_stats", stats=bad)
+    check(f"{label}: ignored as a whole, the last good sample kept",
+          install("lic_stats").stats_customer_accounts, 984)
+hb("lic_old_panel")
+check("an older panel without stats: unknown, never zero",
+      ("نامشخص" in viewer.get("/console/license?id=lic_old_panel").text,
+       install("lic_old_panel").stats_customer_accounts), (True, None))
+s_ = console_deps._Session()
+row = store.get_install(s_, "lic_stats")
+row.stats_received_at = dt.datetime.utcnow() - dt.timedelta(hours=30)
+s_.commit(); s_.close()
+listing = viewer.get("/console").text
+check("an old sample is shown as old, with its age", "قدیمی" in listing and "۱ روز پیش" in listing, True)
+
 os.unlink(_KEY_PATH)
 print("\n" + "=" * 60)
 if failures:

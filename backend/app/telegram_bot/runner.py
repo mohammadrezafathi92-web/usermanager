@@ -32,6 +32,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramUnauthorizedError
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     BotCommand, BotCommandScopeChat, BotCommandScopeDefault, BufferedInputFile, CallbackQuery,
@@ -263,6 +264,7 @@ ADMIN_EXTRA_COMMANDS = [
     BotCommand(command="search", description="🔎 جستجوی کاربر"),
     BotCommand(command="pending", description="📥 درخواست‌های در انتظار"),
     BotCommand(command="history", description="🗂 تاریخچه درخواست‌ها"),
+    BotCommand(command="notices", description="📭 اعلان‌های تأیید خودکار ارسال‌نشده"),
     BotCommand(command="stats", description="📊 گزارش فروش"),
     BotCommand(command="broadcast", description="📢 پیام همگانی"),
     BotCommand(command="dm", description="✉️ پیام به یک کاربر"),
@@ -928,6 +930,60 @@ def _run_loop(
         loop.close()
 
 
+# Waits between attempts to reach Telegram when a bot starts; the last one
+# repeats. A start that fails on the network (a filtered route, Telegram
+# briefly unreachable) used to leave the bot off until someone restarted it.
+START_RETRY_DELAYS = (5, 15, 30, 60, 120, 300, 600)
+GET_ME_TIMEOUT = 30
+
+
+async def _sleep_unless_stopped(seconds: float, stop_event: threading.Event) -> bool:
+    """True if the full wait passed, False as soon as the bot is stopped."""
+    for _ in range(int(seconds * 2)):
+        if stop_event.is_set():
+            return False
+        await asyncio.sleep(0.5)
+    return not stop_event.is_set()
+
+
+async def _connect_with_retry(inst: _Instance, bot: Bot, stop_event: threading.Event, owner):
+    """getMe until it answers, with a bounded backoff; None if the bot must
+    not start (stopped meanwhile, or the token itself was rejected).
+
+    Only this thread retries, before any polling starts, and it re-checks
+    the stop event after every wait AND after a successful answer: a
+    restart or a token change (stop_bot sets the event, a new thread is
+    started) can therefore never end with two pollers on one token."""
+    attempt = 0
+    while not stop_event.is_set():
+        attempt += 1
+        try:
+            me = await asyncio.wait_for(bot.get_me(), timeout=GET_ME_TIMEOUT)
+        except TelegramUnauthorizedError as exc:
+            inst.status.update(running=False, last_error=f"توکن ربات نامعتبر است: {exc}")
+            logger.error("telegram bot token rejected (owner_admin_id=%s); not retrying", owner)
+            return None
+        except Exception as exc:  # network, timeout, Telegram server error
+            delay = START_RETRY_DELAYS[min(attempt - 1, len(START_RETRY_DELAYS) - 1)]
+            inst.status.update(
+                running=False,
+                last_error=f"تلگرام در دسترس نیست؛ تلاش دوباره {attempt} تا {delay} ثانیه دیگر ({type(exc).__name__})",
+                retry_attempt=attempt,
+            )
+            logger.warning("telegram bot start failed (owner_admin_id=%s, attempt %s): %s: %s; retrying in %ss",
+                           owner, attempt, type(exc).__name__, exc, delay)
+            if not await _sleep_unless_stopped(delay, stop_event):
+                return None
+            continue
+        if stop_event.is_set():
+            return None
+        if attempt > 1:
+            logger.info("telegram bot reached Telegram after %s attempts (owner_admin_id=%s)", attempt, owner)
+        inst.status.pop("retry_attempt", None)
+        return me
+    return None
+
+
 async def _main(
     inst: _Instance, token: str, admin_ids: set, approval_chat_ids: set, stop_event: threading.Event,
     customer_bot_enabled: bool, bot_owner_admin_id: int | None,
@@ -941,11 +997,8 @@ async def _main(
     bot_storage.init_db()
 
     bot = _make_bot(token)
-    try:
-        me = await bot.get_me()
-    except Exception as exc:
-        inst.status.update(running=False, last_error=f"توکن نامعتبر است یا تلگرام در دسترس نیست: {exc}")
-        logger.exception("failed to start telegram bot (owner_admin_id=%s)", bot_owner_admin_id)
+    me = await _connect_with_retry(inst, bot, stop_event, bot_owner_admin_id)
+    if me is None:
         await bot.session.close()
         return
 
@@ -969,6 +1022,10 @@ async def _main(
     dp.include_router(build_router())
 
     polling_task = asyncio.create_task(dp.start_polling(bot, handle_signals=False))
+    # Re-sends automatic-approval notices that could not be delivered at
+    # once (telegram_bot/approval_notices.py); stops with this bot.
+    from . import approval_notices
+    notice_task = asyncio.create_task(approval_notices.run_worker(bot, stop_event))
     try:
         while not stop_event.is_set():
             if polling_task.done():
@@ -980,12 +1037,13 @@ async def _main(
                 break
             await asyncio.sleep(0.5)
     finally:
-        if not polling_task.done():
-            polling_task.cancel()
-            try:
-                await polling_task
-            except (asyncio.CancelledError, Exception):
-                pass
+        for task in (polling_task, notice_task):
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
         await bot.session.close()
         inst.bot = None
         inst.status.update(running=False)

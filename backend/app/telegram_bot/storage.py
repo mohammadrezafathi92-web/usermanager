@@ -106,9 +106,37 @@ def _conn():
         conn.close()
 
 
+# Notices to admins that a receipt was APPROVED AUTOMATICALLY. Kept apart
+# from pending_purchases and from anything financial: a row here only says
+# "tell this chat about that approval"; resending it can never provision,
+# credit or reward anything again. bot_id is the numeric part of the token
+# of the bot that received the receipt - Telegram file ids are valid only
+# for that bot, so only that bot instance delivers (and retries) the row.
+# chat_id 0 = the recipients could not be resolved yet.
+_NOTICE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS approval_notices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL,
+    bot_id TEXT NOT NULL,
+    chat_id INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    photo BLOB,                              -- only for a receipt with no Telegram file id (Mini App upload)
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending | sending | sent | failed | gave_up
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    claimed_until TEXT,                      -- 'sending': taken by one sender until then (a crash frees it)
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    sent_at TEXT,
+    UNIQUE (request_id, chat_id)
+);
+"""
+
+
 def init_db():
     with _conn() as conn:
         conn.execute(_SCHEMA)
+        conn.execute(_NOTICE_SCHEMA)
         for col, coltype in _NEW_COLUMNS.items():
             try:
                 conn.execute(f"ALTER TABLE pending_purchases ADD COLUMN {col} {coltype}")
@@ -304,3 +332,100 @@ def may_handle(request: dict, owner_ids: Optional[set[int]], include_unowned: bo
     if owner is None:
         return include_unowned
     return owner in owner_ids
+
+
+# --------------------------------------------------------------------------
+# automatic-approval notices (see _NOTICE_SCHEMA)
+# --------------------------------------------------------------------------
+def _now_iso() -> str:
+    return dt.datetime.utcnow().replace(microsecond=0).isoformat()
+
+
+def queue_notices(request_id: int, bot_id: str, chat_ids, text: str, photo: Optional[bytes] = None) -> None:
+    """One row per recipient; queuing the same request again adds nothing."""
+    now = _now_iso()
+    with _conn() as conn:
+        for chat_id in chat_ids:
+            conn.execute(
+                "INSERT OR IGNORE INTO approval_notices (request_id, bot_id, chat_id, text, photo, status, "
+                "next_attempt_at, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+                (request_id, bot_id, int(chat_id), text, photo, now, now),
+            )
+
+
+_DUE = ("(status IN ('pending', 'failed') AND next_attempt_at <= :now) "
+        "OR (status = 'sending' AND claimed_until <= :now)")
+
+
+def due_notices(bot_id: str, request_id: Optional[int] = None, limit: int = 20) -> list[dict]:
+    """Due now - including a 'sending' row whose sender died (restart)."""
+    query = f"SELECT * FROM approval_notices WHERE bot_id = :bot AND ({_DUE})"
+    args: dict = {"bot": bot_id, "now": _now_iso(), "limit": limit}
+    if request_id is not None:
+        query += " AND request_id = :request"
+        args["request"] = request_id
+    with _conn() as conn:
+        return [dict(r) for r in conn.execute(query + " ORDER BY id LIMIT :limit", args).fetchall()]
+
+
+def claim_notice(notice_id: int, bot_id: str, lease_seconds: int) -> bool:
+    """Take one due notice for sending - one atomic UPDATE, so the worker,
+    the resend button and a restarted bot can never send it at once."""
+    now = _now_iso()
+    until = (dt.datetime.utcnow() + dt.timedelta(seconds=lease_seconds)).replace(microsecond=0).isoformat()
+    with _conn() as conn:
+        cur = conn.execute(f"UPDATE approval_notices SET status = 'sending', claimed_until = :until "
+                           f"WHERE id = :id AND bot_id = :bot AND ({_DUE})",
+                           {"until": until, "id": notice_id, "bot": bot_id, "now": now})
+        return cur.rowcount == 1
+
+
+def mark_notice(notice_id: int, status: str, *, error: Optional[str] = None,
+                next_attempt_at: Optional[str] = None) -> None:
+    """The outcome of a claimed send (only a 'sending' row changes)."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE approval_notices SET status = ?, attempts = attempts + 1, last_error = ?, claimed_until = NULL, "
+            "next_attempt_at = COALESCE(?, next_attempt_at), "
+            "sent_at = CASE WHEN ? = 'sent' THEN ? ELSE sent_at END WHERE id = ? AND status = 'sending'",
+            (status, (error or None) and error[:300], next_attempt_at, status, _now_iso(), notice_id),
+        )
+
+
+def close_resolver_notice(notice_id: int) -> None:
+    """A chat_id 0 row whose recipients were resolved and queued."""
+    with _conn() as conn:
+        conn.execute("UPDATE approval_notices SET status = 'sent', sent_at = ?, claimed_until = NULL "
+                     "WHERE id = ? AND status = 'sending'", (_now_iso(), notice_id))
+
+
+def undelivered_notices(bot_id: str, owner_ids: Optional[set[int]], include_unowned: bool,
+                        limit: int = 20) -> list[dict]:
+    """Undelivered notices (retrying or stopped) of requests this admin may see."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT n.*, p.kind, p.target_username, p.owner_admin_id, p.final_price, p.price "
+            "FROM approval_notices n JOIN pending_purchases p ON p.id = n.request_id "
+            "WHERE n.bot_id = ? AND n.status IN ('failed', 'gave_up') ORDER BY n.id DESC LIMIT ?",
+            (bot_id, limit * 4),
+        ).fetchall()
+    out = [dict(r) for r in rows if may_handle(dict(r), owner_ids, include_unowned)]
+    return out[:limit]
+
+
+def retry_notice(notice_id: int, bot_id: str) -> bool:
+    """Manual retry: back to pending, due now. Attempts are kept. Never a
+    row that is being sent right now or already sent."""
+    with _conn() as conn:
+        cur = conn.execute(
+            "UPDATE approval_notices SET status = 'pending', next_attempt_at = ? "
+            "WHERE id = ? AND bot_id = ? AND status IN ('failed', 'gave_up')",
+            (_now_iso(), notice_id, bot_id),
+        )
+        return cur.rowcount > 0
+
+
+def get_notice(notice_id: int) -> Optional[dict]:
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM approval_notices WHERE id = ?", (notice_id,)).fetchone()
+        return dict(row) if row else None

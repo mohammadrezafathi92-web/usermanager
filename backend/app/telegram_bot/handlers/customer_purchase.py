@@ -734,6 +734,12 @@ async def receive_receipt(message: Message, state: FSMContext, bot: Bot) -> None
     except Exception:
         logger.exception("auto-approve raised - falling back to manual approval")
         auto_note = "بررسی تایید خودکار با خطا مواجه شد"
+        # An error AFTER the approval went through must not produce an
+        # approval prompt (with an Approve button) for a request that is
+        # already approved or being processed.
+        current = storage.get_pending(request_id)
+        if not current or current.get("status") != "pending":
+            return
 
     caption = "🧾 رسید پرداخت جدید\n\n" + _pending_summary(pending_row, await _owner_label(pending_row.get("owner_admin_id")))
     # Says WHY this one still needs a human. Without it, an owner who has

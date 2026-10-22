@@ -88,6 +88,19 @@ def acquire(db, resource_key, owner, ttl=60):
     return Lease(resource_key, owner, epoch)
 
 
+def transient_conflict(exc) -> bool:
+    """MariaDB's answer to a lock conflict - snapshot changed under a
+    locking read (1020), deadlock (1213), lock wait timeout (1205). After a
+    1213 InnoDB has rolled the whole transaction back; after a 1205 (with
+    innodb_rollback_on_timeout OFF, the default) only the statement - the
+    rest is discarded when the caller's Session block exits on the error.
+    Either way nothing of that transaction is kept, so running the same
+    step again is safe (tests/test_durable_fault_injection.py)."""
+    from sqlalchemy.exc import OperationalError
+    code = getattr(getattr(exc, "orig", None), "args", (None,))[0]
+    return isinstance(exc, OperationalError) and code in (1020, 1205, 1213)
+
+
 def renew(db, lease, ttl=60):
     if not isinstance(lease, Lease):
         raise LeaseProtocolError("invalid_lease")

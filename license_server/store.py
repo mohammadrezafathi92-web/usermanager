@@ -88,6 +88,22 @@ class Install(Base):
 
     note = Column(Text, nullable=True)
 
+    # Aggregate usage counts the panel reports with a heartbeat (see the
+    # panel's license_state.aggregate_stats): no customer data, only three
+    # numbers. NULL = never reported (an older panel), which the console
+    # shows as unknown - never as zero. Informational; nothing limits on it.
+    stats_customer_accounts = Column(Integer, nullable=True)
+    stats_online_accounts = Column(Integer, nullable=True)
+    stats_online_sessions = Column(Integer, nullable=True)
+    stats_sampled_at = Column(DateTime, nullable=True)    # the panel's clock
+    stats_received_at = Column(DateTime, nullable=True)   # this server's clock
+
+
+# Nullable columns added to `installs` after it first shipped; create_all
+# does not extend an existing table, so startup adds whichever are missing.
+_ADDED_INSTALL_COLUMNS = ("activated_at", "stats_customer_accounts", "stats_online_accounts",
+                          "stats_online_sessions", "stats_sampled_at", "stats_received_at")
+
 
 class IssuedLicense(Base):
     """What a licence this server signed (or verified) actually says.
@@ -155,9 +171,10 @@ def make_engine(url: str):
             # Serialize inspect + ADD across simultaneous startup attempts.
             connection.exec_driver_sql("BEGIN IMMEDIATE")
         columns = {column["name"] for column in inspect(connection).get_columns("installs")}
-        if "activated_at" not in columns:
-            declaration = str(CreateColumn(Install.__table__.c.activated_at).compile(dialect=engine.dialect))
-            connection.exec_driver_sql("ALTER TABLE installs ADD COLUMN " + declaration)
+        for name in _ADDED_INSTALL_COLUMNS:
+            if name not in columns:
+                declaration = str(CreateColumn(Install.__table__.c[name]).compile(dialect=engine.dialect))
+                connection.exec_driver_sql("ALTER TABLE installs ADD COLUMN " + declaration)
     return engine
 
 
@@ -177,6 +194,7 @@ def record_heartbeat(
     panel_version: Optional[str] = None,
     reported_customers: Optional[int] = None,
     activated_at: Optional[dt.datetime] = None,
+    stats: Optional[dict] = None,
     now: Optional[dt.datetime] = None,
 ) -> tuple[Install, dict]:
     """Register-or-update an install, and return what to tell it.
@@ -238,6 +256,13 @@ def record_heartbeat(
             install.activated_at = activated_at
         install.heartbeat_count = (install.heartbeat_count or 0) + 1
 
+    if stats is not None:
+        # Already validated by the web layer; only a complete sample is kept.
+        install.stats_customer_accounts = stats["customer_accounts"]
+        install.stats_online_accounts = stats["online_customer_accounts"]
+        install.stats_online_sessions = stats["online_sessions"]
+        install.stats_sampled_at = stats.get("sampled_at")
+        install.stats_received_at = now
     db.commit()
     return install, {
         "revoked": bool(install.revoked),

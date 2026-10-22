@@ -73,7 +73,13 @@ with tempfile.TemporaryDirectory(prefix="license-store-upgrade-") as folder:
     with sqlite3.connect(path) as upgraded:
         columns = [r[1] for r in upgraded.execute("PRAGMA table_info(installs)")]
         check("activation column is added exactly once", columns.count("activated_at"), 1)
-        original_columns = ",".join(c for c in columns if c != "activated_at")
+        check("usage columns are added, empty (unknown) for old rows",
+              [c for c in columns if c.startswith("stats_")],
+              ["stats_customer_accounts", "stats_online_accounts", "stats_online_sessions",
+               "stats_sampled_at", "stats_received_at"])
+        check("...no invented counts", upgraded.execute(
+            "SELECT COUNT(*) FROM installs WHERE stats_customer_accounts IS NOT NULL").fetchone()[0], 0)
+        original_columns = ",".join(c for c in columns if c != "activated_at" and not c.startswith("stats_"))
         check("all previous install values are unchanged", upgraded.execute(
             "SELECT " + original_columns + " FROM installs ORDER BY id").fetchall(), before)
         check("settings are byte-for-byte unchanged", upgraded.execute("SELECT * FROM settings ORDER BY key").fetchall(), before_settings)

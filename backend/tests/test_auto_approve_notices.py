@@ -1,12 +1,16 @@
 """Admins are told about an AUTOMATIC approval: receipt photo, details,
 result, «خودکار تأیید شد», no approve button. Delivery is recorded and
-retried by the bot apart from the approval, which never runs twice.
+retried by the bot apart from the approval, which never runs twice. A
+transient failure is retried with no last attempt; a permanent one stays
+durable, visible and resendable. Worker, resend button and a restarted bot
+never send one notice at once, and a notice only goes to its own shop.
 
 Run:  python3 backend/tests/test_auto_approve_notices.py
 """
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import os
 import sqlite3
 import sys
@@ -161,17 +165,25 @@ with patch.object(admin_pending, "_owner_label", owner_label), \
     bot.fail = None
     check("...and it is sent", run(approval_notices.deliver_due(bot, request_id=p3["id"])), 1)
 
-    print("--- backoff is bounded ---")
+    print("--- a transient failure is never final ---")
     bot = Bot()
     p4 = new_request()
     targets["value"] = {444}
     bot.fail = network_error()
     run(approval_notices.queue_auto_approved(p4, "✅", "r"))
-    for _ in range(len(approval_notices.BACKOFF) + 1):
+    for _ in range(len(approval_notices.BACKOFF) * 3):
         make_due(p4["id"])
         run(approval_notices.deliver_due(bot, request_id=p4["id"]))
-    check("after the last backoff step it gives up (still listed)",
-          (rows(p4["id"])[0]["status"], rows(p4["id"])[0]["attempts"]), ("gave_up", len(approval_notices.BACKOFF) + 1))
+    row = rows(p4["id"])[0]
+    check("after 15 failed attempts it is still queued for retry, never abandoned",
+          (row["status"], row["attempts"]), ("failed", len(approval_notices.BACKOFF) * 3))
+    wait = (dt.datetime.fromisoformat(row["next_attempt_at"]) - dt.datetime.utcnow()).total_seconds()
+    check("...the wait is capped at the last step (an hour)", 3500 < wait <= approval_notices.BACKOFF[-1], True)
+    check("...and it stays listed for the shop's admins", any(n["id"] == row["id"] for n in
+                                                              storage.undelivered_notices("777000", {20}, False)), True)
+    bot.fail = None
+    make_due(p4["id"])
+    check("...and goes out once the network is back", run(approval_notices.deliver_due(bot, request_id=p4["id"])), 1)
 
     print("--- recipients that cannot be resolved yet are resolved on retry ---")
     bot = Bot()
@@ -225,6 +237,86 @@ with patch.object(admin_pending, "_owner_label", owner_label), \
     run(approval_notices.deliver_due(bot))
     check("the retry worker pass sends it without touching the approval", (rows(p6["id"])[0]["status"], calls),
           ("sent", [p6["id"]]))
+
+    print("--- worker, resend button and the send after approval never send one notice at once ---")
+    targets["value"] = {777}
+    p8 = new_request()
+    run(approval_notices.queue_auto_approved(p8, "✅", "r"))
+
+    class SlowBot(Bot):
+        async def send_photo(self, chat_id, photo, caption=None, **kw):
+            await asyncio.sleep(0.05)
+            await super().send_photo(chat_id, photo, caption=caption, **kw)
+    slow = SlowBot()
+
+    async def at_once():
+        return await asyncio.gather(approval_notices.deliver_due(slow, request_id=p8["id"]),
+                                    approval_notices.deliver_due(slow), approval_notices.deliver_due(slow))
+    check("three concurrent senders: sent exactly once", (sum(run(at_once())), len(slow.sent)), (1, 1))
+
+    p9 = new_request()
+    run(approval_notices.queue_auto_approved(p9, "✅", "r"))
+    nid = rows(p9["id"])[0]["id"]
+    check("a sender claims the row", storage.claim_notice(nid, "777000", approval_notices.LEASE), True)
+    check("...a second claim (worker / button) is refused while it sends",
+          storage.claim_notice(nid, "777000", approval_notices.LEASE), False)
+    check("...the resend button cannot re-queue a row being sent", storage.retry_notice(nid, "777000"), False)
+    check("...nor is it listed as undelivered meanwhile",
+          any(n["id"] == nid for n in storage.undelivered_notices("777000", {20}, False)), False)
+
+    print("--- a bot that died mid-send: the claim expires and it is sent after the restart ---")
+    bot = Bot()
+    check("not due again before the claim expires", run(approval_notices.deliver_due(bot, request_id=p9["id"])), 0)
+    with sqlite3.connect(_db.name) as c:
+        c.execute("UPDATE approval_notices SET claimed_until = '2000-01-01T00:00:00' WHERE id = ?", (nid,))
+    check("expired claim: sent once by the restarted bot", (run(approval_notices.deliver_due(bot)), len(bot.sent)), (1, 1))
+    check("...and marked sent (not sent again)", (rows(p9["id"])[0]["status"],
+                                                  run(approval_notices.deliver_due(bot)), len(bot.sent)), ("sent", 0, 1))
+    check("a late outcome of the dead sender changes nothing", (storage.mark_notice(nid, "failed"),
+                                                                rows(p9["id"])[0]["status"]), (None, "sent"))
+
+    print("--- a notice stays in its own shop and never re-runs the approval ---")
+    targets["value"] = {888}
+    p10 = new_request(owner=30)
+    bot = Bot()
+    bot.fail = forbidden()
+    run(approval_notices.queue_auto_approved(p10, "✅", "r"))
+    run(approval_notices.deliver_due(bot, request_id=p10["id"]))
+    nid = rows(p10["id"])[0]["id"]
+    check("listed for shop 30's admins", any(n["id"] == nid for n in storage.undelivered_notices("777000", {30}, False)),
+          True)
+    check("not for shop 20's", any(n["id"] == nid for n in storage.undelivered_notices("777000", {20}, False)), False)
+
+    class Call:
+        def __init__(self):
+            self.answers = []
+
+        async def answer(self, text, show_alert=False):
+            self.answers.append(text)
+
+    async def scope_20(_event):
+        return "scope-20"
+    calls = []
+
+    async def no_rerun(*a, **k):
+        calls.append(a)
+        raise AssertionError("a notice re-ran the approval")
+    with patch.object(admin_pending, "_scope_of", scope_20), \
+            patch.object(admin_pending, "_filters", lambda scope: ({20}, False)), \
+            patch.object(admin_pending, "perform_approval", no_rerun):
+        call = Call()
+        bot.fail = None
+        run(admin_pending.cb_notice_retry(call, admin_pending.NoticeRetryCB(notice_id=nid), bot))
+        check("shop 20's admin cannot resend shop 30's notice", (call.answers, len(bot.sent), rows(p10["id"])[0]["status"]),
+              (["این اعلان پیدا نشد"], 0, "gave_up"))
+    with patch.object(admin_pending, "_scope_of", scope_20), \
+            patch.object(admin_pending, "_filters", lambda scope: ({30}, False)), \
+            patch.object(admin_pending, "perform_approval", no_rerun):
+        call = Call()
+        run(admin_pending.cb_notice_retry(call, admin_pending.NoticeRetryCB(notice_id=nid), bot))
+        check("shop 30's admin resends it: to its own recipient only",
+              (call.answers, [chat for _k, chat, *_r in bot.sent]), (["ارسال شد"], [888]))
+    check("...and neither the worker nor the resend ever ran the approval again", calls, [])
 
 os.unlink(_db.name)
 print("\n" + "=" * 60)

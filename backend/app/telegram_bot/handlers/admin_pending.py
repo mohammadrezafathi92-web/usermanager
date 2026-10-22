@@ -608,7 +608,7 @@ def _notices_view(items: list[dict]) -> tuple[str, Optional[InlineKeyboardMarkup
              "خود تأیید و فعال‌سازی انجام شده؛ فقط پیام به ادمین نرسیده است.", ""]
     rows = []
     for n in items:
-        state = "در صف تلاش دوباره" if n["status"] == "failed" else "متوقف شد"
+        state = "در صف تلاش دوباره (خودکار)" if n["status"] == "failed" else "متوقف شد؛ فقط با ارسال دوباره"
         target = "گیرنده هنوز مشخص نشده" if n["chat_id"] == 0 else f"به <code>{n['chat_id']}</code>"
         lines.append(f"#{n['request_id']} · {kinds.get(n['kind'], n['kind'])} · {n['target_username']}")
         lines.append(f"    {target} · {state} · {n['attempts']} تلاش · {n.get('last_error') or '-'}")
@@ -640,7 +640,7 @@ async def cb_notice_retry(call: CallbackQuery, callback_data: NoticeRetryCB, bot
         await call.answer("این اعلان پیدا نشد", show_alert=True)
         return
     if not storage.retry_notice(notice["id"], approval_notices.bot_id()):
-        await call.answer("این اعلان قبلاً ارسال شده یا در صف است")
+        await call.answer("این اعلان قبلاً ارسال شده یا همین حالا در حال ارسال است")
         return
     sent = await approval_notices.deliver_due(bot, request_id=notice["request_id"])
     await call.answer("ارسال شد" if sent else "ارسال نشد؛ در صف تلاش دوباره ماند", show_alert=not sent)

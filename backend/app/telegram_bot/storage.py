@@ -121,9 +121,10 @@ CREATE TABLE IF NOT EXISTS approval_notices (
     chat_id INTEGER NOT NULL,
     text TEXT NOT NULL,
     photo BLOB,                              -- only for a receipt with no Telegram file id (Mini App upload)
-    status TEXT NOT NULL DEFAULT 'pending',  -- pending | sent | failed | gave_up
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending | sending | sent | failed | gave_up
     attempts INTEGER NOT NULL DEFAULT 0,
     next_attempt_at TEXT NOT NULL,
+    claimed_until TEXT,                      -- 'sending': taken by one sender until then (a crash frees it)
     last_error TEXT,
     created_at TEXT NOT NULL,
     sent_at TEXT,
@@ -352,24 +353,41 @@ def queue_notices(request_id: int, bot_id: str, chat_ids, text: str, photo: Opti
             )
 
 
+_DUE = ("(status IN ('pending', 'failed') AND next_attempt_at <= :now) "
+        "OR (status = 'sending' AND claimed_until <= :now)")
+
+
 def due_notices(bot_id: str, request_id: Optional[int] = None, limit: int = 20) -> list[dict]:
-    query = ("SELECT * FROM approval_notices WHERE bot_id = ? AND status IN ('pending', 'failed') "
-             "AND next_attempt_at <= ?")
-    args: list = [bot_id, _now_iso()]
+    """Due now - including a 'sending' row whose sender died (restart)."""
+    query = f"SELECT * FROM approval_notices WHERE bot_id = :bot AND ({_DUE})"
+    args: dict = {"bot": bot_id, "now": _now_iso(), "limit": limit}
     if request_id is not None:
-        query += " AND request_id = ?"
-        args.append(request_id)
+        query += " AND request_id = :request"
+        args["request"] = request_id
     with _conn() as conn:
-        return [dict(r) for r in conn.execute(query + " ORDER BY id LIMIT ?", (*args, limit)).fetchall()]
+        return [dict(r) for r in conn.execute(query + " ORDER BY id LIMIT :limit", args).fetchall()]
+
+
+def claim_notice(notice_id: int, bot_id: str, lease_seconds: int) -> bool:
+    """Take one due notice for sending - one atomic UPDATE, so the worker,
+    the resend button and a restarted bot can never send it at once."""
+    now = _now_iso()
+    until = (dt.datetime.utcnow() + dt.timedelta(seconds=lease_seconds)).replace(microsecond=0).isoformat()
+    with _conn() as conn:
+        cur = conn.execute(f"UPDATE approval_notices SET status = 'sending', claimed_until = :until "
+                           f"WHERE id = :id AND bot_id = :bot AND ({_DUE})",
+                           {"until": until, "id": notice_id, "bot": bot_id, "now": now})
+        return cur.rowcount == 1
 
 
 def mark_notice(notice_id: int, status: str, *, error: Optional[str] = None,
                 next_attempt_at: Optional[str] = None) -> None:
+    """The outcome of a claimed send (only a 'sending' row changes)."""
     with _conn() as conn:
         conn.execute(
-            "UPDATE approval_notices SET status = ?, attempts = attempts + 1, last_error = ?, "
+            "UPDATE approval_notices SET status = ?, attempts = attempts + 1, last_error = ?, claimed_until = NULL, "
             "next_attempt_at = COALESCE(?, next_attempt_at), "
-            "sent_at = CASE WHEN ? = 'sent' THEN ? ELSE sent_at END WHERE id = ?",
+            "sent_at = CASE WHEN ? = 'sent' THEN ? ELSE sent_at END WHERE id = ? AND status = 'sending'",
             (status, (error or None) and error[:300], next_attempt_at, status, _now_iso(), notice_id),
         )
 
@@ -377,12 +395,13 @@ def mark_notice(notice_id: int, status: str, *, error: Optional[str] = None,
 def close_resolver_notice(notice_id: int) -> None:
     """A chat_id 0 row whose recipients were resolved and queued."""
     with _conn() as conn:
-        conn.execute("UPDATE approval_notices SET status = 'sent', sent_at = ? WHERE id = ?", (_now_iso(), notice_id))
+        conn.execute("UPDATE approval_notices SET status = 'sent', sent_at = ?, claimed_until = NULL "
+                     "WHERE id = ? AND status = 'sending'", (_now_iso(), notice_id))
 
 
 def undelivered_notices(bot_id: str, owner_ids: Optional[set[int]], include_unowned: bool,
                         limit: int = 20) -> list[dict]:
-    """Failed/abandoned notices of requests this admin may see."""
+    """Undelivered notices (retrying or stopped) of requests this admin may see."""
     with _conn() as conn:
         rows = conn.execute(
             "SELECT n.*, p.kind, p.target_username, p.owner_admin_id, p.final_price, p.price "
@@ -395,7 +414,8 @@ def undelivered_notices(bot_id: str, owner_ids: Optional[set[int]], include_unow
 
 
 def retry_notice(notice_id: int, bot_id: str) -> bool:
-    """Manual retry: back to pending, due now. Attempts are kept."""
+    """Manual retry: back to pending, due now. Attempts are kept. Never a
+    row that is being sent right now or already sent."""
     with _conn() as conn:
         cur = conn.execute(
             "UPDATE approval_notices SET status = 'pending', next_attempt_at = ? "

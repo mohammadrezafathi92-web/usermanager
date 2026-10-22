@@ -40,6 +40,42 @@ target=$(git rev-parse refs/remotes/origin/main)
 [[ -z $target_arg || $target == "$target_arg" ]] || die "main differs from --target"
 git merge-base --is-ancestor "$previous" "$target" || die "main cannot fast-forward"
 docker compose exec -T backend python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/api/health",timeout=5).close()' >/dev/null 2>&1 || die "backend unhealthy"
+# Base images BEFORE anything changes: a registry that cannot be reached
+# must stop the update here - not after the checkout, half way through a
+# build. Exactly the references the target's Dockerfiles name (their pins
+# are kept); an image already on this host needs no network at all.
+stage images
+base_images=$(for file in backend/Dockerfile frontend/Dockerfile; do
+        git show "$target:$file" 2>/dev/null || { echo "UNREADABLE $file"; }
+    done | awk 'toupper($1) == "UNREADABLE" { print "!" $2; next }
+        toupper($1) == "FROM" {
+            ref = ""; alias = ""
+            for (i = 2; i <= NF; i++) {
+                if ($i ~ /^--/) continue
+                if (ref == "") { ref = $i; continue }
+                if (toupper($i) == "AS" && i < NF) alias = $(i + 1)
+            }
+            if (alias != "") stages[alias] = 1
+            refs[++n] = ref
+        }
+        END { for (i = 1; i <= n; i++) if (!(refs[i] in stages)) print refs[i] }' | sort -u)
+[[ -n $base_images ]] || die "no base images found in the target's Dockerfiles"
+for image in $base_images; do
+    [[ $image != !* ]] || die "cannot read ${image#!} at the target commit"
+    [[ $image =~ ^[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9._-]+)?(@sha256:[0-9a-f]{64})?$ ]] || die "unexpected base image reference"
+    if docker image inspect "$image" >/dev/null 2>&1; then
+        echo "BASE_IMAGE=$image present"
+        continue
+    fi
+    pulled=false
+    for attempt in 1 2 3; do
+        if timeout 600 docker pull --quiet "$image" >/dev/null 2>&1; then pulled=true; break; fi
+        echo "base image $image: pull attempt $attempt of 3 failed" >&2
+        [[ $attempt == 3 ]] || sleep $((attempt * 30))
+    done
+    $pulled || die "base image $image could not be pulled (registry unreachable?); nothing was changed - run again later"
+    echo "BASE_IMAGE=$image pulled"
+done
 tag="update_$(date -u +%Y%m%dT%H%M%SZ)_$$"
 stage backup
 backup_root=${UM_UPDATE_BACKUP_DIR:-/var/backups/usermanager}

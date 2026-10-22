@@ -105,6 +105,9 @@ with tempfile.TemporaryDirectory(prefix="safe-update-") as temp:
     (repo / "backend/scripts").mkdir(parents=True)
     shutil.copy(ROOT / "update.sh", repo / "update.sh")
     (repo / "backend/scripts/ensure_host_identity.sh").write_text("#!/bin/bash\nexit 0\n")
+    (repo / "frontend").mkdir()
+    (repo / "backend/Dockerfile").write_text("FROM python:3.11-slim AS base\nFROM base AS runtime\n")
+    (repo / "frontend/Dockerfile").write_text("FROM node:20-alpine AS build\nFROM --platform=linux/amd64 nginx:alpine\n")
     fake_helper = '''import json,sys,os
 from pathlib import Path
 cmd=sys.argv[1]
@@ -133,6 +136,13 @@ if [[ $2 == up && ${*: -1} == backend ]]; then touch "$TEST_RESTART_MARKER"; fi
 if [[ ${TEST_FAIL_HEALTH:-} == yes && -f "$TEST_RESTART_MARKER" && $2 == exec && $6 == -c ]]; then exit 1; fi
 if [[ ${TEST_FAIL_FRONTEND:-} == yes && $2 == exec && $4 == frontend ]]; then exit 1; fi
 if [[ $1 == inspect ]]; then echo sha256:old; exit; fi
+if [[ $1 == image && $2 == inspect ]]; then [[ ${TEST_IMAGE_MISSING:-} == yes ]] && exit 1; exit 0; fi
+if [[ $1 == pull ]]; then
+ n=$(grep -c '^pull ' "$TEST_DOCKER_LOG")
+ [[ ${TEST_PULL_FAIL:-} == always ]] && exit 1
+ [[ ${TEST_PULL_FAIL:-} == once && $n -le 1 ]] && exit 1
+ exit 0
+fi
 if [[ $1 == image ]]; then exit; fi
 if [[ $2 == ps ]]; then echo fake-container; exit; fi
 if [[ $2 == cp ]]; then src=${3#backend:}; cp -R "$src" "$4"; exit; fi
@@ -155,6 +165,30 @@ exit 0
     assert "up -d --no-build --no-deps frontend" in log
     assert "license-server" not in log
     assert "UPDATE_OK" in run.stdout
+    check_images = [line for line in log.splitlines() if line.startswith("image inspect")]
+    assert sorted(check_images) == ["image inspect nginx:alpine", "image inspect node:20-alpine",
+                                    "image inspect python:3.11-slim"], check_images
+    assert "pull " not in log, "images already on the host need no network"
+    # A base image that cannot be pulled stops BEFORE backup and checkout.
+    head = git("rev-parse", "HEAD")
+    Path(env["TEST_DOCKER_LOG"]).write_text("")
+    backups_before = sorted((folder / "hostbackups").iterdir())
+    bad = subprocess.run(["bash", "update.sh"], cwd=repo, env={**env, "TEST_IMAGE_MISSING": "yes",
+                         "TEST_PULL_FAIL": "always"}, capture_output=True, text=True)
+    assert bad.returncode != 0
+    log = Path(env["TEST_DOCKER_LOG"]).read_text()
+    assert log.count("pull --quiet nginx:alpine") == 3, log
+    assert "build" not in log and "up -d" not in log and "exec -T backend python - backup" not in log
+    assert git("rev-parse", "HEAD") == head
+    assert sorted((folder / "hostbackups").iterdir()) == backups_before
+    assert "could not be pulled" in bad.stderr and "nothing was changed" in bad.stderr
+    assert "UPDATE_OK" not in bad.stdout
+    # A transient failure is retried (bounded) and the update then proceeds.
+    Path(env["TEST_DOCKER_LOG"]).write_text("")
+    ok = subprocess.run(["bash", "update.sh"], cwd=repo, env={**env, "TEST_IMAGE_MISSING": "yes",
+                        "TEST_PULL_FAIL": "once"}, capture_output=True, text=True)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert "BASE_IMAGE=nginx:alpine pulled" in ok.stdout and "attempt 1 of 3 failed" in ok.stderr
     # Exact-target disagreement must stop before even making a backup.
     Path(env["TEST_DOCKER_LOG"]).write_text("")
     bad = subprocess.run(["bash", "update.sh", "--target", "f" * 40], cwd=repo, env=env, capture_output=True)

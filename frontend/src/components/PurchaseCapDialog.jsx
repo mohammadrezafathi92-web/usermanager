@@ -95,7 +95,13 @@ export default function PurchaseCapDialog({ purchase, onClose, onDone }) {
     else if (lowering) effect = t("purchaseCap.effectLowerNoExcess", { live: shown.live_sessions_in_scope });
     else effect = t("purchaseCap.effectRaise", { cap: shown.new_value });
   }
-  const pppOwnCaps = shown?.scope?.some((c) => ["openvpn", "l2tp", "ikev2", "sstp"].includes(c.type));
+  const PPP = ["openvpn", "l2tp", "ikev2", "sstp", "pptp"];
+  const pppOwnCaps = shown?.scope?.some((c) => PPP.includes(c.type));
+  // No service cap: what really applies today (session_cap_rule.session_scope)
+  // - each PPP credential its own cap, WireGuard/V2Ray not counted at all.
+  const fallback = shown && !shown.current_value ? shown.scope.map((c) => PPP.includes(c.type)
+    ? t("purchaseCap.fallbackPpp", { type: c.type, cap: c.connection_cap || t("purchaseCap.noCap") })
+    : t("purchaseCap.fallbackOther", { type: c.type })) : [];
 
   return <Modal open={!!purchase} onClose={() => { if (!busy) onClose(); }} dismissible={!busy} title={t("purchaseCap.title")}>
     <div className="space-y-4">
@@ -128,6 +134,10 @@ export default function PurchaseCapDialog({ purchase, onClose, onDone }) {
           <dt className="text-gray-500">{t("purchaseCap.mode")}</dt>
           <dd data-testid="cap-mode">{t(`purchaseCap.mode_${shown.session_cap_mode}`)}</dd>
         </dl>
+        {fallback.length > 0 && <div className="hint">
+          <p>{t("purchaseCap.fallbackTitle")}</p>
+          <ul data-testid="cap-fallback">{fallback.map((line, i) => <li key={i}>{line}</li>)}</ul>
+        </div>}
         <p role="note" className={shown.excess_now > 0 && shown.in_force_now
           ? "rounded-lg bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 p-2" : "text-gray-600 dark:text-gray-300"}>
           {effect}

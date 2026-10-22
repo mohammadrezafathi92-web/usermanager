@@ -107,6 +107,17 @@ describe("purchase cap dialog", () => {
     expect(screen.getByTestId("cap-mode").textContent).toBe(t("purchaseCap.mode_shadow"));
   });
 
+  it("no service cap: shows what really applies per connection, never 'unlimited'", async () => {
+    const user = userEvent.setup();
+    open({ purchase: { id: 7, max_concurrent_sessions: null } });
+    expect(screen.getByTestId("cap-current").textContent).toBe(t("purchaseCap.notSet"));
+    await previewWith(user, 2, shown({ current_value: null, new_value: 2, scope: [
+      { connection_id: 1, type: "openvpn", connection_cap: 1 }, { connection_id: 2, type: "wireguard", connection_cap: 1 }] }));
+    const items = [...screen.getByTestId("cap-fallback").querySelectorAll("li")].map((li) => li.textContent);
+    expect(items).toEqual([t("purchaseCap.fallbackPpp", { type: "openvpn", cap: 1 }),
+                           t("purchaseCap.fallbackOther", { type: "wireguard" })]);
+  });
+
   it("mode unreadable: says no cap decision is taken now", async () => {
     const user = userEvent.setup();
     open();

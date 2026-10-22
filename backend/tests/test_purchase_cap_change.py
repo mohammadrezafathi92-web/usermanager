@@ -293,6 +293,9 @@ def scenario(label, engine):
         shown = preview(P3, 3)
         check(L + "an unreadable mode (RADIUS/poller decide nothing): 'unavailable', not in force",
               (shown["session_cap_mode"], shown["in_force_now"]), ("unavailable", False))
+        sessions("ovpn3", 0)
+        check(L + "...and RADIUS then answers no login at all - not accepted, the cap is never bypassed",
+              login(server, "four-ovpn-3", "10.9.2.1"), None)
 
 
 def _count_audit(env, pid):

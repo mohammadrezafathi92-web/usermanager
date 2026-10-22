@@ -14,6 +14,7 @@ work (design 5.5/5.6).
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 from . import storage
@@ -26,11 +27,23 @@ FAIL_CLOSED_CODES = ("receipt_approval_blocked", "required_mode_not_available", 
                      "auto_approval_rate_limited", "auto_approval_policy_denied", "approval_registration_refused")
 
 
+# The central policy's refusal reasons (receipt_approval_auto.evaluate) - the
+# only part of a refusal detail ever passed on, and only when it is one of these.
+POLICY_REASONS = ("kind_not_auto_eligible", "disabled", "outside_window", "over_cap", "no_telegram_identity",
+                  "returning_unknown", "not_returning")
+
+
 class ApprovalBlocked(RuntimeError):
     """A backend fail-closed decision must never fall back to legacy work."""
-    def __init__(self, code, retry_after_seconds=None):
+    def __init__(self, code, retry_after_seconds=None, reason=None):
         super().__init__(code)
         self.retry_after_seconds = retry_after_seconds
+        self.reason = reason
+
+
+def policy_reason(detail: str) -> Optional[str]:
+    found = re.search(r"auto_approval_policy_denied:([a-z_]+)", detail or "")
+    return found.group(1) if found and found.group(1) in POLICY_REASONS else None
 
 LEGACY = {"mode": "off", "approval_uuid": None, "proceed_legacy": True}
 APPROVAL_PROTOCOL_VERSION = 1
@@ -115,7 +128,7 @@ async def begin(pending: dict, *, approved_by_telegram_id: Optional[int] = None,
                 retry = payload.get("retry_after_seconds") if isinstance(payload, dict) else None
                 raise ApprovalBlocked("auto_approval_rate_limited", retry) from exc
             if "auto_approval_policy_denied" in detail:
-                raise ApprovalBlocked("auto_approval_policy_denied") from exc
+                raise ApprovalBlocked("auto_approval_policy_denied", reason=policy_reason(detail)) from exc
             raise ApprovalBlocked(code) from exc
         if auto:
             raise ApprovalBlocked("auto_approval_unavailable") from exc

@@ -312,7 +312,8 @@ def _register_once(db: Session, principal: bot_auth.BotPrincipal, intent: ri.App
         retry_after = auto_policy.retry_after_seconds(subject["last_granted_at"] if subject else None, now)
         if registered_under_mode == runtime.REQUIRED:
             if not allowed:
-                raise AutoDenied("auto_approval_policy_denied", target=target, intent=intent,
+                # the reason is one of auto_policy.evaluate's fixed codes - safe to show
+                raise AutoDenied(f"auto_approval_policy_denied:{reason}", target=target, intent=intent,
                                  reason=reason, local_decision=local_decision)
             if retry_after is not None and rate_limit_mode == runtime.ENFORCED:
                 raise AutoDenied("auto_approval_rate_limited", target=target, intent=intent,

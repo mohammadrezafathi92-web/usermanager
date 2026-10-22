@@ -131,8 +131,9 @@ def build(db, execution: ApprovalExecution, operation_type: str, *, user=None, f
     rows = {(r.effect_type, r.effect_key): r for r in _manifest(db, execution.approval_uuid)}
     referral = {key for (_kind, key) in rows if key.startswith(("credit:referral_reward:", "quota:referral:"))}
     if referral and not referral & {"credit:referral_reward:referrer", "quota:referral:referrer"}:
-        # Only the new customer's own referral reward is frozen: the manifest
-        # names no referrer, so T_final could not prove whom to link (the
+        # Only the new customer's own referral reward is frozen (a manifest
+        # registered before receipt_approval_intent froze the referrer's
+        # identity on its own): it names no referrer, so T_final could not prove whom to link (the
         # code may change owner meanwhile). Refused before any write; the
         # approval stays registered for a human decision.
         raise HTTPException(409, "referral_referrer_not_frozen")

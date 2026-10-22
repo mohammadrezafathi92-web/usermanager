@@ -109,7 +109,7 @@ def scenario(label, engine):
             db.commit()
         policy_count = count(rv.receipt_approvals)
         check("central policy denial 403", begin(6, name="renewer")[:2],
-              (403, "approval_registration_refused:auto_approval_policy_denied"))
+              (403, "approval_registration_refused:auto_approval_policy_denied:disabled"))
         check("policy denial no approval", count(rv.receipt_approvals), policy_count)
         with env.Session() as db:
             check("policy refusal audit", db.execute(select(rv.auto_approval_rate_events.c.outcome).order_by(

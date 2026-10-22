@@ -17,10 +17,14 @@ Void 6.5, 5.3). Fake runner; no network.
     binding; a code that changed owner between T1 and T_final links nobody
     else (the new owner is never linked while the frozen reward is due to
     the first), and an unchanged code links and rewards the frozen one;
-  * a manifest whose referral rows reward only the new customer (no
-    referrer frozen): refused fail-closed before any write.
+  * a referral that rewards only the new customer: the manifest freezes
+    the referrer's identity on its own (a zero, optional credit row), the
+    approval executes and links exactly that referrer (receipt #1099); a
+    manifest registered before that row existed is still refused
+    fail-closed before any write.
 """
 import datetime as dt
+import json
 import os
 import sys
 import tempfile
@@ -289,32 +293,63 @@ frozen, linked = volume_signup(4, "volnew2", 1502, "VOL2", ok_runner)
 check("volume-only reward, code unchanged: the frozen referrer is linked and gets exactly 1 GB",
       (linked, quotas("volref2")[0] - before[0]), (VOLREF2, GB))
 
-# ------------------------------------------------------------------ only the new customer's reward: no frozen referrer
+# ------------------------------------------------------------------ only the new customer's reward (#1099)
 with SessionLocal() as db:
     row = db.get(models.PanelSettings, 1)
     row.referral_referrer_reward_credit, row.referral_referrer_reward_gb = 0, 0
     row.referral_new_user_reward_credit, row.referral_new_user_reward_gb = 30, 0
     db.commit()
     ops_before = db.query(mp.ProvisioningOperation).count()
-uuid_c, token_c = register(ri.ApprovalIntent(pending_source_instance_id="b", pending_local_id=5, kind="new",
-                                             target_username="lonely", amount=1000, package_id=PACKAGE,
-                                             referral_code="VOL2", list_price=1000, claimed_telegram_id=1503))
+
+
+def new_user_only(local_id, username, telegram_id, legacy_manifest=False):
+    approval_uuid, token = register(ri.ApprovalIntent(
+        pending_source_instance_id="b", pending_local_id=local_id, kind="new", target_username=username, amount=1000,
+        package_id=PACKAGE, referral_code="VOL2", list_price=1000, claimed_telegram_id=telegram_id))
+    expected = rv.receipt_approval_expected_effects
+    with SessionLocal() as db:
+        if legacy_manifest:
+            # registered before the identity row existed: neither the rows nor
+            # the registered hash have it
+            db.execute(expected.delete().where(expected.c.approval_uuid == approval_uuid,
+                                               expected.c.effect_key == "credit:referral_reward:referrer"))
+            rows = [ri.ManifestRow(r["effect_type"], r["effect_key"], r["requirement"], json.loads(r["expected"]))
+                    for r in db.execute(select(expected).where(expected.c.approval_uuid == approval_uuid)).mappings()]
+            db.execute(rv.receipt_approvals.update().where(rv.receipt_approvals.c.approval_uuid == approval_uuid)
+                       .values(manifest_hash=ri.manifest_hash(rows)))
+            db.commit()
+        frozen = {r["effect_key"]: (r["requirement"], json.loads(r["expected"])) for r in db.execute(
+            select(expected).where(expected.c.approval_uuid == approval_uuid)).mappings() if "referral" in r["effect_key"]}
+    with SessionLocal() as db, NO_SHARE, patch.object(execute.remote_runner, "run_action", side_effect=ok_runner):
+        answer = code(lambda: bot_router.create_user(schemas.BotCreateUserRequest(
+            username=username, telegram_id=telegram_id, package_id=PACKAGE, connections=[
+                schemas.BotCreateConnectionSpec(node_id=NODE, protocol="wireguard")], paid_amount=1000,
+            payment_method="card", approval_uuid=approval_uuid, execution_token=token, referral_code="VOL2",
+            list_price=1000), db=db, principal=INTERNAL))
+    with SessionLocal() as db:
+        state = db.execute(select(rv.receipt_approvals.c.state).where(
+            rv.receipt_approvals.c.approval_uuid == approval_uuid)).scalar()
+        user = db.query(models.User).filter_by(username=username).one_or_none()
+        return frozen, answer, state, user and (user.referred_by_id, int(user.balance or 0))
+
+
+referrer_before = quotas("volref2")
+frozen, answer, state, linked = new_user_only(5, "lonely", 1503)
+check("manifest with only the new customer's reward also freezes the referrer, as a zero optional row",
+      frozen, {"credit:referral_reward:new_user": ("required", {"user": {"ref": "effect:user_created:user"},
+                                                                "amount": 30}),
+               "credit:referral_reward:referrer": ("optional", {"referrer_user_id": VOLREF2,
+                                                                "referrer_username": "volref2", "amount": 0})})
+check("...the durable execution completes, linked to that referrer, the new customer credited 30 once",
+      (isinstance(answer, tuple), state, linked), (False, "completed", (VOLREF2, 30)))
+check("...the referrer is given nothing", quotas("volref2"), referrer_before)
 with SessionLocal() as db:
-    frozen = sorted(r.effect_key for r in db.execute(select(rv.receipt_approval_expected_effects.c.effect_key).where(
-        rv.receipt_approval_expected_effects.c.approval_uuid == uuid_c)) if "referral" in r.effect_key)
-with SessionLocal() as db, NO_SHARE, patch.object(execute.remote_runner, "run_action", side_effect=ok_runner):
-    refused = code(lambda: bot_router.create_user(schemas.BotCreateUserRequest(
-        username="lonely", telegram_id=1503, package_id=PACKAGE, connections=[schemas.BotCreateConnectionSpec(
-            node_id=NODE, protocol="wireguard")], paid_amount=1000, payment_method="card", approval_uuid=uuid_c,
-        execution_token=token_c, referral_code="VOL2", list_price=1000), db=db, principal=INTERNAL))
+    ops_before = db.query(mp.ProvisioningOperation).count()
+frozen, answer, state, linked = new_user_only(6, "lonely2", 1504, legacy_manifest=True)
 with SessionLocal() as db:
-    state = db.execute(select(rv.receipt_approvals.c.state).where(rv.receipt_approvals.c.approval_uuid == uuid_c)).scalar()
-    check("manifest with ONLY the new customer's referral reward (no referrer frozen)",
-          frozen, ["credit:referral_reward:new_user"])
-    check("...the durable execution is refused fail-closed before any write",
-          (refused, db.query(models.User).filter_by(username="lonely").count(),
-           db.query(mp.ProvisioningOperation).count() - ops_before, state),
-          ((409, "referral_referrer_not_frozen"), 0, 0, "registered"))
+    ops_after = db.query(mp.ProvisioningOperation).count()
+check("a manifest registered before the identity row (no referrer frozen): refused fail-closed before any write",
+      (answer, linked, ops_after - ops_before, state), ((409, "referral_referrer_not_frozen"), None, 0, "registered"))
 
 check("no network", _no_network.attempts, [])
 engine.dispose()

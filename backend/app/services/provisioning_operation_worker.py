@@ -8,6 +8,7 @@ Approval integration remains separate. Recovery can reacquire expired lease
 sets, but never steals live leases or releases a child-held node gate.
 """
 import datetime as dt
+import logging
 import secrets
 
 from fastapi import HTTPException
@@ -321,6 +322,17 @@ def resume_one(session_factory, operation_id, identity, *, installation_uuid, ow
             return _public(operation, "terminal")
     try:
         return tick(session_factory, operation_id, identity, tokens, release_shared_for_remote=True, **expected)
+    except Exception as exc:
+        if not leases.transient_conflict(exc):
+            raise
+        # A MariaDB lock conflict (deadlock/lock wait) rolled this iteration's
+        # transaction back as a whole; everything committed before it -
+        # including a remote_calling marker - is unchanged. Same answer as a
+        # busy lease: the caller tries again within its budget, and the
+        # recovery worker later if that runs out. Never reported as success.
+        logging.getLogger(__name__).warning("operation %s: transient lock conflict, retrying (%s)",
+                                            operation_id, getattr(getattr(exc, "orig", None), "args", ("?",))[0])
+        return dict(operation_id=operation_id, status="lease_busy")
     finally:
         # The tick's context managers close/roll back its business sessions
         # before reaching here, including launcher or final commit failures.

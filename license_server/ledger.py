@@ -154,6 +154,26 @@ def contact(install: Install, now: dt.datetime) -> dict:
     return {"state": state, "last_seen": install.last_seen, "silent": silent}
 
 
+def usage(install: Install, now: dt.datetime) -> dict:
+    """The last aggregate counts the panel reported, and how old they are.
+
+    Age is measured on THIS server's clock (when the sample arrived), not
+    the panel's. Never reported -> unknown, not zero; older than STALE_AFTER
+    -> stale, shown with its age instead of as current."""
+    if install.stats_received_at is None or install.stats_customer_accounts is None:
+        return {"state": "unknown"}
+    age = now - install.stats_received_at
+    return {
+        "state": "fresh" if age <= STALE_AFTER else "stale",
+        "accounts": install.stats_customer_accounts,
+        "online": install.stats_online_accounts,
+        "sessions": install.stats_online_sessions,
+        "received_at": install.stats_received_at,
+        "sampled_at": install.stats_sampled_at,
+        "age": age,
+    }
+
+
 def delivery(db, install: Install) -> dict:
     """Whether the panel has heard the CURRENT access decision.
 
@@ -190,6 +210,7 @@ def overview(db, now: Optional[dt.datetime] = None) -> list[dict]:
             "install": install, "issued": record,
             "validity": validity(install, record, now),
             "contact": contact(install, now),
+            "usage": usage(install, now),
             "successor": successor,
             # replaced only once the new key has actually reported in
             "replaced": bool(succ_install is not None and succ_install.heartbeat_count),

@@ -147,6 +147,75 @@ def capture_counters(db: Session, *, operation_id: int, connection_id: int,
         raise
 
 
+def _ppp_step(db, operation_id, connection_id):
+    op = _locked(db, Operation, operation_id)
+    if op is None or op.state != "pending":
+        raise HTTPException(409, "refund_not_pending")
+    connection = _locked(db, models.Connection, connection_id)
+    step = db.execute(select(Step).where(Step.operation_id == op.id, Step.connection_id == connection_id)
+                      .with_for_update()).scalar_one_or_none()
+    if step is None or connection is None or _identity(connection) != step.identity_digest:
+        raise HTTPException(409, "refund_resource_changed")
+    return op, connection, step
+
+
+def block_ppp(db: Session, *, operation_id: int, connection_id: int) -> None:
+    """From now on RADIUS refuses this PPP connection's logins (radius_server,
+    reseller_refund_block). Idempotent; only settlement ends it."""
+    try:
+        _begin(db)
+        _op, _connection, step = _ppp_step(db, operation_id, connection_id)
+        step.blocked_at = step.blocked_at or datetime.utcnow()
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
+def mark_waiting(db: Session, *, operation_id: int, connection_id: int, reason: str) -> None:
+    """Record what the step waits for (shown to the operator); keeps the first time."""
+    try:
+        _begin(db)
+        step = db.execute(select(Step).where(Step.operation_id == operation_id, Step.connection_id == connection_id)
+                          .with_for_update()).scalar_one_or_none()
+        if step is not None and step.verified_at is None:
+            if step.wait_reason != reason:
+                step.wait_reason, step.wait_since = reason, datetime.utcnow()
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
+def capture_ppp(db: Session, *, operation_id: int, connection_id: int) -> int:
+    """The PPP connection's final usage: its total once it is blocked and
+    every RADIUS session of it has ended with an Accounting Stop (a pruned
+    or reconciled-away row never counts - both skip a blocked connection).
+    Refused while any session is still open. Never rewritten later."""
+    try:
+        _begin(db)
+        _op, connection, step = _ppp_step(db, operation_id, connection_id)
+        if step.blocked_at is None:
+            raise HTTPException(409, "ppp_not_blocked")
+        if db.query(models.RadiusActiveSession.id).filter_by(connection_id=connection_id).first():
+            raise HTTPException(409, "ppp_accounting_stop_missing")
+        total = int(connection.total_bytes or 0)
+        if step.captured_at is not None:
+            if total != step.final_total_bytes:
+                raise HTTPException(409, "refund_usage_changed")
+        else:
+            if total < step.baseline_total_bytes:
+                raise HTTPException(409, "refund_counter_reset")
+            step.final_total_bytes, step.captured_at = total, datetime.utcnow()
+        step.wait_reason = step.wait_since = None
+        result = step.final_total_bytes
+        db.commit()
+        return result
+    except Exception:
+        db.rollback()
+        raise
+
+
 def verify_stopped(db: Session, *, operation_id: int, connection_id: int,
                    final_total_bytes: int) -> None:
     """INTERNAL worker hook: already stopped, absence verified, counters final.

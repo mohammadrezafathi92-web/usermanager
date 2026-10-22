@@ -42,7 +42,17 @@ export const REFUND_REASONS = {
   refund_counter_reset: "refund.reasonCounters",
   wg_refund_delete_unconfirmed: "refund.reasonDelete",
   refund_sessions_active: "refund.reasonSessions",
+  ppp_accounting_stop_missing: "refund.reasonStopMissing",
+  ppp_kick_unconfirmed: "refund.reasonKick",
+  ppp_kick_failed: "refund.reasonKick",
+  ppp_sessions_unreadable: "refund.reasonNode",
+  ppp_session_reappeared: "refund.reasonKick",
+  ppp_not_blocked: "refund.reasonKick",
+  refund_usage_changed: "refund.reasonCounters",
 };
+
+const COMPONENT_STATE = { verified: "refund.compVerified", usage_captured: "refund.compCaptured",
+  blocked: "refund.compBlocked", pending: "refund.compPending" };
 
 function errorOf(e) {
   const detail = e?.response?.data?.detail;
@@ -154,6 +164,15 @@ export default function UnpaidRefundDialog({ userId, purchase, onClose, onDone }
         <p className="font-semibold text-amber-700 dark:text-amber-400">{t("refund.pendingTitle")}</p>
         <p>{t("refund.progress", { stopped: operation.connections_stopped, removed: operation.connections_removed,
                                    total: operation.connections_total })}</p>
+        {operation.components?.length > 0 && <ul className="space-y-1" aria-label={t("refund.components")}>
+          {operation.components.map((c) => <li key={c.connection_id} className="flex flex-wrap gap-x-2">
+            <span className="font-medium">{c.type}</span>
+            <span>{t(COMPONENT_STATE[c.state] || "refund.compPending")}</span>
+            {c.wait_reason && <span className="text-amber-700 dark:text-amber-400">
+              {reasonText(c.wait_reason)}{c.wait_since ? ` (${t("refund.since", { date: formatDateTime(c.wait_since, language) })})` : ""}
+            </span>}
+          </li>)}
+        </ul>}
         <p className="text-gray-500">{t("refund.pendingHelp")}</p>
       </div>}
       {(pending || preview?.execution_available) && <label className="flex items-start gap-2 text-sm">

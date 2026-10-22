@@ -9,7 +9,8 @@ loopback interface (no node, no outside network):
   * a direct write from the panel process is refused by the gate - the
     reason this path must go through the runner;
   * the cancellation's stop and delete reach the router only from the
-    child, with the node lock held;
+    child, with the node lock held - so does the PPP disconnect, whose
+    Accounting Stop then makes the PPP usage final;
   * the delete fails: the operation stays pending with the final counters
     durable, no credit, the service in place;
   * resumed: the same peer (still stopped, same counters) is deleted and the
@@ -99,6 +100,8 @@ class FakeRouterOS(threading.Thread):
             "*2": {"interface": "wg0", "comment": "peer-b", "public-key": "key-b", "allowed-address": "10.0.0.3/32",
                    "disabled": "false", "tx": "999", "rx": "5"},
         }
+        self.ppp_active = {"*a1": "cust-ovpn"}     # .id -> username
+        self.on_kick = lambda username: None
         self.fail_remove = 0
         self.writes, self.lock_held = [], []
         self.mutex = threading.Lock()
@@ -149,6 +152,17 @@ class FakeRouterOS(threading.Thread):
                         rows = [["!re", f"=.id={pid}"] + [f"={k}={v}" for k, v in p.items()]
                                 for pid, p in self.peers.items()]
                         self._send(conn, *rows, ["!done"])
+                    elif command == "/ppp/active/print":
+                        wanted = next((w.split("=", 1)[1] for w in words[1:] if w.startswith("?name=")), None)
+                        rows = [["!re", f"=.id={i}", f"=name={n}"] for i, n in self.ppp_active.items()
+                                if wanted is None or n == wanted]
+                        self._send(conn, *rows, ["!done"])
+                    elif command == "/ppp/active/remove":
+                        self._note_write(command)
+                        username = self.ppp_active.pop(args[".id"], None)
+                        self._send(conn, ["!done"])
+                        if username:
+                            threading.Thread(target=self.on_kick, args=(username,), daemon=True).start()
                     elif command == "/system/resource/print":
                         self._send(conn, ["!re", "=uptime=52w"], ["!done"])
                     elif command.endswith("/print"):
@@ -204,6 +218,8 @@ with SessionLocal() as db:
         models.Connection(user_id=user.id, purchase_id=target.id, node_id=NODE_ID, type=models.ConnectionType.wireguard,
                           wg_peer_name="peer-a", wg_public_key="key-a", wg_client_address="10.0.0.2/32",
                           total_bytes=20, last_rx_bytes=20, last_tx_bytes=0),
+        models.Connection(user_id=user.id, purchase_id=target.id, node_id=NODE_ID, type=models.ConnectionType.openvpn,
+                          ppp_username="cust-ovpn", ppp_password="pw", enabled=True),
         models.Connection(user_id=user.id, purchase_id=other.id, node_id=NODE_ID, type=models.ConnectionType.wireguard,
                           wg_peer_name="peer-b", wg_public_key="key-b", wg_client_address="10.0.0.3/32",
                           total_bytes=20, last_rx_bytes=20, last_tx_bytes=0)])
@@ -245,12 +261,35 @@ def execute():
 def state():
     with SessionLocal() as db:
         op = db.query(Operation).one_or_none()
-        step = db.query(Step).one_or_none()
-        return dict(op=op.state if op else None, captured=bool(step and step.captured_at),
-                    verified=bool(step and step.verified_at), seller=db.get(models.AdminUser, AID).balance,
+        steps = db.query(Step).all()
+        return dict(op=op.state if op else None, captured=bool(steps) and all(s.captured_at for s in steps),
+                    verified=bool(steps) and all(s.verified_at for s in steps),
+                    seller=db.get(models.AdminUser, AID).balance,
                     purchase=db.get(models.Purchase, PID) is not None,
                     refunds=db.query(models.LedgerEntry).filter_by(kind="admin_credit_refund").count())
 
+
+# The OpenVPN credential has one live session, known to accounting; the NAS
+# sends its Stop when the session is removed from /ppp/active.
+from pyrad import packet
+from pyrad.dictionary import Dictionary
+from app.services import radius_server
+_dict = Dictionary(radius_server.DICT_PATH)
+nas = object.__new__(radius_server.UserManagerRadiusServer)
+nas._rejection_log_times, nas._overlimit_attempts = {}, {}
+
+
+def acct(username, kind, session, octets=0):
+    pkt = packet.AcctPacket(id=1, secret=b"s", dict=_dict)
+    pkt["User-Name"], pkt["Acct-Status-Type"], pkt["Acct-Session-Id"] = username, kind, session
+    pkt["Acct-Input-Octets"] = pkt["Acct-Output-Octets"] = octets
+    pkt.source = ("127.0.0.1", 1813)
+    with patch.object(radius_server, "_send_reply", lambda *a: None):
+        nas.HandleAcctPacket(pkt)
+
+
+acct("cust-ovpn", "Start", "s1")
+router.on_kick = lambda username: acct(username, "Stop", "s1")
 
 with patch.object(settings, "reseller_cancellation_enabled", True):
     with SessionLocal() as db:
@@ -264,8 +303,11 @@ with patch.object(settings, "reseller_cancellation_enabled", True):
           (409, "reseller_cancellation_pending", "wg_refund_delete_unconfirmed"))
     check("...the peer was stopped (disabled) and is still there",
           ("*1" in router.peers, router.peers.get("*1", {}).get("disabled")), (True, "true"))
-    check("...its final counters are durable; no credit; the service is still in the panel",
+    check("...final usage of every component (WireGuard counters, the OpenVPN Stop) durable; no credit; "
+          "the service is still in the panel",
           state(), dict(op="pending", captured=True, verified=False, seller=0, purchase=True, refunds=0))
+    check("...the OpenVPN session was ended on the router by a write of the child",
+          (router.ppp_active, "/ppp/active/remove" in router.writes), ({}, True))
     check("...every write came from the runner child holding the node lock",
           (bool(router.writes), all(router.lock_held)), (True, True))
 
@@ -273,15 +315,19 @@ with patch.object(settings, "reseller_cancellation_enabled", True):
     router.writes.clear()
     router.lock_held.clear()
     done = execute()
-    check("resumed: deleted and settled - the reseller credited once", done.get("refund_amount"), 75000)
+    # 75,000 at zero elapsed time; the seconds the run takes shave a toman or so
+    check("resumed: deleted and settled - the reseller credited once (about 75,000)",
+          74_990 <= (done.get("refund_amount") or 0) <= 75_000, True)
+    paid = done.get("refund_amount")
     check("...the peer is gone from the router", "*1" in router.peers, False)
+    check("...the OpenVPN session stays ended", router.ppp_active, {})
     check("...writes again only from the child with the node lock", (bool(router.writes), all(router.lock_held)),
           (True, True))
-    check("...settled state", state(), dict(op="completed", captured=True, verified=True, seller=75000,
+    check("...settled state", state(), dict(op="completed", captured=True, verified=True, seller=paid,
                                             purchase=False, refunds=1))
     again = execute()
     check("a retry returns the stored result and credits nothing more",
-          (again == done, state()["seller"], state()["refunds"]), (True, 75000, 1))
+          (again == done, state()["seller"], state()["refunds"]), (True, paid, 1))
 
     # ---------------------------------------------------------------- the rest is untouched
     with SessionLocal() as db:

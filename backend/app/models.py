@@ -1356,6 +1356,22 @@ class RadiusActiveSession(Base):
     last_tx_bytes = Column(BigInteger, default=0)
 
 
+class RadiusClosedSession(Base):
+    """A RADIUS session closed by its Accounting Stop. A Stop retransmitted
+    by the NAS (its reply was lost) or an Interim arriving after the Stop
+    names a session whose RadiusActiveSession row is gone: without this
+    record it was taken as a new session with a zero baseline and its whole
+    usage was counted again. Kept a few days (cleanup_stale_radius_sessions)."""
+
+    __tablename__ = "radius_closed_sessions"
+    __table_args__ = (UniqueConstraint("connection_id", "session_id", name="uq_radius_closed_session"),)
+
+    id = Column(Integer, primary_key=True)
+    connection_id = Column(Integer, nullable=False, index=True)
+    session_id = Column(String(128), nullable=False)
+    closed_at = Column(DateTime, default=now, nullable=False, index=True)
+
+
 class RadiusLimitEventLog(Base):
     """Persisted history of RADIUS auth attempts rejected for exceeding the
     concurrent-session limit (Connection.max_concurrent_sessions /

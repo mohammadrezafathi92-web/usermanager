@@ -76,6 +76,13 @@ class ResellerRefundStep(Base):
     final_upload_counter = Column(BigInteger, nullable=True)
     captured_at = Column(DateTime, nullable=True)
     verified_at = Column(DateTime, nullable=True)
+    # PPP (RADIUS) connections: logins refused from blocked_at on, until the
+    # operation completes (radius_server checks it; nothing else clears it).
+    blocked_at = Column(DateTime, nullable=True)
+    # What the step waits for now, and since when (shown to the operator):
+    # e.g. ppp_accounting_stop_missing - an open session never got its Stop.
+    wait_reason = Column(String(60), nullable=True)
+    wait_since = Column(DateTime, nullable=True)
     __table_args__ = (
         UniqueConstraint("operation_id", "connection_id", name="uq_reseller_refund_step"),
         CheckConstraint("baseline_total_bytes >= 0", name="ck_reseller_step_baseline"),

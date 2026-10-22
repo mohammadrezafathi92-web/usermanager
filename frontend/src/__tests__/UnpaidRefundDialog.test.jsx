@@ -133,6 +133,20 @@ describe("unpaid cancellation dialog", () => {
     expect(screen.getByRole("button", { name: t("refund.retry") }).disabled).toBe(false);
   });
 
+  it("a mixed service shows each component and what it waits for, with no refund", async () => {
+    const op = { ...PENDING, connections_total: 2, connections_stopped: 1, components: [
+      { connection_id: 1, type: "wireguard", state: "usage_captured", wait_reason: null, wait_since: null },
+      { connection_id: 2, type: "l2tp", state: "blocked", wait_reason: "ppp_accounting_stop_missing",
+        wait_since: "2026-10-23T10:00:00" }] };
+    api.fetchUnpaidRefundPreview.mockResolvedValue({ data: { ...PREVIEW, operation: op, execution_available: true } });
+    open();
+    const list = await screen.findByRole("list", { name: t("refund.components") });
+    expect(list.textContent).toContain(t("refund.compCaptured"));
+    expect(list.textContent).toContain(t("refund.compBlocked"));
+    expect(list.textContent).toContain(t("refund.reasonStopMissing"));
+    expect(screen.queryByText((text) => text.includes(t("refund.done", { amount: "" }).trim()))).toBe(null);
+  });
+
   it("an answer for a finished operation is matched by its service key, not a reused id", async () => {
     api.fetchUnpaidRefundPreview.mockResolvedValue({ data: { ...PREVIEW, target: { ...TARGET, purchase_key: "new-key" } } });
     api.cancelUnpaidPurchase.mockRejectedValue(new Error("Network Error"));

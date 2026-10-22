@@ -1,10 +1,16 @@
-"""Opt-in single-host SQLite/WireGuard unpaid-service cancellation.
+"""Opt-in single-host SQLite unpaid-service cancellation: WireGuard and
+PPP (OpenVPN / L2TP / PPTP over RADIUS) connections of ONE Purchase.
 
-Other transports require their own final-disconnect/usage contracts and
-are refused before any remote mutation. No public payload supplies usage.
+Each connection is a step; every step's state is committed as it moves, so
+a failure leaves the operation pending with what was already done (peers
+stopped or deleted, sessions ended, usage captured) and a resume continues
+from there. Credit, ledger and deletion happen once, only after every step
+is verified. Other transports are refused before any remote mutation. No
+public payload supplies usage.
 """
 import sys
 import re
+import time
 from datetime import datetime
 
 from fastapi import HTTPException
@@ -21,6 +27,7 @@ from .reseller_refund import preview
 from .reseller_refund_fence import barrier, enabled
 from . import reseller_refund_holds as holds
 from .reseller_refund_settlement import prepare, capture_counters, verify_stopped, settle, find_operation
+from .reseller_refund_settlement import block_ppp, capture_ppp, mark_waiting
 
 
 def availability(db, purchase, *, starting=True):
@@ -35,7 +42,11 @@ def availability(db, purchase, *, starting=True):
     if panel and panel.ha_enabled:
         return "reseller_cancellation_ha_unsupported"
     connections = list(purchase.connections)
-    if not connections or any(c.type != models.ConnectionType.wireguard for c in connections):
+    if not connections or any(c.type not in SUPPORTED_TYPES for c in connections):
+        return "reseller_cancellation_protocol_unsupported"
+    if any(c.type in PPP_TYPES and (not c.ppp_username or c.node is None
+                                    or c.node.type != models.NodeType.mikrotik) for c in connections):
+        # the session is ended on its MikroTik's /ppp/active
         return "reseller_cancellation_protocol_unsupported"
     # Legacy rewards lack reversible provenance until the loyalty cutover.
     if purchase.user.referral_reward_granted or purchase.user.loyalty_rewards_given:
@@ -86,10 +97,10 @@ def _prove_no_reboot(mt, connection, basis):
     _prove_uptime(mt.get_system_resources().get("uptime"), connection, basis)
 
 
-_CODE = re.compile(r"(wg|refund)_[a-z_]+")
+_CODE = re.compile(r"(wg|ppp|refund)_[a-z_]+")
 
 
-def _remote(node, block, **arguments):
+def _remote(node, block, default="wg_refund_unreadable", **arguments):
     """One refund write through legacy_remote: inline in gate off/shadow,
     in the runner child (node lock, ownership, endpoint fencing) when the
     gate is enforced - the only place a write may run then. The child
@@ -102,7 +113,63 @@ def _remote(node, block, **arguments):
         raise
     except (MikrotikError, GateViolation) as exc:
         code = str(exc).strip()
-        raise AdapterError(code if _CODE.fullmatch(code) else "wg_refund_unreadable") from None
+        raise AdapterError(code if _CODE.fullmatch(code) else default) from None
+
+
+PPP_TYPES = (models.ConnectionType.openvpn, models.ConnectionType.l2tp, models.ConnectionType.pptp)
+SUPPORTED_TYPES = (models.ConnectionType.wireguard,) + PPP_TYPES
+# How long one attempt waits for the Accounting Stop of the sessions it just
+# ended (RouterOS sends it at once; a few seconds covers the round trip).
+PPP_STOP_WAIT_SECONDS = 20
+PPP_KICK_ATTEMPTS = 3
+
+
+def _peer(connection):
+    identity = _identity(connection)
+    return dict(interface=identity.interface, peer_name=identity.peer_name,
+                public_key=identity.public_key, client_address=identity.client_address)
+
+
+def _ppp_sessions(connection) -> int:
+    """/ppp/active entries for the connection now (a read, in this process)."""
+    try:
+        with MikrotikClient.for_node(connection.node) as mt:
+            return mt.count_ppp_sessions(connection.ppp_username)
+    except MikrotikError:
+        raise AdapterError("ppp_sessions_unreadable") from None
+
+
+def _ppp_final(db, op_id, connection):
+    step = db.query(Step).filter_by(operation_id=op_id, connection_id=connection.id).one()
+    if step.captured_at is not None:
+        capture_ppp(db, operation_id=op_id, connection_id=connection.id)   # re-checks, never rewrites
+        return
+    node, username = connection.node, connection.ppp_username
+    for _ in range(PPP_KICK_ATTEMPTS):
+        db.rollback()
+        if not _ppp_sessions(connection):
+            break
+        # the login is refused (blocked): a kicked session cannot come back
+        _remote(node, "ppp_kick", username=username, default="ppp_kick_failed")
+    else:
+        if _ppp_sessions(connection):
+            mark_waiting(db, operation_id=op_id, connection_id=connection.id, reason="ppp_kick_unconfirmed")
+            raise AdapterError("ppp_kick_unconfirmed")
+    deadline = time.monotonic() + PPP_STOP_WAIT_SECONDS
+    while True:
+        db.expire_all()
+        open_ = db.query(models.RadiusActiveSession.id).filter_by(connection_id=connection.id).first()
+        if open_ is None:
+            break
+        if time.monotonic() >= deadline:
+            # No proof of the final usage: the operation waits; nothing is
+            # paid and no prune/timeout ever stands in for the Stop.
+            mark_waiting(db, operation_id=op_id, connection_id=connection.id,
+                         reason="ppp_accounting_stop_missing")
+            raise AdapterError("ppp_accounting_stop_missing")
+        db.rollback()
+        time.sleep(0.5)
+    capture_ppp(db, operation_id=op_id, connection_id=connection.id)
 
 
 def execute(db, *, purchase_id, actor, purchase_key=None, user_id=None):
@@ -147,10 +214,12 @@ def execute(db, *, purchase_id, actor, purchase_key=None, user_id=None):
         preview(db, purchase)
         op_id = prepare(db, purchase_id=purchase_id, actor=actor)
         connections = list(purchase.connections)
+        wgs = [c for c in connections if c.type == models.ConnectionType.wireguard]
+        ppps = [c for c in connections if c.type in PPP_TYPES]
         basis = db.query(Basis).filter_by(purchase_id=purchase_id).one()
-        # Validate ALL identities before disabling any peer.
         try:
-            for connection in connections:
+            # 1. Validate ALL identities before touching anything.
+            for connection in wgs:
                 if not all((connection.wg_peer_name, connection.wg_public_key, connection.wg_client_address)):
                     raise HTTPException(409, "refund_resource_changed")
                 with MikrotikClient.for_node(connection.node) as mt:
@@ -161,30 +230,47 @@ def execute(db, *, purchase_id, actor, purchase_key=None, user_id=None):
                     if found.state is not wg.ReadState.PRESENT_MATCH:
                         raise AdapterError("wg_refund_identity_unverified")
                     _prove_no_reboot(mt, connection, basis)
-            for connection in connections:
+            # 2. PPP: no new login from here on (RADIUS refuses a blocked step).
+            for connection in ppps:
+                block_ppp(db, operation_id=op_id, connection_id=connection.id)
+            # 3. WireGuard: stop and make the final counters durable.
+            stopped_usage = {}
+            for connection in wgs:
                 step = db.query(Step).filter_by(operation_id=op_id, connection_id=connection.id).one()
                 prior = ([step.final_download_counter, step.final_upload_counter]
                          if step.captured_at is not None else None)
-                identity = _identity(connection)
-                peer = dict(interface=identity.interface, peer_name=identity.peer_name,
-                            public_key=identity.public_key, client_address=identity.client_address)
-                node = connection.node
-                # End the DB read transaction before the network. Two writes,
-                # the final counters committed between them: a peer is never
-                # deleted before its usage is durable.
-                db.rollback()
+                peer, node = _peer(connection), connection.node
+                db.rollback()            # no DB transaction across the network
                 stopped = _remote(node, "wg_refund_stop", previous=prior, **peer)
                 usage = [stopped["download"], stopped["upload"]]
                 if prior is None or stopped.get("present", True):
                     _prove_uptime(stopped.get("uptime"), connection, basis)
                     capture_counters(db, operation_id=op_id, connection_id=connection.id,
                                      download_bytes=usage[0], upload_bytes=usage[1])
+                stopped_usage[connection.id] = (peer, node, usage)
+            # 4. PPP: end every open session, then its usage is final only
+            #    once each has its Accounting Stop.
+            for connection in ppps:
+                _ppp_final(db, op_id, connection)
+            # 5. WireGuard: delete the stopped peers (usage already durable).
+            for connection in wgs:
+                peer, node, usage = stopped_usage[connection.id]
                 db.rollback()
                 _remote(node, "wg_refund_remove", download=usage[0], upload=usage[1], **peer)
                 db.expire_all()
                 step = db.query(Step).filter_by(operation_id=op_id, connection_id=connection.id).one()
                 verify_stopped(db, operation_id=op_id, connection_id=connection.id,
                                final_total_bytes=step.final_total_bytes)
+            # 6. PPP: still blocked, no session on the router or in RADIUS.
+            for connection in ppps:
+                db.expire_all()
+                if _ppp_sessions(connection) or db.query(models.RadiusActiveSession.id).filter_by(
+                        connection_id=connection.id).first():
+                    raise AdapterError("ppp_session_reappeared")
+                step = db.query(Step).filter_by(operation_id=op_id, connection_id=connection.id).one()
+                verify_stopped(db, operation_id=op_id, connection_id=connection.id,
+                               final_total_bytes=step.final_total_bytes)
+            # 7. Only now: credit, ledger and deletion in one transaction.
             return settle(db, operation_id=op_id)
         except AdapterError as exc:
             db.rollback()

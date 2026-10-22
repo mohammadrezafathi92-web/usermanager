@@ -34,7 +34,7 @@ from ..config import settings
 from ..database import SessionLocal
 from ..telegram_bot import runner as telegram_bot_runner
 from .quota_manager import add_usage, _enforce_user_limits, _enforce_purchase_limits, active_session_count
-from . import session_cap_mode, session_cap_rule, license_guard
+from . import session_cap_mode, session_cap_rule, license_guard, reseller_refund_block
 from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
 from . import mschapv2
 from . import ip_guard
@@ -74,6 +74,8 @@ BAN_DURATION_MINUTES = 3
 # Stop packet was lost - router reboot, network blip, etc.) and pruned so
 # it doesn't permanently count against the concurrent-session limit.
 STALE_SESSION_MINUTES = 15
+# How long a closed session is remembered against late/retransmitted accounting.
+CLOSED_SESSION_KEEP_DAYS = 3
 
 
 def _to_str(value) -> str:
@@ -432,6 +434,11 @@ class UserManagerRadiusServer(Server):
             elif conn.banned_until and conn.banned_until > dt.datetime.utcnow():
                 reason = f"banned until {conn.banned_until.isoformat()} (too many over-limit attempts)"
                 # Already recorded when the ban was applied - not logged again.
+            elif reseller_refund_block.ppp_blocked(db, conn.id):
+                # Its unpaid-service cancellation is under way: no new
+                # session may start before its final usage is known.
+                reason = "service cancellation in progress"
+                reject_kind = "disabled"
             elif not conn.enabled:
                 reason = "connection disabled"
                 reject_kind = "disabled"
@@ -667,6 +674,16 @@ class UserManagerRadiusServer(Server):
             )
 
     @staticmethod
+    def _already_closed(db, connection_id: int, session_id) -> bool:
+        if not session_id:
+            return False
+        if db.query(models.RadiusActiveSession.id).filter_by(
+                connection_id=connection_id, session_id=session_id).first() is not None:
+            return False
+        return db.query(models.RadiusClosedSession.id).filter_by(
+            connection_id=connection_id, session_id=session_id).first() is not None
+
+    @staticmethod
     def _close_active_session(db, connection_id: int, session_id: str) -> None:
         """Removes the session's row THROUGH the session, not with a bulk
         DELETE. _session_delta has usually just changed that same row, and
@@ -770,6 +787,11 @@ class UserManagerRadiusServer(Server):
                     # baseline moved to the session row, see _session_delta.
                     conn.radius_session_id = session_id
                     self._open_active_session(db, conn.id, session_id, nas_ip, client_ip)
+                elif status in ("Interim-Update", "Stop") and self._already_closed(db, conn.id, session_id):
+                    # A retransmitted Stop, or an Interim after the Stop: that
+                    # session's usage is already counted - never again.
+                    logger.info("RADIUS Acct %s for closed session %s of connection %s ignored",
+                                status, session_id, conn.id)
                 elif status in ("Interim-Update", "Stop"):
                     conn.radius_session_id = session_id
                     in_octets = _gigaword_total(pkt, "Acct-Input-Octets", "Acct-Input-Gigawords")
@@ -785,6 +807,8 @@ class UserManagerRadiusServer(Server):
                         # deletes the row the baseline lives on, and the
                         # final report is usually the largest one.
                         self._close_active_session(db, conn.id, session_id)
+                        if session_id:
+                            db.add(models.RadiusClosedSession(connection_id=conn.id, session_id=session_id))
                     else:
                         self._touch_active_session(db, conn.id, session_id, nas_ip, client_ip)
 
@@ -851,11 +875,17 @@ def cleanup_stale_radius_sessions(stale_after_minutes: int = STALE_SESSION_MINUT
     db = SessionLocal()
     try:
         cutoff = dt.datetime.utcnow() - dt.timedelta(minutes=stale_after_minutes)
-        deleted = (
-            db.query(models.RadiusActiveSession)
-            .filter(models.RadiusActiveSession.last_seen_at < cutoff)
-            .delete(synchronize_session=False)
-        )
+        query = db.query(models.RadiusActiveSession).filter(models.RadiusActiveSession.last_seen_at < cutoff)
+        # A connection held by an unpaid-service cancellation keeps its open
+        # sessions: only their Accounting Stop proves the final usage, and a
+        # pruned row would look exactly like a closed one.
+        held = reseller_refund_block.blocked_connection_ids(db)
+        if held:
+            query = query.filter(models.RadiusActiveSession.connection_id.notin_(held))
+        deleted = query.delete(synchronize_session=False)
+        db.query(models.RadiusClosedSession).filter(
+            models.RadiusClosedSession.closed_at < dt.datetime.utcnow() - dt.timedelta(days=CLOSED_SESSION_KEEP_DAYS)
+        ).delete(synchronize_session=False)
         db.commit()
         if deleted:
             logger.info("cleaned up %d stale RADIUS active session(s)", deleted)

@@ -17,7 +17,8 @@ Credit returns to that charged reseller, not to the customer wallet or card pool
 Disabled by default (`RESELLER_CANCELLATION_ENABLED=false`). The UI can
 preview eligible charges without enabling execution. This implementation
 requires Linux, SQLite, one host, a shared local lock directory, HA disabled,
-and exclusively WireGuard connections for the selected purchase. Do not
+and only WireGuard and OpenVPN/L2TP/PPTP (RADIUS, on a MikroTik node)
+connections in the selected purchase; any other kind refuses it. Do not
 enable on a multi-host deployment or a network filesystem. All backend
 processes must be restarted together when enabling; old/uninstrumented
 processes and external mutation scripts cannot run alongside cancellation.
@@ -49,6 +50,50 @@ cancellation could not stop or delete anything on an enforced install.
 Reads (identity check before any stop) stay in the panel process. An
 unknown runner outcome leaves the operation pending; the resume repeats
 the stop (idempotent) and accepts only the same counters.
+
+## Order of a cancellation (one step per connection, each committed)
+
+1. Validate every WireGuard identity (reads; reboot continuity).
+2. Block every PPP connection: RADIUS refuses its logins from now on.
+3. Stop every WireGuard peer; commit its final counters.
+4. End every PPP session on the router (`ppp_kick`), then wait for each
+   session's Accounting Stop; only then is the connection's total final.
+5. Delete the WireGuard peers (verified absent).
+6. Verify each PPP connection: still blocked, no session on the router or
+   in RADIUS.
+7. Settle: credit, ledger, sale void marker and DB deletion together.
+
+A failure at any step leaves the operation `pending` with what was already
+done (peers stopped or deleted, sessions ended, usage captured) and the
+reason; each component's state and what it waits for (and since when) is
+shown on the customer page. A resume continues the same operation from the
+first unverified step - repeating a block, stop or kick is harmless, and a
+captured usage is never replaced by a different value. Success and the
+refund exist only after step 7.
+
+### A PPP session whose Accounting Stop never arrives
+
+Pending, reason `ppp_accounting_stop_missing`, logins of the service closed,
+nothing paid. Neither the 15-minute stale-session prune nor the poller's
+/ppp/active reconciliation removes a blocked connection's session: gone from
+the router is not proof of the final usage, and neither is a timeout.
+Allowed handling: restore the router's RADIUS accounting to the panel (the
+Stop is accepted whenever it arrives, a late one included) and resume. If
+the router rebooted, that session's Stop will never come; then the refund
+cannot be proven and the operation stays pending - closing it without a
+refund is an owner decision, not something this release does.
+
+Accounting for a session already closed by its Stop (a retransmitted Stop,
+an Interim after the Stop) is ignored, so it never counts twice
+(`radius_closed_sessions`, kept 3 days).
+
+### What cannot lift the hold
+
+The block, the stopped peers and the refusal of every enable/disable toggle
+(`quota_manager._set_connection_enabled`: poller, quota/expiry, session-cap
+releases, licence restore) hold for as long as the operation is pending,
+whether or not the feature flag is on; only settlement (which deletes the
+service) ends them.
 
 ## What "unpaid" excludes
 

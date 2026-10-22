@@ -41,6 +41,18 @@ async def scenario():
         register.return_value = {"mode": "required", "central_decision": {"central_allowed": False}}
         check("required policy false never executes", (await auto_approve.try_auto_approve(pending, object()))[0], False)
         check("policy denied not claimed", claim.call_count, 1)
+        register.return_value = {"mode": "required", "central_decision": {"central_allowed": False,
+                                                                          "central_reason": "not_returning"}}
+        answer = await auto_approve.try_auto_approve(pending, object())
+        check("central refusal names its real reason (no previous paid purchase)",
+              (answer[0], "خرید پرداخت‌شدهٔ قبلی ندارد" in answer[1], "بررسی دستی" in answer[1]), (False, True, True))
+        register.side_effect = approval_session.ApprovalBlocked("auto_approval_policy_denied", reason="not_returning")
+        answer = await auto_approve.try_auto_approve(pending, object())
+        check("403 policy refusal names its reason too", "خرید پرداخت‌شدهٔ قبلی ندارد" in answer[1])
+        register.side_effect = approval_session.ApprovalBlocked("auto_approval_policy_denied")
+        answer = await auto_approve.try_auto_approve(pending, object())
+        check("an unknown reason stays the generic sentence", "شرایط تأیید خودکار مرکزی برقرار نیست" in answer[1])
+        check("refusals are never claimed or executed", (claim.call_count, perform.await_count), (1, 1))
         register.side_effect = approval_session.ApprovalBlocked("auto_approval_rate_limited", 61)
         answer = await auto_approve.try_auto_approve(pending, object())
         check("rate-limited retained for manual", answer[0], False)
@@ -59,6 +71,16 @@ async def scenario():
                 raise AssertionError("auto fell back to legacy")
             except approval_session.ApprovalBlocked as exc:
                 check("bridge error blocks auto", str(exc).startswith("auto_approval_"))
+        for detail, reason in (("approval_registration_refused:auto_approval_policy_denied:not_returning", "not_returning"),
+                               ("approval_registration_refused:auto_approval_policy_denied:<b>x</b> token=abc", None),
+                               ("approval_registration_refused:auto_approval_policy_denied", None)):
+            request.side_effect = panel_bridge.ApiError(detail, status_code=403)
+            try:
+                await approval_session.begin(pending, auto=True)
+                raise AssertionError("auto fell back to legacy")
+            except approval_session.ApprovalBlocked as exc:
+                check(f"only a known policy reason is passed on ({reason})", (str(exc), exc.reason),
+                      ("auto_approval_policy_denied", reason))
         request.side_effect = None
         for answer in (None, {}, {"mode": "unexpected"}, {"mode": "required", "proceed_legacy": True},
                        {"mode": "shadow", "proceed_legacy": False}):

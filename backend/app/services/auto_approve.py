@@ -158,6 +158,23 @@ def decide(pending: dict) -> tuple[bool, str]:
         db.close()
 
 
+# What the central policy's refusal means, for the admins' receipt message.
+CENTRAL_REASON_TEXT = {
+    "kind_not_auto_eligible": "این نوع درخواست مشمول تأیید خودکار نیست",
+    "disabled": "تأیید خودکار در تنظیمات مرکزی خاموش است",
+    "outside_window": "خارج از ساعات تأیید خودکار است",
+    "over_cap": "مبلغ از سقف تأیید خودکار بیشتر است",
+    "no_telegram_identity": "شناسهٔ تلگرام مشتری معلوم نیست",
+    "returning_unknown": "خرید پرداخت‌شدهٔ قبلی مشتری قابل تأیید نیست",
+    "not_returning": "مشتری خرید پرداخت‌شدهٔ قبلی ندارد و فقط مشتریان قبلی خودکار تأیید می‌شوند",
+}
+
+
+def central_refusal(reason) -> str:
+    text = CENTRAL_REASON_TEXT.get(reason, "شرایط تأیید خودکار مرکزی برقرار نیست")
+    return f"تأیید خودکار انجام نشد: {text}؛ درخواست برای بررسی دستی ثبت شد."
+
+
 async def try_auto_approve(pending: dict, bot, photo: bytes | None = None) -> tuple[bool, str]:
     """(approved, reason). Claims the request the same way the Approve
     button does, so an admin tapping Approve at the same moment cannot
@@ -192,12 +209,14 @@ async def try_auto_approve(pending: dict, bot, photo: bytes | None = None) -> tu
             wait = f" ({max(1, (seconds + 59) // 60)} دقیقه باقی‌مانده)" if type(seconds) is int and seconds > 0 else ""
             return False, "سهمیهٔ تأیید خودکار این مشتری در ۶۰ دقیقهٔ اخیر مصرف شده" + wait + "؛ درخواست برای بررسی دستی ثبت شد."
         if str(exc) == "auto_approval_policy_denied":
-            return False, "شرایط تأیید خودکار مرکزی برقرار نیست؛ درخواست برای بررسی دستی ثبت شد."
+            return False, central_refusal(getattr(exc, "reason", None))
         return False, "تأیید خودکار در دسترس نیست؛ درخواست برای بررسی دستی ثبت شد."
     if session.get("mode") == "required":
         # A remote bot's empty local history must not veto central history.
-        allowed = session.get("central_decision", {}).get("central_allowed") is True
-        reason = "شرایط تأیید خودکار در سامانهٔ مرکزی بررسی شد"
+        decision = session.get("central_decision", {})
+        allowed = decision.get("central_allowed") is True
+        reason = "شرایط تأیید خودکار در سامانهٔ مرکزی بررسی شد" if allowed else central_refusal(
+            decision.get("central_reason"))
     if not allowed:
         logger.info("درخواست %s تایید خودکار نشد: %s", pending.get("id"), reason)
         return False, reason

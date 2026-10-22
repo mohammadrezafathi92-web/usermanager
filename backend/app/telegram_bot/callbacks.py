@@ -165,3 +165,8 @@ class SwitchAccountCB(CallbackData, prefix="swacc"):
     # becomes that chat's "active_username" in FSM state until /start or
     # another ambiguous action re-opens the picker.
     username: str
+
+
+class NoticeRetryCB(CallbackData, prefix="ntc"):
+    """Re-send one undelivered automatic-approval notice (see /notices)."""
+    notice_id: int

@@ -112,6 +112,21 @@ def _receipt_waiting(user, purchase_id: int) -> Optional[bool]:
         conn.close()
 
 
+def in_flight(db, purchase: models.Purchase, user: models.User) -> Optional[str]:
+    """Work that is changing this service right now (no payment judgement):
+    a receipt-void hold on it, a receipt approval still open for it, an
+    unfinished provisioning operation or a reserved payment on the customer.
+    'void' | 'approval' | 'operation' | None. Used by edits that must not race
+    such work (purchase_cap_repair)."""
+    if _void_held(db, purchase):
+        return "void"
+    if _approval_open(db, user.id, purchase.id):
+        return "approval"
+    if _operation_open(db, user.id) or _payment_hold(db, user.id):
+        return "operation"
+    return None
+
+
 def reason(db, purchase: models.Purchase, user: models.User) -> Optional[str]:
     """None when nothing holds this service; otherwise a stable code."""
     if _queued_renewal(purchase) or _queued_renewal(user):

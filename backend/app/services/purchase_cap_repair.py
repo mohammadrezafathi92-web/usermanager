@@ -15,7 +15,17 @@ connections), then records an audit row in the same commit. Nothing is
 ever written in bulk: one Purchase per call.
 
 Under session_cap_mode 'legacy'/'shadow' a Purchase's cap decides nothing
-(the legacy rule never reads it); it governs only once 'enforced'.
+(the legacy rule never reads it); it governs only once 'enforced'. There it
+is the only cap of the Purchase's connections: neither the User's cap nor a
+connection's own (a PPP credential's, often 1) is applied on top of it
+(session_cap_rule.session_scope), so raising it is never held back by them.
+
+Refused while other work is changing the same service (a receipt-void hold,
+an open receipt approval, an unfinished provisioning operation or reserved
+payment, a pending unpaid-service cancellation): that work could write the
+cap from what it read before this change. The operator lets it finish and
+previews again. A queued renewal is not such work - its cap is the separate
+reserved field, never touched by a change of the cap in force.
 """
 from __future__ import annotations
 
@@ -41,6 +51,18 @@ def _package_cap(db, package_id):
         return None
     package = db.get(models.Package, package_id)
     return package.max_concurrent_sessions if package is not None else None
+
+
+def _busy(db, purchase, user) -> Optional[str]:
+    from ..models_reseller_refund import ResellerRefundOperation
+    from . import reseller_refund_holds
+    held = reseller_refund_holds.in_flight(db, purchase, user)
+    if held:
+        return f"purchase_cap_{held}_in_progress"
+    if db.query(ResellerRefundOperation.id).filter(ResellerRefundOperation.user_id == user.id,
+                                                  ResellerRefundOperation.state == "pending").first():
+        return "purchase_cap_cancellation_pending"
+    return None
 
 
 def _state(db, purchase_id: int, field: str, *, lock: bool = False) -> dict:
@@ -69,11 +91,13 @@ def _state(db, purchase_id: int, field: str, *, lock: bool = False) -> dict:
                     live=counts.get(c.id, 0) if c.type in session_cap_rule.PPP_TYPES else int(bool(c.online)))
                for c in scope],
         other_enabled_legacy_connections=[c.id for c in legacy],
+        busy=_busy(db, purchase, user),
     )
 
 
 def _token(state: dict, new_value: int) -> str:
     bound = json.loads(json.dumps(dict(state, new_value=new_value), default=str))
+    bound.pop("busy", None)    # checked on its own, at preview and again under the execute lock
     for row in bound["scope"]:
         row.pop("live", None)  # live sessions inform the preview; they do not bind it
     return hashlib.sha256(json.dumps(bound, sort_keys=True, default=str).encode()).hexdigest()
@@ -93,16 +117,27 @@ def _reservation_required(state: dict) -> None:
 
 
 def preview(db, purchase_id: int, new_value: int, field: str = "max_concurrent_sessions") -> dict:
+    from . import session_cap_mode
     new_value = _valid(new_value, field)
     state = _state(db, purchase_id, field)
     _reservation_required(state)
     live = sum(row["live"] for row in state["scope"] if row["enabled"])
+    ppp = {t.value for t in session_cap_rule.PPP_TYPES}
+    live_ppp = sum(row["live"] for row in state["scope"] if row["enabled"] and row["type"] in ppp)
     token = _token(state, new_value)
+    mode = session_cap_mode.status(db)["mode"]
     db.rollback()
+    # What the change does now, for the confirmation (the UI words it):
+    # in 'enforced' a cap below the live count kicks WireGuard/Xray on the
+    # next poll (newest first) and refuses new PPP logins; open PPP sessions
+    # are not cut, they end on their own.
+    excess = max(live - new_value, 0) if field == "max_concurrent_sessions" else 0
     enforced = (f"at most {new_value} live session(s) across this Purchase's connections combined; {live} live now"
                 if field == "max_concurrent_sessions" else
                 f"none now; {new_value} becomes this Purchase's cap when its queued renewal activates")
     return dict(state, new_value=new_value, live_sessions_in_scope=live, preview_token=token,
+                session_cap_mode=mode, live_ppp_sessions=live_ppp, live_other_sessions=live - live_ppp,
+                excess_now=excess, in_force_now=mode == "enforced" and field == "max_concurrent_sessions",
                 effect=dict(legacy_and_shadow="none: the legacy rule never reads a Purchase's cap", enforced=enforced))
 
 
@@ -118,6 +153,9 @@ def execute(session_factory, admin_id: int, *, purchase_id: int, expected_user_i
             db.execute(text("BEGIN IMMEDIATE"))
         state = _state(db, purchase_id, field, lock=True)
         _reservation_required(state)
+        if state["busy"]:
+            db.rollback()
+            raise HTTPException(409, state["busy"])
         if state["user_id"] != expected_user_id or state["current_value"] != expected_current:
             db.rollback()
             raise HTTPException(409, "purchase_cap_target_changed")

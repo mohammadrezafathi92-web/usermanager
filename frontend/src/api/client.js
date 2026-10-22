@@ -669,3 +669,13 @@ export const fetchUnpaidCancellations = (userId) =>
 export const cancelUnpaidPurchase = (userId, purchaseId, purchaseKey) =>
   client.post(`/users/${userId}/purchases/${purchaseId}/cancel-unpaid`,
     { confirm_unpaid: true, ...(purchaseKey ? { purchase_key: purchaseKey } : {}) }, { _pwForce: true });
+// Concurrent-session cap of ONE purchased service (superadmin): preview the
+// exact state, then change it by compare-and-set against that preview.
+export const previewPurchaseCap = (purchaseId, newValue) =>
+  client.post("/session-caps/purchase-repairs/preview",
+    { purchase_id: purchaseId, new_value: newValue, field: "max_concurrent_sessions" });
+export const changePurchaseCap = (shown, reason) =>
+  client.post("/session-caps/purchase-repairs/execute", {
+    purchase_id: shown.purchase_id, expected_user_id: shown.user_id, expected_current: shown.current_value,
+    new_value: shown.new_value, preview_token: shown.preview_token, reason, field: "max_concurrent_sessions",
+  }, { _pwForce: true });

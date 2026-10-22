@@ -192,11 +192,40 @@ def wg_reconcile(mt, *, interface: str, desired_subnet: str) -> dict:
             "db_subnet": desired_subnet}
 
 
+# ------------------------------------------------------------------ unpaid-service cancellation (reseller_refund_worker)
+def _refund_identity(interface, peer_name, public_key, client_address):
+    from .adapter_mikrotik_wg import WireguardIdentity
+    return WireguardIdentity(interface, peer_name, public_key, client_address)
+
+
+def wg_refund_stop(mt, *, interface: str, peer_name: str, public_key: str, client_address: str,
+                   previous: Optional[list] = None) -> dict:
+    """adapter_mikrotik_wg.stop_and_measure, plus the router's uptime read
+    right after it (the parent proves no reboot since the sale with it).
+    `previous` = [download, upload] captured by an earlier attempt."""
+    from .adapter_mikrotik_wg import StoppedUsage, stop_and_measure
+    prior = StoppedUsage(*previous) if previous is not None else None
+    usage = stop_and_measure(mt, _refund_identity(interface, peer_name, public_key, client_address), prior)
+    # present=False: the peer was already gone and `previous` answers for it
+    return {"download": usage.download_bytes, "upload": usage.upload_bytes, "present": usage is not prior,
+            "uptime": mt.get_system_resources().get("uptime")}
+
+
+def wg_refund_remove(mt, *, interface: str, peer_name: str, public_key: str, client_address: str,
+                     download: int, upload: int) -> str:
+    """adapter_mikrotik_wg.remove_stopped for counters already persisted."""
+    from .adapter_mikrotik_wg import StoppedUsage, remove_stopped
+    remove_stopped(mt, _refund_identity(interface, peer_name, public_key, client_address),
+                   StoppedUsage(download, upload))
+    return "verified_absent"
+
+
 BLOCKS = {name: function for name, function in globals().items()
           if callable(function) and not name.startswith("_") and name != "Optional"}
 
 # Which client each block needs, so the child builds the right one.
 CLIENT_KIND = {
+    "wg_refund_stop": "mikrotik", "wg_refund_remove": "mikrotik",
     "wg_provision": "mikrotik", "wg_remove": "mikrotik", "ppp_kick": "mikrotik", "wg_bounce": "mikrotik",
     "wg_set_enabled": "mikrotik", "wg_rename": "mikrotik", "wg_queue_sync": "mikrotik", "mt_push": "mikrotik",
     "xray_add": "xray", "xray_remove": "xray", "xray_bounce": "xray", "xray_set_enabled": "xray",

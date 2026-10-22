@@ -203,7 +203,7 @@ check("every legacy-only writer action runs the guarded legacy child entry",
       {"mt_push_ikev2", "mt_push_l2tp", "mt_push_pptp", "mt_push_radius", "mt_push_sstp", "ppp_kick_session",
        "softether_bounce_user", "softether_set_user_enabled", "wg_bounce_peer", "wg_rename_peer",
        "wg_set_peer_enabled", "wg_set_speed_queue", "xray_bounce_client", "xray_rebuild_clients",
-       "xray_set_client_enabled", "wg_reconcile_interface_address"})
+       "xray_set_client_enabled", "wg_reconcile_interface_address", "wg_refund_stop", "wg_refund_remove"})
 spawned = []
 real_popen = subprocess.Popen
 

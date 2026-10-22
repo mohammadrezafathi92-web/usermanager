@@ -34,6 +34,22 @@ tree scope. Execution requires password confirmation and an explicit unpaid
 confirmation. Before enabling on a real installation, verify stop/read/delete
 against a staging RouterOS node; fake-router tests are not hardware verification.
 
+## Remote steps and the provisioning gate
+
+The two RouterOS writes go through `legacy_remote` like every other legacy
+writer: `wg_refund_stop` (disable the exact peer, read its final counters
+twice, read the router uptime) and `wg_refund_remove` (re-check the stopped
+counters, delete, verify absence and the peer's speed queue). The final
+counters are committed in the panel database between the two, so a peer is
+never deleted before its usage is durable. With the gate `off`/`shadow` they
+run inline; with the gate `enforced` (required on production) they run in
+the runner child under the node lock and ownership/endpoint fencing. A write
+from the panel process itself is refused there; before this change the
+cancellation could not stop or delete anything on an enforced install.
+Reads (identity check before any stop) stay in the panel process. An
+unknown runner outcome leaves the operation pending; the resume repeats
+the stop (idempotent) and accepts only the same counters.
+
 ## What "unpaid" excludes
 
 A new cancellation is refused while anything says the customer paid for this

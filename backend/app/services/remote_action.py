@@ -71,6 +71,8 @@ class ActionType(str, enum.Enum):
     MT_PUSH_SSTP = "mt_push_sstp"
     MT_PUSH_L2TP = "mt_push_l2tp"
     MT_PUSH_IKEV2 = "mt_push_ikev2"
+    WG_REFUND_STOP = "wg_refund_stop"
+    WG_REFUND_REMOVE = "wg_refund_remove"
     CONTRACT_PROBE = "contract_probe"
     # Runner self-test - no node, no network. Used by the runner's own
     # health check and by the tests.

@@ -14,7 +14,9 @@ from ..models_reseller_refund import ResellerRefundOperation as Operation, Resel
 from ..models_reseller_refund import ResellerSaleBasis as Basis
 from . import adapter_mikrotik_wg as wg
 from .adapter_base import AdapterError
-from .mikrotik_client import MikrotikClient
+from . import legacy_remote
+from .mikrotik_client import MikrotikClient, MikrotikError
+from .transport_guard import GateViolation
 from .reseller_refund import preview
 from .reseller_refund_fence import barrier, enabled
 from . import reseller_refund_holds as holds
@@ -71,13 +73,36 @@ def _uptime_seconds(value):
     raise AdapterError("wg_uptime_unverified")
 
 
-def _prove_no_reboot(mt, connection, basis):
+def _prove_uptime(uptime, connection, basis):
     # A reboot followed by enough traffic can overtake the old counter;
     # checking only for a decreased counter misses that lost consumption.
     source_time = min(basis.created_at, connection.created_at)
     elapsed = max(0, (datetime.utcnow() - source_time).total_seconds())
-    if _uptime_seconds(mt.get_system_resources().get("uptime")) <= elapsed + 2:
+    if _uptime_seconds(uptime) <= elapsed + 2:
         raise AdapterError("wg_usage_continuity_unverified")
+
+
+def _prove_no_reboot(mt, connection, basis):
+    _prove_uptime(mt.get_system_resources().get("uptime"), connection, basis)
+
+
+_CODE = re.compile(r"(wg|refund)_[a-z_]+")
+
+
+def _remote(node, block, **arguments):
+    """One refund write through legacy_remote: inline in gate off/shadow,
+    in the runner child (node lock, ownership, endpoint fencing) when the
+    gate is enforced - the only place a write may run then. The child
+    reports an adapter refusal as a client error carrying its code; any
+    other failure (unknown outcome, gate refusal) is 'unreadable', which
+    leaves the operation pending for a resume, never settled."""
+    try:
+        return legacy_remote.run(node, block, factory=lambda n: MikrotikClient.for_node(n), **arguments)
+    except AdapterError:
+        raise
+    except (MikrotikError, GateViolation) as exc:
+        code = str(exc).strip()
+        raise AdapterError(code if _CODE.fullmatch(code) else "wg_refund_unreadable") from None
 
 
 def execute(db, *, purchase_id, actor, purchase_key=None, user_id=None):
@@ -138,18 +163,24 @@ def execute(db, *, purchase_id, actor, purchase_key=None, user_id=None):
                     _prove_no_reboot(mt, connection, basis)
             for connection in connections:
                 step = db.query(Step).filter_by(operation_id=op_id, connection_id=connection.id).one()
-                prior = (wg.StoppedUsage(step.final_download_counter, step.final_upload_counter)
+                prior = ([step.final_download_counter, step.final_upload_counter]
                          if step.captured_at is not None else None)
-                def save(usage):
-                    _prove_no_reboot(mt, connection, basis)
-                    capture_counters(db, operation_id=op_id, connection_id=connection.id,
-                                     download_bytes=usage.download_bytes, upload_bytes=usage.upload_bytes)
-                    return usage
-                # End the DB read transaction before entering the network client.
+                identity = _identity(connection)
+                peer = dict(interface=identity.interface, peer_name=identity.peer_name,
+                            public_key=identity.public_key, client_address=identity.client_address)
+                node = connection.node
+                # End the DB read transaction before the network. Two writes,
+                # the final counters committed between them: a peer is never
+                # deleted before its usage is durable.
                 db.rollback()
-                with MikrotikClient.for_node(connection.node) as mt:
-                    wg.stop_capture_remove(mt, _identity(connection), persist_usage=save,
-                                           previously_captured=prior)
+                stopped = _remote(node, "wg_refund_stop", previous=prior, **peer)
+                usage = [stopped["download"], stopped["upload"]]
+                if prior is None or stopped.get("present", True):
+                    _prove_uptime(stopped.get("uptime"), connection, basis)
+                    capture_counters(db, operation_id=op_id, connection_id=connection.id,
+                                     download_bytes=usage[0], upload_bytes=usage[1])
+                db.rollback()
+                _remote(node, "wg_refund_remove", download=usage[0], upload=usage[1], **peer)
                 db.expire_all()
                 step = db.query(Step).filter_by(operation_id=op_id, connection_id=connection.id).one()
                 verify_stopped(db, operation_id=op_id, connection_id=connection.id,

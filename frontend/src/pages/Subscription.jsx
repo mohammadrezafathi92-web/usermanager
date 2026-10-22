@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import QRCode from "qrcode";
-import { Wifi, Globe, Network, ShieldCheck, Lock, KeyRound, ShieldEllipsis, Copy, Check, Download, Gift, Wallet, CalendarClock, ChevronDown, ChevronUp } from "lucide-react";
+import { Wifi, Globe, Network, ShieldCheck, ShieldAlert, Lock, KeyRound, ShieldEllipsis, Copy, Check, Download, Gift, Wallet, CalendarClock, ChevronDown, ChevronUp } from "lucide-react";
 import { fetchPublicSubscriptionInfo } from "../api/client.js";
 import { formatBytes, formatDateTime, statusLabel, STATUS_STYLES, copyText } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
@@ -16,12 +16,21 @@ function buildTypeMeta() {
     l2tp: { label: "L2TP/IPsec", icon: Lock, color: "bg-amber-50 text-amber-600" },
     ikev2: { label: "IKEv2/IPsec", icon: KeyRound, color: "bg-sky-50 text-sky-600" },
     sstp: { label: "SSTP", icon: ShieldEllipsis, color: "bg-rose-50 text-rose-600" },
+    // Missing here once, so a PPTP service fell through to the V2Ray entry
+    // below and was shown to the customer as "V2Ray / Xray".
+    pptp: { label: "PPTP ⚠️", icon: ShieldAlert, color: "bg-orange-50 text-orange-600" },
     xray: { label: "V2Ray / Xray", icon: Globe, color: "bg-purple-50 text-purple-600" },
     softether: { label: "SoftEther", icon: Network, color: "bg-sky-50 text-sky-600" },
   };
 }
 
-const FILE_EXT = { wireguard: "conf", openvpn: "txt", l2tp: "txt", ikev2: "txt", sstp: "txt" };
+const FILE_EXT = { wireguard: "conf", openvpn: "txt", l2tp: "txt", ikev2: "txt", sstp: "txt", pptp: "txt", softether: "txt" };
+
+// A protocol this page does not know is shown under its own name - never
+// borrowed from another protocol's label and icon.
+export function typeMeta(type) {
+  return buildTypeMeta()[type] || { label: String(type || "?").toUpperCase(), icon: Network, color: "bg-gray-100 text-gray-600" };
+}
 
 // Purchase is the quota boundary, not purchase_batch or a sum of protocol
 // counters. Keep services with no remaining connections visible as well.
@@ -218,7 +227,7 @@ function PurchaseGroupSection({ group, token, TYPE_META, defaultOpen }) {
       {open && (
         <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
           {group.connections.map((conn) => (
-            <ServiceCard key={conn.id} conn={conn} meta={TYPE_META[conn.type] || TYPE_META.xray} token={token} />
+            <ServiceCard key={conn.id} conn={conn} meta={typeMeta(conn.type)} token={token} />
           ))}
         </div>
       )}
@@ -366,11 +375,14 @@ export default function Subscription() {
   }
 
   const accounts = data.accounts || [];
+  // The app subscribe URL (/api/subscribe/<token>) carries V2Ray/Xray links
+  // only; every other protocol is a downloadable config below.
+  const hasXray = accounts.some((a) => (a.connections || []).some((c) => c.type === "xray"));
 
   return (
     <div className="min-h-screen bg-gray-50 py-6 px-4">
       <div className="max-w-2xl mx-auto space-y-4">
-        <div className="card p-5 space-y-2">
+        {hasXray && <div className="card p-5 space-y-2" data-testid="app-subscribe">
           <div className="font-medium text-sm text-gray-800">{t("subscription.appSubscribeTitle")}</div>
           <div className="text-xs text-gray-500">{t("subscription.appSubscribeHint")}</div>
           <div className="flex gap-2">
@@ -380,7 +392,7 @@ export default function Subscription() {
             </button>
           </div>
           {copiedApp && <div className="text-xs text-emerald-600">{t("subscription.copied")}</div>}
-        </div>
+        </div>}
 
         <div className="space-y-3">
           {accounts.length > 1 && (

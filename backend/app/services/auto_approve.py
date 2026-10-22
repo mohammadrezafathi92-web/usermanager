@@ -158,7 +158,7 @@ def decide(pending: dict) -> tuple[bool, str]:
         db.close()
 
 
-async def try_auto_approve(pending: dict, bot) -> tuple[bool, str]:
+async def try_auto_approve(pending: dict, bot, photo: bytes | None = None) -> tuple[bool, str]:
     """(approved, reason). Claims the request the same way the Approve
     button does, so an admin tapping Approve at the same moment cannot
     double-provision: whichever gets the claim first wins and the other
@@ -217,34 +217,20 @@ async def try_auto_approve(pending: dict, bot) -> tuple[bool, str]:
         return False, f"تایید خودکار شروع شد ولی ناموفق بود: {result}"
 
     logger.info("درخواست %s به‌صورت خودکار تایید شد (%s)", pending.get("id"), reason)
-    await _notify_admins(pending, bot, reason)
+    await _notify_admins(pending, bot, reason, result, photo)
     return True, reason
 
 
-async def _notify_admins(pending: dict, bot, reason: str) -> None:
-    """Tells the admins a sale happened without them.
-
-    Without this the feature is silent: the owner would find out about
-    automatic approvals only by noticing the money. There is no approve
-    button on this message - the service is already delivered - so it is
-    plain text, deliberately distinguishable from a request awaiting action.
-    """
-    from ..telegram_bot.handlers.admin_pending import _pending_summary, _owner_label
-    from ..telegram_bot.handlers.customer import _notify_targets
-
+async def _notify_admins(pending: dict, bot, reason: str, result: str, photo: bytes | None = None) -> None:
+    """Tells the admins a sale happened without them: the receipt photo, the
+    customer, the amount, purchase/renewal and the actual result, marked
+    «خودکار تأیید شد», with no approve button - the service is already
+    delivered. Recorded first and then sent; a failed send stays queued for
+    the bot's retry worker (telegram_bot/approval_notices.py) and is listed
+    by /notices. Never raises: the approval itself is complete."""
+    from ..telegram_bot import approval_notices
+    await approval_notices.queue_auto_approved(pending, result, reason, photo)
     try:
-        owner_label = await _owner_label(pending.get("owner_admin_id"))
-        text = "🤖 تایید خودکار انجام شد\n\n" + _pending_summary(pending, owner_label) + f"\n\nدلیل: {reason}"
+        await approval_notices.deliver_due(bot, request_id=pending["id"])
     except Exception:
-        logger.exception("could not render the auto-approval notice")
-        text = f"🤖 درخواست {pending.get('id')} به‌صورت خودکار تایید شد"
-
-    # See customer.py's _notify_targets docstring - approval_targets() alone
-    # can miss the actual owning reseller, so their own linked Telegram id
-    # (from pending['owner_admin_id']) is always added too.
-    for admin_id in await _notify_targets(pending):
-        try:
-            await bot.send_message(admin_id, text)
-        except Exception:
-            # A notification failure must never undo a completed approval.
-            logger.warning("ارسال اطلاع تایید خودکار به %s ناموفق بود", admin_id)
+        logger.exception("ارسال اطلاع تایید خودکار درخواست %s انجام نشد؛ در صف تلاش دوباره ماند", pending.get("id"))

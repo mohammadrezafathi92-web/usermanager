@@ -3,11 +3,11 @@ from typing import Optional
 
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from ..panel_bridge import api, ApiError
 from ..admin_scope import resolve_admin_scope
-from ..callbacks import MenuCB, ApprovalCB
+from ..callbacks import MenuCB, ApprovalCB, NoticeRetryCB
 from ..config import config
 from ..keyboards import approval_kb, home_kb
 from .. import approval_session, storage
@@ -595,3 +595,52 @@ async def cmd_admin_history(message: Message) -> None:
         await message.answer("هنوز درخواست رسیدگی‌شده‌ای ثبت نشده.", reply_markup=home_kb())
         return
     await message.answer(_history_text(items), reply_markup=home_kb())
+
+
+# ---------------------------------------------------------------------------
+# undelivered automatic-approval notices (telegram_bot/approval_notices.py)
+# ---------------------------------------------------------------------------
+def _notices_view(items: list[dict]) -> tuple[str, Optional[InlineKeyboardMarkup]]:
+    if not items:
+        return "همهٔ اعلان‌های تأیید خودکار ارسال شده‌اند.", None
+    kinds = {"new": "خرید جدید", "renew": "تمدید", "topup": "افزایش اعتبار"}
+    lines = ["📭 <b>اعلان‌های تأیید خودکار که ارسال نشد</b>",
+             "خود تأیید و فعال‌سازی انجام شده؛ فقط پیام به ادمین نرسیده است.", ""]
+    rows = []
+    for n in items:
+        state = "در صف تلاش دوباره (خودکار)" if n["status"] == "failed" else "متوقف شد؛ فقط با ارسال دوباره"
+        target = "گیرنده هنوز مشخص نشده" if n["chat_id"] == 0 else f"به <code>{n['chat_id']}</code>"
+        lines.append(f"#{n['request_id']} · {kinds.get(n['kind'], n['kind'])} · {n['target_username']}")
+        lines.append(f"    {target} · {state} · {n['attempts']} تلاش · {n.get('last_error') or '-'}")
+        rows.append([InlineKeyboardButton(text=f"ارسال دوبارهٔ #{n['request_id']}",
+                                          callback_data=NoticeRetryCB(notice_id=n["id"]).pack())])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.message(Command("notices"))
+async def cmd_notices(message: Message) -> None:
+    """Automatic-approval notices this bot could not deliver, limited to
+    requests this admin may see. A notice only reports a finished approval;
+    re-sending it never repeats the purchase, renewal or reward."""
+    from .. import approval_notices
+    owner_ids, include_unowned = _filters(await _scope_of(message))
+    items = storage.undelivered_notices(approval_notices.bot_id(), owner_ids, include_unowned)
+    text, kb = _notices_view(items)
+    await message.answer(text, reply_markup=kb or home_kb())
+
+
+@router.callback_query(NoticeRetryCB.filter())
+async def cb_notice_retry(call: CallbackQuery, callback_data: NoticeRetryCB, bot: Bot) -> None:
+    from .. import approval_notices
+    notice = storage.get_notice(callback_data.notice_id)
+    owner_ids, include_unowned = _filters(await _scope_of(call))
+    request = storage.get_pending(notice["request_id"]) if notice else None
+    if not notice or not request or not storage.may_handle(request, owner_ids, include_unowned) \
+            or notice["bot_id"] != approval_notices.bot_id():
+        await call.answer("این اعلان پیدا نشد", show_alert=True)
+        return
+    if not storage.retry_notice(notice["id"], approval_notices.bot_id()):
+        await call.answer("این اعلان قبلاً ارسال شده یا همین حالا در حال ارسال است")
+        return
+    sent = await approval_notices.deliver_due(bot, request_id=notice["request_id"])
+    await call.answer("ارسال شد" if sent else "ارسال نشد؛ در صف تلاش دوباره ماند", show_alert=not sent)

@@ -38,6 +38,7 @@ import {
   restartTelegramBot,
   fetchMyBot,
   updateMyBot,
+  restartMyBot,
   fetchMyAutoApprove,
   updateMyAutoApprove,
   fetchMyPayment,
@@ -2088,7 +2089,33 @@ function OwnBotCard({ t }) {
   const [enabled, setEnabled] = useState(true);
   const [onboarding, setOnboarding] = useState({ required_channel_id: "", required_channel_url: "", customer_terms_text: "" });
   const [saving, setSaving] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const [msg, setMsg] = useState(null);
+
+  // Restart only: nothing on the form is sent or saved, and the drafts on
+  // screen are kept - only the status line is refreshed afterwards.
+  const restart = async () => {
+    if (restarting) return;
+    setRestarting(true);
+    setMsg(null);
+    try {
+      await restartMyBot();
+      setMsg({ type: "info", text: t("settings.myBotRestartRequested") });
+      for (let i = 0; i < 5; i += 1) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const res = await fetchMyBot();
+        setStatus((s) => ({ ...s, running: res.data.running, last_error: res.data.last_error, bot_username: res.data.bot_username }));
+        if (res.data.running) {
+          setMsg({ type: "ok", text: t("settings.myBotRestarted") });
+          return;
+        }
+      }
+    } catch (err) {
+      setMsg({ type: "err", text: err?.response?.data?.detail || t("settings.myBotRestartError") });
+    } finally {
+      setRestarting(false);
+    }
+  };
 
   const load = () =>
     fetchMyBot().then((res) => {
@@ -2182,13 +2209,20 @@ function OwnBotCard({ t }) {
             <div className="hint">{t("settings.customerTermsHint")}</div>
         </div>
         {msg && (
-          <div className={`text-sm rounded-lg px-3 py-2 ${msg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
+          <div role={msg.type === "err" ? "alert" : "status"} className={`text-sm rounded-lg px-3 py-2 ${msg.type === "ok" ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400" : msg.type === "info" ? "text-sky-700 bg-sky-50 dark:bg-sky-500/10 dark:text-sky-300" : "text-red-500 bg-red-50 dark:bg-red-500/10 dark:text-red-400"}`}>
             {msg.text}
           </div>
         )}
-        <button type="button" className="btn-primary" disabled={saving} onClick={save}>
-          {saving ? t("common.saving") : t("settings.saveAndRestartMyBot")}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className="btn-primary" disabled={saving || restarting} onClick={save}>
+            {saving ? t("common.saving") : t("settings.saveAndRestartMyBot")}
+          </button>
+          {status.enabled && (
+            <button type="button" className="btn-secondary" disabled={saving || restarting} onClick={restart}>
+              {restarting ? t("settings.myBotRestarting") : t("settings.restartMyBot")}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

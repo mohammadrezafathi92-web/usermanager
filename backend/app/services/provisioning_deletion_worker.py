@@ -188,8 +188,10 @@ def resume_one(session_factory, operation_id, identity, *, installation_uuid, ow
     except Exception as exc:
         if not leases.transient_conflict(exc):
             raise
-        # A MariaDB lock conflict (deadlock/lock wait) rolled this iteration's
-        # transaction back as a whole; everything committed before it -
+        # A MariaDB lock conflict (deadlock/lock wait): the failed transaction
+        # is gone - InnoDB rolled a deadlock back, the Session block rolled
+        # back what a lock wait timeout left open - while everything
+        # committed before it -
         # including a remote_calling marker - is unchanged. Same answer as a
         # busy lease: the caller tries again within its budget, and the
         # recovery worker later if that runs out. Never reported as success.

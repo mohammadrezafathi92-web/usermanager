@@ -100,10 +100,11 @@ def _discount(db, record, intent, user, manifest):
 
 def _frozen_referrers(db, rows):
     """The referrer every frozen referrer row names: the credit row's
-    referrer_user_id and the quota row's binding (a User, or the Purchase of
-    that user). An empty set: no referrer row at all (only the new
-    customer's own rewards) - refused before T1 (provisioning_approval_exec
-    .build) and never linked here. None: a binding whose owner cannot be told."""
+    referrer_user_id (a zero amount when only the identity is frozen) and the
+    quota row's binding (a User, or the Purchase of that user). An empty set:
+    no referrer row at all (only the new customer's own rewards, registered
+    before the identity row existed) - refused before T1
+    (provisioning_approval_exec.build) and never linked here. None: a binding whose owner cannot be told."""
     named = set()
     credit = rows.get("credit:referral_reward:referrer")
     if credit is not None:
@@ -155,6 +156,8 @@ def _referral(db, record, intent, user, purchase, manifest, approval_uuid=None):
     for key in sorted(rows):
         expected = rows[key]
         if key.startswith("credit:"):
+            if int(expected["amount"]) <= 0:
+                continue                              # the referrer's identity only (intent._referral_rows)
             target = referrer if key.endswith(":referrer") else user
             before = int(target.balance or 0)
             side = "referrer" if key.endswith(":referrer") else "new_user"

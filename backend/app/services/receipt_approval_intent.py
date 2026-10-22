@@ -161,6 +161,13 @@ def _referral_rows(db: Session, intent: ApprovalIntent, target: Target, package:
         # one it creates) when the sale has connections, and none otherwise
         rows.append(ManifestRow("quota_reward_granted", "quota:referral:new_user", REQUIRED, {
             "target": PURCHASE_REF if has_connections else USER_REF, "bytes": new_user_bytes}))
+    if rows and not any(r.effect_key.endswith(":referrer") for r in rows):
+        # The referrer earns nothing here (no credit set, and no single
+        # service to take the quota) while the new customer's reward is still
+        # owed to THIS referrer's code: freeze who that is - a zero, optional
+        # credit row that is never written - so T_final links exactly them.
+        rows.append(ManifestRow("wallet_credit_source_created", "credit:referral_reward:referrer", OPTIONAL, {
+            "referrer_user_id": referrer.id, "referrer_username": referrer.username, "amount": 0}))
     return rows
 
 

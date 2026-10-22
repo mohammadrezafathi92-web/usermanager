@@ -178,6 +178,10 @@ def scenario(label, engine):
               login(server, "four-ovpn-0", "10.9.1.1"), REJECT)
         unban()
         shown = preview(P1, 5)
+        with env.Session() as db:
+            no_row = db.get(models.SessionCapRuntimeState, 1) is None
+        check(L + "no mode row and never changed (as on server 2): the preview reports the effective default",
+              (no_row, preview(P1, 5)["session_cap_mode"]), (True, "enforced"))
         check(L + "preview: current 3 -> new 5, enforced now, 3 live PPP sessions, nothing in excess",
               (shown["current_value"], shown["new_value"], shown["in_force_now"], shown["live_ppp_sessions"],
                shown["excess_now"], shown["busy"]), (3, 5, True, 3, 0, None))
@@ -280,7 +284,15 @@ def scenario(label, engine):
 
         with env.Session() as db:
             mode.change_mode(env.Session, env.root.id, "legacy", "checking the legacy preview")
-        check(L + "in legacy the preview says the cap is not in force", preview(P3, 3)["in_force_now"], False)
+        shown = preview(P3, 3)
+        check(L + "in legacy the preview says the cap is not in force",
+              (shown["session_cap_mode"], shown["in_force_now"]), ("legacy", False))
+        with env.Session() as db:
+            db.get(models.SessionCapRuntimeState, 1).mode = "bogus"
+            db.commit()
+        shown = preview(P3, 3)
+        check(L + "an unreadable mode (RADIUS/poller decide nothing): 'unavailable', not in force",
+              (shown["session_cap_mode"], shown["in_force_now"]), ("unavailable", False))
 
 
 def _count_audit(env, pid):

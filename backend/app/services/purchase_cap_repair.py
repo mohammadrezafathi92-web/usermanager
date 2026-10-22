@@ -39,6 +39,9 @@ from sqlalchemy import select, text
 from .. import models
 from . import session_cap_rule
 
+# The cap a single form may set: whole numbers only, 1 or more (0/NULL mean
+# "no cap" in session_cap_rule and are never set from here). The upper bound
+# only stops a typo (10000 for 10); real caps are single digits.
 MAX_CAP = 1000
 FIELDS = ("max_concurrent_sessions", "reserved_max_concurrent_sessions")
 
@@ -125,8 +128,14 @@ def preview(db, purchase_id: int, new_value: int, field: str = "max_concurrent_s
     ppp = {t.value for t in session_cap_rule.PPP_TYPES}
     live_ppp = sum(row["live"] for row in state["scope"] if row["enabled"] and row["type"] in ppp)
     token = _token(state, new_value)
-    mode = session_cap_mode.status(db)["mode"]
     db.rollback()
+    # The EFFECTIVE mode, read exactly as RADIUS and the poller read it
+    # (session_cap_mode._read): no state row and never changed = the
+    # default; a lost or invalid row = no decision at all ('unavailable').
+    try:
+        mode = session_cap_mode._read(db.get_bind())
+    except session_cap_mode.ModeUnavailable:
+        mode = "unavailable"
     # What the change does now, for the confirmation (the UI words it):
     # in 'enforced' a cap below the live count kicks WireGuard/Xray on the
     # next poll (newest first) and refuses new PPP logins; open PPP sessions

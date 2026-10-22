@@ -85,7 +85,8 @@ export default function PurchaseCapDialog({ purchase, onClose, onDone }) {
   const lowering = shown && shown.current_value && shown.new_value < shown.current_value;
   let effect = null;
   if (shown) {
-    if (!shown.in_force_now) effect = t("purchaseCap.effectNotInForce");
+    if (shown.session_cap_mode === "unavailable") effect = t("purchaseCap.effectModeUnavailable");
+    else if (!shown.in_force_now) effect = t("purchaseCap.effectNotInForce", { mode: shown.session_cap_mode });
     else if (shown.excess_now > 0) effect = [
       t("purchaseCap.effectExcess", { live: shown.live_sessions_in_scope, excess: shown.excess_now, cap: shown.new_value }),
       shown.live_other_sessions > 0 ? t("purchaseCap.effectExcessOther") : null,
@@ -124,6 +125,8 @@ export default function PurchaseCapDialog({ purchase, onClose, onDone }) {
           <dt className="text-gray-500">{t("purchaseCap.current")}</dt><dd>{before(shown.current_value)}</dd>
           <dt className="text-gray-500">{t("purchaseCap.newValue")}</dt><dd className="font-semibold">{shown.new_value}</dd>
           <dt className="text-gray-500">{t("purchaseCap.liveNow")}</dt><dd>{shown.live_sessions_in_scope}</dd>
+          <dt className="text-gray-500">{t("purchaseCap.mode")}</dt>
+          <dd data-testid="cap-mode">{t(`purchaseCap.mode_${shown.session_cap_mode}`)}</dd>
         </dl>
         <p role="note" className={shown.excess_now > 0 && shown.in_force_now
           ? "rounded-lg bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 p-2" : "text-gray-600 dark:text-gray-300"}>

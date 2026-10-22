@@ -26,6 +26,7 @@ vi.stubGlobal("localStorage", {
 const PURCHASE = { id: 7, max_concurrent_sessions: 3, reserved_max_concurrent_sessions: 4 };
 const shown = (extra) => ({ purchase_id: 7, user_id: 1, current_value: 3, new_value: 5, preview_token: "tok",
   live_sessions_in_scope: 2, live_ppp_sessions: 2, live_other_sessions: 0, excess_now: 0, in_force_now: true,
+  session_cap_mode: "enforced",
   busy: null, scope: [{ connection_id: 1, type: "openvpn", connection_cap: 1 }], ...extra });
 const httpError = (status, detail) => Object.assign(new Error("http"), { response: { status, data: { detail } } });
 
@@ -91,11 +92,26 @@ describe("purchase cap dialog", () => {
     expect(note).not.toContain(t("purchaseCap.effectExcessOther"));   // a PPP-only service: no WireGuard talk
   });
 
-  it("not in force in this mode: says so", async () => {
+  it("shows the panel's effective mode, as the server reported it", async () => {
     const user = userEvent.setup();
     open();
-    await previewWith(user, 2, shown({ new_value: 2, in_force_now: false }));
-    expect(screen.getByText(t("purchaseCap.effectNotInForce"))).toBeTruthy();
+    await previewWith(user, 5, shown({ session_cap_mode: "enforced" }));
+    expect(screen.getByTestId("cap-mode").textContent).toBe(t("purchaseCap.mode_enforced"));
+  });
+
+  it("not in force in this mode: says so, naming the mode", async () => {
+    const user = userEvent.setup();
+    open();
+    await previewWith(user, 2, shown({ new_value: 2, in_force_now: false, session_cap_mode: "shadow" }));
+    expect(screen.getByText(t("purchaseCap.effectNotInForce", { mode: "shadow" }))).toBeTruthy();
+    expect(screen.getByTestId("cap-mode").textContent).toBe(t("purchaseCap.mode_shadow"));
+  });
+
+  it("mode unreadable: says no cap decision is taken now", async () => {
+    const user = userEvent.setup();
+    open();
+    await previewWith(user, 2, shown({ new_value: 2, in_force_now: false, session_cap_mode: "unavailable" }));
+    expect(screen.getByText(t("purchaseCap.effectModeUnavailable"))).toBeTruthy();
   });
 
   it("needs a reason, then changes exactly the previewed state once", async () => {

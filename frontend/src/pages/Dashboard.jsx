@@ -10,7 +10,7 @@ import { fetchDashboard, fetchUsageHistory } from "../api/client.js";
 import { formatBytes, formatBitrate, formatUptime, toDisplayDate, formatDate, formatToman, formatGb } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
-const PROTOCOL_LABELS = { wireguard: "WireGuard", openvpn: "OpenVPN", l2tp: "L2TP", ikev2: "IKEv2", sstp: "SSTP", pptp: "PPTP", xray: "V2Ray/Xray" };
+const PROTOCOL_LABELS = { wireguard: "WireGuard", openvpn: "OpenVPN", l2tp: "L2TP", ikev2: "IKEv2", sstp: "SSTP", pptp: "PPTP", xray: "V2Ray/Xray", softether: "SoftEther" };
 
 
 // One actionable tile: a number that means "go do something", with the page

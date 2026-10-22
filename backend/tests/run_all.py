@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 
 TEST_DIR = Path(__file__).resolve().parent
@@ -32,7 +33,9 @@ def main() -> int:
     # SQLite URL; removing the inherited value lets that choice take effect.
     env.pop("DATABASE_URL", None)
 
+    durations: list[tuple[float, str]] = []
     for test in tests:
+        started = time.monotonic()
         result = subprocess.run(
             [sys.executable, str(test)],
             cwd=BACKEND_DIR,
@@ -41,14 +44,19 @@ def main() -> int:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
+        took = time.monotonic() - started
+        durations.append((took, test.name))
+        # flush: CI shows each line when it happens, so a slow test is
+        # visible by its own timestamp instead of all lines at the end.
         if result.returncode == 0:
-            print(f"PASS  {test.name}")
+            print(f"PASS  {test.name}  ({took:.1f}s)", flush=True)
         else:
-            print(f"FAIL  {test.name}")
+            print(f"FAIL  {test.name}  ({took:.1f}s)", flush=True)
             failures.append((test, result.stdout))
 
     print("\n" + "=" * 72)
     print(f"{len(tests) - len(failures)} passed, {len(failures)} failed, {len(tests)} total")
+    print("slowest: " + ", ".join(f"{name} {took:.0f}s" for took, name in sorted(durations, reverse=True)[:10]))
     for test, output in failures:
         print(f"\n--- {test.name} output ---\n{output.rstrip()}")
     return 1 if failures else 0

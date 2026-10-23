@@ -161,6 +161,23 @@ describe("purchase cap dialog", () => {
     expect(screen.getByRole("button", { name: t("purchaseCap.apply", { value: 5 }) }).disabled).toBe(true);
   });
 
+  it("does not promise RADIUS session counting for PPTP", async () => {
+    const user = userEvent.setup();
+    open();
+    await previewWith(user, 5, shown({ scope: [{ connection_id: 1, type: "pptp", connection_cap: 1 }] }));
+    expect(screen.getByText(t("purchaseCap.pptpLimit"))).toBeTruthy();
+    expect(screen.queryByText(t("purchaseCap.pppNote"))).toBe(null);
+  });
+
+  it("explains a service without stable identity without exposing the raw error", async () => {
+    const user = userEvent.setup();
+    open();
+    api.previewPurchaseCap.mockRejectedValue(httpError(409, "purchase_cap_identity_unavailable"));
+    await user.click(screen.getByRole("button", { name: t("purchaseCap.check") }));
+    expect(await screen.findByText(t("purchaseCap.identityUnavailable"))).toBeTruthy();
+    expect(screen.queryByText("purchase_cap_identity_unavailable")).toBe(null);
+  });
+
   it("an unknown error code is not shown raw", async () => {
     const user = userEvent.setup();
     open();

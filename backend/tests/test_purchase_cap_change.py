@@ -260,6 +260,72 @@ def scenario(label, engine):
             db.commit()
         check(L + "changed after the preview: refused", change(P4, 7, stale), (409, "purchase_cap_target_changed"))
 
+        # ============================================================ stable service / term identity
+        with env.Session() as db:
+            isolated = models.Purchase(user_id=uid, status=models.UserStatus.active,
+                                       max_concurrent_sessions=3)
+            db.add(isolated)
+            db.commit()
+            isolated_id, isolated_key = isolated.id, isolated.history_key
+        if engine.dialect.name == "sqlite":
+            old_preview = preview(isolated_id, 5)
+            with env.Session() as db:
+                db.delete(db.get(models.Purchase, isolated_id))
+                db.commit()
+                replacement = models.Purchase(user_id=uid, status=models.UserStatus.active,
+                                              max_concurrent_sessions=3)
+                db.add(replacement)
+                db.commit()
+                check(L + "SQLite reuses the deleted empty service id, but not its identity",
+                      (replacement.id == isolated_id, replacement.history_key != isolated_key), (True, True))
+            check(L + "old preview cannot change the replacement service",
+                  change(isolated_id, 5, old_preview), (409, "purchase_cap_preview_stale"))
+            with env.Session() as db:
+                check(L + "replacement cap and audit remain untouched",
+                      (db.get(models.Purchase, isolated_id).max_concurrent_sessions,
+                       db.query(models.PurchaseCapRepair).filter_by(purchase_id=isolated_id).count()), (3, 0))
+
+        # Historical NULL keys are read-only: use created_at as fallback,
+        # without assigning a key during preview or failing the SQL CAS.
+        with env.Session() as db:
+            historical = db.get(models.Purchase, isolated_id)
+            historical.history_key = None
+            db.commit()
+            created = historical.created_at
+        historical_preview = preview(isolated_id, 4)
+        check(L + "historical service without a key remains editable",
+              change(isolated_id, 4, historical_preview)["after"], 4)
+        with env.Session() as db:
+            row = db.get(models.Purchase, isolated_id)
+            check(L + "preview and change do not create a historical key",
+                  (row.history_key, row.created_at), (None, created))
+        old_preview = preview(isolated_id, 5)
+        with env.Session() as db:
+            db.get(models.Purchase, isolated_id).created_at = created + dt.timedelta(seconds=1)
+            db.commit()
+        check(L + "historical creation identity changed: old preview refused",
+              change(isolated_id, 5, old_preview), (409, "purchase_cap_preview_stale"))
+
+        for seq in ("reservation_activation_seq", "renewal_event_seq"):
+            old_preview = preview(isolated_id, 5)
+            with env.Session() as db:
+                row = db.get(models.Purchase, isolated_id)
+                setattr(row, seq, int(getattr(row, seq) or 0) + 1)
+                db.commit()
+            check(L + f"{seq} changed while cap/scope stayed the same: old preview refused",
+                  change(isolated_id, 5, old_preview), (409, "purchase_cap_preview_stale"))
+        old_preview = preview(isolated_id, 5)
+        with env.Session() as db:
+            db.get(models.Purchase, isolated_id).used_bytes = 123
+            db.commit()
+        check(L + "ordinary usage does not stale a valid service preview",
+              change(isolated_id, 5, old_preview)["after"], 5)
+        with env.Session() as db:
+            db.get(models.Purchase, isolated_id).created_at = None
+            db.commit()
+        check(L + "no stable identity at all: refuse rather than bind a numeric id",
+              preview(isolated_id, 6), (409, "purchase_cap_identity_unavailable"))
+
         # ============================================================ other work on the same service
         env.new_user("solo", 7602)
         with env.Session() as db:
@@ -304,6 +370,16 @@ def _count_audit(env, pid):
 
 
 def routes_guarded():
+    from pydantic import ValidationError
+    for invalid in (True, 2.5, "3"):
+        for request, extra in ((routes.RepairPreviewRequest, {}),
+                               (routes.RepairExecuteRequest, dict(expected_user_id=1, preview_token="t", reason="test"))):
+            try:
+                request(purchase_id=1, new_value=invalid, **extra)
+                rejected = False
+            except ValidationError:
+                rejected = True
+            check(f"HTTP schema {request.__name__} refuses non-integer {invalid!r}", rejected)
     by_path = {(r.path, tuple(sorted(r.methods))): r for r in routes.router.routes}
     check("routes: superadmin-only",
           all(any(d.call is require_superadmin for d in r.dependant.dependencies) for r in by_path.values()))

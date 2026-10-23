@@ -11,6 +11,7 @@ export const CAP_REASONS = {
   purchase_cap_value_invalid: "purchaseCap.invalid",
   purchase_cap_preview_stale: "purchaseCap.stale",
   purchase_cap_target_changed: "purchaseCap.stale",
+  purchase_cap_identity_unavailable: "purchaseCap.identityUnavailable",
   purchase_cap_approval_in_progress: "purchaseCap.busyApproval",
   purchase_cap_operation_in_progress: "purchaseCap.busyOperation",
   purchase_cap_void_in_progress: "purchaseCap.busyVoid",
@@ -95,7 +96,9 @@ export default function PurchaseCapDialog({ purchase, onClose, onDone }) {
     else if (lowering) effect = t("purchaseCap.effectLowerNoExcess", { live: shown.live_sessions_in_scope });
     else effect = t("purchaseCap.effectRaise", { cap: shown.new_value });
   }
-  const PPP = ["openvpn", "l2tp", "ikev2", "sstp", "pptp"];
+  // Match session_cap_rule.PPP_TYPES; PPTP has a pre-existing counting gap.
+  const PPP = ["openvpn", "l2tp", "ikev2", "sstp"];
+  const hasPptp = shown?.scope?.some((c) => c.type === "pptp");
   const pppOwnCaps = shown?.scope?.some((c) => PPP.includes(c.type));
   // No service cap: what really applies today (session_cap_rule.session_scope)
   // - each PPP credential its own cap, WireGuard/V2Ray not counted at all.
@@ -143,6 +146,9 @@ export default function PurchaseCapDialog({ purchase, onClose, onDone }) {
           {effect}
         </p>
         {pppOwnCaps && shown.in_force_now && <p className="hint">{t("purchaseCap.pppNote")}</p>}
+        {hasPptp && <p role="note" className="rounded-lg bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 p-2">
+          {t("purchaseCap.pptpLimit")}
+        </p>}
         {shown.busy && <p role="alert" className="text-red-600">{reasonText(shown.busy)}</p>}
         <label className="block">
           <span className="label">{t("purchaseCap.reason")}</span>

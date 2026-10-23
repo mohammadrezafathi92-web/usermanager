@@ -34,7 +34,7 @@ import json
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from .. import models
 from . import session_cap_rule
@@ -73,6 +73,10 @@ def _state(db, purchase_id: int, field: str, *, lock: bool = False) -> dict:
     purchase = db.execute(query.with_for_update() if lock else query).scalar_one_or_none()
     if purchase is None:
         raise HTTPException(404, "purchase_not_found")
+    # Old installations may not have a history key yet. Their creation
+    # timestamp is the fallback identity; never bind only a recyclable id.
+    if purchase.history_key is None and purchase.created_at is None:
+        raise HTTPException(409, "purchase_cap_identity_unavailable")
     user = db.get(models.User, purchase.user_id)
     connections = sorted(db.query(models.Connection).filter(models.Connection.user_id == user.id),
                          key=lambda c: c.id)
@@ -81,6 +85,9 @@ def _state(db, purchase_id: int, field: str, *, lock: bool = False) -> dict:
     counts = session_cap_rule.ppp_counts(db, [user.id])
     return dict(
         purchase_id=purchase.id, user_id=user.id, username=user.username,
+        purchase_history_key=purchase.history_key, purchase_created_at=purchase.created_at,
+        reservation_activation_seq=int(purchase.reservation_activation_seq or 0),
+        renewal_event_seq=int(purchase.renewal_event_seq or 0),
         purchase_status=purchase.status.value if purchase.status else None,
         field=field, current_value=getattr(purchase, field),
         cap_in_force=purchase.max_concurrent_sessions,
@@ -174,6 +181,12 @@ def execute(session_factory, admin_id: int, *, purchase_id: int, expected_user_i
         column = getattr(models.Purchase, field)
         result = db.execute(models.Purchase.__table__.update().where(
             models.Purchase.id == purchase_id, models.Purchase.user_id == expected_user_id,
+            models.Purchase.history_key.is_(None) if state["purchase_history_key"] is None
+            else models.Purchase.history_key == state["purchase_history_key"],
+            models.Purchase.created_at.is_(None) if state["purchase_created_at"] is None
+            else models.Purchase.created_at == state["purchase_created_at"],
+            func.coalesce(models.Purchase.reservation_activation_seq, 0) == state["reservation_activation_seq"],
+            func.coalesce(models.Purchase.renewal_event_seq, 0) == state["renewal_event_seq"],
             column.is_(None) if expected_current is None else column == expected_current,
         ).values(**{field: new_value}))
         if result.rowcount != 1:

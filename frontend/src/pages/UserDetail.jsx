@@ -9,6 +9,7 @@ import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import ResetUsageDialog from "../components/ResetUsageDialog.jsx";
 import UnpaidRefundDialog, { UnpaidCancellationBanner } from "../components/UnpaidRefundDialog.jsx";
+import PurchaseCapDialog from "../components/PurchaseCapDialog.jsx";
 import QuotaBar from "../components/QuotaBar.jsx";
 import { useConfirm } from "../components/ConfirmDialog.jsx";
 import {
@@ -292,6 +293,7 @@ export default function UserDetail() {
   // 2026-09-13, and the same shape as the StatCard white page before it.
   const [resetTarget, setResetTarget] = useState(null); // the Purchase awaiting a reset
   const [refundTarget, setRefundTarget] = useState(null);
+  const [capTarget, setCapTarget] = useState(null);
   // Upload/download split for this user's last 24h, same bucket source the
   // dashboard chart's 24h tab reads - summed client-side since this badge
   // only needs the totals, not the per-hour shape.
@@ -1106,6 +1108,9 @@ export default function UserDetail() {
                   )}
                 </div>
                 <div className="flex flex-wrap gap-2 mt-3">
+                  {isSuperadmin && <button type="button" className="btn-secondary" onClick={() => setCapTarget(purchase)}>
+                    {t("purchaseCap.action")}
+                  </button>}
                   {can("cancel_unpaid_services") && <button type="button" className="btn-secondary text-amber-700 dark:text-amber-400" onClick={() => setRefundTarget(purchase)}>
                     {t("refund.action")}
                   </button>}
@@ -2049,6 +2054,8 @@ export default function UserDetail() {
         )}
       </Modal>
       <UnpaidRefundDialog userId={id} purchase={refundTarget} onClose={() => setRefundTarget(null)} onDone={load} />
+      <PurchaseCapDialog purchase={capTarget} onClose={() => setCapTarget(null)}
+                         onDone={() => { setCapTarget(null); load(); }} />
     </Layout>
   );
 }

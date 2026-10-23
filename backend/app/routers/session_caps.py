@@ -8,7 +8,7 @@ audit row. Reads never change anything.
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictInt
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -43,7 +43,7 @@ CapField = Literal["max_concurrent_sessions", "reserved_max_concurrent_sessions"
 
 class RepairPreviewRequest(BaseModel):
     purchase_id: int
-    new_value: int
+    new_value: StrictInt
     field: CapField = "max_concurrent_sessions"
 
 
@@ -51,7 +51,7 @@ class RepairExecuteRequest(BaseModel):
     purchase_id: int
     expected_user_id: int
     expected_current: Optional[int] = None
-    new_value: int
+    new_value: StrictInt
     preview_token: str
     reason: str
     field: CapField = "max_concurrent_sessions"

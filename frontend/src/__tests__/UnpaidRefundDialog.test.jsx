@@ -155,6 +155,17 @@ describe("unpaid cancellation dialog", () => {
     expect(screen.queryByText((text) => text.includes(t("refund.done", { amount: "" }).trim()))).toBe(null);
   });
 
+  it("explains persistent counter ambiguity without promising a retry will fix it", async () => {
+    const op = { ...PENDING, components: [
+      { connection_id: 2, type: "openvpn", state: "blocked",
+        wait_reason: "ppp_accounting_counter_regressed", wait_since: "2026-10-23T10:00:00" }] };
+    api.fetchUnpaidRefundPreview.mockResolvedValue({ data: { ...PREVIEW, operation: op, execution_available: true } });
+    open();
+    const list = await screen.findByRole("list", { name: t("refund.components") });
+    expect(list.textContent).toContain(t("refund.reasonCounterAmbiguous"));
+    expect(list.textContent).not.toContain("ppp_accounting_counter_regressed");
+  });
+
   it("an answer for a finished operation is matched by its service key, not a reused id", async () => {
     api.fetchUnpaidRefundPreview.mockResolvedValue({ data: { ...PREVIEW, target: { ...TARGET, purchase_key: "new-key" } } });
     api.cancelUnpaidPurchase.mockRejectedValue(new Error("Network Error"));

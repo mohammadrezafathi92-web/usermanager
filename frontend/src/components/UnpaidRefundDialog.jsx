@@ -43,6 +43,7 @@ export const REFUND_REASONS = {
   wg_refund_delete_unconfirmed: "refund.reasonDelete",
   refund_sessions_active: "refund.reasonSessions",
   ppp_accounting_stop_missing: "refund.reasonStopMissing",
+  ppp_accounting_counter_regressed: "refund.reasonCounterAmbiguous",
   ppp_kick_unconfirmed: "refund.reasonKick",
   ppp_kick_failed: "refund.reasonKick",
   ppp_sessions_unreadable: "refund.reasonNode",

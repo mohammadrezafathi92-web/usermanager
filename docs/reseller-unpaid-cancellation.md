@@ -96,6 +96,14 @@ unresolved; missing fields are not zero. A valid corrected Stop can resolve it.
 Duplicate Stop/late Interim on a stopped grant cannot count twice. Legacy or
 unattributable sessions fail closed rather than inventing final usage. A
 counter wrap without the NAS's necessary high-word evidence cannot be inferred.
+A complete decreasing Interim is different: its ambiguity is recorded durably
+on the grant and blocks both precheck and settlement even after a later Stop.
+Wrap, reset and a delayed/reordered Interim cannot be distinguished here;
+no missing byte amount is guessed, and a reordered report can conservatively
+leave cancellation unavailable. This is not universal reset detection: under
+the existing corrected-final contract, Interim 5000 -> Stop 100 -> Stop 6000
+still trusts the later complete corrected Stop. Only a decreasing continuing
+Interim creates this separate, persistent marker.
 Settlement rechecks every PPP component's final evidence inside its final
 SQLite writer transaction, before any credit or deletion.
 

@@ -243,6 +243,9 @@ def ppp_stop_missing(db: Session, step):
                                    connection's node (its router is not read);
       ppp_accounting_lost          a session open when its NAS restarted and
                                    not heard of since (usage maybe lost);
+      ppp_accounting_counter_regressed  a grant reported a complete Interim
+                                   below its high-water mark (wrap, reset or
+                                   reordering - unknowable; never cleared);
       ppp_accounting_stop_missing  a grant's session is open (no Stop);
       ppp_login_unresolved         an Accept whose session has not reported
                                    at all - it may still come up.
@@ -264,6 +267,8 @@ def ppp_stop_missing(db: Session, step):
     grants = current_ppp_grants(db, connection).all()
     if any(g.accounting_unverified for g in grants):
         return "ppp_session_unverified"
+    if any(g.counter_regressed_at is not None for g in grants):
+        return "ppp_accounting_counter_regressed"
     unended = [g for g in grants if g.state in ("granted", "open")]
     if any(g.node_id is None or g.node_id != node_id for g in unended):
         return "ppp_session_foreign_node"
@@ -293,6 +298,9 @@ def ppp_sessions_unverified(db: Session, connection, session_ids) -> bool:
     from .reseller_refund_block import session_key
     if _unbound_ppp_grant(db, connection.id):
         return True
+    if current_ppp_grants(db, connection).filter(
+            models.RadiusAuthGrant.counter_regressed_at.isnot(None)).first() is not None:
+        return True                          # ended or not: it can never settle
     unended = current_ppp_grants(db, connection).filter(
         models.RadiusAuthGrant.state.in_(("granted", "open"))).all()
     shown = {session_key(sid) for sid in session_ids}

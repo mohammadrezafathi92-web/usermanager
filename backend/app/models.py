@@ -1458,6 +1458,17 @@ class RadiusAuthGrant(Base):
     # Missing/malformed/regressing final counters are not a final sample.
     # A subsequent complete, monotonic Stop may resolve this evidence gap.
     accounting_unverified = Column(Boolean, nullable=False, default=False)
+    # A complete Interim with a counter BELOW this session's high-water mark:
+    # a wrap without Gigawords, a NAS counter reset and a merely reordered
+    # (delayed) Interim look the same here, so none of them is assumed and no
+    # missing byte amount is guessed. Evidence only, never cleared by a later
+    # report (a catch-up Stop above the old mark proves nothing about the
+    # bytes in between): this grant's session settles no cancellation, which
+    # may conservatively leave one pending. Interim only - a lower FINAL
+    # sample stays the recoverable accounting_unverified gap above, i.e.
+    # Interim 5000 -> Stop 100 -> Stop 6000 trusts the later corrected final
+    # (existing contract); this is not universal reset detection.
+    counter_regressed_at = Column(DateTime, nullable=True)
 
 
 class RadiusLimitEventLog(Base):

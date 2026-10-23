@@ -853,6 +853,13 @@ class UserManagerRadiusServer(Server):
             # (and existing session row); a corrected complete Stop can retry.
             grant.accounting_unverified = True
             return True
+        if status == "Interim-Update" and (in_octets < int(grant.last_rx_bytes or 0)
+                                           or out_octets < int(grant.last_tx_bytes or 0)):
+            # A complete Interim below the high-water mark: wrap, reset or a
+            # reordered report - not knowable here. Kept for good (no later
+            # Stop clears it); nothing is added or guessed for it below.
+            logger.warning("RADIUS Acct Interim of grant %s: counter below its high-water mark", grant.id)
+            grant.counter_regressed_at = grant.counter_regressed_at or dt.datetime.utcnow()
         # Start commonly has no counters and is not final usage evidence.
         in_octets, out_octets = in_octets or 0, out_octets or 0
         # High-water marks per direction: a delayed or reordered report never adds again.

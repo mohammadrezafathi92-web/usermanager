@@ -154,10 +154,23 @@ again. An initial setup attempt was blocked by the old deleted test client's
 invalid reconnects triggering the existing IP guard. The original ban was
 preserved; a distinct legitimate private test client source completed the test.
 
-This is not all-protocol or process-crash verification: OpenVPN nonzero final
-traffic, process crash recovery and the full fault matrix remain unproved.
-PPTP is deliberately unsupported. The production cancellation flag remains
-disabled.
+A deliberate process-crash scenario also passed: only the test controller's
+newly owned worker process group was SIGKILLed after durable capture and before
+the remove sentence was forwarded. No refund occurred, the stopped peer stayed
+present, and kernel locks were released. A new actual application worker resumed
+the same operation; a third process retried its stored result without a second
+credit. The control service, wallet and existing test IP ban were preserved.
+
+The actual NAS Accounting Stop was separately delayed in a private UDP proxy.
+Although the router's PPP session was gone, the operation stayed pending with
+an unended grant, retained stopped WireGuard peer and no refund. Delivering the
+original authenticated NAS bytes unchanged allowed the application to validate
+final nonzero usage and resume exactly once. This proves delayed delivery, not
+the NAS's own retry policy; no accounting packet or counter was fabricated.
+
+This is not all-protocol or exhaustive crash verification: OpenVPN nonzero
+final traffic and the full fault matrix remain unproved. PPTP is deliberately
+unsupported. The production cancellation flag remains disabled.
 
 The preview shows the exact target service (package, connections, node,
 usage, expiry), how many other services stay untouched, and the reseller

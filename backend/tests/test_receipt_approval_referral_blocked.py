@@ -12,10 +12,12 @@ Real HTTP requests against the real router. No node is involved.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import tempfile
 import uuid
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -29,7 +31,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
-from app import models, models_receipt_void as rv
+from app import database, models, models_receipt_void as rv
 from app.database import get_db
 from app.routers import bot as bot_router
 from app.services import bot_auth, receipt_void_schema
@@ -47,10 +49,24 @@ def check(label, got, expected=True):
         print(f"FAIL  {label}\n        got:      {got!r}\n        expected: {expected!r}")
 
 
-with tempfile.TemporaryDirectory(prefix="referral_blocked_") as folder:
+original_auxiliary_factory = database.SessionLocal
+with tempfile.TemporaryDirectory(prefix="referral_blocked_") as folder, contextlib.ExitStack() as fixture:
     engine = create_engine(f"sqlite:///{folder}/t.db", connect_args={"check_same_thread": False})
     models.Base.metadata.create_all(engine)
     Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)        # the application's settings
+    # get_db's HTTP override alone leaves the off-mode hold inspector on the
+    # unrelated module sqlite:// pool. All fresh readers need this same file,
+    # with separate DBAPI connections, including TestClient worker threads.
+    check("fixture's original auxiliary factory uses a different database",
+          database.SessionLocal.kw["bind"] is engine, False)
+    fixture.callback(engine.dispose)
+    fixture.enter_context(patch.object(database, "SessionLocal", Session))
+    with database.SessionLocal() as first, database.SessionLocal() as second:
+        check("HTTP and auxiliary readers use the same fixture engine",
+              first.get_bind() is second.get_bind() is engine, True)
+        check("auxiliary readers own independent DBAPI connections",
+              first.connection().connection.driver_connection is not
+              second.connection().connection.driver_connection, True)
     check("schema ready", receipt_void_schema.bootstrap(engine, Session)["ready"], True)
 
     setup = Session()
@@ -80,6 +96,7 @@ with tempfile.TemporaryDirectory(prefix="referral_blocked_") as folder:
     app.include_router(bot_router.router)
     app.dependency_overrides[get_db] = session_per_request
     client = TestClient(app)
+    fixture.callback(client.close)
 
     def snapshot():
         """Everything a referral could write."""
@@ -136,8 +153,8 @@ with tempfile.TemporaryDirectory(prefix="referral_blocked_") as folder:
           (allowed.status_code, allowed.json().get("ok"), after_allowed["users"]["new_blocked"][2:],
            after_allowed["users"]["referrer"][0]), (200, True, (1, True), 6100))
     check("no attempt to reach a node or any other host", _no_network.attempts, [])
-    engine.dispose()
 
+check("auxiliary factory restored after the fixture", database.SessionLocal is original_auxiliary_factory, True)
 print()
 if failures:
     print(f"{len(failures)} FAILED:")

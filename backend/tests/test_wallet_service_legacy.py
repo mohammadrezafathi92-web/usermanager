@@ -41,7 +41,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
-from app import models, models_receipt_void as rv, schemas
+from app import models, models_receipt_void as rv, schemas, database
 from app.database import get_db
 from app.routers import bot as bot_router
 from app.routers import users as users_router
@@ -72,9 +72,19 @@ FENCED = (503, "wallet_writer_unavailable")
 
 
 def scenario(label: str, engine) -> None:
+    factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    # Auxiliary guards use fresh sessions on this same file-backed fixture,
+    # not the app's unrelated per-thread in-memory SQLite database. The
+    # patch is restored even when an assertion or concurrent request fails.
+    with patch.object(database, "SessionLocal", factory):
+        _scenario(label, engine, factory)
+
+
+def _scenario(label: str, engine, Session) -> None:
     L = f"[{label}] "
     models.Base.metadata.create_all(engine)
-    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)        # the application's settings
+    with database.SessionLocal() as auxiliary:
+        check(L + "HTTP and auxiliary sessions share the fixture database", auxiliary.get_bind() is engine, True)
     SessionLocal_ = Session
     check(L + "schema ready", receipt_void_schema.bootstrap(engine, Session)["ready"], True)
 

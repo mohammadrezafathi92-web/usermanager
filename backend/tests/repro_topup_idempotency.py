@@ -51,6 +51,7 @@ import sys
 import tempfile
 import threading
 import uuid
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -69,7 +70,7 @@ try:                                        # added by an open pull request; use
 except ImportError:
     _no_network = None
 
-from app import models, models_receipt_void as rv
+from app import models, models_receipt_void as rv, database
 from app.database import get_db
 from app.routers import bot as bot_router
 from app.routers import receipt_approvals as approvals_router
@@ -91,9 +92,19 @@ def check(label, got, expected=True):
 
 
 def scenario(label: str, engine) -> None:
+    factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    # HTTP dependencies and in-process guards must inspect the same fixture.
+    # A global sqlite:// SingletonThreadPool has unrelated per-thread DBs
+    # and may close connections still used by concurrent TestClient workers.
+    with patch.object(database, "SessionLocal", factory):
+        _scenario(label, engine, factory)
+
+
+def _scenario(label: str, engine, Session) -> None:
     L = f"[{label}] "
     models.Base.metadata.create_all(engine)
-    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)        # the application's settings
+    with database.SessionLocal() as auxiliary:
+        check(L + "HTTP and auxiliary sessions share the fixture database", auxiliary.get_bind() is engine, True)
     check(L + "schema ready", receipt_void_schema.bootstrap(engine, Session)["ready"], True)
 
     setup = Session()

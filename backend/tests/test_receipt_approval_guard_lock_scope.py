@@ -15,11 +15,13 @@ that exact moment. No node is contacted.
 from __future__ import annotations
 
 import datetime as dt
+import contextlib
 import os
 import sqlite3
 import sys
 import tempfile
 import uuid
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATABASE_URL", "sqlite://")
@@ -29,7 +31,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
-from app import models, models_receipt_void as rv
+from app import database, models, models_receipt_void as rv
 from app.database import get_db
 from app.routers import bot as bot_router
 from app.services import bot_auth, receipt_void_schema, user_ops
@@ -46,7 +48,8 @@ def check(label, got, expected=True):
         print(f"FAIL  {label}\n        got:      {got!r}\n        expected: {expected!r}")
 
 
-with tempfile.TemporaryDirectory(prefix="guard_lock_") as folder:
+original_auxiliary_factory = database.SessionLocal
+with tempfile.TemporaryDirectory(prefix="guard_lock_") as folder, contextlib.ExitStack() as fixture:
     path = f"{folder}/t.db"
     engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
 
@@ -59,6 +62,19 @@ with tempfile.TemporaryDirectory(prefix="guard_lock_") as folder:
 
     models.Base.metadata.create_all(engine)
     Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)        # the application's settings
+    # get_db's HTTP override alone leaves the off-mode hold inspector on the
+    # unrelated module sqlite:// pool. All fresh readers need this same file,
+    # with separate DBAPI connections, including TestClient worker threads.
+    check("fixture's original auxiliary factory uses a different database",
+          database.SessionLocal.kw["bind"] is engine, False)
+    fixture.callback(engine.dispose)
+    fixture.enter_context(patch.object(database, "SessionLocal", Session))
+    with database.SessionLocal() as first, database.SessionLocal() as second:
+        check("HTTP and auxiliary readers use the same fixture engine",
+              first.get_bind() is second.get_bind() is engine, True)
+        check("auxiliary readers own independent DBAPI connections",
+              first.connection().connection.driver_connection is not
+              second.connection().connection.driver_connection, True)
     check("schema ready", receipt_void_schema.bootstrap(engine, Session)["ready"], True)
 
     past = dt.datetime.utcnow() - dt.timedelta(days=3)
@@ -89,6 +105,7 @@ with tempfile.TemporaryDirectory(prefix="guard_lock_") as folder:
     app.include_router(bot_router.router)
     app.dependency_overrides[get_db] = session_per_request
     client = TestClient(app)
+    fixture.callback(client.close)
 
     probes: list[str] = []
 
@@ -158,8 +175,8 @@ with tempfile.TemporaryDirectory(prefix="guard_lock_") as folder:
         check("a refused request leaves the writer free", probes, ["free"])
     finally:
         user_ops.reconcile_purchase_connections = original
-        engine.dispose()
 
+check("auxiliary factory restored after the fixture", database.SessionLocal is original_auxiliary_factory, True)
 print()
 if failures:
     print(f"{len(failures)} FAILED:")

@@ -2,8 +2,10 @@
 
 Ordinary mutations hold a shared flock. Refund execution holds it exclusive
 through stop/capture/delete/settlement. Restart all processes when enabling;
-mixing old/uninstrumented processes is unsupported. Disabled means no locks,
-queries or changed legacy behavior. This is NOT a HA/distributed fence.
+mixing old/uninstrumented processes is unsupported. Disabling prevents new
+cancellations. With the feature off a read-only hold lookup still runs:
+previously started cancellations retain their barrier and scope checks.
+This is NOT a HA/distributed fence.
 """
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -23,6 +25,29 @@ def enabled():
     return settings.reseller_cancellation_enabled
 
 
+def _requires_barrier():
+    if enabled():
+        return True
+    # Turning the flag off stops NEW cancellations, not ownership of an
+    # unknown/incomplete stop. Do not turn a known hold into a bypass if its
+    # schema cannot be read. An installation with no operation table cannot
+    # have a cancellation and retains its ordinary legacy behavior.
+    from ..database import SessionLocal
+    from ..models_reseller_refund import ResellerRefundOperation as Operation
+    from .reseller_refund_block import holding_operations
+    from sqlalchemy import inspect
+    try:
+        with SessionLocal() as db:
+            if not inspect(db.get_bind()).has_table(Operation.__tablename__):
+                return False
+            return holding_operations(db).first() is not None
+    except Exception:
+        # A session factory or connection wrapper can fail before SQLAlchemy
+        # produces an SQLAlchemyError. Unknown ownership is still not permission
+        # to mutate; expose the same bounded domain error, never the raw cause.
+        raise HTTPException(503, "reseller_cancellation_state_unavailable") from None
+
+
 def _acquire(exclusive):
     path = os.path.join(lock_base_dir(), "reseller-cancellation.lock")
     try:
@@ -33,21 +58,21 @@ def _acquire(exclusive):
 
 @contextmanager
 def barrier(*, exclusive=False):
-    if not enabled():
-        if exclusive:
-            raise HTTPException(503, "reseller_cancellation_disabled")
-        yield
+    if exclusive and not enabled():
+        raise HTTPException(503, "reseller_cancellation_disabled")
+    if not _requires_barrier():
+        yield False
         return
     held = _held.get()
     if held:
         if exclusive and held != "exclusive":
             raise RuntimeError("cannot upgrade a shared cancellation barrier")
-        yield
+        yield True
         return
     lock = _acquire(exclusive)
     token = _held.set("exclusive" if exclusive else "shared")
     try:
-        yield
+        yield True
     finally:
         _held.reset(token)
         lock.release()
@@ -59,11 +84,12 @@ def executor(fn):
 
 
 def _check_pending(fn, args, kwargs):
-    if not enabled() or fn.__module__ not in ("app.routers.users", "app.routers.bot"):
+    if fn.__module__ not in ("app.routers.users", "app.routers.bot"):
         return
     from ..database import SessionLocal
     from .. import models
     from ..models_reseller_refund import ResellerRefundOperation as Operation
+    from .reseller_refund_block import holding_operations
     bound = inspect.signature(fn).bind_partial(*args, **kwargs).arguments
     ids = []
     if isinstance(bound.get("user_id"), int):
@@ -76,7 +102,7 @@ def _check_pending(fn, args, kwargs):
             user = db.query(models.User.id).filter(models.User.username == username).first()
             if user:
                 ids.append(user.id)
-        if ids and db.query(Operation.id).filter(Operation.user_id.in_(ids), Operation.state == "pending").first():
+        if ids and holding_operations(db).filter(Operation.user_id.in_(ids)).first():
             raise HTTPException(409, "reseller_cancellation_pending")
 
 
@@ -86,9 +112,11 @@ def guarded(fn):
     if inspect.iscoroutinefunction(fn):
         @wraps(fn)
         async def wrapper(*args, **kwargs):
-            if not enabled() or _held.get():
+            if _held.get():
                 return await fn(*args, **kwargs)
             import anyio
+            if not await anyio.to_thread.run_sync(_requires_barrier):
+                return await fn(*args, **kwargs)
             lock = await anyio.to_thread.run_sync(lambda: _acquire(False))
             token = _held.set("shared")
             try:
@@ -100,8 +128,9 @@ def guarded(fn):
     else:
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            with barrier():
-                _check_pending(fn, args, kwargs)
+            with barrier() as protected:
+                if protected:
+                    _check_pending(fn, args, kwargs)
                 return fn(*args, **kwargs)
     wrapper._refund_guarded = True
     return wrapper

@@ -55,6 +55,14 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("unpaid cancellation dialog", () => {
+  it("does not advertise unsupported PPTP cancellation in either language", () => {
+    for (const lang of ["fa", "en"]) {
+      const message = translate(lang, "refund.protocol");
+      expect(message).toContain("WireGuard");
+      expect(message).toContain("OpenVPN/L2TP");
+      expect(message).not.toContain("PPTP");
+    }
+  });
   it("previews exactly the target service, what it leaves alone, and that it is not a receipt void", async () => {
     open();
     expect(await screen.findByText(t("refund.targetTitle"))).toBeTruthy();

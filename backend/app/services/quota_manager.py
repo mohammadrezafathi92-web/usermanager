@@ -1040,8 +1040,8 @@ def _license_restore_holds(db, conn):
             # its child owns remote I/O. Let it settle before restoration.
             raise HTTPException(409, "license_restore_operation_pending")
     # Flag on or off: a pending cancellation owns its service until settled.
-    from ..models_reseller_refund import ResellerRefundOperation
-    if db.query(ResellerRefundOperation.id).filter_by(user_id=conn.user_id, state="pending").first():
+    from .reseller_refund_block import user_pending
+    if user_pending(db, conn.user_id):
         raise HTTPException(409, "reseller_cancellation_pending")
 
 

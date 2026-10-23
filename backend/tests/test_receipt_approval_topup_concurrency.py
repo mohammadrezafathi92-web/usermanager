@@ -23,6 +23,7 @@ import sys
 import tempfile
 import threading
 import uuid
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -35,7 +36,7 @@ from sqlalchemy.orm import sessionmaker
 
 import _mariadb_scratch as scratch
 
-from app import models
+from app import models, database
 from app.database import get_db
 from app.routers import bot as bot_router
 from app.routers import receipt_approvals as approvals_router
@@ -76,9 +77,18 @@ def together(app, calls):
 
 
 def scenario(label: str, engine) -> None:
+    # HTTP dependencies and in-process/background guards must see the same
+    # fixture database, just as they do in production. The module's default
+    # sqlite:// engine otherwise creates unrelated per-thread memory databases
+    # and may close in-use connections beyond SingletonThreadPool's capacity.
+    factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    with patch.object(database, "SessionLocal", factory):
+        _scenario(label, engine, factory)
+
+
+def _scenario(label: str, engine, Session) -> None:
     L = f"[{label}] "
     models.Base.metadata.create_all(engine)
-    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)        # the application's settings
     check(L + "schema ready", receipt_void_schema.bootstrap(engine, Session)["ready"], True)
 
     names = ("two_approvals", "plain_many", "credit_debit")

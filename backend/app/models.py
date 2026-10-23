@@ -1,6 +1,8 @@
 import enum
 import datetime as dt
 import uuid
+import hashlib
+import json
 from typing import Optional
 
 from sqlalchemy import (
@@ -25,6 +27,23 @@ from .database import Base
 
 def now():
     return dt.datetime.utcnow()
+
+
+def radius_connection_identity(connection):
+    """Immutable credential generation, not a recyclable numeric id.
+
+    Purchase is deliberately absent: migrating the SAME credential row from
+    the legacy pool to a Purchase must not discard its in-flight accounting.
+    A new row/owner/node is a different identity and cannot inherit a
+    previous generation's usage or cancellation proof. Password rotation
+    on this SAME row does not end sessions already admitted by its nonce.
+    """
+    user = connection.user
+    if not connection.history_key or user is None:
+        return None
+    fields = (connection.history_key, connection.id, connection.user_id,
+              user.history_key, connection.node_id, str(connection.type))
+    return hashlib.sha256(json.dumps(fields, ensure_ascii=True).encode()).hexdigest()
 
 
 class NodeType(str, enum.Enum):
@@ -1155,6 +1174,10 @@ class Connection(Base):
     __tablename__ = "connections"
 
     id = Column(Integer, primary_key=True, index=True)
+    # Additive startup migration; existing rows are initialized on their
+    # first Class-bound authentication, not assigned historical grants.
+    history_key = Column(String(36), nullable=True, unique=True, index=True,
+                         default=lambda: str(uuid.uuid4()))
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     node_id = Column(Integer, ForeignKey("nodes.id"), nullable=False, index=True)
     type = Column(Enum(ConnectionType), nullable=False)
@@ -1354,6 +1377,9 @@ class RadiusActiveSession(Base):
     # session stays up and the more devices share the account.
     last_rx_bytes = Column(BigInteger, default=0)
     last_tx_bytes = Column(BigInteger, default=0)
+    # The RadiusAuthGrant nonce (Class) of the session this row stands for;
+    # NULL for a session without one (accounted by session id, as before).
+    auth_nonce = Column(String(64), nullable=True, index=True)
 
 
 class RadiusClosedSession(Base):
@@ -1361,7 +1387,13 @@ class RadiusClosedSession(Base):
     by the NAS (its reply was lost) or an Interim arriving after the Stop
     names a session whose RadiusActiveSession row is gone: without this
     record it was taken as a new session with a zero baseline and its whole
-    usage was counted again. Kept a few days (cleanup_stale_radius_sessions)."""
+    usage was counted again. Kept a few days (cleanup_stale_radius_sessions).
+
+    The id alone is not the session: RouterOS restarts its session counter
+    on reboot, so the same id can name a NEW session later. The Stop's final
+    counters and Acct-Session-Time tell the two apart (radius_server
+    _is_final_replay / _proves_new_session); a reused id's Stop updates
+    this row."""
 
     __tablename__ = "radius_closed_sessions"
     __table_args__ = (UniqueConstraint("connection_id", "session_id", name="uq_radius_closed_session"),)
@@ -1370,6 +1402,62 @@ class RadiusClosedSession(Base):
     connection_id = Column(Integer, nullable=False, index=True)
     session_id = Column(String(128), nullable=False)
     closed_at = Column(DateTime, default=now, nullable=False, index=True)
+    final_rx_bytes = Column(BigInteger, nullable=False, default=0)
+    final_tx_bytes = Column(BigInteger, nullable=False, default=0)
+    final_session_time = Column(Integer, nullable=True)
+
+
+class RadiusAuthGrant(Base):
+    """One Access-Accept and the ONE session it admits, while unpaid-service
+    cancellation is enabled (radius_server; off: none is written and
+    accounting is exactly as before).
+
+    Identity is a random nonce sent in the Accept's Class attribute: RFC
+    2865 5.25 - the NAS sends it unmodified in every Accounting-Request of
+    that session; RouterOS documents Class as "the RADIUS server cookie
+    received in Access-Accept". So a session is told apart by WHICH Accept
+    admitted it - never by Acct-Session-Id (reused after a reboot), counters
+    or arrival times. The grant is also bound to the trusted NAS (the node
+    whose mt_host the authenticated packet came from) and to the
+    connection/purchase history it was issued for: a packet carrying the
+    nonce from another node or for another connection/purchase changes
+    nothing.
+
+    The session's usage is accounted HERE, exactly once: per-direction
+    high-water counters (a delayed, reordered or retransmitted report never
+    adds again), and nothing after its Stop. state:
+      granted  Accept sent; no accounting of the session yet
+      open     accounting seen (Start/Interim)
+      stopped  its Stop counted - its usage is final
+    nas_restart_at: its NAS sent Accounting-On/Off since its last report.
+    Evidence only (sockets are not ordered: never a reason to stop counting
+    its cookie); an open session so marked may have lost usage since its
+    last report and settles no cancellation until it reports again.
+    A retransmitted Access-Request (same NAS, packet id, authenticator)
+    reuses its grant and Class (request_key)."""
+
+    __tablename__ = "radius_auth_grants"
+
+    id = Column(Integer, primary_key=True)
+    nonce = Column(String(64), nullable=False, unique=True)
+    request_key = Column(String(64), nullable=False, unique=True)
+    connection_id = Column(Integer, nullable=False, index=True)
+    connection_history_key = Column(String(36), nullable=True, index=True)
+    connection_identity_digest = Column(String(64), nullable=True, index=True)
+    purchase_id = Column(Integer, nullable=True)
+    purchase_key = Column(String(36), nullable=True)
+    node_id = Column(Integer, nullable=True)
+    nas_ip = Column(String(64), nullable=True)
+    accepted_at = Column(DateTime, default=now, nullable=False)
+    state = Column(String(16), nullable=False, default="granted")
+    acct_session_id = Column(String(128), nullable=True)
+    last_rx_bytes = Column(BigInteger, nullable=False, default=0)
+    last_tx_bytes = Column(BigInteger, nullable=False, default=0)
+    stopped_at = Column(DateTime, nullable=True)
+    nas_restart_at = Column(DateTime, nullable=True)
+    # Missing/malformed/regressing final counters are not a final sample.
+    # A subsequent complete, monotonic Stop may resolve this evidence gap.
+    accounting_unverified = Column(Boolean, nullable=False, default=False)
 
 
 class RadiusLimitEventLog(Base):

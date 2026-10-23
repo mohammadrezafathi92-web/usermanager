@@ -154,7 +154,9 @@ class FakeRouterOS(threading.Thread):
                         self._send(conn, *rows, ["!done"])
                     elif command == "/ppp/active/print":
                         wanted = next((w.split("=", 1)[1] for w in words[1:] if w.startswith("?name=")), None)
-                        rows = [["!re", f"=.id={i}", f"=name={n}"] for i, n in self.ppp_active.items()
+                        # session-id as RouterOS shows it; RADIUS reports it as "s1"
+                        rows = [["!re", f"=.id={i}", f"=name={n}", "=session-id=0xS1"]
+                                for i, n in self.ppp_active.items()
                                 if wanted is None or n == wanted]
                         self._send(conn, *rows, ["!done"])
                     elif command == "/ppp/active/remove":
@@ -279,19 +281,41 @@ nas = object.__new__(radius_server.UserManagerRadiusServer)
 nas._rejection_log_times, nas._overlimit_attempts = {}, {}
 
 
+classes = {}
+
+
+def login(username, session):
+    """The router's Access-Request (it names the coming session) - its
+    Accept's Class is echoed in that session's accounting, as RouterOS does."""
+    pkt = packet.AuthPacket(id=1, secret=b"s", authenticator=os.urandom(16), dict=_dict)
+    pkt["User-Name"], pkt["Acct-Session-Id"] = username, session
+    pkt["User-Password"] = pkt.PwCrypt("pw")
+    pkt.source = ("127.0.0.1", 1812)          # the node's mt_host
+    replies = []
+    with patch.object(radius_server, "_send_reply", side_effect=lambda srv, p, reply: replies.append(reply)):
+        nas.HandleAuthPacket(pkt)
+    if replies and "Class" in replies[-1]:
+        classes[(username, session)] = replies[-1]["Class"][0]
+    return replies[-1].code if replies else None
+
+
 def acct(username, kind, session, octets=0):
     pkt = packet.AcctPacket(id=1, secret=b"s", dict=_dict)
     pkt["User-Name"], pkt["Acct-Status-Type"], pkt["Acct-Session-Id"] = username, kind, session
     pkt["Acct-Input-Octets"] = pkt["Acct-Output-Octets"] = octets
+    if (username, session) in classes:
+        pkt["Class"] = classes[(username, session)]
     pkt.source = ("127.0.0.1", 1813)
     with patch.object(radius_server, "_send_reply", lambda *a: None):
         nas.HandleAcctPacket(pkt)
 
 
-acct("cust-ovpn", "Start", "s1")
 router.on_kick = lambda username: acct(username, "Stop", "s1")
 
 with patch.object(settings, "reseller_cancellation_enabled", True):
+    check("the OpenVPN login is accepted with a Class cookie",
+          (login("cust-ovpn", "s1"), ("cust-ovpn", "s1") in classes), (packet.AccessAccept, True))
+    acct("cust-ovpn", "Start", "s1")
     with SessionLocal() as db:
         check("eligible on this enforced install", worker.availability(db, db.get(models.Purchase, PID)), None)
 

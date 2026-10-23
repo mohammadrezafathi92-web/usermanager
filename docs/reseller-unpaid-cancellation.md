@@ -17,7 +17,7 @@ Credit returns to that charged reseller, not to the customer wallet or card pool
 Disabled by default (`RESELLER_CANCELLATION_ENABLED=false`). The UI can
 preview eligible charges without enabling execution. This implementation
 requires Linux, SQLite, one host, a shared local lock directory, HA disabled,
-and only WireGuard and OpenVPN/L2TP/PPTP (RADIUS, on a MikroTik node)
+and only WireGuard and OpenVPN/L2TP (RADIUS, on a MikroTik node)
 connections in the selected purchase; any other kind refuses it. Do not
 enable on a multi-host deployment or a network filesystem. All backend
 processes must be restarted together when enabling; old/uninstrumented
@@ -83,9 +83,21 @@ the router rebooted, that session's Stop will never come; then the refund
 cannot be proven and the operation stays pending - closing it without a
 refund is an owner decision, not something this release does.
 
-Accounting for a session already closed by its Stop (a retransmitted Stop,
-an Interim after the Stop) is ignored, so it never counts twice
-(`radius_closed_sessions`, kept 3 days).
+Each accepted login has a durable random RADIUS Class grant. Authentication
+through sending the reply is serialized against the cancellation's PPP block;
+an accepted login awaiting Accounting Start is not assumed absent. The NAS
+must echo Class, and accounting binds the grant to the connection generation,
+customer, node and protocol, not merely a reusable numeric connection/session
+id. A recreated connection cannot inherit an old grant. Same-row credential
+rotation does not erase unresolved accepted sessions.
+
+Missing, invalid, regressing or unproven final counters keep the grant
+unresolved; missing fields are not zero. A valid corrected Stop can resolve it.
+Duplicate Stop/late Interim on a stopped grant cannot count twice. Legacy or
+unattributable sessions fail closed rather than inventing final usage. A
+counter wrap without the NAS's necessary high-word evidence cannot be inferred.
+Settlement rechecks every PPP component's final evidence inside its final
+SQLite writer transaction, before any credit or deletion.
 
 ### What cannot lift the hold
 
@@ -93,7 +105,10 @@ The block, the stopped peers and the refusal of every enable/disable toggle
 (`quota_manager._set_connection_enabled`: poller, quota/expiry, session-cap
 releases, licence restore) hold for as long as the operation is pending,
 whether or not the feature flag is on; only settlement (which deletes the
-service) ends them.
+service) ends them. A read-only preflight refusal does not establish this hold.
+The durable mutation marker is committed before the first remote mutation;
+historical blocked/captured/verified steps also prove a started operation.
+Unknown hold storage fails closed even with the feature flag off.
 
 ## What "unpaid" excludes
 
@@ -110,15 +125,39 @@ service or other work owns it (`services/reseller_refund_holds.py`):
   on the customer.
 
 These holds are checked again inside the transaction that creates the
-operation (SQLite `BEGIN IMMEDIATE`), so a renewal or operation committed
-after the first check cannot slip in; afterwards the pending operation
+operation (SQLite `BEGIN IMMEDIATE`) and again before its first mutation, so a
+renewal or operation committed after the first check cannot slip in; afterwards
+the genuinely started pending operation
 refuses the customer's mutations, and a renewal racing the remote delete
 waits behind the cancellation barrier and then finds the service gone.
 
 The operator resolves that item first (approve or reject the receipt, let
 the operation finish); the cancellation never decides between them. Once an
-operation exists it is resumed, not re-judged: its connections may already
-be stopped or deleted.
+operation has started mutating it is resumed, not re-judged: its connections
+may already be stopped or deleted. A prepared-only operation is revalidated
+before its first mutation and does not bypass a newly arrived payment hold.
+
+## Verification status (2026-10-23)
+
+An isolated real RouterOS CHR 7.24.5 lab has passed the application's enforced
+gate/ownership and real Linux runner, WireGuard plus L2TP nonzero traffic,
+actual Class-bound final Accounting Stop, completed cancellation, identical
+retry and exactly-once refund, with another service usable and customer wallet
+unchanged. No production customer or node was used.
+
+A separate fresh synthetic target also passed a real TCP interruption before
+the WireGuard remove command reached RouterOS: captured counters remained
+durable, the stopped peer remained present, and no refund occurred. Resume of
+that same operation completed once, with actual final PPP counters, unchanged
+customer wallet and the other service still usable; repeating it did not credit
+again. An initial setup attempt was blocked by the old deleted test client's
+invalid reconnects triggering the existing IP guard. The original ban was
+preserved; a distinct legitimate private test client source completed the test.
+
+This is not all-protocol or process-crash verification: OpenVPN nonzero final
+traffic, process crash recovery and the full fault matrix remain unproved.
+PPTP is deliberately unsupported. The production cancellation flag remains
+disabled.
 
 The preview shows the exact target service (package, connections, node,
 usage, expiry), how many other services stay untouched, and the reseller

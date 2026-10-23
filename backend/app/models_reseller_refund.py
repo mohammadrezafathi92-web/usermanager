@@ -53,6 +53,10 @@ class ResellerRefundOperation(Base):
     # purchase id. Pending operations keep the live id (the service exists).
     retired_purchase_id = Column(Integer, nullable=True)
     purchase_key = Column(String(36), nullable=True)
+    # Set before the first cancellation mutation (including an uncertain
+    # remote stop). A merely prepared/precheck-refused operation is not a
+    # durable hold; a started one stays fenced until settlement completes.
+    mutation_started_at = Column(DateTime, nullable=True)
     __table_args__ = (
         CheckConstraint("baseline_used_bytes >= 0", name="ck_reseller_op_usage"),
         CheckConstraint("state IN ('pending', 'completed')", name="ck_reseller_op_state"),
@@ -83,6 +87,16 @@ class ResellerRefundStep(Base):
     # e.g. ppp_accounting_stop_missing - an open session never got its Stop.
     wait_reason = Column(String(60), nullable=True)
     wait_since = Column(DateTime, nullable=True)
+    # PPP: every /ppp/active session the router showed for it after the
+    # block, as JSON {normalized session-id: first seen (ISO)}. A session
+    # whose Start and Interims never reached the panel has no RADIUS row -
+    # each needs the Stop OF THAT SESSION ID, after it was seen, before the
+    # usage is final (settlement.ppp_stop_missing).
+    ppp_seen_sessions = Column(Text, nullable=True)
+    # PPP: when accounting without (or with a foreign) Class cookie arrived
+    # for it after the block - a session whose identity cannot be verified;
+    # the operation can then never be settled automatically.
+    ppp_unverified_at = Column(DateTime, nullable=True)
     __table_args__ = (
         UniqueConstraint("operation_id", "connection_id", name="uq_reseller_refund_step"),
         CheckConstraint("baseline_total_bytes >= 0", name="ck_reseller_step_baseline"),

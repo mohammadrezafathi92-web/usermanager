@@ -1,5 +1,8 @@
 """Unpaid-service cancellation of a MIXED service: WireGuard + OpenVPN +
-L2TP + PPTP (the shape every eligible sale on production has).
+L2TP. (Production's sales also carry PPTP, which this panel's RADIUS does
+not authenticate or account at all: such a service is refused before
+anything is touched - test_reseller_refund_p1. Production mixed
+eligibility is therefore still incomplete.)
 
 A fake RouterOS holds the WireGuard peers and /ppp/active; a fake NAS sends
 REAL RADIUS accounting packets (pyrad) to the panel's own RADIUS handler,
@@ -29,7 +32,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+import tempfile
+_TMP = tempfile.mkdtemp(prefix="um-mixed-")
+os.environ.setdefault("DATABASE_URL", f"sqlite:///{_TMP}/app.db")
+os.environ.setdefault("SECRET_KEY", "test-only-reseller-refund-mixed-0123456789abcdef")
 os.environ.setdefault("RADIUS_ENABLED", "false")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -90,8 +96,8 @@ class Router:
     def remove_simple_queue(self, name):
         pass
 
-    def count_ppp_sessions(self, username):
-        return len(self.active.get(username, []))
+    def ppp_session_ids(self, username):
+        return [sid for sid, _rx, _tx in self.active.get(username, [])]
 
     def kick_ppp_session(self, username):
         sessions = self.active.pop(username, [])
@@ -108,39 +114,60 @@ class Router:
         self.uptime = "30s"
 
 
+NAS_IP = "10.20.0.1"
+
+
 class Nas:
+    """A RouterOS-like NAS: a session starts with its Access-Request (which
+    names the coming Acct-Session-Id) and every Accounting-Request of it
+    echoes the Accept's Class unmodified."""
+
     def __init__(self):
         self.server = object.__new__(radius_server.UserManagerRadiusServer)
         self.server._rejection_log_times, self.server._overlimit_attempts = {}, {}
         self.drop_stop = set()
+        self.classes = {}
 
     def acct(self, username, kind, session, rx=0, tx=0):
+        if kind == "Start" and (username, session) not in self.classes:
+            self.login(username, session)
         pkt = packet.AcctPacket(id=1, secret=b"s", dict=_dict)
         pkt["User-Name"] = username
         pkt["Acct-Status-Type"] = kind
         pkt["Acct-Session-Id"] = session
         pkt["Acct-Input-Octets"] = rx
         pkt["Acct-Output-Octets"] = tx
-        pkt.source = ("10.20.0.1", 1813)
+        if (username, session) in self.classes:
+            pkt["Class"] = self.classes[(username, session)]
+        pkt.source = (NAS_IP, 1813)
         with patch.object(radius_server, "_send_reply", lambda *a: None):
             self.server.HandleAcctPacket(pkt)
 
-    def login(self, username):
+    def login(self, username, session=None):
         pkt = packet.AuthPacket(id=1, secret=b"s", authenticator=os.urandom(16), dict=_dict)
         pkt["User-Name"] = username
         pkt["User-Password"] = pkt.PwCrypt("pw")
         pkt["Calling-Station-Id"] = "10.30.0.9"
-        pkt.source = ("10.30.0.9", 1812)
+        if session:
+            pkt["Acct-Session-Id"] = session
+        pkt.source = (NAS_IP, 1812)            # the router is the RADIUS client
         replies = []
         with patch.object(radius_server, "_send_reply", side_effect=lambda srv, p, reply: replies.append(reply)), \
                 patch.object(radius_server, "_notify_ban_async", lambda *a, **k: None):
             self.server.HandleAuthPacket(pkt)
-        return replies[-1].code if replies else None
+        reply = replies[-1] if replies else None
+        if session and reply is not None and reply.code == packet.AccessAccept and "Class" in reply:
+            self.classes[(username, session)] = reply["Class"][0]
+        return reply.code if reply is not None else None
 
 
 def scenario(directory):
     engine = create_engine(f"sqlite:///{directory}/mixed.db", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
+    from app.database import engine as app_engine
+    from app import models_provisioning
+    Base.metadata.create_all(app_engine)      # node_gate's counters live on the app's own engine
+    models_provisioning.ProvisioningGateStat.__table__.create(app_engine, checkfirst=True)
     factory = sessionmaker(bind=engine, autoflush=False)
     from app.services import provisioning_schema, receipt_void_schema
     assert receipt_void_schema.bootstrap(engine, factory)["ready"]
@@ -155,7 +182,7 @@ def scenario(directory):
 
     with Session(engine) as db:
         actor = models.AdminUser(username="seller", hashed_password="x", role="seller", tree_path="/1/", balance=0)
-        node = models.Node(name="mt", type=models.NodeType.mikrotik, mt_wireguard_interface="wg0")
+        node = models.Node(name="mt", type=models.NodeType.mikrotik, mt_wireguard_interface="wg0", mt_host=NAS_IP)
         package = models.Package(name="mixed", duration_days=10, price=100000, quota_gb=1)
         db.add_all([actor, node, package])
         db.flush()
@@ -201,10 +228,10 @@ def scenario(directory):
             db.commit()
             return user.id, ids
 
-        uid, (target, other) = customer("ali", [("wireguard", "openvpn", "l2tp", "pptp"), ("wireguard", "openvpn")])
+        uid, (target, other) = customer("ali", [("wireguard", "openvpn", "l2tp"), ("wireguard", "openvpn")])
         _uid2, (reboot_mixed,) = customer("reza", [("wireguard", "openvpn")])
         _uid3, (reboot_ppp,) = customer("sara", [("openvpn",)])
-        _uid4, (partial,) = customer("nima", [("wireguard", "pptp")])
+        _uid4, (partial,) = customer("nima", [("wireguard", "l2tp")])
         aid = actor.id
 
     def run(pid):
@@ -235,6 +262,13 @@ def scenario(directory):
             c = db.query(models.Connection).filter_by(ppp_username=name).one()
             return db.query(models.RadiusActiveSession).filter_by(connection_id=c.id).count()
 
+    def reason(outcome):
+        return outcome[1]["reason"] if isinstance(outcome[1], dict) else outcome[1]
+
+    def operation_count(pid):
+        with Session(engine) as db:
+            return db.query(Operation).filter_by(purchase_id=pid).count()
+
     with patch.object(settings, "reseller_cancellation_enabled", True), patch.object(worker.sys, "platform", "linux"), \
             patch.dict(os.environ, {"UM_LOCK_DIR": directory}), patch.object(worker.MikrotikClient, "for_node", client), \
             patch.object(worker, "PPP_STOP_WAIT_SECONDS", 1):
@@ -249,7 +283,9 @@ def scenario(directory):
         # ------------------------------------------------ retransmitted / late accounting (other service)
         nas.acct("ali-1-openvpn", "Stop", "s3", 40, 30)
         nas.acct("ali-1-openvpn", "Stop", "s3", 40, 30)            # the NAS did not get our reply
-        nas.acct("ali-1-openvpn", "Interim-Update", "s3", 45, 35)  # late, after the Stop
+        # late, after the Stop: sent before it, so never above its final counters
+        # (higher ones are a new session reusing the id - test_radius_session_id_reuse)
+        nas.acct("ali-1-openvpn", "Interim-Update", "s3", 35, 25)
         check("a retransmitted Stop and an Interim after the Stop count nothing again",
               (used(other), open_sessions("ali-1-openvpn")), (70, 0))
         nas.acct("ali-1-openvpn", "Start", "s4")
@@ -257,20 +293,19 @@ def scenario(directory):
 
         # ------------------------------------------------ the Stop of one session never comes
         with Session(engine) as db:
-            check("a mixed WireGuard + OpenVPN + L2TP + PPTP service is eligible",
+            check("a mixed WireGuard + OpenVPN + L2TP service is eligible",
                   worker.availability(db, db.get(models.Purchase, target)), None)
         nas.drop_stop = {"ali-0-l2tp"}
         first = run(target)
         check("Stop missing: pending, with that reason", (first[0], first[1]["code"], first[1]["reason"]),
               (409, "reseller_cancellation_pending", "ppp_accounting_stop_missing"))
-        check("...each component's state is kept: WG stopped, OpenVPN final, L2TP waiting, PPTP blocked",
+        check("...each component's state is kept: WG stopped, OpenVPN final, L2TP waiting",
               components(target), {"wireguard": ("usage_captured", None), "openvpn": ("usage_captured", None),
-                                   "pptp": ("blocked", None),          # reached after L2TP: blocked, not yet ended
                                    "l2tp": ("blocked", "ppp_accounting_stop_missing")})
         check("...the OpenVPN session's final Stop is counted (100 + 50)", used(target), 150)
         check("...nothing paid, nothing deleted", (money(), router.removed, used(target) is not None),
               ((0, 0), [], True))
-        check("...the target's PPP logins are refused", (nas.login("ali-0-openvpn"), nas.login("ali-0-pptp")),
+        check("...the target's PPP logins are refused", (nas.login("ali-0-openvpn"), nas.login("ali-0-l2tp")),
               (packet.AccessReject, packet.AccessReject))
         check("...the customer's other service still logs in", nas.login("ali-1-openvpn"), packet.AccessAccept)
         with Session(engine) as db:
@@ -346,21 +381,21 @@ def scenario(directory):
         router.reboot()
         rebooted = run(reboot_mixed)
         check("reboot: WireGuard continuity refused before anything is touched",
-              (rebooted[1]["reason"], router.peers["*reza-0-wireguard"]["disabled"],
-               components(reboot_mixed)["openvpn"][0]), ("wg_usage_continuity_unverified", False, "pending"))
+              (reason(rebooted), router.peers["*reza-0-wireguard"]["disabled"],
+               operation_count(reboot_mixed)), ("wg_usage_continuity_unverified", False, 0))
         nas.acct("sara-0-openvpn", "Start", "s6")
         lost = run(reboot_ppp)
-        check("reboot: a PPP session that vanished without a Stop leaves it pending, unpaid",
-              (lost[1]["reason"], money()[1]), ("ppp_accounting_stop_missing", 1))
+        check("reboot: a PPP session that vanished without a Stop - refused before anything is touched, unpaid",
+              (reason(lost), money()[1], operation_count(reboot_ppp)), ("ppp_session_unverified", 1, 0))
         router.uptime = "52w"
 
         # ------------------------------------------------ partial failure, then resume
         router.fail_remove = 1
         failed = run(partial)
-        check("the WireGuard delete fails: pending with the reason; PPTP already final",
+        check("the WireGuard delete fails: pending with the reason; L2TP already final",
               (failed[1]["reason"], components(partial)),
               ("wg_refund_delete_unconfirmed", {"wireguard": ("usage_captured", None),
-                                                "pptp": ("usage_captured", None)}))
+                                                "l2tp": ("usage_captured", None)}))
         resumed = run(partial)
         check("resumed: the same operation finishes, the peer is deleted once, one more credit",
               (resumed["state"], router.removed.count("nima-0-wireguard"), money()[1]), ("completed", 1, 2))

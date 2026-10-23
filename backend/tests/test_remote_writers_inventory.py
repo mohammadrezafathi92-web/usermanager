@@ -293,6 +293,9 @@ check("legacy writers are gated; private guarded infrastructure has no live dura
       {"app.routers.nodes": ["node_gate.writer_gate"], "app.routers.users": ["node_gate.writer_gate"],
        "app.services.quota_manager": ["node_gate.writer_gate"], "app.services.user_ops": ["node_gate.writer_gate"],
        "app.services.reseller_refund_fence": ["gate_locks.FileLock", "gate_locks.lock_base_dir"],
+       # PPP block waits for in-flight auth replies under the actual cap lock;
+       # this is local coordination, not an additional remote-write dispatcher.
+       "app.services.reseller_refund_settlement": ["gate_locks.FileLock", "gate_locks.LockTimeout", "gate_locks.LockUnavailable"],
     "app.services.license_fence": ["gate_locks.FileLock", "gate_locks.lock_base_dir"],
        "app.services.session_cap_mode": ["gate_locks.FileLock", "gate_locks.LockTimeout",
                                           "gate_locks.LockUnavailable", "gate_locks.lock_base_dir"],

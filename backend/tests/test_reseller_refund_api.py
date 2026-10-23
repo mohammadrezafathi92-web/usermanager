@@ -75,7 +75,7 @@ with TemporaryDirectory() as directory:
         assert db.query(Operation).count() == 0
         assert db.get(models.AdminUser, aid).balance == 0
         db.add(Operation(basis_id=1, purchase_id=pid, user_id=uid, requested_by=aid,
-                         state="pending", baseline_used_bytes=0))
+                         state="pending", baseline_used_bytes=0, mutation_started_at=datetime.utcnow()))
         db.commit()
     with patch.object(settings, "reseller_cancellation_enabled", True), \
          patch.dict(os.environ, {"UM_LOCK_DIR": directory}), \

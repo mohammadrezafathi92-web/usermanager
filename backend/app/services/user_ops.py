@@ -701,7 +701,11 @@ def _maybe_activate_reserved_renewal(db: Session, user: models.User) -> bool:
         # also called directly from radius_server.py's live login check, so
         # without this the customer's PPP login would be let back in while
         # their Xray/other connections stay deleted/disabled from before.
-        reconcile_user_connections(db, user)
+        # From that login check it runs after the reply instead (no node
+        # call under its lock or open transaction - reservation_transition).
+        from . import reservation_transition
+        if not reservation_transition.defer_user_reconcile(user.id):
+            reconcile_user_connections(db, user)
     _count_legacy_purchase(db, user)
     _maybe_grant_loyalty_reward(db, user)
     return True

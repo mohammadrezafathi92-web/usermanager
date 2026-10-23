@@ -159,9 +159,28 @@ def _ppp_step(db, operation_id, connection_id):
     return op, connection, step
 
 
+# How long block_ppp waits for the RADIUS decisions in flight to be answered.
+PPP_BLOCK_WAIT_SECONDS = 30.0
+
+
 def block_ppp(db: Session, *, operation_id: int, connection_id: int) -> None:
     """From now on RADIUS refuses this PPP connection's logins (radius_server,
-    reseller_refund_block). Idempotent; only settlement ends it."""
+    reseller_refund_block). Idempotent; only settlement ends it.
+
+    Committed under session_cap_mode's lock taken EXCLUSIVELY: every
+    Access-Request holds it shared from before it reads anything until its
+    reply is sent, so this waits for each decision in flight. An Accept
+    decided before the block is therefore sent - and its RadiusAuthGrant
+    committed - before blocked_at, and every later request sees the block.
+    The grant then keeps the operation pending until that session's own
+    Class-bound Stop is counted (ppp_stop_missing)."""
+    from . import session_cap_mode
+    from .gate_locks import FileLock, LockTimeout, LockUnavailable
+    lock = FileLock(session_cap_mode.lock_path())
+    try:
+        lock.acquire(shared=False, timeout=PPP_BLOCK_WAIT_SECONDS)
+    except (LockTimeout, LockUnavailable):
+        raise HTTPException(409, "ppp_block_unconfirmed") from None
     try:
         _begin(db)
         _op, _connection, step = _ppp_step(db, operation_id, connection_id)
@@ -170,6 +189,119 @@ def block_ppp(db: Session, *, operation_id: int, connection_id: int) -> None:
     except Exception:
         db.rollback()
         raise
+    finally:
+        lock.release()
+
+
+def observe_ppp(db: Session, *, operation_id: int, connection_id: int, session_ids, at: datetime) -> None:
+    """Persist (before they are ended) WHICH router sessions it had: each is
+    final only with its own Stop after `at`, RADIUS row or not."""
+    from .reseller_refund_block import session_key
+    try:
+        _begin(db)
+        _op, _connection, step = _ppp_step(db, operation_id, connection_id)
+        if step.blocked_at is None:
+            raise HTTPException(409, "ppp_not_blocked")
+        seen = json.loads(step.ppp_seen_sessions or "{}")
+        for sid in session_ids:
+            seen.setdefault(session_key(sid), at.isoformat())
+        step.ppp_seen_sessions = json.dumps(seen, sort_keys=True)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
+def current_ppp_grants(db: Session, connection):
+    """Only this credential generation's grants, never a recycled row id's.
+
+    No digest on a historical grant means unproven, not a wildcard match.
+    """
+    return db.query(models.RadiusAuthGrant).filter(
+        models.RadiusAuthGrant.connection_id == connection.id,
+        models.RadiusAuthGrant.connection_history_key == connection.history_key,
+        models.RadiusAuthGrant.connection_history_key.isnot(None))
+
+
+def _unbound_ppp_grant(db, connection_id):
+    # Pre-upgrade grants carry no generation. They cannot be safely assigned
+    # to this row, or silently treated as if their accepted session ended.
+    return db.query(models.RadiusAuthGrant.id).filter(
+        models.RadiusAuthGrant.connection_id == connection_id,
+        models.RadiusAuthGrant.connection_history_key.is_(None),
+        models.RadiusAuthGrant.state.in_(("granted", "open"))).first() is not None
+
+
+def ppp_stop_missing(db: Session, step):
+    """Why the PPP connection's final usage is not known yet, or None. Only
+    Class-bound sessions (models.RadiusAuthGrant) can ever prove it:
+      ppp_session_unverified       a session without our Class cookie - an
+                                   open session row without a grant, router
+                                   session no grant names, or such accounting
+                                   after the block (step.ppp_unverified_at);
+      ppp_session_foreign_node     an unended grant from another NAS than the
+                                   connection's node (its router is not read);
+      ppp_accounting_lost          a session open when its NAS restarted and
+                                   not heard of since (usage maybe lost);
+      ppp_accounting_stop_missing  a grant's session is open (no Stop);
+      ppp_login_unresolved         an Accept whose session has not reported
+                                   at all - it may still come up.
+    No elapsed time resolves any of them (fail closed: the operation stays
+    pending, unpaid)."""
+    from .reseller_refund_block import session_key
+    cid = step.connection_id
+    connection = db.get(models.Connection, cid)
+    node_id = connection.node_id if connection is not None else None
+    if step.ppp_unverified_at is not None:
+        return "ppp_session_unverified"
+    if _unbound_ppp_grant(db, cid):
+        return "ppp_session_unverified"
+    if db.query(models.RadiusActiveSession.id).filter(models.RadiusActiveSession.connection_id == cid,
+                                                      models.RadiusActiveSession.auth_nonce.is_(None)).first():
+        return "ppp_session_unverified"
+    if connection is None:
+        return "ppp_session_unverified"
+    grants = current_ppp_grants(db, connection).all()
+    if any(g.accounting_unverified for g in grants):
+        return "ppp_session_unverified"
+    unended = [g for g in grants if g.state in ("granted", "open")]
+    if any(g.node_id is None or g.node_id != node_id for g in unended):
+        return "ppp_session_foreign_node"
+    if any(g.state == "open" and g.nas_restart_at is not None for g in unended):
+        return "ppp_accounting_lost"
+    for state, reason in (("open", "ppp_accounting_stop_missing"), ("granted", "ppp_login_unresolved")):
+        if any(g.state == state for g in unended):
+            return reason
+    seen = json.loads(step.ppp_seen_sessions or "{}")
+    for sid, first_seen in seen.items():
+        mine = [g for g in grants if g.node_id == node_id and session_key(g.acct_session_id) == sid]
+        if not mine:
+            return "ppp_session_unverified"     # a router session no grant of ours names
+        # whole seconds: MariaDB DATETIME keeps no fraction of stopped_at
+        seen_at = datetime.fromisoformat(first_seen).replace(microsecond=0)
+        if not any(g.state == "stopped" and g.stopped_at and g.stopped_at >= seen_at for g in mine):
+            return "ppp_accounting_stop_missing"
+    return None
+
+
+def ppp_sessions_unverified(db: Session, connection, session_ids) -> bool:
+    """Read-only, before anything is touched (so a service is never blocked
+    into an operation that could not end): does the router show a session no
+    unended grant of this connection on that node names - or is there an
+    unended grant (an Accept that never came up, a lost Stop, another
+    node's) the router does not show?"""
+    from .reseller_refund_block import session_key
+    if _unbound_ppp_grant(db, connection.id):
+        return True
+    unended = current_ppp_grants(db, connection).filter(
+        models.RadiusAuthGrant.state.in_(("granted", "open"))).all()
+    shown = {session_key(sid) for sid in session_ids}
+    if any(sid is None for sid in session_ids):
+        return True
+    if any(g.node_id is None or g.node_id != connection.node_id or g.nas_restart_at is not None or g.accounting_unverified
+           or session_key(g.acct_session_id) not in shown for g in unended):
+        return True
+    return not shown <= {session_key(g.acct_session_id) for g in unended}
 
 
 def mark_waiting(db: Session, *, operation_id: int, connection_id: int, reason: str) -> None:
@@ -190,15 +322,17 @@ def mark_waiting(db: Session, *, operation_id: int, connection_id: int, reason: 
 def capture_ppp(db: Session, *, operation_id: int, connection_id: int) -> int:
     """The PPP connection's final usage: its total once it is blocked and
     every RADIUS session of it has ended with an Accounting Stop (a pruned
-    or reconciled-away row never counts - both skip a blocked connection).
-    Refused while any session is still open. Never rewritten later."""
+    or reconciled-away row never counts - both skip a blocked connection),
+    including each session the router showed without a RADIUS row
+    (ppp_stop_missing). Refused while any is missing. Never rewritten later."""
     try:
         _begin(db)
         _op, connection, step = _ppp_step(db, operation_id, connection_id)
         if step.blocked_at is None:
             raise HTTPException(409, "ppp_not_blocked")
-        if db.query(models.RadiusActiveSession.id).filter_by(connection_id=connection_id).first():
-            raise HTTPException(409, "ppp_accounting_stop_missing")
+        missing = ppp_stop_missing(db, step)
+        if missing:
+            raise HTTPException(409, missing)
         total = int(connection.total_bytes or 0)
         if step.captured_at is not None:
             if total != step.final_total_bytes:
@@ -277,6 +411,16 @@ def settle(db: Session, *, operation_id: int) -> dict:
         if any(_identity(c) != next(s.identity_digest for s in steps if s.connection_id == c.id)
                for c in connections):
             raise HTTPException(409, "refund_resource_changed")
+        # Capture/remote verification commit separately. Accounting may have
+        # committed new unresolved evidence since either one; only this final
+        # writer transaction can bind that evidence to the financial commit.
+        # It also serializes a concurrent accounting writer on supported SQLite.
+        for connection in connections:
+            if connection.type in (models.ConnectionType.openvpn, models.ConnectionType.l2tp):
+                step = next(s for s in steps if s.connection_id == connection.id)
+                missing = ppp_stop_missing(db, step)
+                if missing:
+                    raise HTTPException(409, missing)
         if any(int(c.total_bytes or 0) > next(s.final_total_bytes for s in steps
                                              if s.connection_id == c.id) for c in connections):
             raise HTTPException(409, "refund_usage_changed")

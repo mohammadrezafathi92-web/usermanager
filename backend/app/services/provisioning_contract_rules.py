@@ -7,16 +7,35 @@ from sqlalchemy import text
 
 from .adapter_base import InvalidMatcher, validate_matchers
 
-ADAPTER_FILES = ("adapter_base.py", "adapter_mikrotik_wg.py", "adapter_radius_ppp.py",
-    "adapter_softether.py", "adapter_xray.py", "adapter_xray_panels.py", "provisioning_contracts.py",
-    "provisioning_contract_rules.py")
+# A contract records the version of the code that verified it. The version is
+# PER BACKEND: the shared contract code plus that backend's own adapter, so a
+# change to one adapter (e.g. WireGuard) never invalidates another backend's
+# contracts (receipt 1140). Cancellation/refund helpers live outside every
+# hashed file (adapter_mikrotik_wg_refund.py). tests/
+# test_provisioning_contract_version_scope.py pins the current versions.
+SHARED_CONTRACT_FILES = ("adapter_base.py", "provisioning_contracts.py", "provisioning_contract_rules.py")
+BACKEND_ADAPTER_FILES = {
+    "mikrotik_wg": "adapter_mikrotik_wg.py", "softether": "adapter_softether.py",
+    "xray_ssh": "adapter_xray.py", "threexui": "adapter_xray.py",
+    "marzban": "adapter_xray_panels.py", "hiddify": "adapter_xray_panels.py",
+    "marzneshin": "adapter_xray_panels.py", "sui": "adapter_xray_panels.py",
+}
 ENDPOINT_FIELDS = ("type", "xr_panel_mode", "mt_host", "mt_port", "mt_use_ssl", "mt_api_ssl_port",
     "mt_wireguard_interface", "xr_ssh_host", "xr_ssh_port", "xr_panel_base_url", "se_host", "se_port",
     "se_hub_name", "xr_inbound_tag", "xr_panel_inbound_id", "xr_config_path", "xr_service_name")
 
 
-def adapter_version():
-    return hashlib.sha1(b"".join((Path(__file__).parent / name).read_bytes() for name in ADAPTER_FILES)).hexdigest()
+def contract_files(backend):
+    if backend not in BACKEND_ADAPTER_FILES:
+        raise ValueError(f"no node contract for backend {backend!r}")
+    return SHARED_CONTRACT_FILES + (BACKEND_ADAPTER_FILES[backend],)
+
+
+def adapter_version(backend, root=None):
+    """The contract-code version of ONE backend (40 hex). `root` is only for
+    the scope test's scratch copy; production always reads this package."""
+    base = Path(root) if root is not None else Path(__file__).parent
+    return hashlib.sha1(b"".join((base / name).read_bytes() for name in contract_files(backend))).hexdigest()
 
 
 def validate_contract(raw, backend):

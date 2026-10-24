@@ -253,7 +253,7 @@ with SessionLocal() as db:
     row = db.query(mp.ProvisioningNodeContract).filter_by(node_id=61).one()
     current = contracts.config_fingerprint(db.get(models.Node, 61))
     check("a successful verify writes one ready row with the current adapter version and configuration",
-          (response["ready"], row.state, row.backend, row.adapter_version == contracts.adapter_version(),
+          (response["ready"], row.state, row.backend, row.adapter_version == contracts.adapter_version(row.backend),
            row.config_fingerprint == current, row.verified_by_admin_id),
           (True, "ready", "mikrotik_wg", True, True, 1))
 

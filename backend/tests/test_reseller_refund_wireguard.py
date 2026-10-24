@@ -6,7 +6,8 @@ from pathlib import Path
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.services.adapter_mikrotik_wg import WireguardIdentity, StoppedUsage, stop_capture_remove
+from app.services.adapter_mikrotik_wg import WireguardIdentity
+from app.services.adapter_mikrotik_wg_refund import StoppedUsage, stop_capture_remove
 from app.services.adapter_base import AdapterError
 
 

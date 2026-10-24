@@ -1,18 +1,25 @@
-"""Reviewed compatibility upgrade of node contracts, 42d -> c22 (receipt 1140).
+"""Reviewed compatibility upgrade of node contracts: global digest -> per backend.
 
-docs/node-contract-compatibility-upgrade.md. c22 changed the global adapter
-digest only because adapter_mikrotik_wg.py's cancellation/refund helpers were
-split; probe, create, read, identity, matcher and verified-absence code did
-not change. Startup therefore invalidated every verified contract with reason
-adapter_version_changed. This is NOT a new live verification: it restores
-exactly those rows, for exactly that one reviewed digest pair, and only while
-the actual current digest is still that target. Every existing guard
-(require_ready, p6 readiness, the runner child's ChildGuard) is untouched and
-then simply sees a normal current 'ready' row.
+docs/node-contract-compatibility-upgrade.md. History: c22 changed the single
+global adapter digest only because WireGuard refund helpers were split, which
+invalidated unrelated 3X-UI/SoftEther contracts (receipt 1140). The first
+upgrade (42d -> c22) restored those rows and is now RETIRED: production ran it
+once (its audit rows remain), and nothing still carries its source digest
+except a deliberately disabled node, which needs a fresh verification.
 
-Not one of the eight hashed adapter files, and its audit table is on its own
-metadata (the ten provisioning tables are a closed list). No node I/O, no DDL
-and no commit inside recover_reviewed(): the caller owns the transaction.
+The fix is per-backend versions (provisioning_contract_rules.adapter_version
+(backend)) plus moving the refund helpers out of every hashed file. Probe,
+create, read, identity, matcher and verified-absence code did not change, but
+the version scheme change itself moves every stored version once. This module
+restores exactly those rows: stored version == the deployed global c22 digest,
+invalidated only for adapter_version_changed, one of the three reviewed
+backends, and only while that backend's actual current version is still the
+reviewed target. Every existing guard is untouched and simply sees a normal
+current 'ready' row.
+
+Not one of the hashed contract files, and its audit table is on its own
+metadata. No node I/O, no DDL and no commit inside recover_reviewed(): the
+caller owns the transaction.
 """
 import datetime as dt
 import json
@@ -27,9 +34,15 @@ from . import provisioning_contracts as contracts
 from . import provisioning_schema
 from .adapter_base import InvalidMatcher
 
-SOURCE_VERSION = "742e58935c84e385565c1468b06c6bdd3218e984"   # 42d0ec8, stored in the invalidated rows
-TARGET_VERSION = "8342748d18b4c80457d28d1ef038d7389fef3d39"   # c22f1dc, the reviewed current digest
-BACKENDS = ("mikrotik_wg", "threexui", "softether")            # the reviewed, unchanged backends only
+SOURCE_VERSION = "8342748d18b4c80457d28d1ef038d7389fef3d39"   # global digest of c22f1dc/93500c7 (deployed)
+# The reviewed per-backend versions of this change. A later change to any of
+# these backends' contract files moves its version and disables its recovery.
+TARGET_VERSIONS = {
+    "mikrotik_wg": "4323bda8fa65dee12b9efb2d7802bb1bf3cdfed0",
+    "threexui": "fb6bab0b9202b4924251bd73262dfe9689b9f244",
+    "softether": "0d948da339a557561f547c93676a929ba93fe0ca",
+}
+BACKENDS = tuple(TARGET_VERSIONS)                                # the reviewed backends only
 REASON = "adapter_version_changed"
 
 # Every contract column a recovery observes (and CASes on), in a fixed order.
@@ -119,12 +132,13 @@ def recover_reviewed(db) -> list:
     [(node_id, backend)] in node order. No commit: the caller commits, and a
     caller rollback (or any exception here, e.g. an audit failure) undoes
     every recovery of this call."""
-    if contract_rules.adapter_version() != TARGET_VERSION:
-        return []          # a future hashed-source change disables this upgrade
+    live = [b for b in BACKENDS if contract_rules.adapter_version(b) == TARGET_VERSIONS[b]]
+    if not live:
+        return []          # a later contract-code change disables this upgrade
     contract = mp.ProvisioningNodeContract
     candidates = db.execute(select(contract.node_id, contract.backend).where(
         contract.state == "invalidated", contract.invalidation_reason == REASON,
-        contract.adapter_version == SOURCE_VERSION, contract.backend.in_(BACKENDS))
+        contract.adapter_version == SOURCE_VERSION, contract.backend.in_(live))
         .order_by(contract.node_id, contract.backend)).all()
     table = contract.__table__
     recovered = []
@@ -150,12 +164,12 @@ def recover_reviewed(db) -> list:
         conditions = [table.c.node_id == node_id, unchanged(table.c.backend, backend)]
         conditions += [unchanged(table.c[name], value) for name, value in observed.items()]
         result = db.execute(update(table).where(*conditions).values(
-            state="ready", adapter_version=TARGET_VERSION, invalidated_at=None, invalidation_reason=None,
+            state="ready", adapter_version=TARGET_VERSIONS[backend], invalidated_at=None, invalidation_reason=None,
             version=observed["version"] + 1))
         if result.rowcount != 1:
             continue       # lost the CAS to a concurrent writer: nothing written, nothing audited
         db.execute(insert(UpgradeAudit.__table__).values(
-            node_id=node_id, backend=backend, source_version=SOURCE_VERSION, target_version=TARGET_VERSION,
+            node_id=node_id, backend=backend, source_version=SOURCE_VERSION, target_version=TARGET_VERSIONS[backend],
             row_version_before=observed["version"], row_version_after=observed["version"] + 1,
             before_image=image, recovered_at=dt.datetime.utcnow()))
         recovered.append((node_id, backend))

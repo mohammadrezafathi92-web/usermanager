@@ -154,7 +154,7 @@ with SessionLocal() as db:
     db.add(admin)
     db.flush()
     db.add(mp.ProvisioningNodeContract(node_id=NODE, backend="mikrotik_wg", state="ready",
-        adapter_version=contracts.adapter_version(), config_fingerprint=contracts.config_fingerprint(db.get(models.Node, NODE)),
+        adapter_version=contracts.adapter_version("mikrotik_wg"), config_fingerprint=contracts.config_fingerprint(db.get(models.Node, NODE)),
         server_fingerprint="b" * 64, contract='{"not_exist":[]}', verified_by_admin_id=admin.id,
         verified_at=dt.datetime.utcnow()))
     user = wallet_accounts.create_user_with_wallet(db, username="cust", telegram_id=99)

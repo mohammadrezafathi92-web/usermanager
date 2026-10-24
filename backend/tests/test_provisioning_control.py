@@ -179,7 +179,7 @@ def scenario(label, engine, base_dir):
         with Factory() as db:
             node = db.get(models.Node, 7)
             db.add(mp.ProvisioningNodeContract(node_id=7, backend="mikrotik_wg", state="ready",
-                adapter_version=contracts.adapter_version(), server_fingerprint="s" * 64,
+                adapter_version=contracts.adapter_version("mikrotik_wg"), server_fingerprint="s" * 64,
                 config_fingerprint=contracts.config_fingerprint(node), contract='{"not_exist": []}',
                 verified_by_admin_id=1, verified_at=dt.datetime.utcnow()))
             db.get(models.PanelSettings, 1).ha_enabled = True

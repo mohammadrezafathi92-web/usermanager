@@ -73,7 +73,7 @@ def scenario(engine):
                 db.flush()
                 if backend != "radius_ppp":
                     db.add(mp.ProvisioningNodeContract(node_id=node.id, backend=backend, state="ready",
-                        adapter_version=contracts.adapter_version(), server_fingerprint="b" * 64,
+                        adapter_version=contracts.adapter_version(backend), server_fingerprint="b" * 64,
                         config_fingerprint=contracts.config_fingerprint(node), contract='{"not_exist":[]}',
                         verified_by_admin_id=aid, verified_at=dt.datetime.utcnow()))
                 connection = models.Connection(user_id=user.id, purchase_id=purchase.id, node_id=node.id,

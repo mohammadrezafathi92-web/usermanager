@@ -69,7 +69,7 @@ class ChildGuard:
             with self.database.connect() as connection:
                 row = connection.execute(contract_rules.contract_statement(), dict(node_id=binding.node_id,
                     backend=binding.backend)).mappings().one_or_none()
-            if row is None or row["state"] != "ready" or row["adapter_version"] != contract_rules.adapter_version() or (
+            if row is None or row["state"] != "ready" or row["adapter_version"] != contract_rules.adapter_version(binding.backend) or (
                     row["config_fingerprint"] != contract_rules.endpoint_fingerprint(row)) or not isinstance(
                     row["server_fingerprint"], str) or not re.fullmatch("[0-9a-f]{64}", row["server_fingerprint"]):
                 raise ChildGuardUnavailable("child_guard_contract_not_ready")

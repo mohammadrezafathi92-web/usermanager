@@ -76,7 +76,7 @@ def scenario(engine):
         db.add(purchase)
         db.flush()
         db.add(mp.ProvisioningNodeContract(node_id=node.id, backend="mikrotik_wg", state="ready",
-            adapter_version=contracts.adapter_version(), server_fingerprint="b" * 64,
+            adapter_version=contracts.adapter_version("mikrotik_wg"), server_fingerprint="b" * 64,
             config_fingerprint=contracts.config_fingerprint(node), contract='{"not_exist":[]}',
             verified_by_admin_id=admin.id, verified_at=dt.datetime.utcnow()))
         owner = admin.id if kind == "create_user" else None
@@ -270,7 +270,7 @@ def scenario(engine):
             db.rollback()
             assert not db.query(mp.ProvisioningOperation).filter_by(business_key=request.business_key).count()
             db.add(mp.ProvisioningNodeContract(node_id=nid, backend=backend, state="ready",
-                adapter_version=contracts.adapter_version(), server_fingerprint="c" * 64,
+                adapter_version=contracts.adapter_version(backend), server_fingerprint="c" * 64,
                 config_fingerprint=contracts.config_fingerprint(db.get(models.Node, nid)),
                 contract='{"not_exist":[]}', verified_by_admin_id=aid, verified_at=dt.datetime.utcnow()))
             db.commit()

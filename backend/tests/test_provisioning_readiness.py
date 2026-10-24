@@ -85,7 +85,7 @@ def scenario(label, engine):
         for node in nodes[:-1]:
             backend = readiness._node_backend(node)
             db.add(mp.ProvisioningNodeContract(node_id=node.id, backend=backend, state="ready",
-                adapter_version=contracts.adapter_version(), server_fingerprint="s" * 64,
+                adapter_version=contracts.adapter_version(backend), server_fingerprint="s" * 64,
                 config_fingerprint=contracts.config_fingerprint(node), contract='{"not_exist": []}',
                 verified_by_admin_id=1, verified_at=now))
         for row in db.query(mp.ProvisioningTypeMode):

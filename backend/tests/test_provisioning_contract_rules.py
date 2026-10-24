@@ -12,7 +12,8 @@ from app.services import provisioning_contract_rules as rules, provisioning_cont
 assert parent.adapter_version is rules.adapter_version
 assert parent.validate_contract is rules.validate_contract
 assert parent._FIELDS == rules.ENDPOINT_FIELDS
-assert len(rules.adapter_version()) == 40
+for _backend in ("mikrotik_wg", "softether", "xray_ssh", "threexui", "marzban", "hiddify", "marzneshin", "sui"):
+    assert len(rules.adapter_version(_backend)) == 40
 tree = ast.parse(Path(rules.__file__).read_text())
 assert not any(isinstance(node, ast.ImportFrom) and node.module and (
     "models" in node.module or node.module in ("database", "config", "sqlalchemy.orm")) for node in ast.walk(tree))

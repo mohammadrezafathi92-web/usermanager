@@ -752,7 +752,7 @@ def _bootstrap_provisioning_schema() -> None:
         if provisioning_schema.is_ready():
             # 5.10: at startup a 'ready' node contract that no longer matches
             # the adapter version / node configuration / backend is invalidated.
-            # Then, in the SAME transaction, the reviewed 42d -> c22
+            # Then, in the SAME transaction, the reviewed global -> per-backend
             # compatibility upgrade (services/provisioning_contract_upgrade.py)
             # restores exactly the contracts that digest change alone
             # invalidated - only if its audit table verifies. Any audit/schema/
@@ -779,8 +779,8 @@ def _bootstrap_provisioning_schema() -> None:
                         recovered = []
                 db.commit()
                 if recovered:
-                    logging.warning("node contract compatibility upgrade %s -> %s recovered %d contract(s): %s",
-                                    contract_upgrade.SOURCE_VERSION[:12], contract_upgrade.TARGET_VERSION[:12],
+                    logging.warning("node contract compatibility upgrade %s -> per-backend recovered %d contract(s): %s",
+                                    contract_upgrade.SOURCE_VERSION[:12],
                                     len(recovered), ", ".join(f"{n}/{b}" for n, b in recovered))
     except Exception:  # noqa: BLE001
         logging.exception("provisioning schema bootstrap raised - provisioning stays not-ready")

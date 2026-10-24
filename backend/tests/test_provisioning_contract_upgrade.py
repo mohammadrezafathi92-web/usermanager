@@ -1,19 +1,21 @@
-"""Reviewed adapter-version upgrade of node contracts (42d -> c22), test first.
+"""Reviewed adapter-version upgrade of node contracts: global -> per backend.
 
-c22 changed the global adapter digest only because the WireGuard refund
-helper was split; probe/read/create/absence/matcher semantics did not change.
-Startup therefore invalidated every verified mikrotik_wg / threexui /
-softether contract with reason adapter_version_changed. The proposed
-app.services.provisioning_contract_upgrade recovers EXACTLY those rows,
-EXACTLY that one reviewed source -> target digest pair, and nothing else:
+Receipt 1140: one global adapter digest let a WireGuard-only refund change
+invalidate unrelated 3X-UI/SoftEther contracts. Versions are now per backend
+(tests/test_provisioning_contract_version_scope.py), which itself moves every
+stored version once. Probe/read/create/absence/matcher semantics did not
+change, so app.services.provisioning_contract_upgrade recovers EXACTLY the
+rows that the reviewed global c22 digest -> per-backend switch invalidated,
+and nothing else (the earlier 42d -> c22 transition is retired):
 
-  * only the real current digest == TARGET_VERSION, only rows whose stored
+  * only while each backend's real current version == TARGET_VERSIONS[backend],
+    only rows whose stored
     adapter_version == SOURCE_VERSION, state 'invalidated', reason
     'adapter_version_changed', backend in (mikrotik_wg, threexui, softether),
     the node enabled and its live backend/configuration unchanged, a valid
     contract, a 64-lower-hex server fingerprint, original verifier/verified_at;
   * CAS on every observed field, version + 1, verified facts preserved,
-    adapter_version -> TARGET, state ready, invalidation cleared;
+    adapter_version -> TARGET_VERSIONS[backend], state ready, invalidation cleared;
   * one audit row per recovery in the SAME transaction (separate metadata,
     not one of the ten frozen provisioning tables), with a before-image and
     no secret; audit failure rolls the recovery back; a lost CAS writes
@@ -60,8 +62,13 @@ try:
 except ImportError:          # base source: the recovery checks FAIL, the baseline guards still run
     up = None
 
-SOURCE = "742e58935c84e385565c1468b06c6bdd3218e984"     # 42d digest stored in the invalidated rows
-TARGET = "8342748d18b4c80457d28d1ef038d7389fef3d39"     # actual c22 global digest
+SOURCE = "8342748d18b4c80457d28d1ef038d7389fef3d39"     # deployed global c22 digest (main 93500c7)
+RETIRED = "742e58935c84e385565c1468b06c6bdd3218e984"    # the 42d source of the earlier, retired transition
+BACKENDS3 = ("mikrotik_wg", "threexui", "softether")
+
+
+def TARGET(backend):
+    return contract_rules.adapter_version(backend)
 SECRETS = ("SECRET-mt-password-never-audited", "SECRET-xr-password-never-audited",
            "SECRET-se-password-never-audited", "SECRET-ssh-password-never-audited")
 failures = []
@@ -213,6 +220,10 @@ def require_ready_outcome(db, node_id, backend):
         db.rollback()
 
 
+def lambda_targets():
+    return {b: contract_rules.adapter_version(b) for b in BACKENDS3}
+
+
 def scenario(label, engine, directory):
     L = f"[{label}] "
     models.Base.metadata.create_all(engine)
@@ -221,19 +232,15 @@ def scenario(label, engine, directory):
     check(L + "provisioning schema ready", lambda: provisioning_schema.bootstrap(engine, Factory)["ready"])
 
     # ---- baseline guards (pass on the base source too)
-    check(L + "actual current global adapter digest is the reviewed c22 target",
-          contract_rules.adapter_version(), TARGET)
-    check(L + "the eight hashed adapter files are unchanged",
-          contract_rules.ADAPTER_FILES, ("adapter_base.py", "adapter_mikrotik_wg.py", "adapter_radius_ppp.py",
-           "adapter_softether.py", "adapter_xray.py", "adapter_xray_panels.py", "provisioning_contracts.py",
-           "provisioning_contract_rules.py"))
+    check(L + "the reviewed targets are exactly the actual current per-backend versions",
+          lambda: up.TARGET_VERSIONS, lambda_targets())
     check(L + "the ten frozen provisioning tables are unchanged", len(mp.PROVISIONING_TABLES), 10)
 
     # ---- module surface
-    check(L + "SOURCE_VERSION is exactly the reviewed 42d digest", lambda: up.SOURCE_VERSION, SOURCE)
-    check(L + "TARGET_VERSION is exactly the c22 digest", lambda: up.TARGET_VERSION, TARGET)
-    check(L + "the recovery module is not one of the hashed adapter files",
-          lambda: os.path.basename(up.__file__) in contract_rules.ADAPTER_FILES, False)
+    check(L + "SOURCE_VERSION is exactly the deployed global c22 digest", lambda: up.SOURCE_VERSION, SOURCE)
+    check(L + "only the three reviewed backends", lambda: tuple(sorted(up.TARGET_VERSIONS)), tuple(sorted(BACKENDS3)))
+    check(L + "the recovery module is not one of the hashed contract files",
+          lambda: any(os.path.basename(up.__file__) in contract_rules.contract_files(b) for b in BACKENDS3), False)
     check(L + "audit table on its own metadata, not a frozen provisioning table",
           lambda: (audit_table().metadata is not mp.PROVISIONING_METADATA,
                    audit_table().metadata is not models.Base.metadata,
@@ -259,7 +266,8 @@ def scenario(label, engine, directory):
             invalidated(db, node, backend, **row)
 
         bad_case("unknown_source", "wg", "mikrotik_wg", adapter="1" * 40)
-        bad_case("current_source", "wg", "mikrotik_wg", adapter=TARGET)
+        bad_case("current_source", "wg", "mikrotik_wg", adapter=TARGET("mikrotik_wg"))
+        bad_case("retired_transition_source", "se", "softether", adapter=RETIRED)
         bad_case("manual_reason", "wg", "mikrotik_wg", reason="manual")
         bad_case("config_reason", "se", "softether", reason="config_changed")
         bad_case("invalid_contract", "3xui", "threexui", contract="[]")
@@ -302,8 +310,8 @@ def scenario(label, engine, directory):
     check(L + "before: the real ChildGuard refuses", guard_enters(args, directory), False)
 
     # ---- a future/unknown CURRENT digest recovers nothing
-    with Factory() as db, patch.object(contract_rules, "adapter_version", lambda: "f" * 40), \
-            patch.object(contracts, "adapter_version", lambda: "f" * 40):
+    with Factory() as db, patch.object(contract_rules, "adapter_version", lambda backend, root=None: "f" * 40), \
+            patch.object(contracts, "adapter_version", lambda backend, root=None: "f" * 40):
         check(L + "current digest not the reviewed target: nothing recovered", lambda: recover(db), [])
         db.rollback()
         check(L + "...no row changed", {k: facts(row_of(db, *v)) for k, v in good_ids.items()},
@@ -394,7 +402,7 @@ def scenario(label, engine, directory):
             old = before[key]
             check(L + f"{backend}: ready, target digest, invalidation cleared, version + 1",
                   (row.state, row.adapter_version, row.invalidated_at, row.invalidation_reason, row.version),
-                  ("ready", TARGET, None, None, old[9] + 1))
+                  ("ready", TARGET(backend), None, None, old[9] + 1))
             check(L + f"{backend}: verified facts, contract and fingerprints preserved",
                   (row.server_fingerprint, row.config_fingerprint, row.contract, row.verified_by_admin_id,
                    row.verified_at), (old[2], old[3], old[4], old[5], old[6]))
@@ -415,7 +423,7 @@ def scenario(label, engine, directory):
             check(L + f"audit {audit.get('backend')}: versions and row versions",
                   (audit.get("source_version"), audit.get("target_version"), audit.get("row_version_before"),
                    audit.get("row_version_after"), audit.get("recovered_at") is not None),
-                  (SOURCE, TARGET, before[key][9], before[key][9] + 1, True))
+                  (SOURCE, TARGET(audit.get("backend")), before[key][9], before[key][9] + 1, True))
             image = json.loads(audit.get("before_image") or "{}")
             check(L + f"audit {audit.get('backend')}: before-image of the invalidated row",
                   (image.get("state"), image.get("adapter_version"), image.get("invalidation_reason"),
@@ -574,7 +582,7 @@ def startup_scenario(label, engine, *, broken_audit):
         else:
             check(L + "old-digest ready row: invalidated then recovered at startup",
                   (row.state, row.adapter_version, row.invalidated_at, row.invalidation_reason),
-                  ("ready", TARGET, None, None))
+                  ("ready", TARGET("mikrotik_wg"), None, None))
             check(L + "...exactly one audit row across two startups",
                   [(a.get("node_id"), a.get("backend")) for a in audit_rows(db)], [(node_id, "mikrotik_wg")])
             check(L + "...and require_ready accepts it", require_ready_outcome(db, node_id, "mikrotik_wg"), "ready")

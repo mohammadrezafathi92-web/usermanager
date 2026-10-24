@@ -200,10 +200,10 @@ def _refund_identity(interface, peer_name, public_key, client_address):
 
 def wg_refund_stop(mt, *, interface: str, peer_name: str, public_key: str, client_address: str,
                    previous: Optional[list] = None) -> dict:
-    """adapter_mikrotik_wg.stop_and_measure, plus the router's uptime read
+    """adapter_mikrotik_wg_refund.stop_and_measure, plus the router's uptime read
     right after it (the parent proves no reboot since the sale with it).
     `previous` = [download, upload] captured by an earlier attempt."""
-    from .adapter_mikrotik_wg import StoppedUsage, stop_and_measure
+    from .adapter_mikrotik_wg_refund import StoppedUsage, stop_and_measure
     prior = StoppedUsage(*previous) if previous is not None else None
     usage = stop_and_measure(mt, _refund_identity(interface, peer_name, public_key, client_address), prior)
     # present=False: the peer was already gone and `previous` answers for it
@@ -213,8 +213,8 @@ def wg_refund_stop(mt, *, interface: str, peer_name: str, public_key: str, clien
 
 def wg_refund_remove(mt, *, interface: str, peer_name: str, public_key: str, client_address: str,
                      download: int, upload: int) -> str:
-    """adapter_mikrotik_wg.remove_stopped for counters already persisted."""
-    from .adapter_mikrotik_wg import StoppedUsage, remove_stopped
+    """adapter_mikrotik_wg_refund.remove_stopped for counters already persisted."""
+    from .adapter_mikrotik_wg_refund import StoppedUsage, remove_stopped
     remove_stopped(mt, _refund_identity(interface, peer_name, public_key, client_address),
                    StoppedUsage(download, upload))
     return "verified_absent"

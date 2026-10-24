@@ -58,3 +58,29 @@ The production observation linked receipt 1140 to approval 254, which was
 `failed`, had no `mutating_at`, and had no linked provisioning operation. This
 does not by itself prove every possible financial table unchanged; do not
 overstate that observation.
+
+## Prevention: per-backend contract versions (follow-up)
+
+The root cause was the single global adapter digest: any change to any of
+the eight hashed files invalidated every node contract. Now:
+
+- `provisioning_contract_rules.adapter_version(backend)` hashes only the shared
+  contract code (`adapter_base.py`, `provisioning_contracts.py`,
+  `provisioning_contract_rules.py`) plus that backend's own adapter. A
+  WireGuard-only change no longer touches 3X-UI, SoftEther or panel contracts;
+  a shared-code change still (correctly) moves them all.
+- The WireGuard cancellation/refund steps moved to
+  `adapter_mikrotik_wg_refund.py`, outside every hashed file, so refund changes
+  invalidate no contract.
+- `tests/test_provisioning_contract_version_scope.py` pins every backend's
+  version. A pull request that changes contract code fails it and names the
+  backends whose deployed contracts it would invalidate, before merge.
+- Switching the scheme moves every stored version once. The upgrade module now
+  carries only that reviewed transition (global c22 `8342748…` -> pinned
+  per-backend versions, same three backends, same locks/CAS/audit and
+  fail-closed rules). The earlier 42d -> c22 transition is retired.
+
+Remaining, deliberately not automated: when an operator changes a node's
+connection settings, its contract is `config_changed` and needs a fresh
+verification. Automatically probing a real node on save needs an explicit
+owner decision first.

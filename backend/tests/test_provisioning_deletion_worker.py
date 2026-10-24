@@ -44,7 +44,7 @@ def scenario(engine):
         db.add_all([admin, node])
         db.flush()
         db.add(mp.ProvisioningNodeContract(node_id=node.id, backend="mikrotik_wg", state="ready",
-            adapter_version=contracts.adapter_version(), config_fingerprint=contracts.config_fingerprint(node),
+            adapter_version=contracts.adapter_version("mikrotik_wg"), config_fingerprint=contracts.config_fingerprint(node),
             server_fingerprint="b" * 64, contract='{"not_exist":[]}', verified_by_admin_id=admin.id,
             verified_at=dt.datetime.utcnow()))
         purchase = models.Purchase(user_id=user.id, quota_bytes=1000)

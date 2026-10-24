@@ -49,7 +49,7 @@ CLIENT_MODULES = frozenset({
 ADAPTER_MODULES = frozenset({
     "app.services.adapter_mikrotik_wg", "app.services.adapter_radius_ppp",
     "app.services.adapter_xray", "app.services.adapter_softether",
-    "app.services.adapter_xray_panels",
+    "app.services.adapter_xray_panels", "app.services.adapter_mikrotik_wg_refund",
     # The 5.10 contract probe: runs only as the CONTRACT_PROBE runner action,
     # under the node lock, on its own namespaced test identity.
     "app.services.provisioning_child_probe",
@@ -155,7 +155,7 @@ register_writer_site(_BLOCKS, "xray_rebuild", (A.XRAY_REBUILD_CLIENTS,), {"add_c
 ACTIONS_WITHOUT_LEGACY_SITE = frozenset({A.WG_RECONCILE_INTERFACE_ADDRESS, A.CONTRACT_PROBE})
 
 # Blocks whose writes are an adapter's (the unpaid-service cancellation's two
-# steps: adapter_mikrotik_wg.stop_and_measure / remove_stopped, writing
+# steps: adapter_mikrotik_wg_refund.stop_and_measure / remove_stopped, writing
 # set_peer_disabled and remove_peer / remove_simple_queue). Adapter modules
 # are outside the call-site scan, so these are listed by name: block -> action.
 ADAPTER_BLOCK_ACTIONS = {"wg_refund_stop": A.WG_REFUND_STOP, "wg_refund_remove": A.WG_REFUND_REMOVE}

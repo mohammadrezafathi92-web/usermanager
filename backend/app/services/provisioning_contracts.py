@@ -42,7 +42,7 @@ def require_ready(db, node, backend):
     row = db.execute(select(mp.ProvisioningNodeContract).where(
         mp.ProvisioningNodeContract.node_id == node.id, mp.ProvisioningNodeContract.backend == backend)
         .with_for_update(read=True).execution_options(populate_existing=True)).scalar_one_or_none()
-    if row is None or row.state != "ready" or row.adapter_version != adapter_version() or (
+    if row is None or row.state != "ready" or row.adapter_version != adapter_version(backend) or (
             row.config_fingerprint != config_fingerprint(node)):
         raise HTTPException(409, "node_contract_not_ready")
     try:
@@ -58,7 +58,6 @@ def invalidate_stale(db) -> list:
     CAS UPDATE each). Caller commits. Returns [(node_id, backend, reason)]."""
     import datetime as dt
     from sqlalchemy import update
-    current = adapter_version()
     changed = []
     rows = db.execute(select(mp.ProvisioningNodeContract).where(mp.ProvisioningNodeContract.state == "ready")
                       .order_by(mp.ProvisioningNodeContract.node_id)).scalars().all()
@@ -75,7 +74,7 @@ def invalidate_stale(db) -> list:
                 live_backend = None
             if live_backend != row.backend:
                 reason = "backend_changed"
-            elif row.adapter_version != current:
+            elif row.adapter_version != adapter_version(row.backend):
                 reason = "adapter_version_changed"
             elif row.config_fingerprint != config_fingerprint(node):
                 reason = "config_changed"
@@ -107,7 +106,7 @@ def record_verified(db, node, backend, *, contract: dict, server_fingerprint: st
     row = db.execute(select(mp.ProvisioningNodeContract).where(
         mp.ProvisioningNodeContract.node_id == node.id, mp.ProvisioningNodeContract.backend == backend)
         .with_for_update()).scalar_one_or_none()
-    values = dict(state="ready", adapter_version=adapter_version(), server_fingerprint=server_fingerprint,
+    values = dict(state="ready", adapter_version=adapter_version(backend), server_fingerprint=server_fingerprint,
                   config_fingerprint=config_fingerprint(node), contract=raw, verified_by_admin_id=actor_admin_id,
                   verified_at=now, invalidated_at=None, invalidation_reason=None)
     if row is None:

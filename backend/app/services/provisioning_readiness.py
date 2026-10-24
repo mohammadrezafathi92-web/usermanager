@@ -49,7 +49,6 @@ def _node_backend(node):
 
 def node_contract_blockers(db) -> list[dict]:
     """Enabled nodes without a current 'ready' contract (5.10), by ID."""
-    version = contracts.adapter_version()
     found = []
     for node in db.execute(select(models.Node).where(models.Node.enabled.is_(True)).order_by(models.Node.id)).scalars():
         try:
@@ -64,7 +63,7 @@ def node_contract_blockers(db) -> list[dict]:
             mp.ProvisioningNodeContract.backend == backend)).scalar_one_or_none()
         if row is None or row.state != "ready":
             reason = "unverified" if row is None or row.state == "unverified" else "invalidated"
-        elif row.adapter_version != version:
+        elif row.adapter_version != contracts.adapter_version(backend):
             reason = "adapter_version_changed"
         elif row.config_fingerprint != contracts.config_fingerprint(node):
             reason = "config_changed"

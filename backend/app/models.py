@@ -585,6 +585,11 @@ class Node(Base):
     type = Column(Enum(NodeType), nullable=False)
     enabled = Column(Boolean, default=True)
 
+    # Private bookkeeping; sanitized status only is returned to API callers.
+    contract_check_json = Column(Text, nullable=True)
+    contract_check_fingerprint = Column(String(64), nullable=True)
+    contract_check_token = Column(String(64), nullable=True)
+
     # Which level-2 Admin added this server themselves - NULL means a
     # superadmin created it (every node that existed before this column, or
     # one a superadmin makes directly). Added so an Admin can plug in their

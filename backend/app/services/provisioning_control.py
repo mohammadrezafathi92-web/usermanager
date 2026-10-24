@@ -379,8 +379,7 @@ def reset_gate_stats(session_factory, admin_id):
 def verify_node_contract(session_factory, admin_id, node_id):
     """POST /nodes/{id}/contract/verify: a live probe, only in 'enforced' and
     only from the runner. A disabled node may be verified (then enabled)."""
-    from . import legacy_remote, provisioning_contracts
-    from .transport_guard import GateViolation
+    from . import node_contract_status
     provisioning_schema.assert_ready()
     with session_factory() as db:
         node = db.get(models.Node, node_id)
@@ -389,25 +388,10 @@ def verify_node_contract(session_factory, admin_id, node_id):
         runtime = db.get(mp.ProvisioningRuntimeState, 1)
         if runtime.gate_mode != "enforced":
             raise HTTPException(409, "gate_not_enforced")
-        db.expunge(node)
-    backend = legacy_remote.backend_of(node)
-    try:
-        observed = legacy_remote.dispatch_probe(node)
-    except GateViolation as exc:
-        raise HTTPException(409, str(exc) or "ownership_lock_host_mismatch") from None
-    response = {"node_id": node_id, "backend": backend, "ready": False, "reason": observed.get("reason"),
-                "cleanup": observed.get("cleanup"), "probe_identity": observed.get("probe_identity")}
-    if observed.get("ready"):
-        with session_factory() as db:
-            try:
-                fresh = db.get(models.Node, node_id)
-                provisioning_contracts.record_verified(
-                    db, fresh, backend, contract=observed["contract"],
-                    server_fingerprint=observed["server_fingerprint"],
-                    endpoint_at_dispatch=observed["endpoint_fingerprint"], actor_admin_id=admin_id)
-                db.commit()
-                response.update(ready=True, reason=None)
-            except Exception:
-                db.rollback()
-                raise
-    return response
+        with node_contract_status.save_lock(db, node_id):
+            node = node_contract_status.refresh_locked(db, node_id)
+            node = node_contract_status.verify_locked(db, node, admin_id)
+            state = node.contract_status
+            return dict(node_id=node_id, backend=state["backend"], ready=state["ready"],
+                        reason=state["reason"], cleanup=state["cleanup"],
+                        probe_identity=node_contract_status._stored(node).get("probe_identity"))

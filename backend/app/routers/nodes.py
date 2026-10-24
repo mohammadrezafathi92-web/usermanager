@@ -1,4 +1,5 @@
 from typing import Optional
+from contextlib import nullcontext
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -13,6 +14,7 @@ from ..services.softether_client import SoftEtherError, client_for_node as softe
 from ..services import user_ops, hierarchy, node_monitor
 from ..services.node_gate import writer_gate
 from ..services import legacy_remote
+from ..services import node_contract_status
 from ..services.keys import generate_password
 
 
@@ -104,7 +106,7 @@ def list_nodes(db: Session = Depends(get_db), admin: models.AdminUser = Depends(
     q = db.query(models.Node)
     if allowed is not None:
         q = q.filter(models.Node.id.in_(allowed)) if allowed else q.filter(False)
-    return q.all()
+    return [node_contract_status.attach(db, node) for node in q.all()]
 
 
 @router.post("", response_model=schemas.NodeOut)
@@ -119,9 +121,15 @@ def create_node(payload: schemas.NodeCreate, db: Session = Depends(get_db), admi
     data["owner_admin_id"] = None if admin.is_superadmin else admin.id
     node = models.Node(**data)
     db.add(node)
-    db.commit()
-    db.refresh(node)
-    return node
+    db.flush()
+    try:
+        with node_contract_status.save_lock(db, node.id):
+            db.commit()
+            db.refresh(node)
+            return node_contract_status.verify_locked(db, node, admin.id)
+    except HTTPException:
+        db.rollback()
+        raise
 
 
 @router.get("/resources")
@@ -141,7 +149,7 @@ def node_resources(db: Session = Depends(get_db), admin: models.AdminUser = Depe
 
 @router.get("/{node_id}", response_model=schemas.NodeOut)
 def get_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
-    return _get_scoped_node(db, node_id, admin)
+    return node_contract_status.attach(db, _get_scoped_node(db, node_id, admin))
 
 
 @router.put("/{node_id}", response_model=schemas.NodeOut)
@@ -159,11 +167,34 @@ def update_node(node_id: int, payload: schemas.NodeUpdate, db: Session = Depends
     if "enabled" in changes and not admin.is_superadmin:
         raise HTTPException(403, "روشن و خاموش کردن سرور فقط از دست ادمین اصلی برمی‌آید")
 
-    for k, v in changes.items():
-        setattr(node, k, v)
-    db.commit()
-    db.refresh(node)
-    return node
+    needs_lock = bool(set(changes) & node_contract_status.verification_fields())
+    with node_contract_status.save_lock(db, node.id) if needs_lock else nullcontext():
+        node = node_contract_status.refresh_locked(db, node_id)
+        # A stale pre-lock owner lookup must not authorize a transferred or
+        # deleted/recreated node, even if its id is still in granted scope.
+        node = _get_owned_node(db, node_id, admin)
+        before = node_contract_status.fingerprint(node)
+        for k, v in changes.items():
+            setattr(node, k, v)
+        relevant = before != node_contract_status.fingerprint(node)
+        if relevant and node_contract_status.provisioning_schema.is_ready():
+            node_contract_status.invalidate(db, node)
+        db.commit()
+        db.refresh(node)
+        if relevant:
+            return node_contract_status.verify_locked(db, node, admin.id)
+        return node_contract_status.attach(db, node)
+
+
+@router.post("/{node_id}/verify-contract", response_model=schemas.NodeOut)
+def verify_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+    if hierarchy.is_seller(admin):
+        raise HTTPException(403, "فروشنده‌ها اجازه بررسی سرور را ندارند")
+    node = _get_owned_node(db, node_id, admin)
+    with node_contract_status.save_lock(db, node.id):
+        node = node_contract_status.refresh_locked(db, node_id)
+        node = _get_owned_node(db, node_id, admin)
+        return node_contract_status.verify_locked(db, node, admin.id)
 
 
 @router.delete("/{node_id}")
@@ -189,8 +220,19 @@ def delete_node(node_id: int, db: Session = Depends(get_db), admin: models.Admin
     # silently ripping the node out of packages that still advertise it.
     if db.query(models.PackageConnection).filter(models.PackageConnection.node_id == node.id).first():
         raise HTTPException(400, "ابتدا این سرور را از پکیج‌هایی که استفاده می‌کنند حذف کنید")
-    db.delete(node)
-    db.commit()
+    # Do not delete/reuse an id while its runner probe may still own a
+    # temporary remote resource or is about to record its observation.
+    with node_contract_status.save_lock(db, node.id):
+        node = node_contract_status.refresh_locked(db, node_id)
+        node = _get_owned_node(db, node_id, admin)
+        # These relations may have changed since the preliminary validation.
+        db.expire(node, ["connections"])
+        if node.connections:
+            raise HTTPException(400, "ابتدا کانکشن‌های متصل به این نود را حذف کنید")
+        if db.query(models.PackageConnection).filter(models.PackageConnection.node_id == node.id).first():
+            raise HTTPException(400, "ابتدا این سرور را از پکیج‌هایی که استفاده می‌کنند حذف کنید")
+        db.delete(node)
+        db.commit()
     node_monitor.forget_node(node_id)
     return {"ok": True}
 

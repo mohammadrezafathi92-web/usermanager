@@ -111,6 +111,7 @@ class NodeOut(NodeBase):
     # NULL = superadmin-created/global infrastructure; an AdminUser id =
     # that level-2 Admin's own server (see models.Node.owner_admin_id).
     owner_admin_id: Optional[int] = None
+    contract_status: Optional[dict] = None
 
 
 # ---------- RADIUS auto-provisioning ----------

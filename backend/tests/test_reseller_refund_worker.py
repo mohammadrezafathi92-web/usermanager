@@ -16,6 +16,7 @@ from app import models
 from app.database import Base
 from app.config import settings
 from app.services import reseller_refund_worker as worker, accounting
+from app.services.reseller_refund_block import purchase_pending
 from app.services.reseller_refund import bind_sale
 from app.models_reseller_refund import ResellerRefundOperation as Operation
 
@@ -79,31 +80,33 @@ def run(directory):
             try:
                 worker.execute(db, purchase_id=pid, actor=actor)
             except HTTPException as exc:
-                assert exc.detail["code"] == "reseller_cancellation_pending"
+                assert exc.status_code == 409 and exc.detail == "wg_refund_identity_unverified", exc.detail
             else:
                 raise AssertionError("offline node accepted")
             assert db.get(models.AdminUser, aid).balance == 0
             assert db.get(models.Purchase, pid) is not None
-            operation = db.query(Operation).one()
-            assert operation.state == "pending" and router.deleted == 0
+            assert db.query(Operation).count() == 0 and router.deleted == 0
+            assert not purchase_pending(db, pid)
             router.offline = False
             router.uptime = "0s"
             try:
                 worker.execute(db, purchase_id=pid, actor=actor)
             except HTTPException as exc:
-                assert exc.detail["reason"] == "wg_usage_continuity_unverified", exc.detail
+                assert exc.status_code == 409 and exc.detail == "wg_usage_continuity_unverified", exc.detail
             else:
                 raise AssertionError("rebooted node counters accepted")
             assert router.deleted == 0 and db.get(models.AdminUser, aid).balance == 0
+            assert db.query(Operation).count() == 0 and not purchase_pending(db, pid)
             router.uptime = "365d0h0m0s"
             result = worker.execute(db, purchase_id=pid, actor=actor)
-            assert result["refund_amount"] == 75000, result
+            # max(time ~20%, volume 30/100) of the 100000 debit
+            assert result["refund_amount"] == 70000, result
             assert worker.execute(db, purchase_id=pid, actor=actor) == result
             assert router.deleted == 1
             assert db.get(models.Purchase, pid) is None
             assert db.get(models.User, uid).balance == 456
             assert db.get(models.User, uid).purchase_count == 0
-            assert db.get(models.AdminUser, aid).balance == 75000
+            assert db.get(models.AdminUser, aid).balance == 70000
             assert db.get(models.LedgerEntry, sid).voided_at is not None
             assert db.query(models.LedgerEntry).filter_by(kind="admin_credit_refund").count() == 1
             assert accounting.summary(db, actor)["sales_total"] == 0

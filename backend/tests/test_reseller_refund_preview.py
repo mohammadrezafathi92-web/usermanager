@@ -1,4 +1,4 @@
-"""Standalone acceptance checks for mean proration and actual-charge snapshots."""
+"""Standalone acceptance checks for max proration and actual-charge snapshots."""
 import os
 import sys
 from datetime import datetime, timedelta
@@ -20,9 +20,10 @@ from app.services.reseller_refund import bind_sale, calculate_refund, preview
 def check_math():
     result = calculate_refund(100000, used_bytes=30, quota_bytes=100,
                               elapsed_seconds=20, duration_seconds=100)
-    assert result["refund_amount"] == 75000
-    assert result["consumed_percent"] == 25
-    # Symmetric mean, monotonic consumption, and exact accounting, without
+    # consumed = max(time 20%, volume 30%) = 30%
+    assert result["refund_amount"] == 70000
+    assert result["consumed_percent"] == 30
+    # Symmetric max, monotonic consumption, and exact accounting, without
     # floating-point drift even beyond the largest exact float integer.
     huge = 10**18 + 1
     for time in range(0, 121, 10):
@@ -37,7 +38,8 @@ def check_math():
             assert a["consumed_amount"] + a["refund_amount"] == huge
             previous = a["refund_amount"]
     for time, volume, expected in [(0, 0, 100000), (100, 100, 0),
-                                    (200, 10, 45000), (10, 200, 45000)]:
+                                    # either finite axis exhausted (clamped to 100%) refunds nothing
+                                    (200, 10, 0), (10, 200, 0), (30, 70, 30000), (70, 30, 30000)]:
         assert calculate_refund(100000, used_bytes=volume, quota_bytes=100,
                                 elapsed_seconds=time, duration_seconds=100)["refund_amount"] == expected
     assert calculate_refund(1, used_bytes=1, quota_bytes=3,
@@ -80,7 +82,7 @@ def check_snapshot():
         package.price = package.cooperation_price = 999999
         db.commit()
         result = preview(db, purchase, now=now)
-        assert result["refund_amount"] == 75000
+        assert result["refund_amount"] == 70000   # max(time 20%, volume 30%) of the actual debit
         assert result["refund_admin_id"] == admin.id
         assert result["estimate_only"] and not result["execution_available"]
         db.refresh(admin)
@@ -107,4 +109,4 @@ def check_snapshot():
 if __name__ == "__main__":
     check_math()
     check_snapshot()
-    print("PASS: reseller mean proration and immutable charge preview")
+    print("PASS: reseller max proration and immutable charge preview")

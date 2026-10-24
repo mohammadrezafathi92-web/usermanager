@@ -349,6 +349,25 @@ class MikrotikClient:
             raise MikrotikError(f"قطع سشن ناموفق بود: {exc}") from exc
         return True
 
+    def count_ppp_sessions(self, ppp_username: str) -> int:
+        """How many `/ppp/active` entries RouterOS lists for this username
+        now (a read; nothing is changed)."""
+        path = self._api.path("ppp", "active")
+        try:
+            return len(list(path.select(Key(".id"), Key("name")).where(Key("name") == ppp_username)))
+        except Exception as exc:
+            raise MikrotikError(f"خواندن سشن‌های فعال PPP ناموفق بود: {exc}") from exc
+
+    def ppp_session_ids(self, ppp_username: str) -> list:
+        """The `session-id` of each `/ppp/active` entry for this username
+        (None where RouterOS shows none) - a read; nothing is changed."""
+        path = self._api.path("ppp", "active")
+        try:
+            rows = list(path.select(Key(".id"), Key("name"), Key("session-id")).where(Key("name") == ppp_username))
+        except Exception as exc:
+            raise MikrotikError(f"خواندن سشن‌های فعال PPP ناموفق بود: {exc}") from exc
+        return [row.get("session-id") or None for row in rows]
+
     def list_active_ppp_usernames(self) -> set[str]:
         """Returns the set of usernames RouterOS itself currently lists in
         `/ppp/active` - the router's own ground truth for who's really

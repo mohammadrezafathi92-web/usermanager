@@ -193,11 +193,17 @@ check("the three MikroTik writer methods without any caller are exactly the decl
 
 print("--- A. every real action type is accounted for ---")
 real_actions = {a for a in ActionType if not a.value.startswith("selftest_")}
-check("each real action_type has a legacy site, or is one of the two that have none by design",
-      sorted(a.value for a in real_actions - rw.action_types_in_use() - rw.ACTIONS_WITHOUT_LEGACY_SITE), [])
+check("each real action_type has a legacy site, is an adapter-backed block, or is one of the two that have none",
+      sorted(a.value for a in real_actions - rw.action_types_in_use() - rw.ACTIONS_WITHOUT_LEGACY_SITE
+             - set(rw.ADAPTER_BLOCK_ACTIONS.values())), [])
+check("the adapter-backed blocks exist and map to their own runner actions",
+      {name: (name in __import__("app.services.legacy_remote_blocks", fromlist=["BLOCKS"]).BLOCKS,
+              __import__("app.services.legacy_remote", fromlist=["ACTION_FOR_BLOCK"]).ACTION_FOR_BLOCK.get(name) is action)
+       for name, action in rw.ADAPTER_BLOCK_ACTIONS.items()},
+      {"wg_refund_stop": (True, True), "wg_refund_remove": (True, True)})
 check("no action is both 'in use' and 'without a legacy site'",
       sorted(a.value for a in rw.action_types_in_use() & rw.ACTIONS_WITHOUT_LEGACY_SITE), [])
-check("23 real action types, 4 self-test ones", (len(real_actions), len(set(ActionType) - real_actions)), (23, 4))
+check("25 real action types, 4 self-test ones", (len(real_actions), len(set(ActionType) - real_actions)), (25, 4))
 
 print("--- A. the registration API is type-safe ---")
 E = rw.WriterRegistryError
@@ -287,6 +293,9 @@ check("legacy writers are gated; private guarded infrastructure has no live dura
       {"app.routers.nodes": ["node_gate.writer_gate"], "app.routers.users": ["node_gate.writer_gate"],
        "app.services.quota_manager": ["node_gate.writer_gate"], "app.services.user_ops": ["node_gate.writer_gate"],
        "app.services.reseller_refund_fence": ["gate_locks.FileLock", "gate_locks.lock_base_dir"],
+       # PPP block waits for in-flight auth replies under the actual cap lock;
+       # this is local coordination, not an additional remote-write dispatcher.
+       "app.services.reseller_refund_settlement": ["gate_locks.FileLock", "gate_locks.LockTimeout", "gate_locks.LockUnavailable"],
     "app.services.license_fence": ["gate_locks.FileLock", "gate_locks.lock_base_dir"],
        "app.services.session_cap_mode": ["gate_locks.FileLock", "gate_locks.LockTimeout",
                                           "gate_locks.LockUnavailable", "gate_locks.lock_base_dir"],

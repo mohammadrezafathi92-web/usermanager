@@ -19,10 +19,13 @@ username+password logins already created in this panel's database.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+import secrets
 import threading
 import time
+import uuid
 import datetime as dt
 
 from pyrad import packet
@@ -34,7 +37,7 @@ from ..config import settings
 from ..database import SessionLocal
 from ..telegram_bot import runner as telegram_bot_runner
 from .quota_manager import add_usage, _enforce_user_limits, _enforce_purchase_limits, active_session_count
-from . import session_cap_mode, session_cap_rule, license_guard
+from . import session_cap_mode, session_cap_rule, license_guard, reseller_refund_block
 from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
 from . import mschapv2
 from . import ip_guard
@@ -74,6 +77,10 @@ BAN_DURATION_MINUTES = 3
 # Stop packet was lost - router reboot, network blip, etc.) and pruned so
 # it doesn't permanently count against the concurrent-session limit.
 STALE_SESSION_MINUTES = 15
+# How long a closed session is remembered against late/retransmitted accounting.
+CLOSED_SESSION_KEEP_DAYS = 3
+# Our Class cookie (models.RadiusAuthGrant): any other Class value is not ours.
+CLASS_PREFIX = "um1:"
 
 
 def _to_str(value) -> str:
@@ -107,6 +114,28 @@ def _gigaword_total(pkt, octets_attr: str, gigawords_attr: str) -> int:
     except Exception:
         gigawords = 0
     return octets + gigawords * (2 ** 32)
+
+
+def _verified_counter(pkt, octets_attr, gigawords_attr):
+    """A Class-bound final sample must contain a real uint32 low word.
+
+    An absent high word is legal below the first wrap; a decreased final
+    total is rejected against the grant's high-water mark separately.
+    Missing/invalid values never stand in for literal zero.
+    """
+    try:
+        low_values = pkt[octets_attr]
+        high_values = pkt[gigawords_attr] if gigawords_attr in pkt else [0]
+        if len(low_values) != 1 or len(high_values) != 1:
+            return None
+        low, high = low_values[0], high_values[0]
+        if type(low) is not int or type(high) is not int or not (0 <= low < 2**32 and 0 <= high < 2**32):
+            return None
+        # SQL BigInteger is signed on supported databases.
+        total = low + high * 2**32
+        return total if total < 2**63 else None
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
 
 
 def _ban_notification_text(username: str, minutes: int, banned_until: dt.datetime) -> str:
@@ -373,12 +402,22 @@ class UserManagerRadiusServer(Server):
         session_cap_mode from before the mode is read until after the reply
         is sent - a mode change can never fall in between. No valid mode
         (lock busy or unavailable, mode unreadable): no decision and no reply,
-        exactly as for any other internal error here; the NAS retries."""
-        try:
-            with session_cap_mode.decision(SessionLocal.kw["bind"]) as cap_mode:
-                self._handle_auth_packet(pkt, cap_mode)
-        except session_cap_mode.ModeUnavailable as exc:
-            logger.error("RADIUS Access-Request not answered: no session cap mode (%s)", exc)
+        exactly as for any other internal error here; the NAS retries.
+
+        A queued renewal this login activates is a DB change only here: the
+        node reconciliation it needs (remote writes, the cancellation
+        barrier) runs after the reply, with neither this lock nor a database
+        transaction held (reservation_transition.deferred_reconciliation) -
+        a pending cancellation's block_ppp waiting for this lock can no
+        longer wait on a barrier held by that same cancellation."""
+        from . import reservation_transition
+        with reservation_transition.deferred_reconciliation() as pending:
+            try:
+                with session_cap_mode.decision(SessionLocal.kw["bind"]) as cap_mode:
+                    self._handle_auth_packet(pkt, cap_mode)
+            except session_cap_mode.ModeUnavailable as exc:
+                logger.error("RADIUS Access-Request not answered: no session cap mode (%s)", exc)
+        reservation_transition.run_deferred(pending, SessionLocal.kw["bind"])
 
     def _handle_auth_packet(self, pkt, cap_mode):
         db = SessionLocal()
@@ -432,6 +471,11 @@ class UserManagerRadiusServer(Server):
             elif conn.banned_until and conn.banned_until > dt.datetime.utcnow():
                 reason = f"banned until {conn.banned_until.isoformat()} (too many over-limit attempts)"
                 # Already recorded when the ban was applied - not logged again.
+            elif reseller_refund_block.ppp_blocked(db, conn.id):
+                # Its unpaid-service cancellation is under way: no new
+                # session may start before its final usage is known.
+                reason = "service cancellation in progress"
+                reject_kind = "disabled"
             elif not conn.enabled:
                 reason = "connection disabled"
                 reject_kind = "disabled"
@@ -549,6 +593,21 @@ class UserManagerRadiusServer(Server):
                                 "RADIUS: activated first-use expiry for user=%r -> expire_at=%s",
                                 user.username, user.expire_at.isoformat(),
                             )
+            if ok and conn is not None and settings.reseller_cancellation_enabled:
+                # Durable (committed below) before the Accept is sent, and its
+                # cookie in the Accept: the one session it admits is known by
+                # it from its first Accounting-Request on (models.RadiusAuthGrant).
+                # Only while cancellation can run - nothing new with it off.
+                # A request from no single configured node (mt_host a hostname,
+                # shared) gets no cookie: its session is accounted as before
+                # (by id) and stays unverifiable for a cancellation.
+                # Its grant is still written (node unknown): a cancellation of
+                # this connection then fails closed (ppp_session_foreign_node)
+                # instead of never knowing this session existed.
+                trusted = self._trusted_node(db, pkt)
+                grant = self._grant(db, pkt, conn, trusted)
+                if trusted is not None:
+                    reply.AddAttribute("Class", grant.nonce.encode())
             if ok and conn is not None and conn.speed_limit_mbps:
                 # See models.Connection.speed_limit_mbps's docstring - unlike
                 # WireGuard's RouterOS Simple Queue (a persistent object kept
@@ -624,6 +683,7 @@ class UserManagerRadiusServer(Server):
             .filter(
                 models.RadiusActiveSession.connection_id == connection_id,
                 models.RadiusActiveSession.session_id == session_id,
+                models.RadiusActiveSession.auth_nonce.is_(None),
             )
             .first()
         )
@@ -648,6 +708,7 @@ class UserManagerRadiusServer(Server):
             .filter(
                 models.RadiusActiveSession.connection_id == connection_id,
                 models.RadiusActiveSession.session_id == session_id,
+                models.RadiusActiveSession.auth_nonce.is_(None),
             )
             .first()
         )
@@ -667,6 +728,201 @@ class UserManagerRadiusServer(Server):
             )
 
     @staticmethod
+    def _closed_session(db, connection_id: int, session_id):
+        """The remembered Stop of this id (an open session may reuse it)."""
+        if not session_id:
+            return None
+        return db.query(models.RadiusClosedSession).filter_by(
+            connection_id=connection_id, session_id=session_id).first()
+
+    @staticmethod
+    def _is_final_replay(closed, in_octets: int, out_octets: int, seconds) -> bool:
+        """The closed session's own final report again (a retransmitted Stop)."""
+        return ((in_octets, out_octets) == (int(closed.final_rx_bytes or 0), int(closed.final_tx_bytes or 0))
+                and seconds == closed.final_session_time)
+
+    @staticmethod
+    def _proves_new_session(closed, in_octets: int, out_octets: int, seconds) -> bool:
+        """An Interim that cannot belong to the closed session under its id:
+        a counter or Acct-Session-Time above that session's final ones.
+        Anything else is ambiguous - a late Interim of the closed session
+        (however late it arrives), or an early one of a new session after a
+        reboot - and is NOT counted: the new session's next report is
+        deltaed from the same zero baseline, so nothing it used is lost,
+        while the closed session is never counted twice. No packet arrival
+        time is used as proof."""
+        if in_octets > int(closed.final_rx_bytes or 0) or out_octets > int(closed.final_tx_bytes or 0):
+            return True
+        return (seconds is not None and closed.final_session_time is not None
+                and seconds > closed.final_session_time)
+
+    # ------------------------------------------------ Class-bound sessions (models.RadiusAuthGrant)
+    @staticmethod
+    def _trusted_node(db, pkt):
+        """The node whose configured mt_host this packet came from - the
+        address pyrad authenticated it with (its shared secret, refresh_hosts);
+        never a NAS attribute inside the packet. None if not exactly one."""
+        source = pkt.source[0] if getattr(pkt, "source", None) else None
+        if not source:
+            return None
+        nodes = db.query(models.Node).filter(models.Node.type == models.NodeType.mikrotik,
+                                             models.Node.mt_host == source).limit(2).all()
+        return nodes[0] if len(nodes) == 1 else None
+
+    @staticmethod
+    def _grant(db, pkt, conn, node) -> models.RadiusAuthGrant:
+        """The grant (and Class nonce) of this Access-Request: a retransmission
+        of it (same NAS, packet id and authenticator) gets the same one."""
+        if conn.history_key is None:
+            conn.history_key = str(uuid.uuid4())
+        identity = models.radius_connection_identity(conn)
+        raw = "|".join((str(node.id if node else None), pkt.source[0] if getattr(pkt, "source", None) else "",
+                        str(pkt.id), bytes(pkt.authenticator or b"").hex(), str(conn.id), identity))
+        key = hashlib.sha256(raw.encode()).hexdigest()
+        grant = db.query(models.RadiusAuthGrant).filter_by(request_key=key).first()
+        if grant is None:
+            purchase = conn.purchase if conn.purchase_id else None
+            grant = models.RadiusAuthGrant(
+                nonce=CLASS_PREFIX + secrets.token_hex(16), request_key=key, connection_id=conn.id,
+                connection_history_key=conn.history_key,
+                connection_identity_digest=identity,
+                purchase_id=conn.purchase_id, purchase_key=purchase.history_key if purchase else None,
+                node_id=node.id if node else None, nas_ip=pkt.source[0] if getattr(pkt, "source", None) else None,
+                # RouterOS sends the coming session's id in the Access-Request
+                # (observed on real CHR L2TP/PPTP): the session is named from
+                # the start, even if its accounting Start is lost.
+                acct_session_id=_to_str(pkt.get("Acct-Session-Id", [None])[0]) or None)
+            db.add(grant)
+        return grant
+
+    @staticmethod
+    def _class_nonce(pkt):
+        """Our Class cookie in an Accounting-Request, or None (none, or not ours)."""
+        try:
+            values = pkt["Class"] if "Class" in pkt else []
+        except Exception:
+            return None
+        for value in values:
+            text = value.decode(errors="ignore") if isinstance(value, bytes) else str(value)
+            if text.startswith(CLASS_PREFIX):
+                return text
+        return None
+
+    def _account_grant(self, db, pkt, conn, nonce, status, session_id, in_octets, out_octets, client_ip) -> bool:
+        """Accounting of a Class-bound session. False: the cookie names no
+        grant this packet may act on (unknown, another node, another
+        connection or purchase history) - nothing is changed by it."""
+        grant = db.query(models.RadiusAuthGrant).filter_by(nonce=nonce).first()
+        node = self._trusted_node(db, pkt)
+        identity = models.radius_connection_identity(conn)
+        if (grant is None or node is None or grant.node_id != node.id or grant.connection_id != conn.id
+                or identity is None or grant.connection_history_key != conn.history_key
+                or grant.connection_identity_digest != identity):
+            # (conn is the connection of this packet's User-Name: same id and
+            # same credential - not another service under a reused id)
+            logger.warning("RADIUS Acct %s with foreign Class for connection %s ignored", status, conn.id)
+            return False
+        if grant.state == "stopped":
+            # A completed grant's provenance is historical, immutable evidence;
+            # a replay after a later purchase migration must not rebind it.
+            logger.info("RADIUS Acct %s for ended session %s (grant %s) ignored", status, session_id, grant.id)
+            return True
+        purchase = conn.purchase if conn.purchase_id else None
+        current_key = purchase.history_key if purchase else None
+        if grant.purchase_id != conn.purchase_id or grant.purchase_key != current_key:
+            # The connection was moved to another purchase (or its history
+            # key backfilled) while this session is up: its traffic is still
+            # this credential's - counted on it, the grant follows it.
+            logger.info("RADIUS grant %s re-bound: connection %s now on purchase %s", grant.id, conn.id,
+                        conn.purchase_id)
+            grant.purchase_id, grant.purchase_key = conn.purchase_id, current_key
+        if session_id and grant.acct_session_id and session_id != grant.acct_session_id:
+            if grant.state == "granted":
+                # nothing counted under the Access-Request's id yet: the
+                # accounting id is the session's (the cookie is the identity)
+                grant.acct_session_id = session_id
+            else:
+                logger.warning("RADIUS Acct %s: Class of grant %s under another session id - ignored",
+                               status, grant.id)
+                return False                 # not acted on (a held connection: unverified)
+        grant.acct_session_id = grant.acct_session_id or session_id or None
+        if status in ("Interim-Update", "Stop") and (
+                in_octets is None or out_octets is None or (status == "Stop" and (
+                    in_octets < int(grant.last_rx_bytes or 0) or out_octets < int(grant.last_tx_bytes or 0)))):
+            # This report cannot prove final usage. Keep the grant unended
+            # (and existing session row); a corrected complete Stop can retry.
+            grant.accounting_unverified = True
+            return True
+        if status == "Interim-Update" and (in_octets < int(grant.last_rx_bytes or 0)
+                                           or out_octets < int(grant.last_tx_bytes or 0)):
+            # A complete Interim below the high-water mark: wrap, reset or a
+            # reordered report - not knowable here. Kept for good (no later
+            # Stop clears it); nothing is added or guessed for it below.
+            logger.warning("RADIUS Acct Interim of grant %s: counter below its high-water mark", grant.id)
+            grant.counter_regressed_at = grant.counter_regressed_at or dt.datetime.utcnow()
+        # Start commonly has no counters and is not final usage evidence.
+        in_octets, out_octets = in_octets or 0, out_octets or 0
+        # High-water marks per direction: a delayed or reordered report never adds again.
+        up = max(0, in_octets - int(grant.last_rx_bytes or 0))
+        down = max(0, out_octets - int(grant.last_tx_bytes or 0))
+        if up or down:
+            # counters above anything reported before: the session is alive
+            # since its NAS restarted (a late pre-restart report proves nothing)
+            grant.nas_restart_at = None
+        grant.last_rx_bytes = max(int(grant.last_rx_bytes or 0), in_octets)
+        grant.last_tx_bytes = max(int(grant.last_tx_bytes or 0), out_octets)
+        if up or down:
+            add_usage(db, conn, down + up, down, up)
+        row = db.query(models.RadiusActiveSession).filter_by(auth_nonce=nonce).first()
+        if status == "Stop":
+            grant.accounting_unverified = False
+            grant.state, grant.stopped_at = "stopped", dt.datetime.utcnow()
+            conn.radius_session_id = None
+            if row is not None:
+                db.delete(row)
+            return True
+        grant.state = "open"
+        conn.radius_session_id = session_id
+        if row is None:
+            row = models.RadiusActiveSession(connection_id=conn.id, session_id=session_id or grant.nonce,
+                                             nas_ip=grant.nas_ip, client_ip=_to_str(client_ip) or None,
+                                             auth_nonce=nonce)
+            db.add(row)
+        row.last_seen_at = dt.datetime.utcnow()
+        row.client_ip = _to_str(client_ip) or row.client_ip
+        row.last_rx_bytes, row.last_tx_bytes = grant.last_rx_bytes, grant.last_tx_bytes
+        return True
+
+    def _nas_restarted(self, db, pkt) -> None:
+        """Accounting-On/Off from a trusted NAS: recorded on its unended
+        grants (nas_restart_at) as EVIDENCE only - accounting with a valid
+        cookie still counts (the auth and accounting sockets are not ordered:
+        an Accept for a session after the reboot can be decided before this
+        packet is handled). An open session's usage since its last report
+        may be lost: such a grant settles no cancellation (ppp_stop_missing)
+        until a later report of it proves it alive. Nothing for another node."""
+        node = self._trusted_node(db, pkt)
+        if node is None:
+            return
+        now = dt.datetime.utcnow()
+        for grant in db.query(models.RadiusAuthGrant).filter(
+                models.RadiusAuthGrant.node_id == node.id,
+                models.RadiusAuthGrant.state.in_(("granted", "open"))):
+            grant.nas_restart_at = now
+
+    @staticmethod
+    def _remember_closed(db, connection_id: int, session_id: str, in_octets: int, out_octets: int, seconds) -> None:
+        """Upsert: a reused id's Stop updates its row (a second INSERT failed on
+        the unique key and rolled the whole Stop back)."""
+        row = db.query(models.RadiusClosedSession).filter_by(
+            connection_id=connection_id, session_id=session_id).first()
+        if row is None:
+            row = models.RadiusClosedSession(connection_id=connection_id, session_id=session_id)
+            db.add(row)
+        row.closed_at = dt.datetime.utcnow()
+        row.final_rx_bytes, row.final_tx_bytes, row.final_session_time = in_octets, out_octets, seconds
+
+    @staticmethod
     def _close_active_session(db, connection_id: int, session_id: str) -> None:
         """Removes the session's row THROUGH the session, not with a bulk
         DELETE. _session_delta has usually just changed that same row, and
@@ -678,11 +934,12 @@ class UserManagerRadiusServer(Server):
         still pending and is simply dropped again."""
         for obj in list(db.new):
             if (isinstance(obj, models.RadiusActiveSession) and obj.connection_id == connection_id
-                    and obj.session_id == session_id):
+                    and obj.session_id == session_id and obj.auth_nonce is None):
                 db.expunge(obj)
         for row in db.query(models.RadiusActiveSession).filter(
             models.RadiusActiveSession.connection_id == connection_id,
             models.RadiusActiveSession.session_id == session_id,
+            models.RadiusActiveSession.auth_nonce.is_(None),
         ).all():
             db.delete(row)
 
@@ -716,6 +973,7 @@ class UserManagerRadiusServer(Server):
             .filter(
                 models.RadiusActiveSession.connection_id == connection_id,
                 models.RadiusActiveSession.session_id == session_id,
+                models.RadiusActiveSession.auth_nonce.is_(None),
             )
             .first()
         )
@@ -741,6 +999,16 @@ class UserManagerRadiusServer(Server):
 
     # ---------------------------------------------------------- accounting
     def HandleAcctPacket(self, pkt):
+        """A queued renewal its usage activates reconciles its nodes after
+        this packet's transaction (reservation_transition), never inside it.
+        (Quota/expiry enforcement's own enable/disable toggles still run in
+        it, as before - quota_manager._set_connection_enabled.)"""
+        from . import reservation_transition
+        with reservation_transition.deferred_reconciliation() as pending:
+            self._handle_acct_packet(pkt)
+        reservation_transition.run_deferred(pending, SessionLocal.kw["bind"])
+
+    def _handle_acct_packet(self, pkt):
         db = SessionLocal()
         try:
             reply = self.CreateReplyPacket(pkt)
@@ -763,17 +1031,67 @@ class UserManagerRadiusServer(Server):
             # client_ip, reused here so it can also be shown live next to
             # the آنلاین badge (see RadiusActiveSession.client_ip).
             client_ip = _to_str(pkt.get("Calling-Station-Id", [None])[0])
+            nonce = self._class_nonce(pkt)
 
-            if conn:
+            if status in ("Accounting-On", "Accounting-Off"):
+                self._nas_restarted(db, pkt)
+                db.commit()
+            elif conn and nonce is not None:
+                # A Class-bound session: accounted by its grant alone; a
+                # foreign or unknown cookie changes nothing (not even by id).
+                in_octets = _verified_counter(pkt, "Acct-Input-Octets", "Acct-Input-Gigawords")
+                out_octets = _verified_counter(pkt, "Acct-Output-Octets", "Acct-Output-Gigawords")
+                if status in ("Start", "Interim-Update", "Stop") and self._account_grant(
+                        db, pkt, conn, nonce, status, session_id, in_octets, out_octets, client_ip):
+                    if conn.user:
+                        _enforce_user_limits(db, conn.user)
+                    if conn.purchase_id:
+                        _enforce_purchase_limits(db, conn.purchase)
+                elif reseller_refund_block.ppp_blocked(db, conn.id):
+                    reseller_refund_block.note_unverified(db, conn.id)
+                db.commit()
+            elif conn:
+                if status in ("Start", "Interim-Update", "Stop") and reseller_refund_block.ppp_blocked(db, conn.id):
+                    # a session without our cookie on a held connection: its
+                    # identity cannot be verified - the cancellation fails closed
+                    reseller_refund_block.note_unverified(db, conn.id)
+                closed = self._closed_session(db, conn.id, session_id) if status in (
+                    "Start", "Interim-Update", "Stop") else None
+                try:
+                    seconds = int(pkt["Acct-Session-Time"][0]) if "Acct-Session-Time" in pkt else None
+                except Exception:
+                    seconds = None
+                in_octets = _gigaword_total(pkt, "Acct-Input-Octets", "Acct-Input-Gigawords")
+                out_octets = _gigaword_total(pkt, "Acct-Output-Octets", "Acct-Output-Gigawords")
+                row = db.query(models.RadiusActiveSession).filter_by(
+                    connection_id=conn.id, session_id=session_id, auth_nonce=None).first() if closed is not None else None
+                fresh = row is None or not (row.last_rx_bytes or row.last_tx_bytes)
                 if status == "Start":
-                    # Kept for display/diagnostics only - the accounting
-                    # baseline moved to the session row, see _session_delta.
+                    # Always opened - even right after this id's Stop: a late
+                    # Start of that session and a new session after a reboot
+                    # look the same here. What follows decides (below).
                     conn.radius_session_id = session_id
                     self._open_active_session(db, conn.id, session_id, nas_ip, client_ip)
+                elif status in ("Interim-Update", "Stop") and closed is not None and self._is_final_replay(
+                        closed, in_octets, out_octets, seconds):
+                    # The closed session's Stop retransmitted - counted once
+                    # already. A row with no report yet under the id was
+                    # that session's late Start: no session is open.
+                    if row is not None and fresh:
+                        self._close_active_session(db, conn.id, session_id)
+                    logger.info("RADIUS Acct %s replays closed session %s of connection %s - ignored",
+                                status, session_id, conn.id)
+                elif (status == "Interim-Update" and closed is not None and fresh
+                      and not self._proves_new_session(closed, in_octets, out_octets, seconds)):
+                    if row is not None:
+                        row.last_seen_at = dt.datetime.utcnow()   # still alive, whichever session it is
+                    logger.info("RADIUS Acct Interim for closed session id %s of connection %s not counted "
+                                "(ambiguous; the next report counts it if it is a new session)",
+                                session_id, conn.id)
                 elif status in ("Interim-Update", "Stop"):
+                    # A Stop other than the closed one's own final report is a
+                    # session's one Stop: a new session under the id.
                     conn.radius_session_id = session_id
-                    in_octets = _gigaword_total(pkt, "Acct-Input-Octets", "Acct-Input-Gigawords")
-                    out_octets = _gigaword_total(pkt, "Acct-Output-Octets", "Acct-Output-Gigawords")
                     # Per session, not per connection. The delta is worked
                     # out against THIS session's own previous report; every
                     # other session on the same connection is untouched.
@@ -785,6 +1103,8 @@ class UserManagerRadiusServer(Server):
                         # deletes the row the baseline lives on, and the
                         # final report is usually the largest one.
                         self._close_active_session(db, conn.id, session_id)
+                        if session_id:
+                            self._remember_closed(db, conn.id, session_id, in_octets, out_octets, seconds)
                     else:
                         self._touch_active_session(db, conn.id, session_id, nas_ip, client_ip)
 
@@ -851,11 +1171,21 @@ def cleanup_stale_radius_sessions(stale_after_minutes: int = STALE_SESSION_MINUT
     db = SessionLocal()
     try:
         cutoff = dt.datetime.utcnow() - dt.timedelta(minutes=stale_after_minutes)
-        deleted = (
-            db.query(models.RadiusActiveSession)
-            .filter(models.RadiusActiveSession.last_seen_at < cutoff)
-            .delete(synchronize_session=False)
-        )
+        query = db.query(models.RadiusActiveSession).filter(models.RadiusActiveSession.last_seen_at < cutoff)
+        # A connection held by an unpaid-service cancellation keeps its open
+        # sessions: only their Accounting Stop proves the final usage, and a
+        # pruned row would look exactly like a closed one.
+        held = reseller_refund_block.blocked_connection_ids(db)
+        if held:
+            query = query.filter(models.RadiusActiveSession.connection_id.notin_(held))
+        deleted = query.delete(synchronize_session=False)
+        # A held connection's Stops are its cancellation's evidence
+        # (reseller_refund_settlement.capture_ppp): kept until it settles.
+        closed = db.query(models.RadiusClosedSession).filter(
+            models.RadiusClosedSession.closed_at < dt.datetime.utcnow() - dt.timedelta(days=CLOSED_SESSION_KEEP_DAYS))
+        if held:
+            closed = closed.filter(models.RadiusClosedSession.connection_id.notin_(held))
+        closed.delete(synchronize_session=False)
         db.commit()
         if deleted:
             logger.info("cleaned up %d stale RADIUS active session(s)", deleted)

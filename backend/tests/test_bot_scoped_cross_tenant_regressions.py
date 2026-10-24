@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import os
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATABASE_URL", "sqlite://")
@@ -60,7 +61,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app import models
+from app import models, database
 from app.database import get_db
 from app.deps import get_bot_principal
 from app.routers import bot as bot_router
@@ -91,153 +92,158 @@ def add_admin(db, username, *, balance=0):
 
 engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
 models.Base.metadata.create_all(engine)
-db = sessionmaker(bind=engine)()
+Session = sessionmaker(bind=engine)
+# Keep genuine auxiliary guards on the HTTP fixture; restore even on failure.
+with patch.object(database, "SessionLocal", Session):
+    db = Session()
+    with database.SessionLocal() as auxiliary:
+        check("[fixture] HTTP and auxiliary database match", auxiliary.get_bind() is db.get_bind(), True)
 
-admin_a = add_admin(db, "admin_a", balance=1_000_000)
-admin_b = add_admin(db, "admin_b")
+    admin_a = add_admin(db, "admin_a", balance=1_000_000)
+    admin_b = add_admin(db, "admin_b")
 
-cust_a = models.User(username="cust_a", owner_admin_id=admin_a.id)
-cust_b = models.User(username="cust_b_secret", owner_admin_id=admin_b.id)
-pkg_a = models.Package(name="a-pkg", quota_gb=1, duration_days=30, price=0,
-                       enabled=True, bot_enabled=True, owner_admin_id=admin_a.id)
-pkg_b = models.Package(name="b-private", quota_gb=1, duration_days=30, price=0,
-                       enabled=True, bot_enabled=True, owner_admin_id=admin_b.id)
-card_a = models.PaymentCard(owner_admin_id=admin_a.id, card_number="6037991111111111", card_holder="admin_a card")
-card_b = models.PaymentCard(owner_admin_id=admin_b.id, card_number="6037992222222222", card_holder="admin_b card")
-db.add_all([cust_a, cust_b, pkg_a, pkg_b, card_a, card_b])
-db.commit()
+    cust_a = models.User(username="cust_a", owner_admin_id=admin_a.id)
+    cust_b = models.User(username="cust_b_secret", owner_admin_id=admin_b.id)
+    pkg_a = models.Package(name="a-pkg", quota_gb=1, duration_days=30, price=0,
+                           enabled=True, bot_enabled=True, owner_admin_id=admin_a.id)
+    pkg_b = models.Package(name="b-private", quota_gb=1, duration_days=30, price=0,
+                           enabled=True, bot_enabled=True, owner_admin_id=admin_b.id)
+    card_a = models.PaymentCard(owner_admin_id=admin_a.id, card_number="6037991111111111", card_holder="admin_a card")
+    card_b = models.PaymentCard(owner_admin_id=admin_b.id, card_number="6037992222222222", card_holder="admin_b card")
+    db.add_all([cust_a, cust_b, pkg_a, pkg_b, card_a, card_b])
+    db.commit()
 
-# A key/dedicated bot scoped strictly to admin_a - exactly what a Phase C
-# activation (C1+, out of scope for THIS approval) eventually turns on.
-principal_a = BotPrincipal.internal(admin_a.id, scope_enforced=True)
+    # A key/dedicated bot scoped strictly to admin_a - exactly what a Phase C
+    # activation (C1+, out of scope for THIS approval) eventually turns on.
+    principal_a = BotPrincipal.internal(admin_a.id, scope_enforced=True)
 
-app = FastAPI()
-app.include_router(bot_router.router)
-app.dependency_overrides[get_db] = lambda: db
-app.dependency_overrides[get_bot_principal] = lambda: principal_a
-client = TestClient(app)
-
-
-print("=" * 72)
-print("--- [1] _get_user_or_403: a scoped dedicated bot cannot reach another tenant's customer by name ---")
-print("=" * 72)
-
-resp = client.get(f"/api/bot/users/{cust_b.username}")
-check("GET /users/{username} for a foreign tenant's customer is refused (was a 200 leak before the fix)",
-      resp.status_code, 404)
-
-resp = client.get(f"/api/bot/users/{cust_a.username}")
-check("...but its OWN tenant's customer is still reachable, unaffected",
-      resp.status_code, 200)
-
-resp = client.post(f"/api/bot/users/{cust_b.username}/set-enabled", params={"enabled": False})
-check("mutating a foreign tenant's customer is refused the same way",
-      resp.status_code, 404)
-db.refresh(cust_b)
-check("...and nothing actually changed", cust_b.status, models.UserStatus.active)
+    app = FastAPI()
+    app.include_router(bot_router.router)
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_bot_principal] = lambda: principal_a
+    client = TestClient(app)
 
 
-print("\n" + "=" * 72)
-print("--- [2] package_id: a scoped tenant cannot buy/renew into another tenant's private package ---")
-print("=" * 72)
+    print("=" * 72)
+    print("--- [1] _get_user_or_403: a scoped dedicated bot cannot reach another tenant's customer by name ---")
+    print("=" * 72)
 
-before_purchases = db.query(models.Purchase).count()
-resp = client.post(
-    f"/api/bot/users/{cust_a.username}/purchase-package",
-    json={"package_id": pkg_b.id},
-)
-check("purchase-package against a foreign tenant's private package is refused "
-      "(previously a raw db.get() with no ownership check at all)",
-      resp.status_code, 404)
-check("...and no Purchase row was created for the refused attempt - review round 2 "
-      "caught that _get_package_or_403 alone (without also checking payment_card_id "
-      "early, see [3] below) does not by itself guarantee this for every endpoint",
-      db.query(models.Purchase).count(), before_purchases)
+    resp = client.get(f"/api/bot/users/{cust_b.username}")
+    check("GET /users/{username} for a foreign tenant's customer is refused (was a 200 leak before the fix)",
+          resp.status_code, 404)
 
-resp = client.post(
-    f"/api/bot/users/{cust_a.username}/purchase-package",
-    json={"package_id": pkg_a.id},
-)
-check("...but its own tenant's package still purchases fine", resp.status_code, 200)
-cust_a_purchase = (
-    db.query(models.Purchase)
-    .filter(models.Purchase.user_id == cust_a.id)
-    .order_by(models.Purchase.id.desc())
-    .first()
-)
-before_reserved_pkg = cust_a_purchase.reserved_package_id
-before_pkg_id = cust_a_purchase.package_id
+    resp = client.get(f"/api/bot/users/{cust_a.username}")
+    check("...but its OWN tenant's customer is still reachable, unaffected",
+          resp.status_code, 200)
 
-print("\n--- [2b] same defect, the renew paths: renew_purchase/renew_user commit BEFORE package_id was checked ---")
-
-resp = client.post(
-    f"/api/bot/users/{cust_a.username}/purchases/{cust_a_purchase.id}/renew",
-    json={"add_gb": 1, "package_id": pkg_b.id},
-)
-check("renew-purchase against a foreign tenant's private package is refused "
-      "(review round 2: this endpoint calls user_ops.renew_purchase - which commits "
-      "internally - BEFORE it used to check package_id at all)",
-      resp.status_code, 404)
-db.refresh(cust_a_purchase)
-check("...and the Purchase's reserved_package_id was never stamped with the foreign id "
-      "(this is the actual regression review round 2 found: a 404 response that still "
-      "left the row durably mutated)",
-      cust_a_purchase.reserved_package_id, before_reserved_pkg)
-check("...nor was its own package_id touched either",
-      cust_a_purchase.package_id, before_pkg_id)
+    resp = client.post(f"/api/bot/users/{cust_b.username}/set-enabled", params={"enabled": False})
+    check("mutating a foreign tenant's customer is refused the same way",
+          resp.status_code, 404)
+    db.refresh(cust_b)
+    check("...and nothing actually changed", cust_b.status, models.UserStatus.active)
 
 
-print("\n" + "=" * 72)
-print("--- [3] payment_card_id: a scoped tenant's sale/top-up cannot be attributed to a foreign card ---")
-print("=" * 72)
+    print("\n" + "=" * 72)
+    print("--- [2] package_id: a scoped tenant cannot buy/renew into another tenant's private package ---")
+    print("=" * 72)
 
-cust_a2 = models.User(username="cust_a2", owner_admin_id=admin_a.id)
-db.add(cust_a2)
-db.commit()
+    before_purchases = db.query(models.Purchase).count()
+    resp = client.post(
+        f"/api/bot/users/{cust_a.username}/purchase-package",
+        json={"package_id": pkg_b.id},
+    )
+    check("purchase-package against a foreign tenant's private package is refused "
+          "(previously a raw db.get() with no ownership check at all)",
+          resp.status_code, 404)
+    check("...and no Purchase row was created for the refused attempt - review round 2 "
+          "caught that _get_package_or_403 alone (without also checking payment_card_id "
+          "early, see [3] below) does not by itself guarantee this for every endpoint",
+          db.query(models.Purchase).count(), before_purchases)
 
-before_entries = db.query(models.LedgerEntry).count()
-before_purchases = db.query(models.Purchase).count()
-resp = client.post(
-    f"/api/bot/users/{cust_a2.username}/purchase-package",
-    json={"package_id": pkg_a.id, "paid_amount": 1000, "payment_card_id": card_b.id},
-)
-check("a purchase whose payment_card_id belongs to a FOREIGN tenant is refused entirely, "
-      "not silently recorded against the wrong card",
-      resp.status_code, 404)
-check("...and no ledger row was written for it at all", db.query(models.LedgerEntry).count(), before_entries)
-check("...and no Purchase row was created either - review round 2's actual finding: "
-      "apply_package_as_purchase commits internally BEFORE the old code checked "
-      "payment_card_id at all, so the customer got a real service despite the 404",
-      db.query(models.Purchase).count(), before_purchases)
+    resp = client.post(
+        f"/api/bot/users/{cust_a.username}/purchase-package",
+        json={"package_id": pkg_a.id},
+    )
+    check("...but its own tenant's package still purchases fine", resp.status_code, 200)
+    cust_a_purchase = (
+        db.query(models.Purchase)
+        .filter(models.Purchase.user_id == cust_a.id)
+        .order_by(models.Purchase.id.desc())
+        .first()
+    )
+    before_reserved_pkg = cust_a_purchase.reserved_package_id
+    before_pkg_id = cust_a_purchase.package_id
 
-resp = client.post(
-    f"/api/bot/users/{cust_a.username}/purchase-package",
-    json={"package_id": pkg_a.id, "paid_amount": 1000, "payment_card_id": card_a.id},
-)
-check("...but attributing the sale to its OWN tenant's card succeeds",
-      resp.status_code, 200)
-entry = (
-    db.query(models.LedgerEntry)
-    .filter(models.LedgerEntry.payment_card_id == card_a.id)
-    .order_by(models.LedgerEntry.id.desc())
-    .first()
-)
-check("...and the ledger row really does point at the right card",
-      entry.payment_card_id if entry else None, card_a.id)
+    print("\n--- [2b] same defect, the renew paths: renew_purchase/renew_user commit BEFORE package_id was checked ---")
 
-before_entries = db.query(models.LedgerEntry).count()
-resp = client.post(
-    f"/api/bot/users/{cust_a.username}/add-balance",
-    json={"amount": 5000, "payment_card_id": card_b.id, "source_kind": "receipt_topup"},
-)
-check("add_balance's own wallet-topup ledger write has the SAME check - a foreign "
-      "card_id is refused there too, not just in _record_bot_sale",
-      resp.status_code, 404)
-check("...and no top-up ledger row was written either", db.query(models.LedgerEntry).count(), before_entries)
+    resp = client.post(
+        f"/api/bot/users/{cust_a.username}/purchases/{cust_a_purchase.id}/renew",
+        json={"add_gb": 1, "package_id": pkg_b.id},
+    )
+    check("renew-purchase against a foreign tenant's private package is refused "
+          "(review round 2: this endpoint calls user_ops.renew_purchase - which commits "
+          "internally - BEFORE it used to check package_id at all)",
+          resp.status_code, 404)
+    db.refresh(cust_a_purchase)
+    check("...and the Purchase's reserved_package_id was never stamped with the foreign id "
+          "(this is the actual regression review round 2 found: a 404 response that still "
+          "left the row durably mutated)",
+          cust_a_purchase.reserved_package_id, before_reserved_pkg)
+    check("...nor was its own package_id touched either",
+          cust_a_purchase.package_id, before_pkg_id)
 
 
-print("\n" + "=" * 72)
-if failures:
-    print(f"{len(failures)} FAILED: " + ", ".join(failures))
-    sys.exit(1)
-print("همه‌ی تست‌ها گذشت")
+    print("\n" + "=" * 72)
+    print("--- [3] payment_card_id: a scoped tenant's sale/top-up cannot be attributed to a foreign card ---")
+    print("=" * 72)
+
+    cust_a2 = models.User(username="cust_a2", owner_admin_id=admin_a.id)
+    db.add(cust_a2)
+    db.commit()
+
+    before_entries = db.query(models.LedgerEntry).count()
+    before_purchases = db.query(models.Purchase).count()
+    resp = client.post(
+        f"/api/bot/users/{cust_a2.username}/purchase-package",
+        json={"package_id": pkg_a.id, "paid_amount": 1000, "payment_card_id": card_b.id},
+    )
+    check("a purchase whose payment_card_id belongs to a FOREIGN tenant is refused entirely, "
+          "not silently recorded against the wrong card",
+          resp.status_code, 404)
+    check("...and no ledger row was written for it at all", db.query(models.LedgerEntry).count(), before_entries)
+    check("...and no Purchase row was created either - review round 2's actual finding: "
+          "apply_package_as_purchase commits internally BEFORE the old code checked "
+          "payment_card_id at all, so the customer got a real service despite the 404",
+          db.query(models.Purchase).count(), before_purchases)
+
+    resp = client.post(
+        f"/api/bot/users/{cust_a.username}/purchase-package",
+        json={"package_id": pkg_a.id, "paid_amount": 1000, "payment_card_id": card_a.id},
+    )
+    check("...but attributing the sale to its OWN tenant's card succeeds",
+          resp.status_code, 200)
+    entry = (
+        db.query(models.LedgerEntry)
+        .filter(models.LedgerEntry.payment_card_id == card_a.id)
+        .order_by(models.LedgerEntry.id.desc())
+        .first()
+    )
+    check("...and the ledger row really does point at the right card",
+          entry.payment_card_id if entry else None, card_a.id)
+
+    before_entries = db.query(models.LedgerEntry).count()
+    resp = client.post(
+        f"/api/bot/users/{cust_a.username}/add-balance",
+        json={"amount": 5000, "payment_card_id": card_b.id, "source_kind": "receipt_topup"},
+    )
+    check("add_balance's own wallet-topup ledger write has the SAME check - a foreign "
+          "card_id is refused there too, not just in _record_bot_sale",
+          resp.status_code, 404)
+    check("...and no top-up ledger row was written either", db.query(models.LedgerEntry).count(), before_entries)
+
+
+    print("\n" + "=" * 72)
+    if failures:
+        print(f"{len(failures)} FAILED: " + ", ".join(failures))
+        sys.exit(1)
+    print("همه‌ی تست‌ها گذشت")

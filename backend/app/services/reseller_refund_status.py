@@ -42,7 +42,22 @@ def operation(db, op: Operation) -> dict:
         "connections_total": len(steps),
         "connections_stopped": sum(1 for s in steps if s.captured_at is not None),
         "connections_removed": sum(1 for s in steps if s.verified_at is not None),
+        # Each component as it stands - what is done and what it waits for.
+        "components": [_component(db, s) for s in sorted(steps, key=lambda s: s.connection_id)],
     }
+
+
+def _component(db, step: Step) -> dict:
+    connection = db.get(models.Connection, step.connection_id)
+    kind = connection.type.value if connection is not None and hasattr(connection.type, "value") else None
+    state = ("verified" if step.verified_at else "usage_captured" if step.captured_at
+             else "blocked" if step.blocked_at else "pending")
+    return {"connection_id": step.connection_id, "type": kind, "state": state,
+            "blocked_at": step.blocked_at.isoformat() if step.blocked_at else None,
+            "wait_reason": step.wait_reason,
+            "wait_since": step.wait_since.isoformat() if step.wait_since else None,
+            "open_sessions": db.query(models.RadiusActiveSession).filter_by(connection_id=step.connection_id).count()
+            if kind in ("openvpn", "l2tp", "pptp") and not step.verified_at else 0}
 
 
 def for_user(db, user_id: int) -> list[dict]:

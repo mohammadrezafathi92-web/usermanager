@@ -173,7 +173,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app import models
+from app import models, database
 from app.database import get_db
 from app.deps import get_bot_principal, get_current_admin
 from app.routers import bot as bot_router
@@ -225,7 +225,15 @@ def add_admin(db, username, **extra):
 
 engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
 models.Base.metadata.create_all(engine)
-db = sessionmaker(bind=engine)()
+_original_session_factory = database.SessionLocal
+_main_session_factory = sessionmaker(bind=engine)
+database.SessionLocal = _main_session_factory
+db = _main_session_factory()
+# HTTP dependencies and auxiliary guards inspect the SAME fixture, not the
+# module default sqlite:// SingletonThreadPool of unrelated per-thread DBs.
+with database.SessionLocal() as auxiliary:
+    check("[fixture] main HTTP and auxiliary sessions share the fixture database",
+          auxiliary.get_bind() is db.get_bind(), True)
 
 node_ok = models.Node(name="node-ok", type=models.NodeType.mikrotik,
                       mt_host="1.1.1.1", mt_username="u", mt_password="p")
@@ -1116,6 +1124,17 @@ try:
     db_r2 = sessionmaker(bind=engine_r2)()
     _race_sessions.append(db_r2)
 
+    # These requests really run concurrently. Auxiliary readers need fresh,
+    # independent connections to this same on-disk DB, never the main
+    # fixture's single StaticPool connection or the app's per-thread memory DB.
+    database.SessionLocal = sessionmaker(bind=engine_r1)
+    with database.SessionLocal() as auxiliary_one, database.SessionLocal() as auxiliary_two:
+        check("[fixture] race HTTP and auxiliary sessions use the same database file",
+              auxiliary_one.get_bind().url == db_r1.get_bind().url == db_r2.get_bind().url, True)
+        check("[fixture] parallel auxiliary readers have independent DBAPI connections",
+              auxiliary_one.connection().connection.driver_connection is not
+              auxiliary_two.connection().connection.driver_connection, True)
+
     admin_race = models.AdminUser(username="admin_race_f", hashed_password="x", role="admin", balance=1_000_000)
     db_r1.add(admin_race)
     db_r1.commit()
@@ -1254,6 +1273,9 @@ try:
     _race_engines.append(engine_r4)
     db_r4 = sessionmaker(bind=engine_r4)()
     _race_sessions.append(db_r4)
+    with database.SessionLocal() as auxiliary:
+        check("[fixture] cross-account race auxiliary sessions stay on its HTTP database",
+              auxiliary.get_bind().url == db_r3.get_bind().url == db_r4.get_bind().url, True)
 
     app_r3 = FastAPI()
     app_r3.include_router(bot_router.router)
@@ -1355,6 +1377,7 @@ try:
           "DIFFERENT user_ids by construction - any real fix has to serialize/lock on the "
           "telegram_id-wide claim this check actually makes, not on a single user_id.")
 finally:
+    database.SessionLocal = _original_session_factory
     # Runs on success OR failure - every session closed, every engine
     # disposed (releasing its own pooled connections, not just the one
     # Session wrapping it), THEN the TemporaryDirectory itself removed.

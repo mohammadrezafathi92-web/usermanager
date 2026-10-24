@@ -211,7 +211,11 @@ with contextlib.ExitStack() as cleanup:
         lock_dir = os.path.join(folder, f"locks-{label}")
         os.mkdir(lock_dir, 0o700)
         with patch.dict(os.environ, {"UM_LOCK_DIR": lock_dir}), \
-                patch("app.database.SessionLocal", sessionmaker(bind=engine, autoflush=False)):
+                patch("app.database.SessionLocal", sessionmaker(bind=engine, autoflush=False)), \
+                patch("app.services.reseller_refund_fence._requires_barrier", return_value=False):
+            # This fixture has no financial cancellation. Isolate the P6 mode
+            # fallback from the separate fail-closed cancellation lookup; its
+            # unknown-state behavior is covered by precheck_holds regressions.
             node_gate.reset_cache()
             scenario(label, engine, lock_dir, url)
             node_gate.reset_cache()

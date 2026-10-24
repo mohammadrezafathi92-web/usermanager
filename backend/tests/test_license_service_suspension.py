@@ -273,7 +273,7 @@ with tempfile.TemporaryDirectory(prefix="license-cuts-") as temp:
         ResellerRefundOperation.__table__.create(engine, checkfirst=True)
         with Session() as db:
             db.add(ResellerRefundOperation(basis_id=1, purchase_id=1, user_id=uid,
-                requested_by=1, baseline_used_bytes=0))
+                requested_by=1, baseline_used_bytes=0, mutation_started_at=dt.datetime.utcnow()))
             db.commit()
         with patch.object(settings, "reseller_cancellation_enabled", True):
             try:

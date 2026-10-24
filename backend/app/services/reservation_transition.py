@@ -31,6 +31,8 @@ changed or consumed between the activation's locking read and its commit.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import datetime as dt
 import hashlib
 import json
@@ -231,21 +233,63 @@ def _drop_pending(session, _previous_transaction):
     session.info.pop(AFTER_COMMIT, None)
 
 
+# Set by a caller that holds a global lock across its commit (RADIUS auth
+# holds session_cap_mode's lock until its reply): the node reconciliations
+# its commit would run are collected and run by it after the lock is gone.
+_deferred: contextvars.ContextVar = contextvars.ContextVar("reservation_reconcile_deferred", default=None)
+
+
+@contextlib.contextmanager
+def deferred_reconciliation():
+    bucket: list = []
+    token = _deferred.set(bucket)
+    try:
+        yield bucket
+    finally:
+        _deferred.reset(token)
+
+
+def defer_user_reconcile(user_id: int) -> bool:
+    """True if a user's reconciliation was deferred (the caller must not run
+    it now); False: no deferral active, run it as before."""
+    bucket = _deferred.get()
+    if bucket is None:
+        return False
+    bucket.append(("user", user_id))
+    return True
+
+
+def run_deferred(bucket, bind) -> None:
+    """The collected reconciliations, each in its own short transaction, no
+    lock held by the caller any more. A failure is logged: the consumption is
+    committed and the poller converges the nodes (as after any commit here)."""
+    from . import user_ops
+    for kind, ident in dict.fromkeys(bucket or ()):
+        try:
+            with Session(bind=bind, autoflush=False) as fresh:
+                if kind == "purchase":
+                    purchase = fresh.get(models.Purchase, ident)
+                    if purchase is not None:
+                        user_ops.reconcile_purchase_connections(fresh, purchase)
+                else:
+                    user = fresh.get(models.User, ident)
+                    if user is not None:
+                        user_ops.reconcile_user_connections(fresh, user)
+                fresh.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception("%s %s: deferred reconciliation after a queued renewal failed", kind, ident)
+
+
 @event.listens_for(Session, "after_commit")
 def _reconcile_after_commit(session):
     ids = session.info.pop(AFTER_COMMIT, None)
     if not ids:
         return
-    from . import user_ops
-    for purchase_id in dict.fromkeys(ids):
-        try:
-            with Session(bind=session.get_bind(), autoflush=False) as fresh:
-                purchase = fresh.get(models.Purchase, purchase_id)
-                if purchase is not None:
-                    user_ops.reconcile_purchase_connections(fresh, purchase)
-                    fresh.commit()
-        except Exception:  # noqa: BLE001 - the consumption is committed; the poller converges
-            logger.exception("purchase %s: reconciliation after the queue started failed", purchase_id)
+    bucket = _deferred.get()
+    if bucket is not None:
+        bucket.extend(("purchase", pid) for pid in ids)
+        return
+    run_deferred([("purchase", pid) for pid in ids], session.get_bind())
 
 
 def lock_history(db, purchase) -> None:

@@ -5,11 +5,16 @@ The existing delete action remains distinct and never promises a refund.
 
 ## Calculation
 
-Consumed fraction is the arithmetic mean of elapsed-time percentage and
-used-quota percentage, with each capped at 100%. Example: 20% time + 30%
-quota means 25% consumed and 75% refundable. An unlimited dimension is
-excluded; a wholly unmetered service is refused. Refunds round down to whole
-tomans and use the actual original reseller debit, never today's package price.
+Consumed fraction is the LARGER of elapsed-time and used-quota fractions,
+each capped at 100%: refund = floor(actual debit × (1 − consumed)), computed
+exactly with one final round-down to whole tomans. Examples (debit 200000):
+10% time + 50% quota refunds 100000; 80% time + 20% quota refunds 40000;
+either dimension used up refunds 0. An unlimited dimension is omitted
+(unlimited quota: time only; unlimited time: quota only); a wholly unmetered
+service is refused. Refunds use the actual original reseller debit, never the
+retail sale price or today's package price. A completed cancellation's stored
+result is returned unchanged on replay; a still-pending one is computed with
+the formula in force when it settles.
 Credit returns to that charged reseller, not to the customer wallet or card pool.
 
 ## Current supported execution
@@ -17,7 +22,8 @@ Credit returns to that charged reseller, not to the customer wallet or card pool
 Disabled by default (`RESELLER_CANCELLATION_ENABLED=false`). The UI can
 preview eligible charges without enabling execution. This implementation
 requires Linux, SQLite, one host, a shared local lock directory, HA disabled,
-and exclusively WireGuard connections for the selected purchase. Do not
+and only WireGuard and OpenVPN/L2TP (RADIUS, on a MikroTik node)
+connections in the selected purchase; any other kind refuses it. Do not
 enable on a multi-host deployment or a network filesystem. All backend
 processes must be restarted together when enabling; old/uninstrumented
 processes and external mutation scripts cannot run alongside cancellation.
@@ -34,6 +40,89 @@ tree scope. Execution requires password confirmation and an explicit unpaid
 confirmation. Before enabling on a real installation, verify stop/read/delete
 against a staging RouterOS node; fake-router tests are not hardware verification.
 
+## Remote steps and the provisioning gate
+
+The two RouterOS writes go through `legacy_remote` like every other legacy
+writer: `wg_refund_stop` (disable the exact peer, read its final counters
+twice, read the router uptime) and `wg_refund_remove` (re-check the stopped
+counters, delete, verify absence and the peer's speed queue). The final
+counters are committed in the panel database between the two, so a peer is
+never deleted before its usage is durable. With the gate `off`/`shadow` they
+run inline; with the gate `enforced` (required on production) they run in
+the runner child under the node lock and ownership/endpoint fencing. A write
+from the panel process itself is refused there; before this change the
+cancellation could not stop or delete anything on an enforced install.
+Reads (identity check before any stop) stay in the panel process. An
+unknown runner outcome leaves the operation pending; the resume repeats
+the stop (idempotent) and accepts only the same counters.
+
+## Order of a cancellation (one step per connection, each committed)
+
+1. Validate every WireGuard identity (reads; reboot continuity).
+2. Block every PPP connection: RADIUS refuses its logins from now on.
+3. Stop every WireGuard peer; commit its final counters.
+4. End every PPP session on the router (`ppp_kick`), then wait for each
+   session's Accounting Stop; only then is the connection's total final.
+5. Delete the WireGuard peers (verified absent).
+6. Verify each PPP connection: still blocked, no session on the router or
+   in RADIUS.
+7. Settle: credit, ledger, sale void marker and DB deletion together.
+
+A failure at any step leaves the operation `pending` with what was already
+done (peers stopped or deleted, sessions ended, usage captured) and the
+reason; each component's state and what it waits for (and since when) is
+shown on the customer page. A resume continues the same operation from the
+first unverified step - repeating a block, stop or kick is harmless, and a
+captured usage is never replaced by a different value. Success and the
+refund exist only after step 7.
+
+### A PPP session whose Accounting Stop never arrives
+
+Pending, reason `ppp_accounting_stop_missing`, logins of the service closed,
+nothing paid. Neither the 15-minute stale-session prune nor the poller's
+/ppp/active reconciliation removes a blocked connection's session: gone from
+the router is not proof of the final usage, and neither is a timeout.
+Allowed handling: restore the router's RADIUS accounting to the panel (the
+Stop is accepted whenever it arrives, a late one included) and resume. If
+the router rebooted, that session's Stop will never come; then the refund
+cannot be proven and the operation stays pending - closing it without a
+refund is an owner decision, not something this release does.
+
+Each accepted login has a durable random RADIUS Class grant. Authentication
+through sending the reply is serialized against the cancellation's PPP block;
+an accepted login awaiting Accounting Start is not assumed absent. The NAS
+must echo Class, and accounting binds the grant to the connection generation,
+customer, node and protocol, not merely a reusable numeric connection/session
+id. A recreated connection cannot inherit an old grant. Same-row credential
+rotation does not erase unresolved accepted sessions.
+
+Missing, invalid, regressing or unproven final counters keep the grant
+unresolved; missing fields are not zero. A valid corrected Stop can resolve it.
+Duplicate Stop/late Interim on a stopped grant cannot count twice. Legacy or
+unattributable sessions fail closed rather than inventing final usage. A
+counter wrap without the NAS's necessary high-word evidence cannot be inferred.
+A complete decreasing Interim is different: its ambiguity is recorded durably
+on the grant and blocks both precheck and settlement even after a later Stop.
+Wrap, reset and a delayed/reordered Interim cannot be distinguished here;
+no missing byte amount is guessed, and a reordered report can conservatively
+leave cancellation unavailable. This is not universal reset detection: under
+the existing corrected-final contract, Interim 5000 -> Stop 100 -> Stop 6000
+still trusts the later complete corrected Stop. Only a decreasing continuing
+Interim creates this separate, persistent marker.
+Settlement rechecks every PPP component's final evidence inside its final
+SQLite writer transaction, before any credit or deletion.
+
+### What cannot lift the hold
+
+The block, the stopped peers and the refusal of every enable/disable toggle
+(`quota_manager._set_connection_enabled`: poller, quota/expiry, session-cap
+releases, licence restore) hold for as long as the operation is pending,
+whether or not the feature flag is on; only settlement (which deletes the
+service) ends them. A read-only preflight refusal does not establish this hold.
+The durable mutation marker is committed before the first remote mutation;
+historical blocked/captured/verified steps also prove a started operation.
+Unknown hold storage fails closed even with the feature flag off.
+
 ## What "unpaid" excludes
 
 A new cancellation is refused while anything says the customer paid for this
@@ -49,15 +138,52 @@ service or other work owns it (`services/reseller_refund_holds.py`):
   on the customer.
 
 These holds are checked again inside the transaction that creates the
-operation (SQLite `BEGIN IMMEDIATE`), so a renewal or operation committed
-after the first check cannot slip in; afterwards the pending operation
+operation (SQLite `BEGIN IMMEDIATE`) and again before its first mutation, so a
+renewal or operation committed after the first check cannot slip in; afterwards
+the genuinely started pending operation
 refuses the customer's mutations, and a renewal racing the remote delete
 waits behind the cancellation barrier and then finds the service gone.
 
 The operator resolves that item first (approve or reject the receipt, let
 the operation finish); the cancellation never decides between them. Once an
-operation exists it is resumed, not re-judged: its connections may already
-be stopped or deleted.
+operation has started mutating it is resumed, not re-judged: its connections
+may already be stopped or deleted. A prepared-only operation is revalidated
+before its first mutation and does not bypass a newly arrived payment hold.
+
+## Verification status (2026-10-23)
+
+An isolated real RouterOS CHR 7.24.5 lab has passed the application's enforced
+gate/ownership and real Linux runner, WireGuard plus L2TP nonzero traffic,
+actual Class-bound final Accounting Stop, completed cancellation, identical
+retry and exactly-once refund, with another service usable and customer wallet
+unchanged. No production customer or node was used.
+
+A separate fresh synthetic target also passed a real TCP interruption before
+the WireGuard remove command reached RouterOS: captured counters remained
+durable, the stopped peer remained present, and no refund occurred. Resume of
+that same operation completed once, with actual final PPP counters, unchanged
+customer wallet and the other service still usable; repeating it did not credit
+again. An initial setup attempt was blocked by the old deleted test client's
+invalid reconnects triggering the existing IP guard. The original ban was
+preserved; a distinct legitimate private test client source completed the test.
+
+A deliberate process-crash scenario also passed: only the test controller's
+newly owned worker process group was SIGKILLed after durable capture and before
+the remove sentence was forwarded. No refund occurred, the stopped peer stayed
+present, and kernel locks were released. A new actual application worker resumed
+the same operation; a third process retried its stored result without a second
+credit. The control service, wallet and existing test IP ban were preserved.
+
+The actual NAS Accounting Stop was separately delayed in a private UDP proxy.
+Although the router's PPP session was gone, the operation stayed pending with
+an unended grant, retained stopped WireGuard peer and no refund. Delivering the
+original authenticated NAS bytes unchanged allowed the application to validate
+final nonzero usage and resume exactly once. This proves delayed delivery, not
+the NAS's own retry policy; no accounting packet or counter was fabricated.
+
+This is not all-protocol or exhaustive crash verification: OpenVPN nonzero
+final traffic and the full fault matrix remain unproved. PPTP is deliberately
+unsupported. The production cancellation flag remains disabled.
 
 The preview shows the exact target service (package, connections, node,
 usage, expiry), how many other services stay untouched, and the reseller

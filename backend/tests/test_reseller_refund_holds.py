@@ -205,7 +205,8 @@ with TemporaryDirectory() as directory:
         router.fail_delete = False
         with Session(engine) as db:
             result = worker.execute(db, purchase_id=pid, actor=db.get(models.AdminUser, aid))
-        check("the resume completes the same operation", (result["state"], result["refund_amount"]), ("completed", 75000))
+        # max(time ~20%, volume 30/100) of the 100000 debit
+        check("the resume completes the same operation", (result["state"], result["refund_amount"]), ("completed", 70000))
 
     app = FastAPI(); app.include_router(users.router)
 
@@ -228,7 +229,7 @@ with TemporaryDirectory() as directory:
             ops = api.get(f"/api/users/{uid}/unpaid-cancellations").json()
             check("the customer's operations are listed with their result",
                   [(o["purchase_id"], o["state"], o["refund_amount"], o["connections_removed"]) for o in ops],
-                  [(pid, "completed", 75000, 1)])
+                  [(pid, "completed", 70000, 1)])
             r = api.get(f"/api/users/{uid}/purchases/{oid}/unpaid-refund-preview").json()
             check("an unproven sale still shows its target and a reason, not a bare error",
                   (r["target"]["purchase_id"], r["target"]["package_name"], r["execution_available"],

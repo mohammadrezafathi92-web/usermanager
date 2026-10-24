@@ -33,6 +33,7 @@ ACTIONS.update({action: _LEGACY for action in (
     ActionType.WG_SET_SPEED_QUEUE, ActionType.XRAY_BOUNCE_CLIENT, ActionType.XRAY_SET_CLIENT_ENABLED,
     ActionType.XRAY_REBUILD_CLIENTS, ActionType.SOFTETHER_BOUNCE_USER, ActionType.SOFTETHER_SET_USER_ENABLED,
     ActionType.PPP_KICK_SESSION, ActionType.MT_PUSH_RADIUS, ActionType.MT_PUSH_PPTP, ActionType.MT_PUSH_SSTP,
-    ActionType.MT_PUSH_L2TP, ActionType.MT_PUSH_IKEV2, ActionType.WG_RECONCILE_INTERFACE_ADDRESS)})
+    ActionType.MT_PUSH_L2TP, ActionType.MT_PUSH_IKEV2, ActionType.WG_RECONCILE_INTERFACE_ADDRESS,
+    ActionType.WG_REFUND_STOP, ActionType.WG_REFUND_REMOVE)})
 # The per-node contract probe (5.10), same fencing in its own 'probe' phase.
 ACTIONS[ActionType.CONTRACT_PROBE] = "app.services.provisioning_child_probe:run"

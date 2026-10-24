@@ -730,12 +730,11 @@ def _set_connection_enabled(db: Session, connection: models.Connection, enabled:
         return
     if enabled and license_guard.current().cut_services:
         return
-    from .reseller_refund_fence import enabled as _refund_enabled
-    if _refund_enabled() and connection.purchase_id:
-        from ..models_reseller_refund import ResellerRefundOperation
-        if db.query(ResellerRefundOperation.id).filter_by(
-                purchase_id=connection.purchase_id, state="pending").first():
-            return  # the refund worker owns stop/delete; never resurrect or guess identity
+    # Whether or not the feature is on now: a pending cancellation owns
+    # its service's stop/delete; nothing re-enables (or toggles) it.
+    from .reseller_refund_block import purchase_pending
+    if connection.purchase_id and purchase_pending(db, connection.purchase_id):
+        return
     if connection.enabled == enabled:
         return
     node: models.Node = connection.node
@@ -1024,7 +1023,6 @@ def _restore_license_connection(connection_id: int, *, expected_target=None) -> 
 
 def _license_restore_holds(db, conn):
     from . import provisioning_schema, receipt_void_schema, reservation_transition
-    from .reseller_refund_fence import enabled as refund_enabled
     if not provisioning_schema.is_ready() or not receipt_void_schema.is_ready():
         raise HTTPException(503, "license_restore_schema_not_ready")
     if db.get(models.PanelSettings, 1) is not None and db.get(models.PanelSettings, 1).ha_enabled:
@@ -1041,10 +1039,11 @@ def _license_restore_holds(db, conn):
             # Accepted durable work can be between DB transactions while
             # its child owns remote I/O. Let it settle before restoration.
             raise HTTPException(409, "license_restore_operation_pending")
-    if refund_enabled():
-        from ..models_reseller_refund import ResellerRefundOperation
-        if db.query(ResellerRefundOperation.id).filter_by(user_id=conn.user_id, state="pending").first():
-            raise HTTPException(409, "reseller_cancellation_pending")
+    # Flag on or off: a pending cancellation owns its service until settled.
+    from .reseller_refund_block import user_pending
+    if user_pending(db, conn.user_id):
+        raise HTTPException(409, "reseller_cancellation_pending")
+
 
 
 def _reconcile_connection_enabled_state(db: Session, now: dt.datetime) -> int:
@@ -1157,7 +1156,12 @@ def _reconcile_ppp_sessions(db: Session, node: models.Node, mt: MikrotikClient) 
         logger.warning("mikrotik node %s: failed to read /ppp/active for reconciliation: %s", node.id, exc)
         return
     db.info.setdefault("quota_ppp_live", {})[node.id] = set(live_usernames)
-    by_id = {c.id: c for c in ppp_conns}
+    # A connection held by an unpaid-service cancellation keeps its rows:
+    # gone from /ppp/active is not its Accounting Stop, and only the Stop
+    # proves the final usage (reseller_refund_block).
+    from .reseller_refund_block import blocked_connection_ids
+    held = blocked_connection_ids(db)
+    by_id = {c.id: c for c in ppp_conns if c.id not in held}
     stale_rows = (
         db.query(models.RadiusActiveSession)
         .filter(models.RadiusActiveSession.connection_id.in_(list(by_id.keys())))

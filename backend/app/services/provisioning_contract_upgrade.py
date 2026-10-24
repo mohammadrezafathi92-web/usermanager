@@ -3,15 +3,15 @@
 docs/node-contract-compatibility-upgrade.md. History: c22 changed the single
 global adapter digest only because WireGuard refund helpers were split, which
 invalidated unrelated 3X-UI/SoftEther contracts (receipt 1140). The first
-upgrade (42d -> c22) restored those rows and is now RETIRED: production ran it
-once (its audit rows remain), and nothing still carries its source digest
-except a deliberately disabled node, which needs a fresh verification.
+upgrade (42d -> c22) restored those rows on the primary. Other installations
+can skip that release, so both exact reviewed global source digests remain
+eligible for the direct transition to the pinned per-backend versions.
 
 The fix is per-backend versions (provisioning_contract_rules.adapter_version
 (backend)) plus moving the refund helpers out of every hashed file. Probe,
 create, read, identity, matcher and verified-absence code did not change, but
 the version scheme change itself moves every stored version once. This module
-restores exactly those rows: stored version == the deployed global c22 digest,
+restores exactly those rows: stored version is one of the two reviewed digests,
 invalidated only for adapter_version_changed, one of the three reviewed
 backends, and only while that backend's actual current version is still the
 reviewed target. Every existing guard is untouched and simply sees a normal
@@ -35,6 +35,7 @@ from . import provisioning_schema
 from .adapter_base import InvalidMatcher
 
 SOURCE_VERSION = "8342748d18b4c80457d28d1ef038d7389fef3d39"   # global digest of c22f1dc/93500c7 (deployed)
+SOURCE_VERSIONS = (SOURCE_VERSION, "742e58935c84e385565c1468b06c6bdd3218e984")
 # The reviewed per-backend versions of this change. A later change to any of
 # these backends' contract files moves its version and disables its recovery.
 TARGET_VERSIONS = {
@@ -97,8 +98,13 @@ def _live_backend(node):
 def _eligible(row, node) -> bool:
     if node is None or node.enabled is not True:
         return False
-    if (row.state != "invalidated" or row.invalidation_reason != REASON or row.adapter_version != SOURCE_VERSION
+    if (row.state != "invalidated" or row.invalidation_reason != REASON or row.adapter_version not in SOURCE_VERSIONS
             or row.backend not in BACKENDS or _live_backend(node) != row.backend):
+        return False
+    # A save/live probe since the old verification is not a digest-only
+    # transition. In particular, never erase a failed or unknown cleanup.
+    if any(getattr(node, field, None) is not None for field in (
+            "contract_check_json", "contract_check_token", "contract_check_fingerprint")):
         return False
     if not (isinstance(row.server_fingerprint, str) and _HEX64.fullmatch(row.server_fingerprint)):
         return False
@@ -138,7 +144,7 @@ def recover_reviewed(db) -> list:
     contract = mp.ProvisioningNodeContract
     candidates = db.execute(select(contract.node_id, contract.backend).where(
         contract.state == "invalidated", contract.invalidation_reason == REASON,
-        contract.adapter_version == SOURCE_VERSION, contract.backend.in_(live))
+        contract.adapter_version.in_(SOURCE_VERSIONS), contract.backend.in_(live))
         .order_by(contract.node_id, contract.backend)).all()
     table = contract.__table__
     recovered = []
@@ -151,6 +157,9 @@ def recover_reviewed(db) -> list:
         if row is None or not _eligible(row, node):
             continue
         observed = {name: getattr(row, name) for name in OBSERVED}
+        node_fields = set(contracts._FIELDS) | {
+            "enabled", "owner_admin_id", "contract_check_json", "contract_check_token", "contract_check_fingerprint"}
+        node_observed = {name: getattr(node, name) for name in node_fields}
         image = _image(row)
         # A backend's default text collation may ignore case or trailing
         # spaces. Matcher literals do not: compare text as exact UTF-8 bytes.
@@ -163,13 +172,19 @@ def recover_reviewed(db) -> list:
 
         conditions = [table.c.node_id == node_id, unchanged(table.c.backend, backend)]
         conditions += [unchanged(table.c[name], value) for name, value in observed.items()]
+        # SQLite has no SELECT FOR UPDATE. Fence the node's facts in this
+        # same atomic statement too, including any newly started probe.
+        node_table = models.Node.__table__
+        conditions.append(select(1).select_from(node_table).where(
+            node_table.c.id == node_id,
+            *(unchanged(node_table.c[name], value) for name, value in node_observed.items())).exists())
         result = db.execute(update(table).where(*conditions).values(
             state="ready", adapter_version=TARGET_VERSIONS[backend], invalidated_at=None, invalidation_reason=None,
             version=observed["version"] + 1))
         if result.rowcount != 1:
             continue       # lost the CAS to a concurrent writer: nothing written, nothing audited
         db.execute(insert(UpgradeAudit.__table__).values(
-            node_id=node_id, backend=backend, source_version=SOURCE_VERSION, target_version=TARGET_VERSIONS[backend],
+            node_id=node_id, backend=backend, source_version=observed["adapter_version"], target_version=TARGET_VERSIONS[backend],
             row_version_before=observed["version"], row_version_after=observed["version"] + 1,
             before_image=image, recovered_at=dt.datetime.utcnow()))
         recovered.append((node_id, backend))

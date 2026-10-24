@@ -300,6 +300,7 @@ check("legacy writers are gated; private guarded infrastructure has no live dura
        "app.services.session_cap_mode": ["gate_locks.FileLock", "gate_locks.LockTimeout",
                                           "gate_locks.LockUnavailable", "gate_locks.lock_base_dir"],
        "app.services.provisioning_lock_verification": ["gate_locks"],
+       "app.services.node_contract_status": ["gate_locks"],
        "app.services.provisioning_ownership": ["gate_locks"],
        "app.services.provisioning_installation": ["gate_locks"],
     "app.services.provisioning_dispatch_binding": ["gate_locks"],

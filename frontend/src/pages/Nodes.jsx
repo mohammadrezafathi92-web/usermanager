@@ -1,13 +1,14 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Trash2, Pencil, Wifi, Globe, Network, PlugZap, CheckCircle2, XCircle, Power, X, Cpu, MemoryStick, HardDrive, Clock, Search } from "lucide-react";
 import Layout from "../components/Layout.jsx";
 import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import UsageBar from "../components/UsageBar.jsx";
+import NodeContractStatus from "../components/NodeContractStatus.jsx";
 import { useConfirm } from "../components/ConfirmDialog.jsx";
 import { useToast } from "../components/Toast.jsx";
 import SortSelect from "../components/SortSelect.jsx";
-import { fetchNodes, fetchNodeResources, createNode, updateNode, deleteNode, testNode, pushRadiusConfig, pushSstpConfig, pushL2tpConfig, pushIkev2Config, importPppUsers, importUserManagerUsers, import3xuiClients, rebuildNodeClients } from "../api/client.js";
+import { fetchNodes, fetchNodeResources, createNode, updateNode, deleteNode, testNode, verifyNodeContract, pushRadiusConfig, pushSstpConfig, pushL2tpConfig, pushIkev2Config, importPppUsers, importUserManagerUsers, import3xuiClients, rebuildNodeClients } from "../api/client.js";
 import { formatDateTime, sortRows } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
@@ -113,6 +114,11 @@ export default function Nodes() {
   const [form, setForm] = useState(emptyForm);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [verifyingId, setVerifyingId] = useState(null);
+  const verifyInFlight = useRef(false);
+  const nodesReadVersion = useRef(0);
+  const [saveNotice, setSaveNotice] = useState("");
+  const [saveUncertain, setSaveUncertain] = useState(false);
   const [testResult, setTestResult] = useState({});
   const [radiusPanelHost, setRadiusPanelHost] = useState("");
   const [radiusInterimUpdate, setRadiusInterimUpdate] = useState("00:01:00");
@@ -142,7 +148,12 @@ export default function Nodes() {
   // dnsToPayload, which is what actually gets filtered/joined on submit).
   const [dnsRows, setDnsRows] = useState(["1.1.1.1"]);
 
-  const load = () => fetchNodes().then((res) => setNodes(res.data));
+  const load = () => {
+    const version = ++nodesReadVersion.current;
+    return fetchNodes().then((res) => {
+      if (version === nodesReadVersion.current) setNodes(res.data);
+    });
+  };
   // Live CPU/RAM/disk per node (see services/node_monitor.py) - polled
   // separately from the node list so a slow/unreachable box never delays
   // the page itself, and keyed by node id for lookup while rendering.
@@ -158,7 +169,7 @@ export default function Nodes() {
   useEffect(() => {
     load();
     loadResources();
-    const timer = setInterval(loadResources, 20000);
+    const timer = setInterval(() => { loadResources(); load().catch(() => {}); }, 20000);
     return () => clearInterval(timer);
   }, []);
 
@@ -180,6 +191,7 @@ export default function Nodes() {
   // result until an import button was clicked again.
   const resetModalStatus = () => {
     setError("");
+    setSaveUncertain(false);
     setRadiusStatus("");
     setSstpStatus("");
     setL2tpStatus("");
@@ -383,6 +395,7 @@ export default function Nodes() {
 
   const submit = async (e) => {
     e.preventDefault();
+    if (saveUncertain || saving) return;
     if (step < steps.length - 1) {
       // Enter/click on the primary button before the last step just
       // advances the wizard instead of saving - mirrors clicking "بعدی".
@@ -392,6 +405,7 @@ export default function Nodes() {
     if (!stepIsValid(step)) return;
     setSaving(true);
     setError("");
+    setSaveNotice("");
     const payload = { ...form, mt_client_dns: dnsToPayload() };
     // `enabled` rides along because openEdit spreads the whole node into the
     // form, but only a superadmin may change it (routers/nodes.py's
@@ -399,20 +413,55 @@ export default function Nodes() {
     // in, an Admin renaming their own server would get a 403 about a switch
     // they never touched.
     if (!isSuperadmin) delete payload.enabled;
+    delete payload.contract_status;
+    nodesReadVersion.current += 1;
     try {
-      if (editingId) {
-        await updateNode(editingId, payload);
-      } else {
-        await createNode(payload);
-      }
+      const result = editingId ? await updateNode(editingId, payload) : await createNode(payload);
+      nodesReadVersion.current += 1;
+      setNodes((current) => editingId
+        ? current.map((item) => item.id === editingId ? result.data : item)
+        : [...current.filter((item) => item.id !== result.data.id), result.data]);
+      if (result.data?.contract_status?.ready !== true) setSaveNotice(t("nodes.contract.savedNotReady"));
       setOpen(false);
       setForm(emptyForm);
       setEditingId(null);
-      load();
+      load().catch(() => {});
     } catch (err) {
-      setError(err?.response?.data?.detail || t("nodes.saveError"));
+      const code = err?.response?.status;
+      if (!code || code >= 500 || code === 408) {
+        nodesReadVersion.current += 1;
+        if (editingId) setNodes((current) => current.map((item) => item.id === editingId
+          ? { ...item, contract_status: { state: "unavailable", ready: false, retry_allowed: false } } : item));
+        setSaveUncertain(true);
+        setError(t("nodes.contract.saveUnknown"));
+        load().catch(() => {});
+      } else setError(err?.response?.data?.detail || t("nodes.saveError"));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const onVerifyContract = async (node) => {
+    if (verifyInFlight.current) return;
+    verifyInFlight.current = true;
+    try {
+      if (!(await confirm(t("nodes.contract.retryConfirm")))) return;
+      nodesReadVersion.current += 1;
+      setVerifyingId(node.id);
+      const result = await verifyNodeContract(node.id);
+      nodesReadVersion.current += 1;
+      setNodes((current) => current.map((item) => item.id === node.id ? result.data : item));
+    } catch {
+      // A timeout is not proof that the runner failed; never resend here.
+      nodesReadVersion.current += 1;
+      setNodes((current) => current.map((item) => item.id === node.id
+        ? { ...item, contract_status: { state: "unavailable", ready: false, retry_allowed: false } }
+        : item));
+      toast.error(t("nodes.contract.requestUnknown"));
+      load().catch(() => {});
+    } finally {
+      verifyInFlight.current = false;
+      setVerifyingId(null);
     }
   };
 
@@ -485,6 +534,7 @@ export default function Nodes() {
         </div>
       </div>
 
+      {saveNotice && <div role="alert" className="mb-4 rounded-xl bg-amber-50 text-amber-900 dark:bg-amber-500/10 dark:text-amber-200 p-3 text-sm">{saveNotice}</div>}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {filteredNodes.map((n) => {
           const res = resources[n.id];
@@ -540,6 +590,13 @@ export default function Nodes() {
               {n.last_error && <div className="text-red-500 dark:text-red-400">{t("nodes.error", { value: n.last_error })}</div>}
               {!n.enabled && <div className="text-amber-600 dark:text-amber-400">{t("nodes.disabledNote")}</div>}
             </div>
+
+            <NodeContractStatus
+              status={n.contract_status}
+              canVerify={isSuperadmin || n.owner_admin_id === adminId}
+              busy={verifyingId === n.id}
+              onVerify={() => onVerifyContract(n)}
+            />
 
             {/* Live resource monitor (see services/node_monitor.py) - a
                 node that's unreachable or unsupported (3X-UI panels have no
@@ -600,7 +657,9 @@ export default function Nodes() {
       </div>
 
       <Modal open={open} onClose={() => setOpen(false)} title={editingId ? t("nodes.editModal") : t("nodes.newModal")} width="max-w-2xl">
-        <form onSubmit={submit} className="space-y-4">
+        <form onSubmit={submit} className="space-y-4" aria-busy={saving}>
+          <fieldset disabled={saving} className="space-y-4 min-w-0">
+          <p className="text-sm text-gray-700 dark:text-gray-200 leading-relaxed">{t("nodes.contract.consent")}</p>
           <div>
             <div className="flex items-center gap-1.5 mb-2">
               {steps.map((s, i) => (
@@ -1442,15 +1501,16 @@ export default function Nodes() {
               <button type="button" className="btn-secondary" onClick={() => setOpen(false)}>
                 {t("common.cancel")}
               </button>
-              <button type="submit" disabled={saving || !stepIsValid(step)} className="btn-primary">
+              <button type="submit" disabled={saving || saveUncertain || !stepIsValid(step)} className="btn-primary">
                 {step < steps.length - 1
                   ? t("common.next")
                   : saving
-                  ? t("common.saving")
+                  ? t("nodes.contract.saveChecking")
                   : t("nodes.saveServer")}
               </button>
             </div>
           </div>
+          </fieldset>
         </form>
       </Modal>
     </Layout>

@@ -339,9 +339,9 @@ with patch.object(settings, "reseller_cancellation_enabled", True):
     router.writes.clear()
     router.lock_held.clear()
     done = execute()
-    # 75,000 at zero elapsed time; the seconds the run takes shave a toman or so
-    check("resumed: deleted and settled - the reseller credited once (about 75,000)",
-          74_990 <= (done.get("refund_amount") or 0) <= 75_000, True)
+    # Volume (30%) exceeds elapsed time (~20%): MAX refunds exactly 70%.
+    check("resumed: deleted and settled - the reseller credited once (70,000)",
+          done.get("refund_amount"), 70000)
     paid = done.get("refund_amount")
     check("...the peer is gone from the router", "*1" in router.peers, False)
     check("...the OpenVPN session stays ended", router.ppp_active, {})

@@ -21,7 +21,7 @@ const TARGET = { purchase_id: 7, package_name: "ماهانه", comment: "علی"
   connections: [{ id: 3, type: "wireguard", node: "test-node", name: "peer" }], other_services: 2,
   charged_admin: "seller1" };
 const PREVIEW = { target: TARGET, operation: null, estimate_available: true, charged_amount: 100000,
-  refund_amount: 75000, time_percent: 20, quota_percent: 30, consumed_percent: 25,
+  refund_amount: 70000, time_percent: 20, quota_percent: 30, consumed_percent: 30,
   execution_available: true, unavailable_reason: null };
 const PENDING = { operation_id: 9, purchase_id: 7, state: "pending", connections_total: 1,
   connections_stopped: 1, connections_removed: 0, refund_amount: null };
@@ -63,6 +63,25 @@ describe("unpaid cancellation dialog", () => {
       expect(message).not.toContain("PPTP");
     }
   });
+  it("explains max (not average) proration and unlimited semantics in both languages", () => {
+    const words = {
+      fa: { max: "بیشترین", unlimitedData: "حجم نامحدود", unlimitedTime: "زمان نامحدود", both: "هر دو نامحدود",
+            debit: "کسرشده از اعتبار فروشنده" },
+      en: { max: "larger of", unlimitedData: "Unlimited data", unlimitedTime: "unlimited time",
+            both: "both are unlimited", debit: "actually debited" },
+    };
+    for (const lang of ["fa", "en"]) {
+      const formula = translate(lang, "refund.formula");
+      const consumed = translate(lang, "refund.consumed");
+      for (const word of Object.values(words[lang])) expect(formula).toContain(word);
+      expect(consumed).toContain(words[lang].max);
+      for (const text of [formula, consumed]) {
+        expect(text).not.toContain("میانگین");
+        expect(text.toLowerCase()).not.toContain("average");
+      }
+    }
+  });
+
   it("previews exactly the target service, what it leaves alone, and that it is not a receipt void", async () => {
     open();
     expect(await screen.findByText(t("refund.targetTitle"))).toBeTruthy();

@@ -128,7 +128,8 @@ def run(engine):
             results = list(pool.map(finish, range(2)))
         assert results[0] == results[1], "concurrent attempts returned different settlements"
         result = results[0]
-        assert 74999 <= result["refund_amount"] <= 75000
+        # max(time ~20% + seconds, volume 30/100): volume decides, exactly
+        assert result["refund_amount"] == 70000
         assert settle(db, operation_id=operation) == result
         assert prepare(db, purchase_id=pid, actor=admin) == operation
         assert db.get(models.AdminUser, admin.id).balance == result["refund_amount"]

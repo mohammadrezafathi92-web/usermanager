@@ -99,13 +99,14 @@ def run(directory):
             assert db.query(Operation).count() == 0 and not purchase_pending(db, pid)
             router.uptime = "365d0h0m0s"
             result = worker.execute(db, purchase_id=pid, actor=actor)
-            assert result["refund_amount"] == 75000, result
+            # max(time ~20%, volume 30/100) of the 100000 debit
+            assert result["refund_amount"] == 70000, result
             assert worker.execute(db, purchase_id=pid, actor=actor) == result
             assert router.deleted == 1
             assert db.get(models.Purchase, pid) is None
             assert db.get(models.User, uid).balance == 456
             assert db.get(models.User, uid).purchase_count == 0
-            assert db.get(models.AdminUser, aid).balance == 75000
+            assert db.get(models.AdminUser, aid).balance == 70000
             assert db.get(models.LedgerEntry, sid).voided_at is not None
             assert db.query(models.LedgerEntry).filter_by(kind="admin_credit_refund").count() == 1
             assert accounting.summary(db, actor)["sales_total"] == 0

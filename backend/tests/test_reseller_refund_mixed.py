@@ -359,9 +359,9 @@ def scenario(directory):
         nas.acct("ali-0-l2tp", "Stop", "s2", 30, 20)
         done = run(target)
         check("the late Stop: the resume finishes and pays", isinstance(done, dict) and done["state"], "completed")
-        expected = int(100000 * (1 - ((200 / 1000) + 0) / 2))
-        check("...the refund counts the PPP usage (200 of 1000 bytes) - within a toman of the time share",
-              expected - 50 <= done["refund_amount"] <= expected, True)
+        # Volume (20%) exceeds this short run's elapsed fraction: MAX refunds 80%.
+        check("...the refund counts the PPP usage (200 of 1000 bytes) exactly",
+              done["refund_amount"], 80000)
         check("...credited exactly once", money(), (done["refund_amount"], 1))
         nas.acct("ali-0-l2tp", "Stop", "s2", 30, 20)                # retransmitted after the end
         check("a retry returns the stored result; a late duplicate Stop changes nothing",

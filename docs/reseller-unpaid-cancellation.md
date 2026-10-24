@@ -5,11 +5,16 @@ The existing delete action remains distinct and never promises a refund.
 
 ## Calculation
 
-Consumed fraction is the arithmetic mean of elapsed-time percentage and
-used-quota percentage, with each capped at 100%. Example: 20% time + 30%
-quota means 25% consumed and 75% refundable. An unlimited dimension is
-excluded; a wholly unmetered service is refused. Refunds round down to whole
-tomans and use the actual original reseller debit, never today's package price.
+Consumed fraction is the LARGER of elapsed-time and used-quota fractions,
+each capped at 100%: refund = floor(actual debit × (1 − consumed)), computed
+exactly with one final round-down to whole tomans. Examples (debit 200000):
+10% time + 50% quota refunds 100000; 80% time + 20% quota refunds 40000;
+either dimension used up refunds 0. An unlimited dimension is omitted
+(unlimited quota: time only; unlimited time: quota only); a wholly unmetered
+service is refused. Refunds use the actual original reseller debit, never the
+retail sale price or today's package price. A completed cancellation's stored
+result is returned unchanged on replay; a still-pending one is computed with
+the formula in force when it settles.
 Credit returns to that charged reseller, not to the customer wallet or card pool.
 
 ## Current supported execution

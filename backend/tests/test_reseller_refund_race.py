@@ -220,7 +220,8 @@ with TemporaryDirectory() as directory:
             refunds = db.query(models.LedgerEntry).filter_by(kind="admin_credit_refund", admin_id=aid).count()
             check("resume: the same operation completes once", (done["operation_id"], done["state"]), (op_id, "completed"))
             check("one remote delete, one refund, retry returns the same result",
-                  (router.deleted, refunds, db.get(models.AdminUser, aid).balance, again), (1, 1, 75000, done))
+                  # max(time ~20%, volume 30/100) of the 100000 debit
+                  (router.deleted, refunds, db.get(models.AdminUser, aid).balance, again), (1, 1, 70000, done))
 
         print("--- D: a renewal racing the remote delete waits, then finds the service gone ---")
         previous_pid, previous_op, previous_aid, previous_uid = pid, op_id, aid, uid
@@ -239,7 +240,7 @@ with TemporaryDirectory() as directory:
                                    purchase_key=old_key, user_id=previous_uid)
         with Session(engine) as db:
             check("a retry of the OLD request (its service key) returns that operation's stored result",
-                  (retry["operation_id"], retry["state"], retry["refund_amount"]), (previous_op, "completed", 75000))
+                  (retry["operation_id"], retry["state"], retry["refund_amount"]), (previous_op, "completed", 70000))
             check("...and leaves the new service under the reused id untouched",
                   (db.get(models.Purchase, pid) is not None, router.peers == peers_before, router.deleted,
                    db.query(Operation).filter_by(purchase_id=pid).count(),

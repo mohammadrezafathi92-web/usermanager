@@ -19,7 +19,10 @@ from ..models_reseller_refund import ResellerSaleBasis
 
 def calculate_refund(amount: int, *, used_bytes: int, quota_bytes: int,
                      elapsed_seconds: int, duration_seconds: int) -> dict:
-    """Arithmetic mean of finite dimensions; round refund DOWN in tomans.
+    """Consumption is the LARGER finite dimension (time or volume, each
+    clamped to [0, 1]); refund = floor(amount * (1 - consumed)) in tomans,
+    exact Fractions, one final round-down. Owner contract for an unpaid
+    reseller cancellation: exhausting either axis leaves nothing to refund.
 
     An unlimited dimension is omitted, not counted as zero consumption.
     With neither dimension metered there is no defensible proration.
@@ -37,7 +40,7 @@ def calculate_refund(amount: int, *, used_bytes: int, quota_bytes: int,
         dimensions.append(quota)
     if not dimensions:
         raise ValueError("unmetered service has no proration basis")
-    consumed = sum(dimensions, Fraction(0)) / len(dimensions)
+    consumed = max(dimensions)
     remainder = amount * (1 - consumed)
     refund = remainder.numerator // remainder.denominator
     return {

@@ -752,10 +752,36 @@ def _bootstrap_provisioning_schema() -> None:
         if provisioning_schema.is_ready():
             # 5.10: at startup a 'ready' node contract that no longer matches
             # the adapter version / node configuration / backend is invalidated.
-            from .services import provisioning_contracts
+            # Then, in the SAME transaction, the reviewed 42d -> c22
+            # compatibility upgrade (services/provisioning_contract_upgrade.py)
+            # restores exactly the contracts that digest change alone
+            # invalidated - only if its audit table verifies. Any audit/schema/
+            # recovery failure recovers nothing and never stops startup; the
+            # existing invalidation still commits.
+            from .services import provisioning_contracts, provisioning_contract_upgrade as contract_upgrade
+            try:
+                audit_problems = contract_upgrade.bootstrap(engine)
+            except Exception:  # noqa: BLE001
+                audit_problems = ["contract upgrade audit bootstrap raised"]
+            if audit_problems:
+                logging.error("node contract upgrade audit not ready (%d problem(s)); no compatibility recovery: %s",
+                              len(audit_problems), "; ".join(audit_problems[:5]))
             with SessionLocal() as db:
+                recovered = []
                 provisioning_contracts.invalidate_stale(db)
+                if not audit_problems:
+                    try:
+                        recovered = contract_upgrade.recover_reviewed(db)
+                    except Exception:  # noqa: BLE001
+                        logging.exception("node contract compatibility recovery failed - nothing recovered")
+                        db.rollback()
+                        provisioning_contracts.invalidate_stale(db)
+                        recovered = []
                 db.commit()
+                if recovered:
+                    logging.warning("node contract compatibility upgrade %s -> %s recovered %d contract(s): %s",
+                                    contract_upgrade.SOURCE_VERSION[:12], contract_upgrade.TARGET_VERSION[:12],
+                                    len(recovered), ", ".join(f"{n}/{b}" for n, b in recovered))
     except Exception:  # noqa: BLE001
         logging.exception("provisioning schema bootstrap raised - provisioning stays not-ready")
         try:

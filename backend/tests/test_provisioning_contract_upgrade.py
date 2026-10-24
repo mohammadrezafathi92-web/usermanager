@@ -6,7 +6,7 @@ invalidate unrelated 3X-UI/SoftEther contracts. Versions are now per backend
 stored version once. Probe/read/create/absence/matcher semantics did not
 change, so app.services.provisioning_contract_upgrade recovers EXACTLY the
 rows that the reviewed global c22 digest -> per-backend switch invalidated,
-and nothing else (the earlier 42d -> c22 transition is retired):
+and the reviewed older 42d digest for installations that skipped c22:
 
   * only while each backend's real current version == TARGET_VERSIONS[backend],
     only rows whose stored
@@ -62,8 +62,9 @@ try:
 except ImportError:          # base source: the recovery checks FAIL, the baseline guards still run
     up = None
 
-SOURCE = "8342748d18b4c80457d28d1ef038d7389fef3d39"     # deployed global c22 digest (main 93500c7)
-RETIRED = "742e58935c84e385565c1468b06c6bdd3218e984"    # the 42d source of the earlier, retired transition
+C22_SOURCE = "8342748d18b4c80457d28d1ef038d7389fef3d39"
+LEGACY_SOURCE = "742e58935c84e385565c1468b06c6bdd3218e984"
+SOURCE = C22_SOURCE
 BACKENDS3 = ("mikrotik_wg", "threexui", "softether")
 
 
@@ -143,8 +144,9 @@ def make_node(db, kind, name, **fields):
     return node
 
 
-def invalidated(db, node, backend, *, adapter=SOURCE, reason="adapter_version_changed", state="invalidated",
+def invalidated(db, node, backend, *, adapter=None, reason="adapter_version_changed", state="invalidated",
                 server="b" * 64, contract='{"not_exist":[]}', verifier=7, config=None):
+    adapter = SOURCE if adapter is None else adapter
     now = dt.datetime(2026, 10, 1, 12, 0, 0)
     row = mp.ProvisioningNodeContract(
         node_id=node.id, backend=backend, state=state, adapter_version=adapter, server_fingerprint=server,
@@ -237,7 +239,8 @@ def scenario(label, engine, directory):
     check(L + "the ten frozen provisioning tables are unchanged", len(mp.PROVISIONING_TABLES), 10)
 
     # ---- module surface
-    check(L + "SOURCE_VERSION is exactly the deployed global c22 digest", lambda: up.SOURCE_VERSION, SOURCE)
+    check(L + "only the two exact reviewed global digests", lambda: up.SOURCE_VERSIONS,
+          (C22_SOURCE, LEGACY_SOURCE))
     check(L + "only the three reviewed backends", lambda: tuple(sorted(up.TARGET_VERSIONS)), tuple(sorted(BACKENDS3)))
     check(L + "the recovery module is not one of the hashed contract files",
           lambda: any(os.path.basename(up.__file__) in contract_rules.contract_files(b) for b in BACKENDS3), False)
@@ -255,8 +258,10 @@ def scenario(label, engine, directory):
     with Factory() as db:
         good = {"wg": make_node(db, "wg", "good-wg"), "3xui": make_node(db, "3xui", "good-3xui"),
                 "se": make_node(db, "se", "good-se")}
-        invalidated(db, good["wg"], "mikrotik_wg")
-        invalidated(db, good["3xui"], "threexui")
+        wg_row = invalidated(db, good["wg"], "mikrotik_wg")
+        if SOURCE == LEGACY_SOURCE:
+            wg_row.version = 1  # exact secondary-server pre-upgrade version
+        invalidated(db, good["3xui"], "threexui", adapter=LEGACY_SOURCE if SOURCE == C22_SOURCE else C22_SOURCE)
         invalidated(db, good["se"], "softether")
         bad = {}
 
@@ -267,7 +272,18 @@ def scenario(label, engine, directory):
 
         bad_case("unknown_source", "wg", "mikrotik_wg", adapter="1" * 40)
         bad_case("current_source", "wg", "mikrotik_wg", adapter=TARGET("mikrotik_wg"))
-        bad_case("retired_transition_source", "se", "softether", adapter=RETIRED)
+        bad_case("upper_source", "se", "softether", adapter=SOURCE.upper())
+        # Keep within VARCHAR(40): MariaDB can truncate a 41st trailing space
+        # at INSERT, making SOURCE+' ' indistinguishable from valid SOURCE.
+        bad_case("padded_source", "se", "softether", adapter=SOURCE[:-1] + " ")
+        # A live verification or credential edit since the old verification
+        # invalidates its provenance, even if the public endpoint is identical.
+        for field, value in (("contract_check_json", '{"state":"cleanup_unknown","cleanup":"unknown"}'),
+                             ("contract_check_token", "a" * 48), ("contract_check_fingerprint", "c" * 64)):
+            touched = make_node(db, "wg", "bad-attempt-" + field)
+            setattr(touched, field, value)
+            bad[field] = (touched.id, "mikrotik_wg")
+            invalidated(db, touched, "mikrotik_wg")
         bad_case("manual_reason", "wg", "mikrotik_wg", reason="manual")
         bad_case("config_reason", "se", "softether", reason="config_changed")
         bad_case("invalid_contract", "3xui", "threexui", contract="[]")
@@ -419,16 +435,18 @@ def scenario(label, engine, directory):
         check(L + "one audit row per recovered row", sorted((a.get("node_id"), a.get("backend")) for a in audits),
               sorted(good_ids.values()))
         for audit in audits:
-            key = next(k for k, v in good_ids.items() if v == (audit.get("node_id"), audit.get("backend")))
+            key = next((k for k, v in good_ids.items() if v == (audit.get("node_id"), audit.get("backend"))), None)
+            if key is None:  # unexpected audits already fail the exact-set check above
+                continue
             check(L + f"audit {audit.get('backend')}: versions and row versions",
                   (audit.get("source_version"), audit.get("target_version"), audit.get("row_version_before"),
                    audit.get("row_version_after"), audit.get("recovered_at") is not None),
-                  (SOURCE, TARGET(audit.get("backend")), before[key][9], before[key][9] + 1, True))
+                  (before[key][1], TARGET(audit.get("backend")), before[key][9], before[key][9] + 1, True))
             image = json.loads(audit.get("before_image") or "{}")
             check(L + f"audit {audit.get('backend')}: before-image of the invalidated row",
                   (image.get("state"), image.get("adapter_version"), image.get("invalidation_reason"),
                    image.get("version"), image.get("server_fingerprint"), image.get("config_fingerprint")),
-                  ("invalidated", SOURCE, "adapter_version_changed", before[key][9], before[key][2], before[key][3]))
+                  ("invalidated", before[key][1], "adapter_version_changed", before[key][9], before[key][2], before[key][3]))
             check(L + f"audit {audit.get('backend')}: no secret anywhere",
                   any(secret in json.dumps(audit, default=str) for secret in SECRETS), False)
             check(L + f"audit {audit.get('backend')}: full original verification evidence",
@@ -537,6 +555,33 @@ def scenario(label, engine, directory):
         check(L + "CAS on text: no audit for unrecovered row",
               [a for a in audit_rows(db) if a["node_id"] == 1001], [])
 
+    # A save can start after eligibility was read but before recovery's UPDATE
+    # (SQLite does not implement SELECT FOR UPDATE). The node facts must be
+    # part of the atomic predicate, not just the contract row's facts.
+    with Factory() as db:
+        # The previous matcher-CAS fixture is valid again on a later call;
+        # exclude it so this independent race has just one eligible row.
+        db.get(models.Node, 1001).enabled = False
+        competing_node = make_node(db, "wg", "node-attempt-cas", id=1002)
+        invalidated(db, competing_node, "mikrotik_wg")
+        db.commit()
+        competing_before = facts(row_of(db, 1002, "mikrotik_wg"))
+    node_changed = {"done": False}
+    def node_attempt_writer(conn, cursor, statement, parameters, context, many):
+        if not node_changed["done"] and statement.lstrip().upper().startswith("UPDATE") and "provisioning_node_contracts" in statement:
+            node_changed["done"] = True
+            cursor.execute("UPDATE nodes SET contract_check_token = '" + "d" * 48 + "' WHERE id=1002")
+    with Factory() as db:
+        event.listen(engine, "before_cursor_execute", node_attempt_writer)
+        try:
+            check(L + "CAS on node: a concurrent verification attempt is never recovered", lambda: recover(db), [])
+            db.commit()
+        finally:
+            event.remove(engine, "before_cursor_execute", node_attempt_writer)
+        check(L + "CAS on node: injected change happened", node_changed["done"])
+        check(L + "CAS on node: old contract remains invalidated", facts(row_of(db, 1002, "mikrotik_wg")), competing_before)
+        check(L + "CAS on node: no audit for a rejected recovery", [a for a in audit_rows(db) if a["node_id"] == 1002], [])
+
     for hold in args[3:]:
         hold.release()
     args[0]._engine.dispose()
@@ -588,9 +633,16 @@ def startup_scenario(label, engine, *, broken_audit):
             check(L + "...and require_ready accepts it", require_ready_outcome(db, node_id, "mikrotik_wg"), "ready")
 
 
-with tempfile.TemporaryDirectory(prefix="um-contract-upgrade-") as directory:
+def run_source(source):
+    global SOURCE
+    SOURCE = source
+    with tempfile.TemporaryDirectory(prefix="um-contract-upgrade-") as directory:
+        run_databases(directory)
+
+
+def run_databases(directory):
     sqlite = create_engine("sqlite:///" + os.path.join(directory, "t.db"), connect_args={"check_same_thread": False})
-    scenario("sqlite", sqlite, directory)
+    scenario("sqlite " + SOURCE[:8], sqlite, directory)
     sqlite.dispose()
     for broken in (False, True):
         startup = create_engine("sqlite:///" + os.path.join(directory, f"s{int(broken)}.db"),
@@ -604,7 +656,7 @@ with tempfile.TemporaryDirectory(prefix="um-contract-upgrade-") as directory:
         try:
             maria_directory = os.path.join(directory, "mariadb-locks")
             os.mkdir(maria_directory)
-            scenario("mariadb", maria, maria_directory)
+            scenario("mariadb " + SOURCE[:8], maria, maria_directory)
         finally:
             scratch.release(maria)
         for broken in (False, True):
@@ -617,6 +669,9 @@ with tempfile.TemporaryDirectory(prefix="um-contract-upgrade-") as directory:
         check("CI must provide MARIADB_TEST_URL (real MariaDB is mandatory in CI, never skipped)", False)
     else:
         print("SKIP  real MariaDB execution (MARIADB_TEST_URL not set, not in CI)")
+
+for source in (C22_SOURCE, LEGACY_SOURCE):
+    run_source(source)
 
 check("no network", _no_network.attempts, [])
 if failures:

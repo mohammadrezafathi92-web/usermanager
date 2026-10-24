@@ -46,7 +46,8 @@ schema verification to introduce the audit.
 
 ## Operational constraints
 
-Only the primary server is in deployment scope. The actual receipt must not be
+The original incident deployment was primary-only; the owner later authorized
+the same-cause fix on the secondary server. The actual receipt must not be
 approved, rejected, retried, or used for a test. No financial entries or customer
 records are repaired by this upgrade. After deployment, check contract readiness,
 audit records, schema, runtime modes, health and the unchanged receipt status
@@ -76,11 +77,15 @@ the eight hashed files invalidated every node contract. Now:
   version. A pull request that changes contract code fails it and names the
   backends whose deployed contracts it would invalidate, before merge.
 - Switching the scheme moves every stored version once. The upgrade module now
-  carries only that reviewed transition (global c22 `8342748…` -> pinned
-  per-backend versions, same three backends, same locks/CAS/audit and
-  fail-closed rules). The earlier 42d -> c22 transition is retired.
+  carries both reviewed source digests (42d `742e589…` and c22 `8342748…`)
+  directly to the pinned per-backend versions, with the same three backends,
+  evidence checks and fail-closed rules. An installation can skip c22; it
+  does not need a temporary downgrade to recover compatibility.
+  The audit records the actual source version, not an invented intermediate
+  hop. Node endpoint/enablement/owner and save/probe bookkeeping are included
+  in the atomic CAS alongside all contract facts. Any recorded new save or
+  verification attempt disqualifies recovery, including unknown cleanup.
 
-Remaining, deliberately not automated: when an operator changes a node's
-connection settings, its contract is `config_changed` and needs a fresh
-verification. Automatically probing a real node on save needs an explicit
-owner decision first.
+PR175 subsequently added owner-authorized verification on relevant settings
+saves and operator-visible contract status; see `node-save-verification.md`.
+Compatibility recovery remains offline: deployment does not launch a probe.

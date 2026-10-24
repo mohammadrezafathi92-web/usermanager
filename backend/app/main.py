@@ -780,7 +780,7 @@ def _bootstrap_provisioning_schema() -> None:
                 db.commit()
                 if recovered:
                     logging.warning("node contract compatibility upgrade %s -> per-backend recovered %d contract(s): %s",
-                                    contract_upgrade.SOURCE_VERSION[:12],
+                                    ",".join(version[:12] for version in contract_upgrade.SOURCE_VERSIONS),
                                     len(recovered), ", ".join(f"{n}/{b}" for n, b in recovered))
     except Exception:  # noqa: BLE001
         logging.exception("provisioning schema bootstrap raised - provisioning stays not-ready")

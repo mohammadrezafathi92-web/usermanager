@@ -473,6 +473,13 @@ export const optimizeDatabase = () => client.post("/db-health/optimize");
 // Durable provisioning (routers/provisioning.py, Lifecycle 11.5 / 13 / 7.6) -
 // superadmin only; every action asks for the admin's own password.
 export const fetchProvisioningStatus = () => client.get("/provisioning/status");
+export const claimProvisioningOwnership = () =>
+  client.post("/provisioning/lock-backend/verify", {}, { _pwForce: true });
+export const reclaimProvisioningOwnership = (reason) =>
+  client.post("/provisioning/ownership/reclaim", {
+    reason,
+    confirmation: "process قبلی این نصب دیگر در حال اجرا نیست",
+  }, { _pwForce: true });
 export const fetchProvisioningOperation = (id) => client.get(`/provisioning/operations/${id}`);
 export const retryProvisioningOperation = (id, reason) =>
   client.post(`/provisioning/operations/${id}/retry`, { reason }, { _pwForce: true });

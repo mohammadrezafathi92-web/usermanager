@@ -5,6 +5,7 @@ import Topbar from "../components/Topbar.jsx";
 import Modal from "../components/Modal.jsx";
 import UsageBar from "../components/UsageBar.jsx";
 import NodeContractStatus from "../components/NodeContractStatus.jsx";
+import ProvisioningOwnershipCard from "../components/ProvisioningOwnershipCard.jsx";
 import { useConfirm } from "../components/ConfirmDialog.jsx";
 import { useToast } from "../components/Toast.jsx";
 import SortSelect from "../components/SortSelect.jsx";
@@ -506,6 +507,8 @@ export default function Nodes() {
   return (
     <Layout>
       <Topbar title={t("nodes.title")} subtitle={t("nodes.subtitle")} />
+
+      {isSuperadmin && <ProvisioningOwnershipCard t={t} />}
 
       <div className="flex items-center gap-2 flex-wrap justify-between mb-4">
         <div className="relative">

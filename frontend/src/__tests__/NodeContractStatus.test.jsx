@@ -42,6 +42,13 @@ describe("node contract status", () => {
         { canVerify: true, onVerify: vi.fn(), onInspectCleanup: vi.fn() }, language);
       expect(screen.queryByRole("button")).toBeNull();
     });
+    it(`offers exact-identity cleanup inspection after a lost probe response (${language})`, () => {
+      const onInspectCleanup = vi.fn();
+      show({ state: "cleanup_unknown", ready: false, cleanup_recovery_available: false,
+        cleanup_manual_identity_required: true }, { canVerify: true, onInspectCleanup }, language);
+      expect(screen.getByRole("button").textContent).toContain(language === "fa" ? "فقط‌خواندنی" : "read only");
+      expect(onInspectCleanup).not.toHaveBeenCalled();
+    });
     it(`unknown state never appears ready or prints raw diagnostic content (${language})`, () => {
       show({ state: "unexpected", ready: true, reason: "password=secret https://user:pass@host/" }, {}, language);
       expect(screen.getByRole("status").textContent).not.toContain("secret");

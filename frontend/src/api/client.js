@@ -246,7 +246,10 @@ export const updateNode = (id, data) => client.put(`/nodes/${id}`, data);
 export const deleteNode = (id) => client.delete(`/nodes/${id}`);
 export const testNode = (id) => client.post(`/nodes/${id}/test`);
 export const verifyNodeContract = (id) => client.post(`/nodes/${id}/verify-contract`);
-export const verifyNodeProbeCleanup = (id) => client.post(`/nodes/${id}/verify-probe-cleanup`);
+export const verifyNodeProbeCleanup = (id, probeIdentity = null) => client.post(
+  `/nodes/${id}/verify-probe-cleanup`, probeIdentity ? { probe_identity: probeIdentity } : undefined,
+  { _pwForce: true },
+);
 export const pushRadiusConfig = (id, panelHost, interimUpdate) =>
   client.post(`/nodes/${id}/push-radius-config`, {
     panel_host: panelHost || null,

@@ -30,11 +30,15 @@ export default function NodeContractStatus({ status, canVerify = false, onVerify
         </div>
         {!ready && !blocked && reasons[status?.reason] && <p className="text-gray-700 dark:text-gray-200">{t(`nodes.contract.reason.${reasons[status.reason]}`)}</p>}
         {!ready && <p className="text-gray-700 dark:text-gray-200">{t(blocked ? "nodes.contract.cleanupHelp" : "nodes.contract.notReadyHelp")}</p>}
+        {blocked && status?.cleanup_manual_identity_required === true && (
+          <p className="text-gray-700 dark:text-gray-200">{t("nodes.contract.cleanupIdentityHelp")}</p>
+        )}
         {blocked && status?.probe_identity && <code dir="ltr" className="block text-xs text-gray-600 dark:text-gray-300">{status.probe_identity}</code>}
         {blocked && status?.cleanup_inspection === "present" && <p className="text-amber-700 dark:text-amber-300">{t("nodes.contract.cleanupPresent")}</p>}
         {blocked && status?.cleanup_inspection === "ambiguous" && <p className="text-amber-700 dark:text-amber-300">{t("nodes.contract.cleanupAmbiguous")}</p>}
       </div>
-      {canVerify && blocked && status?.cleanup_recovery_available === true && onInspectCleanup && (
+      {canVerify && blocked && (status?.cleanup_recovery_available === true ||
+        status?.cleanup_manual_identity_required === true) && onInspectCleanup && (
         <button type="button" className="btn-secondary min-h-[44px]" disabled={working} onClick={onInspectCleanup}>
           {t(working ? "nodes.contract.inspectingCleanup" : "nodes.contract.inspectCleanup")}
         </button>

@@ -227,7 +227,8 @@ def verify_probe_cleanup_locked(db, node, actor_id, supplied_identity=None):
     if result == "absent":
         _write(node, "failed", "probe_cleanup_verified_absent", "clean")
         value = _stored(node)
-        value.update(cleanup_inspection="absent", cleanup_inspected_by=actor_id)
+        value.update(cleanup_inspection="absent", cleanup_inspected_by=actor_id,
+                     cleanup_inspected_identity=identity)
         node.contract_check_json = json.dumps(value, separators=(",", ":"))
     else:
         value = dict(stored)

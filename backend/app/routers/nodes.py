@@ -218,6 +218,8 @@ def verify_probe_cleanup(
     """
     if hierarchy.is_seller(admin):
         raise HTTPException(403, "فروشنده‌ها اجازه بررسی سرور را ندارند")
+    if payload is not None and payload.probe_identity is not None and not admin.is_superadmin:
+        raise HTTPException(403, "only_superadmin_manual_probe_identity")
     node = _get_owned_node(db, node_id, admin)
     with node_contract_status.save_lock(db, node.id):
         node = node_contract_status.refresh_locked(db, node_id)

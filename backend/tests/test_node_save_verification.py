@@ -81,6 +81,7 @@ with SessionLocal() as db:
         assert result.contract_status["retry_allowed"] is True
         assert result.contract_status["reason"] == "probe_cleanup_verified_absent"
         inspect_peer.assert_called_once_with(node, safe_identity)
+        assert json.loads(node.contract_check_json)["cleanup_inspected_identity"] == safe_identity
     node.contract_check_json = json.dumps({"state": "cleanup_unknown", "cleanup": "unknown",
                                            "reason": "probe_cleanup_unknown", "probe_identity": safe_identity})
     db.commit()
@@ -115,6 +116,18 @@ with SessionLocal() as db:
             assert getattr(exc, "status_code", None) == 409
         else:
             raise AssertionError("invalid manual probe identity must be rejected")
+        assert not inspect_peer.called
+    with patch.object(legacy_remote, "dispatch_probe_cleanup_check") as inspect_peer:
+        admin.is_superadmin = False
+        try:
+            nodes.verify_probe_cleanup(node.id, db, admin, None,
+                                       nodes.ProbeCleanupRequest(probe_identity=safe_identity))
+        except Exception as exc:
+            assert getattr(exc, "status_code", None) == 403
+        else:
+            raise AssertionError("manual identity entry must be superadmin-only")
+        finally:
+            admin.is_superadmin = True
         assert not inspect_peer.called
     print("PASS node-save failure, harmless edit, credentials, GET, uncertain cleanup")
 

@@ -234,6 +234,8 @@ cd /opt/usermanager
 sudo bash update.sh
 # برای نسخه‌ای که دقیقاً بازبینی شده است:
 # sudo bash update.sh --target <full-40-character-main-SHA>
+# فقط برای recovery مستندشدهٔ یک Xray/3X-UI با نتیجهٔ حذف نامعلوم:
+# sudo bash update.sh --target <full-40-character-main-SHA> --allow-stalled-xray-delete <operation-id>
 ```
 
 آپدیت امن فقط روی شاخهٔ `main` بدون تغییر فایل‌های tracked اجرا می‌شود:
@@ -246,6 +248,12 @@ sudo bash update.sh
 در صورت خطا متوقف می‌شود؛ دیتابیس را خودکار از بکاپ برنمی‌گرداند. پیش از
 نسخهٔ دارای این updater، نصب اولیهٔ helper لازم است. محدودیت‌های بکاپ،
 ترافیک هم‌زمان و مراحل بازگشت در [راهنمای آپدیت امن](docs/safe-update.md) آمده‌اند.
+گزینهٔ recovery فقط همان عملیات حذف `delete_purchase` با یک گام Xray از
+3X-UI در حالت `remote_result_unknown` را می‌پذیرد و lease یک‌ساعته می‌گیرد.
+پس از سلامت سرویس‌ها lease تا اقدام ادمین در پنل نگه داشته می‌شود تا worker
+نتیجهٔ نامعلوم را دوباره اجرا نکند؛ اقدام تأییدشده همان lease را اتمی تحویل
+می‌گیرد. اگر این قیود برقرار نباشند updater متوقف می‌شود. این گزینه حذف remote
+را تأیید نمی‌کند و جای اقدام ادمین در پنل نیست.
 
 ## نصب دستی (بدون Docker)
 

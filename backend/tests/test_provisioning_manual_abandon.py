@@ -19,7 +19,7 @@ _no_network.install([])
 
 from fastapi import HTTPException
 
-from app import models, models_provisioning as mp
+from app import models, models_provisioning as mp, models_receipt_void
 from app.database import SessionLocal, engine
 from app.services import provisioning_operator as operator, provisioning_schema, receipt_void_schema
 from app.services import remote_runner, resource_leases
@@ -105,6 +105,50 @@ with SessionLocal() as db:
 
 with SessionLocal() as db:
     assert db.get(mp.ProvisioningStep, STEP_ID).remote_outcome == "abandoned"
+
+# The bounded lease created by the safe updater can be adopted only by this
+# exact recovery action; the normal active lease above was correctly refused.
+with SessionLocal() as db:
+    resource_leases.begin_business(db)
+    deployment_operation = mp.ProvisioningOperation(
+        operation_type="delete_purchase", business_key="deployment-hold-recovery",
+        request_hash="b" * 64, tenant_scope_key="shared", actor_kind="admin", actor_id=ADMIN_ID,
+        intent="{}", target_user_id=1, state="provisioning",
+        forward_deadline=dt.datetime.utcnow() + dt.timedelta(minutes=5), wallet_epoch_at_start=0,
+    )
+    db.add(deployment_operation)
+    db.flush()
+    deployment_step = mp.ProvisioningStep(
+        operation_id=deployment_operation.id, slot_key="connection:deployment-hold",
+        direction="remove", step_order=0, backend="threexui", protocol="xray", node_id=1,
+        connection_id=CONNECTION_ID, xr_email="deployment-hold@example.invalid", xr_panel_inbound_id=1,
+        state="remote_calling", remote_attempted=True, error_code="remote_result_unknown",
+    )
+    db.add(deployment_step)
+    db.flush()
+    deployment_operation_id, deployment_step_id = deployment_operation.id, deployment_step.id
+    deployment_hold = resource_leases.acquire(
+        db, f"provisioning_op:{deployment_operation_id}",
+        f"op:{deployment_operation_id}:{models_receipt_void.DEPLOYMENT_HOLD_NONCE}", ttl=3600,
+    )
+    db.commit()
+
+with patch.object(remote_runner, "live_count", return_value=0):
+    adopted = operator.abandon_unknown_xray_delete(
+        SessionLocal, ADMIN_ID, deployment_operation_id, deployment_step_id,
+        "Removed manually in 3X-UI; accept the unverified result", CONFIRM, True,
+    )
+assert adopted == {"operation_id": deployment_operation_id, "step_id": deployment_step_id, "abandoned": True}
+with SessionLocal() as db:
+    adopted_step = db.get(mp.ProvisioningStep, deployment_step_id)
+    assert adopted_step.state == "removed" and adopted_step.remote_outcome == "abandoned"
+    assert adopted_step.forced_by_admin_id == ADMIN_ID and adopted_step.forced_at is not None
+    assert adopted_step.remote_outcome != "verified_absent"
+    lock = db.execute(resource_leases.rv.resource_locks.select().where(
+        resource_leases.rv.resource_locks.c.resource_key == f"provisioning_op:{deployment_operation_id}"
+    )).mappings().one()
+    assert lock["lease_owner"] is None
+    assert lock["fencing_epoch"] > deployment_hold.epoch
 assert _no_network.attempts == []
 engine.dispose()
 print("all checks passed")

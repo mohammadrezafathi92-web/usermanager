@@ -20,12 +20,28 @@ cd "${UM_UPDATE_PROJECT_DIR:-$(dirname "$0")}"
 
 die() { echo "STOP: $*" >&2; exit 1; }
 stage() { echo "UPDATE_STAGE=$1"; }
+manifest_digest() {
+    python3 - "$1" <<'PY'
+import hashlib, json, sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    value = json.load(stream)
+print(hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
+PY
+}
 stage preflight
 target_arg=""
-if [[ $# -gt 0 ]]; then
-    [[ $# == 2 && $1 == --target && $2 =~ ^[0-9a-f]{40}$ ]] || die "usage: bash update.sh [--target <full SHA>]"
-    target_arg=$2
-fi
+allow_stalled_xray_delete=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --target)
+            [[ $# -ge 2 && $2 =~ ^[0-9a-f]{40}$ && -z $target_arg ]] || die "invalid target"
+            target_arg=$2; shift 2 ;;
+        --allow-stalled-xray-delete)
+            [[ $# -ge 2 && $2 =~ ^[1-9][0-9]*$ && -z $allow_stalled_xray_delete ]] || die "invalid stalled-operation id"
+            allow_stalled_xray_delete=$2; shift 2 ;;
+        *) die "usage: bash update.sh [--target <full SHA>] [--allow-stalled-xray-delete <operation id>]" ;;
+    esac
+done
 git rev-parse --git-dir >/dev/null 2>&1 || die "not a git checkout"
 [[ -z $(git status --porcelain --untracked-files=no) ]] || die "tracked changes present"
 [[ $(git symbolic-ref --short -q HEAD) == main ]] || die "checkout must be on main"
@@ -88,9 +104,47 @@ cp "${UM_UPDATE_HELPER_PATH:-backend/scripts/update_preflight.py}" "$backup_dir/
 printf '%s\n' "$previous" > "$backup_dir/previous_commit"
 printf '%s\n' "$target" > "$backup_dir/target_commit"
 echo "BACKUP_DIRECTORY=$backup_dir"
-docker compose exec -T backend python - backup "$tag" < "$backup_dir/helper.py" > "$backup_dir/manifest.json"
+backup_env=()
+if [[ -n $allow_stalled_xray_delete ]]; then
+    backup_env=(-e "UM_UPDATE_STALLED_XRAY_DELETE_ID=$allow_stalled_xray_delete")
+fi
+docker compose exec -T "${backup_env[@]}" backend python - backup "$tag" < "$backup_dir/helper.py" > "$backup_dir/manifest.json"
+operation_hold_id=$(python3 -c 'import json,sys; h=json.load(open(sys.argv[1])).get("operation_hold") or {}; print(h.get("operation_id", ""))' "$backup_dir/manifest.json")
+operation_hold_owner=$(python3 -c 'import json,sys; h=json.load(open(sys.argv[1])).get("operation_hold") or {}; print(h.get("lease_owner", ""))' "$backup_dir/manifest.json")
+operation_hold_epoch=$(python3 -c 'import json,sys; h=json.load(open(sys.argv[1])).get("operation_hold") or {}; print(h.get("fencing_epoch", ""))' "$backup_dir/manifest.json")
+hold_active=false
+if [[ -n $operation_hold_id ]]; then
+    hold_active=true
+fi
+hold_env=()
+if [[ -n $operation_hold_id ]]; then
+    hold_env=(-e "UM_UPDATE_STALLED_XRAY_DELETE_ID=$operation_hold_id"
+        -e "UM_UPDATE_STALLED_XRAY_DELETE_OWNER=$operation_hold_owner"
+        -e "UM_UPDATE_STALLED_XRAY_DELETE_EPOCH=$operation_hold_epoch")
+fi
+release_operation_hold() {
+    [[ $hold_active == true ]] || return 0
+    if docker compose exec -T \
+        -e "UM_UPDATE_STALLED_XRAY_DELETE_ID=$operation_hold_id" \
+        -e "UM_UPDATE_STALLED_XRAY_DELETE_OWNER=$operation_hold_owner" \
+        -e "UM_UPDATE_STALLED_XRAY_DELETE_EPOCH=$operation_hold_epoch" \
+        backend python - release-operation-hold < "$backup_dir/helper.py" >/dev/null 2>&1; then
+        hold_active=false
+        return 0
+    fi
+    echo "WARNING: operation hold could not be released; it expires by DB time within one hour" >&2
+    return 1
+}
+trap 'release_operation_hold || true' EXIT
+if [[ -n $allow_stalled_xray_delete ]]; then
+    [[ $operation_hold_id == "$allow_stalled_xray_delete" && $operation_hold_owner =~ ^op:${operation_hold_id}:[1-9][0-9]*$ && $operation_hold_epoch =~ ^[1-9][0-9]*$ ]] || die "invalid deployment hold"
+elif [[ -n $operation_hold_id ]]; then
+    die "unexpected deployment hold"
+fi
 container_dir=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["directory"])' "$backup_dir/manifest.json")
+manifest_sha=$(manifest_digest "$backup_dir/manifest.json")
 docker compose cp "backend:$container_dir/." "$backup_dir/"
+[[ $(manifest_digest "$backup_dir/manifest.json") == "$manifest_sha" ]] || die "backup manifest changed during copy"
 python3 "$backup_dir/helper.py" verify-backup "$backup_dir"
 for service in backend frontend; do
     container=$(docker compose ps -q "$service")
@@ -106,7 +160,7 @@ git merge --ff-only "$target"
 bash backend/scripts/ensure_host_identity.sh
 stage build
 docker compose build backend frontend
-docker compose exec -T backend python - snapshot < "$backup_dir/helper.py" > "$backup_dir/before_restart.json"
+docker compose exec -T "${hold_env[@]}" backend python - snapshot < "$backup_dir/helper.py" > "$backup_dir/before_restart.json"
 python3 "$backup_dir/helper.py" compare "$backup_dir/runtime.json" "$backup_dir/before_restart.json"
 stage backend
 docker compose up -d --no-build --no-deps backend
@@ -118,7 +172,7 @@ for attempt in $(seq 1 60); do
     sleep 2
 done
 $healthy || die "backend health failed; no automatic rollback or DB restore"
-docker compose exec -T backend python - snapshot < "$backup_dir/helper.py" > "$backup_dir/after_restart.json"
+docker compose exec -T "${hold_env[@]}" backend python - snapshot < "$backup_dir/helper.py" > "$backup_dir/after_restart.json"
 python3 "$backup_dir/helper.py" compare "$backup_dir/runtime.json" "$backup_dir/after_restart.json"
 stage frontend
 docker compose up -d --no-build --no-deps frontend
@@ -130,6 +184,13 @@ for attempt in $(seq 1 30); do
     sleep 2
 done
 $healthy || die "frontend health failed"
+if [[ -n $operation_hold_id ]]; then
+    docker compose exec -T "${hold_env[@]}" backend python - validate-operation-hold < "$backup_dir/helper.py" >/dev/null || die "stalled-operation hold is no longer valid"
+    # Keep the lease until the superadmin recovery action takes it over. This
+    # prevents the worker from retrying the unknown remote delete first.
+    hold_active=false
+    echo "OPERATION_HOLD_PENDING_ADMIN=$operation_hold_id (one-hour DB-clock lease)"
+fi
 echo "UPDATE_OK commit=$target; modes preserved; license-server untouched"
 echo "Backups and rollback references: $backup_dir"
 }

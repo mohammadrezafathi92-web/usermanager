@@ -160,7 +160,9 @@ def abandon_unknown_xray_delete(session_factory, admin_id: int, operation_id: in
                    .with_for_update(read=True)).all()
         approval_exec.lock_for(db, operation_id)
         try:
-            lease = resource_leases.acquire(db, f"provisioning_op:{operation_id}", owner, ttl=60)
+            lease = resource_leases.take_over_deployment_hold(db, operation_id, owner, ttl=60)
+            if lease is None:
+                lease = resource_leases.acquire(db, f"provisioning_op:{operation_id}", owner, ttl=60)
         except resource_leases.LeaseBusy:
             raise HTTPException(409, "provisioning_operation_busy") from None
         resource_leases.revalidate(db, (lease,))

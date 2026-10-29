@@ -112,10 +112,16 @@ with tempfile.TemporaryDirectory(prefix="safe-update-") as temp:
 from pathlib import Path
 cmd=sys.argv[1]
 if cmd=='backup':
- p=Path(sys.argv[2]); p.mkdir(); (p/'runtime.json').write_text('{}'); print(json.dumps({'directory':str(p.resolve())}))
+ p=Path(sys.argv[2]); p.mkdir(); (p/'runtime.json').write_text('{}')
+ manifest={'directory':str(p.resolve()),'files':{}}
+ if os.environ.get('UM_UPDATE_STALLED_XRAY_DELETE_ID'):
+  op=os.environ['UM_UPDATE_STALLED_XRAY_DELETE_ID']; manifest['operation_hold']={'operation_id':int(op),'lease_owner':f'op:{op}:987654321','fencing_epoch':4}
+ print(json.dumps(manifest))
 elif cmd=='snapshot': print('{"changed":true}' if os.environ.get('TEST_RUNTIME_DRIFT')=='yes' and Path(os.environ['TEST_RESTART_MARKER']).exists() else '{}')
 elif cmd=='compare':
  if json.loads(Path(sys.argv[2]).read_text())!=json.loads(Path(sys.argv[3]).read_text()): sys.exit(1)
+elif cmd=='release-operation-hold': print('OPERATION_HOLD_RELEASED')
+elif cmd=='validate-operation-hold': print('OPERATION_HOLD_VALID')
 '''
     (repo / "backend/scripts/update_preflight.py").write_text(fake_helper)
     subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
@@ -133,8 +139,11 @@ elif cmd=='compare':
     docker.write_text('''#!/bin/bash
 echo "$*" >> "$TEST_DOCKER_LOG"
 if [[ $2 == up && ${*: -1} == backend ]]; then touch "$TEST_RESTART_MARKER"; fi
-if [[ ${TEST_FAIL_HEALTH:-} == yes && -f "$TEST_RESTART_MARKER" && $2 == exec && $6 == -c ]]; then exit 1; fi
 if [[ ${TEST_FAIL_FRONTEND:-} == yes && $2 == exec && $4 == frontend ]]; then exit 1; fi
+if [[ $1 == compose && $2 == exec && $* == *"python -c"* ]]; then
+  [[ ${TEST_FAIL_HEALTH:-} == yes && -f "$TEST_RESTART_MARKER" ]] && exit 1
+  exit 0
+fi
 if [[ $1 == inspect ]]; then echo sha256:old; exit; fi
 if [[ $1 == image && $2 == inspect ]]; then [[ ${TEST_IMAGE_MISSING:-} == yes ]] && exit 1; exit 0; fi
 if [[ $1 == pull ]]; then
@@ -147,8 +156,17 @@ if [[ $1 == image ]]; then exit; fi
 if [[ $2 == ps ]]; then echo fake-container; exit; fi
 if [[ $2 == cp ]]; then src=${3#backend:}; cp -R "$src" "$4"; exit; fi
 if [[ $2 == build && ${TEST_FAIL_BUILD:-} == yes ]]; then exit 1; fi
-if [[ $2 == exec && $5 == python && $6 == - ]]; then
- shift 5; exec python3 "$@"
+if [[ $1 == compose && $2 == exec ]]; then
+ shift 2
+ while [[ $# -gt 0 ]]; do
+  case "$1" in
+   -e) export "$2"; shift 2 ;;
+   -T) shift ;;
+   backend) shift ;;
+   python) shift; exec python3 "$@" ;;
+   *) shift ;;
+  esac
+ done
 fi
 exit 0
 ''')
@@ -169,6 +187,27 @@ exit 0
     assert sorted(check_images) == ["image inspect nginx:alpine", "image inspect node:20-alpine",
                                     "image inspect python:3.11-slim"], check_images
     assert "pull " not in log, "images already on the host need no network"
+    # Explicit operation hold keeps the one unknown Xray delete fenced
+    # through both runtime snapshots, then releases it after backend health.
+    Path(env["TEST_DOCKER_LOG"]).write_text("")
+    held = subprocess.run(["bash", "update.sh", "--target", git("rev-parse", "HEAD"),
+                           "--allow-stalled-xray-delete", "182"], cwd=repo, env=env,
+                          capture_output=True, text=True)
+    assert held.returncode == 0, held.stdout + held.stderr
+    hold_log = Path(env["TEST_DOCKER_LOG"]).read_text()
+    assert "UM_UPDATE_STALLED_XRAY_DELETE_ID=182" in hold_log
+    assert "validate-operation-hold" in hold_log
+    assert "release-operation-hold" not in hold_log
+    assert "OPERATION_HOLD_PENDING_ADMIN=182" in held.stdout
+    assert "UPDATE_OK" in held.stdout
+    Path(env["TEST_DOCKER_LOG"]).write_text("")
+    held_failure = subprocess.run(["bash", "update.sh", "--target", git("rev-parse", "HEAD"),
+                                   "--allow-stalled-xray-delete", "182"], cwd=repo,
+                                  env={**env, "TEST_FAIL_BUILD": "yes"}, capture_output=True, text=True)
+    assert held_failure.returncode != 0
+    failed_hold_log = Path(env["TEST_DOCKER_LOG"]).read_text()
+    assert "release-operation-hold" in failed_hold_log
+    assert "up -d --no-build --no-deps backend" not in failed_hold_log
     # A base image that cannot be pulled stops BEFORE backup and checkout.
     head = git("rev-parse", "HEAD")
     Path(env["TEST_DOCKER_LOG"]).write_text("")

@@ -88,6 +88,41 @@ def acquire(db, resource_key, owner, ttl=60):
     return Lease(resource_key, owner, epoch)
 
 
+def take_over_deployment_hold(db, operation_id, owner, ttl=60):
+    """Take over the updater's exact bounded Xray-recovery hold, if present.
+
+    The caller must already hold the business transaction and must still
+    validate the operation/step before committing. Ordinary active leases are
+    never stolen; an expired deployment hold is handled by normal acquire().
+    """
+    if type(operation_id) is not int or operation_id < 1:
+        raise LeaseProtocolError("invalid_operation_id")
+    if not isinstance(owner, str) or not re.fullmatch(rf"op:{operation_id}:[1-9][0-9]*", owner):
+        raise LeaseProtocolError("invalid_lease_owner")
+    now, deadline = _clock(db, ttl)
+    key = f"provisioning_op:{operation_id}"
+    table = rv.resource_locks
+    row = db.execute(select(table.c.lease_owner, table.c.fencing_epoch,
+                            (table.c.leased_until >= now).label("live"))
+                     .where(table.c.resource_key == key).with_for_update()).mappings().one_or_none()
+    expected = f"op:{operation_id}:{rv.DEPLOYMENT_HOLD_NONCE}"
+    if row is None or row["lease_owner"] != expected or not bool(row["live"]):
+        return None
+    next_epoch = int(row["fencing_epoch"]) + 1
+    result = db.execute(table.update().where(
+        table.c.resource_key == key,
+        table.c.lease_owner == expected,
+        table.c.fencing_epoch == row["fencing_epoch"],
+        table.c.leased_until >= now,
+    ).values(lease_owner=owner, fencing_epoch=next_epoch, leased_until=deadline,
+             heartbeat_at=now, version=table.c.version + 1))
+    if result.rowcount != 1:
+        raise LeaseBusy("deployment_hold_changed")
+    lease = Lease(key, owner, next_epoch)
+    revalidate(db, (lease,))
+    return lease
+
+
 def transient_conflict(exc) -> bool:
     """MariaDB's answer to a lock conflict - snapshot changed under a
     locking read (1020), deadlock (1213), lock wait timeout (1205). After a

@@ -65,6 +65,9 @@ EFFECT_REVERSAL_STATES = (
     "unrecoverable", "resource_deleted", "not_applicable",
 )
 PAYMENT_EVIDENCE_KINDS = ("receipt_approval", "wallet_capture", "admin_credit_spend")
+# Reserved DB-clock lease owner nonce used only while the safe updater deploys
+# a recovery action for one unknown 3X-UI Xray deletion.
+DEPLOYMENT_HOLD_NONCE = 9223372036854775807
 
 
 def _now():

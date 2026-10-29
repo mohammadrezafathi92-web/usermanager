@@ -65,7 +65,7 @@ with SessionLocal() as db:
     db.add_all([
         models.AdminUser(id=1, username="root", hashed_password="x", is_superadmin=True),
         models.Node(id=61, name="mt", type=models.NodeType.mikrotik, mt_host="10.6.6.6", mt_username="a",
-                    mt_password="p", mt_wireguard_interface="wg0"),
+                    mt_password="p", mt_wireguard_interface="wg0", mt_endpoint_port=18231),
         models.Node(id=62, name="mz", type=models.NodeType.xray, xr_panel_mode="marzban",
                     xr_panel_base_url="http://10.6.6.7:8000", xr_panel_username="u", xr_panel_password="p",
                     xr_inbound_tag="VLESS")])
@@ -94,11 +94,26 @@ def node(node_id):
 # ------------------------------------------------------------------ fake RouterOS (stateful)
 class FakeRouteros:
     def __init__(self):
-        self.peers, self.next_id = {}, 1
+        self.peers, self.interfaces, self.next_id = {}, {}, 1
+        self.interface_adds = []
+        self.fail_interface_add = False
 
     def __call__(self, command, **kwargs):
         if command == "/system/resource/print":
             yield {"version": "7.14.2 (stable)", "total-memory": "1"}
+        elif command == "/interface/wireguard/print":
+            yield from (dict(row) for row in self.interfaces.values())
+        elif command == "/interface/wireguard/add":
+            if self.fail_interface_add:
+                raise RuntimeError("injected interface add failure")
+            name = kwargs.get("name")
+            if any(row.get("name") == name for row in self.interfaces.values()):
+                raise RuntimeError("interface name already exists")
+            interface_id = f"*wg{len(self.interfaces) + 1}"
+            row = {"name": name, "listen-port": str(kwargs.get("listen-port"))}
+            self.interfaces[interface_id] = row
+            self.interface_adds.append(dict(row))
+            yield {"ret": interface_id}
         elif command == "/interface/wireguard/peers/print":
             for peer_id, peer in self.peers.items():
                 yield dict(peer, **{".id": peer_id})
@@ -117,6 +132,13 @@ class FakeRouteros:
             yield {}
 
     def rawCmd(self, command, *words):  # noqa: N802 - queries (select/where): no queue exists here
+        if command == "/interface/wireguard/print":
+            selected = None
+            for word in words:
+                if word.startswith("?=name="):
+                    selected = word.removeprefix("?=name=")
+            yield from (dict(row) for row in self.interfaces.values()
+                        if selected is None or row.get("name") == selected)
         return
         yield
 
@@ -199,8 +221,29 @@ router = FakeRouteros()
 result = child_probe(probe_dto(61), patch("librouteros.connect", return_value=router))
 observed = result.observed
 check("mikrotik probe: ready, no matchers needed, test peer gone, version fingerprint",
-      (observed["ready"], observed["contract"], router.peers, len(observed["server_fingerprint"] or "")),
-      (True, {"not_exist": []}, {}, 64))
+      (observed["ready"], observed["contract"], router.peers,
+       router.interfaces.get("*wg1"), len(observed["server_fingerprint"] or "")),
+      (True, {"not_exist": []}, {}, {"name": "wg0", "listen-port": "18231"}, 64))
+check("mikrotik probe creates only the missing interface with the configured port",
+      router.interface_adds, [{"name": "wg0", "listen-port": "18231"}])
+
+existing_router = FakeRouteros()
+existing_router.interfaces["*existing"] = {"name": "wg0", "listen-port": "51820"}
+existing_observed = child_probe(probe_dto(61), patch("librouteros.connect", return_value=existing_router)).observed
+check("mikrotik probe leaves an existing interface untouched",
+      (existing_observed["ready"], existing_observed["reason"], existing_router.interface_adds,
+       existing_router.interfaces["*existing"]["listen-port"], existing_router.peers),
+      (True, None, [], "51820", {}))
+
+failed_interface_router = FakeRouteros()
+failed_interface_router.fail_interface_add = True
+failed_interface_observed = child_probe(
+    probe_dto(61), patch("librouteros.connect", return_value=failed_interface_router)).observed
+check("failed interface creation stops before attempting a test peer",
+      (failed_interface_observed["ready"], failed_interface_observed["reason"],
+       failed_interface_observed["cleanup"], failed_interface_observed["probe_identity"],
+       failed_interface_router.peers),
+      (False, "wireguard_interface_create_failed", "clean", None, {}))
 
 # ------------------------------------------------------------------ child: Marzban
 panel = FakeMarzban()

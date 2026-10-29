@@ -96,6 +96,15 @@ def _probe_mikrotik(mt, binding, config, state):
     version = resources[0].get("version") if resources else None
     if not version:
         raise ProbeFailed("server_version_unreadable")
+    try:
+        # RouterOS does not create this interface automatically. Match the
+        # normal WG provisioning path: create it only when absent, under this
+        # probe's runner-child guard and node lock, using the configured port.
+        mt.ensure_wireguard_interface(interface, config.get("mt_endpoint_port") or 13231)
+    except Exception:  # noqa: BLE001
+        raise ProbeFailed("wireguard_interface_create_failed") from None
+    if not any(row.get("name") == interface for row in mt._api.path("interface", "wireguard")):
+        raise ProbeFailed("wireguard_interface_not_ready")
     _private, public = generate_wireguard_keypair()
     name = state["name"] = _name()
     identity = wg.WireguardIdentity(interface=interface, peer_name=name, public_key=public,

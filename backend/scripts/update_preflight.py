@@ -223,6 +223,24 @@ def configured_engine(database_url: str):
     return create_engine(database_url)
 
 
+def configured_lease_engine(database_url: str):
+    """Open the minimal write-capable DB path used only for updater lease CAS.
+
+    Backups and runtime snapshots intentionally use configured_engine()'s
+    read-only SQLite connection. The operation hold is the one controlled
+    exception: it must be persisted before the update can proceed.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+    url = make_url(database_url)
+    if url.get_backend_name() == "sqlite":
+        if not url.database or url.database == ":memory:" or not Path(url.database).is_file():
+            raise RuntimeError("configured panel database missing")
+        database = str(Path(url.database).resolve())
+        return create_engine("sqlite://", creator=lambda: sqlite3.connect(database, timeout=30))
+    return create_engine(database_url)
+
+
 def create_backup(tag: str) -> dict:
     from sqlalchemy import text
     from sqlalchemy.engine import make_url
@@ -235,12 +253,14 @@ def create_backup(tag: str) -> dict:
     folder = root / tag
     folder.mkdir(mode=0o700)
     engine = configured_engine(settings.database_url)
+    lease_engine = None
     operation_hold = None
     backup_complete = False
     try:
         requested_hold = _parse_operation_hold(os.environ.get("UM_UPDATE_STALLED_XRAY_DELETE_ID", ""))
         if requested_hold is not None:
-            operation_hold = _acquire_operation_hold(engine, requested_hold["operation_id"])
+            lease_engine = configured_lease_engine(settings.database_url)
+            operation_hold = _acquire_operation_hold(lease_engine, requested_hold["operation_id"])
         state = runtime_snapshot(engine, operation_hold=operation_hold)
         url = make_url(settings.database_url)
         if url.get_backend_name() == "sqlite" and url.database and url.database != ":memory:":
@@ -277,11 +297,13 @@ def create_backup(tag: str) -> dict:
     finally:
         if operation_hold is not None and not backup_complete:
             try:
-                _release_operation_hold(engine, operation_hold)
+                _release_operation_hold(lease_engine, operation_hold)
             except Exception:
                 # The bounded DB-clock lease expires automatically. Never
                 # replace the original backup error with cleanup diagnostics.
                 pass
+        if lease_engine is not None:
+            lease_engine.dispose()
         engine.dispose()
 
 
@@ -291,7 +313,7 @@ def release_operation_hold_from_environment() -> None:
     hold = _hold_from_environment()
     if hold is None:
         raise RuntimeError("operation deployment hold is missing")
-    engine = configured_engine(settings.database_url)
+    engine = configured_lease_engine(settings.database_url)
     try:
         _release_operation_hold(engine, hold)
     finally:

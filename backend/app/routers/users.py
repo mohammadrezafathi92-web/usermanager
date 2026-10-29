@@ -15,6 +15,7 @@ from ..database import get_db
 from ..services.jalali import fmt_jalali
 from ..deps import get_current_admin, require_confirm_password, require_permission, require_superadmin
 from ..services import user_ops, hierarchy, accounting, admin_billing, usage_stats, wallet_service, wallet_accounts
+from ..services.first_use import package_expiry
 from ..services.node_gate import writer_gate
 from ..services import legacy_remote
 from ..services import provisioning_durable, provisioning_requests
@@ -559,10 +560,7 @@ def create_user(
         # session_cap_mode 'legacy' enforces; the Purchase below gets the
         # same value as its own (session_cap_rule.session_scope).
         data["total_quota_bytes"] = int(package.quota_gb * 1024 ** 3) if package.quota_gb else 0
-        data["expire_at"] = (
-            dt.datetime.utcnow() + dt.timedelta(days=package.duration_days) if package.duration_days else None
-        )
-        data["expire_days_after_first_use"] = None
+        data["expire_at"], data["expire_days_after_first_use"] = package_expiry(package)
         data["max_concurrent_sessions"] = package.max_concurrent_sessions
         data["package_id"] = package.id
 

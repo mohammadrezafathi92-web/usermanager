@@ -34,6 +34,7 @@ from .xray_client import XrayError, client_for_node
 from .marzneshin_client import sanitize_username as marzneshin_sanitize_username
 from .softether_client import SoftEtherError, client_for_node as softether_client_for_node
 from .keys import generate_wireguard_keypair, generate_password
+from .first_use import package_expiry
 from .link_builder import (
     build_wireguard_config,
     build_vless_link,
@@ -237,12 +238,18 @@ def create_user_record_core(
     expire_at = None
     if expire_days:
         expire_at = dt.datetime.utcnow() + dt.timedelta(days=expire_days)
-    user = wallet_accounts.create_user_with_wallet(db,
+    pending_first_use = None
+    package = db.get(models.Package, package_id) if package_id else None
+    if package and package.starts_on_first_connection:
+        expire_at, pending_first_use = package_expiry(package)
+    user = wallet_accounts.create_user_with_wallet(
+        db,
         username=username,
         full_name=full_name,
         notes=notes,
         total_quota_bytes=gb_to_bytes(quota_gb),
         expire_at=expire_at,
+        expire_days_after_first_use=pending_first_use,
         telegram_id=telegram_id,
         owner_admin_id=owner_admin_id,
         # This was missing entirely before - every user created through the
@@ -1059,11 +1066,7 @@ def bulk_create_users(
 
         if package:
             user.total_quota_bytes = gb_to_bytes(package.quota_gb) if package.quota_gb else 0
-            user.expire_at = (
-                dt.datetime.utcnow() + dt.timedelta(days=package.duration_days) if package.duration_days else None
-            )
-            # What session_cap_mode 'legacy' enforces; the Purchase below
-            # gets the same value as its own.
+            user.expire_at, user.expire_days_after_first_use = package_expiry(package)
             user.max_concurrent_sessions = package.max_concurrent_sessions
             user.package_id = package.id
             db.commit()
@@ -1171,8 +1174,12 @@ def replace_purchase_with_package_core(db: Session, user: models.User, purchase:
     package's (not queued like a renewal). DB only; the caller reconciles
     the returned sink after its commit (never for a disabled customer)."""
     purchase.quota_bytes = gb_to_bytes(package.quota_gb) if package.quota_gb else 0
+    # This replaces limits on an existing service; the first-connection
+    # option is reserved for a new purchase/service and never restarts a
+    # renewal or replacement's validity clock.
     purchase.expire_at = (
-        dt.datetime.utcnow() + dt.timedelta(days=package.duration_days) if package.duration_days else None
+        dt.datetime.utcnow() + dt.timedelta(days=package.duration_days)
+        if package.duration_days else None
     )
     purchase.expire_days_after_first_use = None
     purchase.max_concurrent_sessions = package.max_concurrent_sessions
@@ -1817,11 +1824,12 @@ The legacy wrapper defers benefits until its remote provisioning finishes.
 Durable T_final uses this core in its one transaction and never calls remote.
 """
     absorb_legacy_pool_core(db, user)
+    purchase_expire_at, purchase_first_use_days = package_expiry(package)
     purchase = models.Purchase(
         user_id=user.id, package_id=package.id, package_name_snapshot=package.name,
         quota_bytes=gb_to_bytes(package.quota_gb) if package.quota_gb else 0,
-        expire_at=(dt.datetime.utcnow() + dt.timedelta(days=package.duration_days)
-                   if package.duration_days else None),
+        expire_at=purchase_expire_at,
+        expire_days_after_first_use=purchase_first_use_days,
         max_concurrent_sessions=package.max_concurrent_sessions,
         status=models.UserStatus.active,
         comment=(comment or "").strip() or _auto_service_label(db, user.id),

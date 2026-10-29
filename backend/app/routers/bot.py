@@ -131,6 +131,7 @@ def _user_response(user: models.User) -> schemas.BotUserResponse:
             if user.effective_quota_bytes else None
         ),
         expire_at=user.effective_expire_at,
+        expire_days_after_first_use=user.expire_days_after_first_use,
         service_count=user.service_count,
         telegram_id=user.telegram_id,
         balance=user.balance or 0,

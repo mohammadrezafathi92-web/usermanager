@@ -927,6 +927,8 @@ class PackageBase(BaseModel):
     name: str
     quota_gb: float = 0  # 0 = unlimited
     duration_days: Optional[int] = 30  # None/0 = never expires
+    # Starts the duration clock on the first successful connection/use.
+    starts_on_first_connection: bool = False
     price: int = 0  # tomans, charged to customers
     # Wholesale price charged to a non-superadmin admin's own credit
     # balance when they create a user with this package - None = same as
@@ -1027,6 +1029,7 @@ class PackageUpdate(BaseModel):
     name: Optional[str] = None
     quota_gb: Optional[float] = None
     duration_days: Optional[int] = None
+    starts_on_first_connection: Optional[bool] = None
     price: Optional[int] = None
     cooperation_price: Optional[int] = None
     description: Optional[str] = None
@@ -1727,6 +1730,7 @@ class BotUserResponse(BaseModel):
     service_count: int = 0
     remaining_bytes: Optional[int] = None
     expire_at: Optional[dt.datetime] = None
+    expire_days_after_first_use: Optional[int] = None
     telegram_id: Optional[int] = None
     balance: int = 0
     connections: List[BotConnectionInfo] = []

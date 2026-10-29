@@ -115,7 +115,10 @@ async def _start_package_picker(call: CallbackQuery, state: FSMContext, kind: st
         await call.answer()
         return
     await state.set_state(CustomerPurchaseStates.picking_package)
-    await call.message.edit_text(packages_message(packages), reply_markup=packages_kb(packages, kind))
+    await call.message.edit_text(
+        packages_message(packages, show_first_connection=(kind == "new")),
+        reply_markup=packages_kb(packages, kind),
+    )
     await call.answer()
 
 
@@ -128,7 +131,10 @@ async def pick_session_count(call: CallbackQuery, callback_data: SessionCountCB,
         await call.answer("پکیجی با این تعداد کاربر پیدا نشد", show_alert=True)
         return
     await state.set_state(CustomerPurchaseStates.picking_package)
-    await call.message.edit_text(packages_message(filtered), reply_markup=packages_kb(filtered, callback_data.kind))
+    await call.message.edit_text(
+        packages_message(filtered, show_first_connection=(callback_data.kind == "new")),
+        reply_markup=packages_kb(filtered, callback_data.kind),
+    )
     await call.answer()
 
 

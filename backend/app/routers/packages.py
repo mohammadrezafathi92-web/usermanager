@@ -301,6 +301,8 @@ def create_package(payload: schemas.PackageCreate, db: Session = Depends(get_db)
     # this ran any later. See _lock_package_node_scope_settings's docstring.
     package_node_scope_settings = _lock_package_node_scope_settings(db)
     _require_package_manager(admin)
+    if payload.starts_on_first_connection and not payload.duration_days:
+        raise HTTPException(400, "شروع مدت از اولین اتصال فقط برای پکیج دارای مدت اعتبار قابل استفاده است")
     # The price floor exists so a reseller cannot sell below what the
     # package costs them. A trial costs them nothing - _charge_seller skips
     # it entirely - so the floor has nothing to protect and would only
@@ -346,6 +348,12 @@ def update_package(package_id: int, payload: schemas.PackageUpdate, db: Session 
     _require_package_manager(admin)
     pkg = _get_scoped_package(db, package_id, admin)
     data = payload.model_dump(exclude_unset=True, exclude={"connections", "ovpn_templates"})
+    if "starts_on_first_connection" in data and data["starts_on_first_connection"] is None:
+        raise HTTPException(400, "مقدار شروع اعتبار از اولین اتصال باید روشن یا خاموش باشد")
+    starts_on_first_connection = data.get("starts_on_first_connection", pkg.starts_on_first_connection)
+    duration_days = data.get("duration_days", pkg.duration_days)
+    if starts_on_first_connection and not duration_days:
+        raise HTTPException(400, "شروع مدت از اولین اتصال فقط برای پکیج دارای مدت اعتبار قابل استفاده است")
     # Judged on the values the package will HAVE, not only the ones being
     # sent: changing quota alone can put an untouched cooperation price
     # under the floor just as surely as changing the price itself.

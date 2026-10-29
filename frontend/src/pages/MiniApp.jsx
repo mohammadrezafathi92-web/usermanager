@@ -305,6 +305,7 @@ function TrialBanner({ trial, busy, onTake }) {
               : "حجم نامحدود"}
             {" · "}
             {trial.duration_days ? `${fa(trial.duration_days)} روز` : "بدون انقضا"}
+            {trial.duration_days && trial.starts_on_first_connection ? " · شروع اعتبار از اولین اتصال" : ""}
             {" · "}
             رایگان
           </div>
@@ -403,6 +404,7 @@ function PackagePicker({ packages, onBuy }) {
               {pkg.quota_gb ? `${fa(pkg.quota_gb)} گیگابایت` : "حجم نامحدود"}
               {" · "}
               {pkg.duration_days ? `${fa(pkg.duration_days)} روز` : "بدون انقضا"}
+              {pkg.duration_days && pkg.starts_on_first_connection ? " · شروع اعتبار از اولین اتصال" : ""}
               {seats > 0 ? ` · ${fa(seats)} کاربر همزمان` : ""}
             </div>
           </div>
@@ -526,8 +528,10 @@ function ServiceCard({ service, onRenew }) {
             <span className={`text-xs px-2 py-1 rounded-lg shrink-0 ${colour}`}>{label}</span>
           </div>
           <div className="text-xs opacity-60 mt-1">
-            انقضا: {fmtDate(service.expire_at)}
-            {days !== null && days > 0 ? ` · ${fa(days)} روز مانده` : ""}
+            {service.expire_days_after_first_use
+              ? `اعتبار ${fa(service.expire_days_after_first_use)} روزه پس از اولین اتصال شروع می‌شود`
+              : `انقضا: ${fmtDate(service.expire_at)}`}
+            {!service.expire_days_after_first_use && days !== null && days > 0 ? ` · ${fa(days)} روز مانده` : ""}
           </div>
         </div>
       </div>

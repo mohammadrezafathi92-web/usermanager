@@ -69,7 +69,11 @@ def _account_text(user: dict) -> str:
     lines += [
         f"وضعیت: {STATUS_LABELS.get(user['status'], user['status'])}",
         f"مصرف: {fmt_bytes(user['used_bytes'])} / {fmt_bytes(user['total_quota_bytes']) if user['total_quota_bytes'] else 'نامحدود'}",
-        f"انقضا: {fmt_date_jalali(user.get('expire_at'))}",
+        (
+            f"انقضا: پس از اولین اتصال موفق ({user['expire_days_after_first_use']} روز)"
+            if user.get("expire_days_after_first_use")
+            else f"انقضا: {fmt_date_jalali(user.get('expire_at'))}"
+        ),
         f"موجودی اعتبار: {user.get('balance', 0):,} تومان",
     ]
     if user.get("purchases_blocked"):

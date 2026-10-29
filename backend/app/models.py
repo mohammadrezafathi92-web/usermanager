@@ -1597,6 +1597,11 @@ class Package(Base):
     name = Column(String(128), nullable=False)
     quota_gb = Column(Float, default=0)  # 0 = unlimited
     duration_days = Column(Integer, default=30)  # 0/None = never expires
+    # When true, this package's duration countdown starts at its first
+    # successful connection/use rather than when it is purchased. Quota and
+    # connection provisioning remain available immediately; only expiry is
+    # deferred. A zero/NULL duration has no countdown and ignores this flag.
+    starts_on_first_connection = Column(Boolean, nullable=False, default=False, server_default="0")
     price = Column(BigInteger, default=0)  # in tomans, charged to customers
     # LEGACY single .ovpn template - superseded by the PackageOvpnTemplate
     # table below, since a package can now carry SEVERAL ready-made files

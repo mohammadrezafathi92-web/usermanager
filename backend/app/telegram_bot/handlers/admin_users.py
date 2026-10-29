@@ -484,7 +484,11 @@ async def _ask_renew_package(target_message, state: FSMContext, username: str, p
     await state.set_state(AdminRenewStates.picking_package)
     await state.update_data(username=username, purchase_id=purchase_id)
     await target_message.edit_text(
-        packages_message(packages, title="🔄 <b>کدام پکیج برای تمدید این سرویس اضافه شود؟</b>"),
+        packages_message(
+            packages,
+            title="🔄 <b>کدام پکیج برای تمدید این سرویس اضافه شود؟</b>",
+            show_first_connection=False,
+        ),
         reply_markup=admin_renew_packages_kb(packages, username),
     )
 

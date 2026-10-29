@@ -29,6 +29,7 @@ const emptyForm = {
   name: "",
   quota_gb: 20,
   duration_days: 30,
+  starts_on_first_connection: false,
   price: 0,
   cooperation_price: "",
   description: "",
@@ -442,7 +443,10 @@ export default function Packages() {
                     ) : null}
                   </td>
                   <td className="text-gray-600">{p.quota_gb ? `${p.quota_gb} GB` : t("packages.unlimited")}</td>
-                  <td className="text-gray-600">{p.duration_days ? t("packages.days", { count: p.duration_days }) : t("packages.noExpiry")}</td>
+                  <td className="text-gray-600">
+                    {p.duration_days ? t("packages.days", { count: p.duration_days }) : t("packages.noExpiry")}
+                    {p.duration_days && p.starts_on_first_connection && <div className="text-xs text-brand-600">{t("packages.firstConnection")}</div>}
+                  </td>
                   <td className="text-gray-600" dir="ltr">
                     {!isSeller && (
                       <>
@@ -602,7 +606,10 @@ export default function Packages() {
 
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-xs text-gray-600">
                 <span>{p.quota_gb ? `${p.quota_gb} GB` : t("packages.unlimited")}</span>
-                <span>{p.duration_days ? t("packages.days", { count: p.duration_days }) : t("packages.noExpiry")}</span>
+                <span>
+                  {p.duration_days ? t("packages.days", { count: p.duration_days }) : t("packages.noExpiry")}
+                  {p.duration_days && p.starts_on_first_connection ? ` · ${t("packages.firstConnection")}` : ""}
+                </span>
                 {!isSeller && (
                   <span dir="ltr">
                     {formatToman(p.price)}
@@ -701,7 +708,14 @@ export default function Packages() {
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldDuration")}</label>
-              <input type="number" min="0" className="input" value={form.duration_days ?? ""} onChange={(e) => set("duration_days", e.target.value ? Number(e.target.value) : null)} />
+              <input type="number" min="0" className="input" value={form.duration_days ?? ""} onChange={(e) => {
+                const duration = e.target.value ? Number(e.target.value) : null;
+                setForm((f) => ({
+                  ...f,
+                  duration_days: duration,
+                  ...(duration > 0 ? {} : { starts_on_first_connection: false }),
+                }));
+              }} />
               <div className="hint">{t("packages.durationHint")}</div>
             </div>
             <div>
@@ -714,6 +728,17 @@ export default function Packages() {
               )}
             </div>
           </div>
+
+          {Number(form.duration_days) > 0 && (
+            <label className="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-200">
+              <input type="checkbox" checked={!!form.starts_on_first_connection}
+                onChange={(e) => set("starts_on_first_connection", e.target.checked)} />
+              <span>
+                {t("packages.startsOnFirstConnection")}
+                <span className="hint block">{t("packages.startsOnFirstConnectionHint")}</span>
+              </span>
+            </label>
+          )}
 
           <div>
             <label className="block text-sm text-gray-600 mb-1">{t("packages.fieldCooperationPrice")}</label>

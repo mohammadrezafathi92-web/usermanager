@@ -39,6 +39,7 @@ from ..telegram_bot import runner as telegram_bot_runner
 from .quota_manager import add_usage, _enforce_user_limits, _enforce_purchase_limits, active_session_count
 from . import session_cap_mode, session_cap_rule, license_guard, reseller_refund_block
 from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
+from .first_use import activate_connection_expiry
 from . import mschapv2
 from . import ip_guard
 
@@ -582,17 +583,10 @@ class UserManagerRadiusServer(Server):
                             )
                             if just_banned and user.telegram_id:
                                 _notify_ban_async(user.telegram_id, username, BAN_DURATION_MINUTES, conn.banned_until)
-                        if ok and user.expire_at is None and user.expire_days_after_first_use:
-                            # This is the user's first-ever successful login
-                            # and their plan is set to "count validity from
-                            # first use" rather than a fixed date - activate
-                            # it now.
-                            user.expire_at = dt.datetime.utcnow() + dt.timedelta(days=user.expire_days_after_first_use)
-                            user.expire_days_after_first_use = None
-                            logger.info(
-                                "RADIUS: activated first-use expiry for user=%r -> expire_at=%s",
-                                user.username, user.expire_at.isoformat(),
-                            )
+                        if ok and conn is not None:
+                            # Start the allotment this connection belongs to:
+                            # its Purchase when present, or the legacy User.
+                            activate_connection_expiry(db, conn)
             if ok and conn is not None and settings.reseller_cancellation_enabled:
                 # Durable (committed below) before the Accept is sent, and its
                 # cookie in the Accept: the one session it admits is known by

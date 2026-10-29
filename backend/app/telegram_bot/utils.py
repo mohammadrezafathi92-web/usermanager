@@ -65,7 +65,7 @@ def fmt_days(days) -> str:
     return "بدون انقضا" if days <= 0 else f"{fa_digits(days)} روز"
 
 
-def package_card(p: dict, index: int | None = None) -> str:
+def package_card(p: dict, index: int | None = None, show_first_connection: bool = True) -> str:
     """One package, rendered as a card rather than a line.
 
     Requested 2026-09-13 after comparing with a competitor's bot: "کارت پلن
@@ -89,6 +89,8 @@ def package_card(p: dict, index: int | None = None) -> str:
     lines.append(f"💰 {fmt_toman(p.get('price'))}")
     lines.append(f"📊 حجم: {fmt_gb(p.get('quota_gb'))}")
     lines.append(f"⏳ مدت: {fmt_days(p.get('duration_days'))}")
+    if show_first_connection and p.get("duration_days") and p.get("starts_on_first_connection"):
+        lines.append("🕒 شروع شمارش اعتبار از اولین اتصال موفق")
 
     sessions = int(p.get("max_concurrent_sessions") or 0)
     if sessions > 0:
@@ -129,10 +131,15 @@ PROTOCOL_NAMES = {
 CARD_SEPARATOR = "\n\n➖➖➖➖➖➖➖➖➖➖\n\n"
 
 
-def packages_message(packages: list[dict], title: str = "🛍 <b>پلن‌های موجود</b>") -> str:
+def packages_message(
+    packages: list[dict],
+    title: str = "🛍 <b>پلن‌های موجود</b>",
+    show_first_connection: bool = True,
+) -> str:
     """The cards, stacked, under one heading - the message the picker
     buttons hang below."""
     body = CARD_SEPARATOR.join(
-        package_card(p, index=i) for i, p in enumerate(packages, start=1)
+        package_card(p, index=i, show_first_connection=show_first_connection)
+        for i, p in enumerate(packages, start=1)
     )
     return f"{title}\n\n{body}"

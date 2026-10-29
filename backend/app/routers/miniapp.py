@@ -285,6 +285,7 @@ def home(visitor: dict = Depends(current_visitor), db: Session = Depends(get_db)
                 "quota_bytes": purchase.quota_bytes,
                 "used_bytes": purchase.used_bytes,
                 "expire_at": purchase.expire_at,
+                "expire_days_after_first_use": purchase.expire_days_after_first_use,
                 "status": purchase.status,
                 "connection_count": purchase.connection_count,
                 # A renewal already paid for but not yet started, because the

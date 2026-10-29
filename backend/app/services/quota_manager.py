@@ -21,6 +21,7 @@ from .node_gate import writer_gate
 from . import legacy_remote, session_cap_mode, session_cap_rule
 from . import license_guard, license_fence
 from .user_ops import _maybe_activate_reserved_renewal, _maybe_activate_reserved_purchase_renewal
+from .first_use import activate_connection_expiry
 from .xray_client import XrayError, client_for_node
 from .softether_client import SoftEtherError, client_for_node as softether_client_for_node
 
@@ -1268,6 +1269,8 @@ def poll_mikrotik_node(db: Session, node: models.Node):
                     age = parse_ros_duration_seconds(peer.get("last-handshake"))
                     peer_disabled = peer.get("disabled") in (True, "true", "yes", "1", 1)
                     conn.online = not peer_disabled and age is not None and age <= WIREGUARD_ONLINE_THRESHOLD_SECONDS
+                    if conn.online:
+                        activate_connection_expiry(db, conn)
 
         node.last_seen = dt.datetime.utcnow()
         node.last_error = None
@@ -1299,24 +1302,12 @@ def poll_xray_node(db: Session, node: models.Node):
             online_emails = xc.get_online_emails()
             for conn in connections:
                 conn.online = bool(conn.xr_email) and conn.xr_email in online_emails
-                if conn.online:
-                    # Mirrors radius_server.py's "count validity from first
-                    # use" activation - PPP logins go through RADIUS, which
-                    # has its own copy of this check, but xray/VLESS has no
-                    # such login event, so a xray-only user's
-                    # expire_days_after_first_use would otherwise never
-                    # fire. Being seen online here is the xray equivalent of
-                    # "first successful login". Idempotent: once activated,
-                    # expire_days_after_first_use is cleared to None, so
-                    # this is a no-op on every later poll.
-                    user = conn.user
-                    if user.expire_at is None and user.expire_days_after_first_use:
-                        user.expire_at = dt.datetime.utcnow() + dt.timedelta(days=user.expire_days_after_first_use)
-                        user.expire_days_after_first_use = None
-                        logger.info(
-                            "xray poll: activated first-use expiry for user=%r -> expire_at=%s",
-                            user.username, user.expire_at.isoformat(),
-                        )
+                bucket = stats.get(conn.xr_email) or {}
+                has_traffic = bool(bucket.get("downlink", 0) or bucket.get("uplink", 0))
+                # 3X-UI exposes online sessions. SSH-managed Xray does not,
+                # so its first observed traffic is the available use signal.
+                if conn.online or has_traffic:
+                    activate_connection_expiry(db, conn)
         node.last_seen = dt.datetime.utcnow()
         node.last_error = None
     except XrayError as exc:
@@ -1347,17 +1338,7 @@ def poll_softether_node(db: Session, node: models.Node):
             for conn in connections:
                 conn.online = bool(conn.ppp_username) and conn.ppp_username in online_usernames
                 if conn.online:
-                    # Same first-use activation as poll_xray_node - a
-                    # SoftEther login has no separate RADIUS-style event of
-                    # its own, so being seen online here is it.
-                    user = conn.user
-                    if user.expire_at is None and user.expire_days_after_first_use:
-                        user.expire_at = dt.datetime.utcnow() + dt.timedelta(days=user.expire_days_after_first_use)
-                        user.expire_days_after_first_use = None
-                        logger.info(
-                            "softether poll: activated first-use expiry for user=%r -> expire_at=%s",
-                            user.username, user.expire_at.isoformat(),
-                        )
+                    activate_connection_expiry(db, conn)
         node.last_seen = dt.datetime.utcnow()
         node.last_error = None
     except SoftEtherError as exc:

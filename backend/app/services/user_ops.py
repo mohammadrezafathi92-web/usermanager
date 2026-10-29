@@ -243,6 +243,7 @@ def create_user_record_core(
     if package and package.starts_on_first_connection:
         expire_at, pending_first_use = package_expiry(package)
     user = wallet_accounts.create_user_with_wallet(
+        db,
         username=username,
         full_name=full_name,
         notes=notes,

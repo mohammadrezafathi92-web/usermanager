@@ -39,7 +39,7 @@ SECRETS = {
              "xr_panel_password", "xr_panel_api_token"),
 }
 # Non-secret node values a client needs that are not part of the endpoint fingerprint.
-EXTRA_PUBLIC = {"mikrotik": (), "softether": ("se_verify_tls",), "xray": ("xr_api_address",)}
+EXTRA_PUBLIC = {"mikrotik": ("mt_endpoint_port",), "softether": ("se_verify_tls",), "xray": ("xr_api_address",)}
 
 ACTION_FOR_BLOCK = {
     "wg_provision": ActionType.WG_ENSURE_PRESENT, "xray_add": ActionType.XRAY_ENSURE_PRESENT,

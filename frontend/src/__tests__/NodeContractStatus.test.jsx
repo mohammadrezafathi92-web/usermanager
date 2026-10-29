@@ -27,6 +27,12 @@ describe("node contract status", () => {
       fireEvent.click(screen.getByRole("button"));
       expect(onVerify).toHaveBeenCalledTimes(1);
     });
+    it(`explains a failed automatic WireGuard interface setup (${language})`, () => {
+      show({ state: "failed", ready: false, reason: "wireguard_interface_create_failed" }, {}, language);
+      expect(screen.getByRole("status").textContent).toContain(language === "fa"
+        ? "ساخت اینترفیس WireGuard روی روتر ناموفق بود"
+        : "The WireGuard interface could not be created on the router");
+    });
     it(`cleanup uncertainty blocks retry, including malicious retry flag (${language})`, () => {
       const onVerify = vi.fn();
       const onInspectCleanup = vi.fn();

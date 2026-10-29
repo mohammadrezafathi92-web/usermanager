@@ -6,6 +6,8 @@ const reasons = {
   config_changed: "config", node_config_changed_during_probe: "config",
   adapter_version_changed: "version", backend_changed: "config",
   wireguard_interface_missing: "interface", server_version_unreadable: "server",
+  wireguard_interface_create_failed: "wireguardInterfaceCreate",
+  wireguard_interface_not_ready: "wireguardInterfaceNotReady",
   ownership_or_lock_unavailable: "lock", schema_not_ready: "schema",
   read_before_not_absent: "identity", read_after_create_not_match: "identity",
   read_before_not_a_complete_answer: "response", read_not_exist_unstable: "response",

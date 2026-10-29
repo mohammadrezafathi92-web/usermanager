@@ -2,7 +2,7 @@
 from typing import Literal
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool, StrictInt, StrictStr
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
@@ -236,6 +236,25 @@ def force_operation_step(operation_id: int, payload: ForceStepRequest, admin=Dep
     with this admin and reason; then compensation (deletion: its T_final)."""
     from ..services import provisioning_operator as operator
     return operator.force_step(factory, admin.id, operation_id, payload.step_id, payload.reason)
+
+
+class ManualXrayAbandonRequest(BaseModel):
+    step_id: StrictInt
+    reason: StrictStr
+    confirmation: StrictStr
+    acknowledged: StrictBool
+
+
+@router.post("/operations/{operation_id}/manual-xray-abandon")
+def abandon_unknown_xray_delete(operation_id: int, payload: ManualXrayAbandonRequest,
+                                admin=Depends(require_confirm_password), factory=Depends(get_session_factory)):
+    """Admin-attested resolution for one unknown 3X-UI delete result.
+
+    This records an abandoned/unverified remote outcome, never verified absence.
+    """
+    from ..services import provisioning_operator as operator
+    return operator.abandon_unknown_xray_delete(factory, admin.id, operation_id, payload.step_id,
+        payload.reason, payload.confirmation, payload.acknowledged)
 
 
 @router.get("/orphans")

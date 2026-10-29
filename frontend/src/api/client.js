@@ -486,6 +486,13 @@ export const retryProvisioningOperation = (id, reason) =>
   client.post(`/provisioning/operations/${id}/retry`, { reason }, { _pwForce: true });
 export const forceProvisioningStep = (id, stepId, reason) =>
   client.post(`/provisioning/operations/${id}/force-step`, { step_id: stepId, reason }, { _pwForce: true });
+export const manuallyAbandonUnknownXrayDelete = (id, stepId, reason) =>
+  client.post(`/provisioning/operations/${id}/manual-xray-abandon`, {
+    step_id: stepId,
+    reason,
+    confirmation: "I understand this records an unverified manual Xray removal",
+    acknowledged: true,
+  }, { _pwForce: true });
 export const fetchProvisioningOrphans = () => client.get("/provisioning/orphans");
 export const fetchApprovalRecoveries = () => client.get("/provisioning/approval-recovery");
 export const decideApprovalRecovery = (uuid, decision, reason) =>

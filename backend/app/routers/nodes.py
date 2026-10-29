@@ -2,6 +2,7 @@ from typing import Optional
 from contextlib import nullcontext
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, StrictStr
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -197,21 +198,32 @@ def verify_node(node_id: int, db: Session = Depends(get_db), admin: models.Admin
         return node_contract_status.verify_locked(db, node, admin.id)
 
 
+class ProbeCleanupRequest(BaseModel):
+    probe_identity: StrictStr | None = None
+
+
 @router.post("/{node_id}/verify-probe-cleanup", response_model=schemas.NodeOut)
 def verify_probe_cleanup(
     node_id: int,
     db: Session = Depends(get_db),
     admin: models.AdminUser = Depends(get_current_admin),
     _confirm=Depends(require_confirm_password),
+    payload: ProbeCleanupRequest | None = None,
 ):
-    """Manually inspect the exact stored MikroTik test peer, without deleting it."""
+    """Manually inspect the exact MikroTik test peer, without deleting it.
+
+    If a timed-out child could not return its generated peer identity, an
+    authorized admin may supply the exact RouterOS comment shown on that
+    test peer. The value is strictly validated and only that peer is read.
+    """
     if hierarchy.is_seller(admin):
         raise HTTPException(403, "فروشنده‌ها اجازه بررسی سرور را ندارند")
     node = _get_owned_node(db, node_id, admin)
     with node_contract_status.save_lock(db, node.id):
         node = node_contract_status.refresh_locked(db, node_id)
         node = _get_owned_node(db, node_id, admin)
-        return node_contract_status.verify_probe_cleanup_locked(db, node, admin.id)
+        return node_contract_status.verify_probe_cleanup_locked(
+            db, node, admin.id, payload.probe_identity if payload else None)
 
 
 @router.delete("/{node_id}")

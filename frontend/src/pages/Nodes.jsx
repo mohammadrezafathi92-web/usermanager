@@ -470,10 +470,20 @@ export default function Nodes() {
     if (verifyInFlight.current) return;
     verifyInFlight.current = true;
     try {
+      let probeIdentity = null;
+      if (node.contract_status?.cleanup_manual_identity_required === true) {
+        probeIdentity = window.prompt(t("nodes.contract.cleanupIdentityPrompt"));
+        if (!probeIdentity) return;
+        probeIdentity = probeIdentity.trim();
+        if (!/^um-probe-[0-9a-f]{16}$/.test(probeIdentity)) {
+          toast.error(t("nodes.contract.cleanupIdentityInvalid"));
+          return;
+        }
+      }
       if (!(await confirm(t("nodes.contract.cleanupInspectConfirm")))) return;
       nodesReadVersion.current += 1;
       setVerifyingId(node.id);
-      const result = await verifyNodeProbeCleanup(node.id);
+      const result = await verifyNodeProbeCleanup(node.id, probeIdentity);
       nodesReadVersion.current += 1;
       setNodes((current) => current.map((item) => item.id === node.id ? result.data : item));
     } catch (err) {

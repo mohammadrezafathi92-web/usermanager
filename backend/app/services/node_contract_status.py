@@ -99,10 +99,14 @@ def describe(db, node):
             recovery = (stored.get("state") == "cleanup_unknown" and backend == "mikrotik_wg" and
                         isinstance(identity, str) and re.fullmatch(r"um-probe-[0-9a-f]{16}", identity) is not None and
                         node.contract_check_fingerprint == fingerprint(node))
+            manual_identity_required = (stored.get("state") == "cleanup_unknown" and identity is None and
+                                        backend == "mikrotik_wg" and
+                                        node.contract_check_fingerprint == fingerprint(node))
             return dict(result, state="cleanup_unknown",
                         reason="probe_cleanup_unknown" if stored.get("state") == "cleanup_unknown" else "verification_interrupted",
                         retry_allowed=False,
-                        probe_identity=identity if recovery else None, cleanup_recovery_available=recovery)
+                        probe_identity=identity if recovery else None, cleanup_recovery_available=recovery,
+                        cleanup_manual_identity_required=manual_identity_required)
         if runtime is None or runtime.gate_mode != "enforced":
             return dict(result, state="gate_not_enforced", reason="gate_not_enforced", retry_allowed=False)
         row = db.get(mp.ProvisioningNodeContract, (node.id, backend))
@@ -202,10 +206,14 @@ def verify_locked(db, node, actor_id):
     return attach(db, fresh)
 
 
-def verify_probe_cleanup_locked(db, node, actor_id):
+def verify_probe_cleanup_locked(db, node, actor_id, supplied_identity=None):
     """Read-only inspect exact stored MikroTik test peer; unlock only on absence."""
     stored = _stored(node)
     identity = stored.get("probe_identity")
+    if identity is None:
+        identity = supplied_identity
+    elif supplied_identity is not None and supplied_identity != identity:
+        raise HTTPException(409, "probe_cleanup_identity_mismatch")
     if (stored.get("state") != "cleanup_unknown" or legacy_remote.backend_of(node) != "mikrotik_wg" or
             not isinstance(identity, str) or not re.fullmatch(r"um-probe-[0-9a-f]{16}", identity) or
             node.contract_check_fingerprint != fingerprint(node)):
@@ -223,7 +231,7 @@ def verify_probe_cleanup_locked(db, node, actor_id):
         node.contract_check_json = json.dumps(value, separators=(",", ":"))
     else:
         value = dict(stored)
-        value.update(cleanup_inspection=result, cleanup_inspected_by=actor_id,
+        value.update(cleanup_inspection=result, cleanup_inspected_by=actor_id, probe_identity=identity,
                      checked_at=dt.datetime.utcnow().isoformat() + "Z")
         node.contract_check_json = json.dumps(value, separators=(",", ":"))
     db.commit()

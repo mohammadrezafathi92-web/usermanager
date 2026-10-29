@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import models
 from app.services.first_use import activate_connection_expiry, activate_expiry, package_expiry
+from app.services.user_ops import replace_purchase_with_package_core
 
 
 failures: list[str] = []
@@ -100,6 +101,31 @@ with Session() as db:
     db.refresh(user)
     check("legacy user gets its first-use expiry", user.expire_at, now + dt.timedelta(days=14))
     check("legacy pending days are cleared", user.expire_days_after_first_use, None)
+
+
+print("\n--- replacing an existing service does not defer its clock ---")
+with Session() as db:
+    user = models.User(username="replacement-owner")
+    old_package = models.Package(name="old", duration_days=10)
+    new_package = models.Package(
+        name="new-deferred", quota_gb=10, duration_days=30,
+        starts_on_first_connection=True,
+    )
+    db.add_all([user, old_package, new_package])
+    db.flush()
+    purchase = models.Purchase(
+        user_id=user.id, package_id=old_package.id,
+        package_name_snapshot=old_package.name,
+        quota_bytes=1, used_bytes=0, status=models.UserStatus.active,
+        expire_at=now, expire_days_after_first_use=None,
+    )
+    db.add(purchase)
+    db.flush()
+    replace_purchase_with_package_core(db, user, purchase, new_package)
+    check("existing service replacement starts expiry immediately",
+          purchase.expire_at is not None, True)
+    check("existing service replacement does not carry first-use pending days",
+          purchase.expire_days_after_first_use, None)
 
 
 print("\n" + "=" * 72)

@@ -1174,7 +1174,14 @@ def replace_purchase_with_package_core(db: Session, user: models.User, purchase:
     package's (not queued like a renewal). DB only; the caller reconciles
     the returned sink after its commit (never for a disabled customer)."""
     purchase.quota_bytes = gb_to_bytes(package.quota_gb) if package.quota_gb else 0
-    purchase.expire_at, purchase.expire_days_after_first_use = package_expiry(package)
+    # This replaces limits on an existing service; the first-connection
+    # option is reserved for a new purchase/service and never restarts a
+    # renewal or replacement's validity clock.
+    purchase.expire_at = (
+        dt.datetime.utcnow() + dt.timedelta(days=package.duration_days)
+        if package.duration_days else None
+    )
+    purchase.expire_days_after_first_use = None
     purchase.max_concurrent_sessions = package.max_concurrent_sessions
     purchase.package_id = package.id
     # The User's cap is what session_cap_mode 'legacy' enforces, so it

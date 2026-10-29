@@ -52,7 +52,7 @@ class LegacyBinding:
             canonical = str(uuid.UUID(self.installation_uuid)) == self.installation_uuid
         except (TypeError, ValueError, AttributeError):
             canonical = False
-        if not canonical or self.phase not in ("legacy", "probe") or self.backend not in BACKENDS or any(
+        if not canonical or self.phase not in ("legacy", "probe", "probe_cleanup") or self.backend not in BACKENDS or any(
                 type(value) is not int or not 0 <= value < 2 ** 63 for value in (self.ownership_epoch, self.gate_mode_epoch)) or (
                 type(self.node_id) is not int or self.node_id <= 0 or self.ownership_epoch <= 0) or (
                 not isinstance(self.endpoint_fingerprint, str) or not re.fullmatch("[0-9a-f]{64}", self.endpoint_fingerprint)):

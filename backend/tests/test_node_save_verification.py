@@ -61,6 +61,35 @@ with SessionLocal() as db:
     with patch.object(legacy_remote, "dispatch_probe") as runner:
         old = provisioning_control.verify_node_contract(SessionLocal, admin.id, node.id)
         assert old["ready"] is False and not runner.called, "old control endpoint cannot bypass unknown cleanup"
+    with patch.object(legacy_remote, "dispatch_probe_cleanup_check") as inspect_peer:
+        try:
+            nodes.verify_probe_cleanup(node.id, db, admin, None)
+        except Exception as exc:
+            assert getattr(exc, "status_code", None) == 409, "changed endpoint cannot be used for cleanup proof"
+        else:
+            raise AssertionError("cleanup verification on changed endpoint should be refused")
+        assert not inspect_peer.called
+    safe_identity = "um-probe-0123456789abcdef"
+    node.mt_host = "127.0.0.2"  # cleanup proof is only valid for the exact saved endpoint
+    db.commit()
+    node.contract_check_json = json.dumps({"state": "cleanup_unknown", "cleanup": "unknown",
+                                           "reason": "probe_cleanup_unknown", "probe_identity": safe_identity})
+    db.commit()
+    with patch.object(legacy_remote, "dispatch_probe_cleanup_check", return_value="absent") as inspect_peer:
+        result = nodes.verify_probe_cleanup(node.id, db, admin, None)
+        assert result.contract_status["state"] == "failed"
+        assert result.contract_status["retry_allowed"] is True
+        assert result.contract_status["reason"] == "probe_cleanup_verified_absent"
+        inspect_peer.assert_called_once_with(node, safe_identity)
+    node.contract_check_json = json.dumps({"state": "cleanup_unknown", "cleanup": "unknown",
+                                           "reason": "probe_cleanup_unknown", "probe_identity": safe_identity})
+    db.commit()
+    with patch.object(legacy_remote, "dispatch_probe_cleanup_check", return_value="present") as inspect_peer:
+        result = nodes.verify_probe_cleanup(node.id, db, admin, None)
+        assert result.contract_status["state"] == "cleanup_unknown"
+        assert result.contract_status["retry_allowed"] is False
+        assert result.contract_status["cleanup_inspection"] == "present"
+        inspect_peer.assert_called_once_with(node, safe_identity)
     print("PASS node-save failure, harmless edit, credentials, GET, uncertain cleanup")
 
 

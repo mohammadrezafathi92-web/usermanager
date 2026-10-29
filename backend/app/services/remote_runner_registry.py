@@ -37,3 +37,4 @@ ACTIONS.update({action: _LEGACY for action in (
     ActionType.WG_REFUND_STOP, ActionType.WG_REFUND_REMOVE)})
 # The per-node contract probe (5.10), same fencing in its own 'probe' phase.
 ACTIONS[ActionType.CONTRACT_PROBE] = "app.services.provisioning_child_probe:run"
+ACTIONS[ActionType.CONTRACT_PROBE_CLEANUP_CHECK] = "app.services.provisioning_child_probe:run"

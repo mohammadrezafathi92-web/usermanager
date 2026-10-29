@@ -9,7 +9,7 @@ import ProvisioningOwnershipCard from "../components/ProvisioningOwnershipCard.j
 import { useConfirm } from "../components/ConfirmDialog.jsx";
 import { useToast } from "../components/Toast.jsx";
 import SortSelect from "../components/SortSelect.jsx";
-import { fetchNodes, fetchNodeResources, createNode, updateNode, deleteNode, testNode, verifyNodeContract, pushRadiusConfig, pushSstpConfig, pushL2tpConfig, pushIkev2Config, importPppUsers, importUserManagerUsers, import3xuiClients, rebuildNodeClients } from "../api/client.js";
+import { fetchNodes, fetchNodeResources, createNode, updateNode, deleteNode, testNode, verifyNodeContract, verifyNodeProbeCleanup, pushRadiusConfig, pushSstpConfig, pushL2tpConfig, pushIkev2Config, importPppUsers, importUserManagerUsers, import3xuiClients, rebuildNodeClients } from "../api/client.js";
 import { formatDateTime, sortRows } from "../utils.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
@@ -466,6 +466,25 @@ export default function Nodes() {
     }
   };
 
+  const onInspectProbeCleanup = async (node) => {
+    if (verifyInFlight.current) return;
+    verifyInFlight.current = true;
+    try {
+      if (!(await confirm(t("nodes.contract.cleanupInspectConfirm")))) return;
+      nodesReadVersion.current += 1;
+      setVerifyingId(node.id);
+      const result = await verifyNodeProbeCleanup(node.id);
+      nodesReadVersion.current += 1;
+      setNodes((current) => current.map((item) => item.id === node.id ? result.data : item));
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || t("nodes.contract.cleanupInspectFailed"));
+      load().catch(() => {});
+    } finally {
+      verifyInFlight.current = false;
+      setVerifyingId(null);
+    }
+  };
+
   const onDelete = async (id) => {
     if (!(await confirm({ message: t("nodes.deleteConfirm"), danger: true }))) return;
     try {
@@ -599,6 +618,7 @@ export default function Nodes() {
               canVerify={isSuperadmin || n.owner_admin_id === adminId}
               busy={verifyingId === n.id}
               onVerify={() => onVerifyContract(n)}
+              onInspectCleanup={() => onInspectProbeCleanup(n)}
             />
 
             {/* Live resource monitor (see services/node_monitor.py) - a

@@ -225,6 +225,27 @@ check("a panel that renames the user: not ready, cleanup unknown, the test ident
       (observed["ready"], observed["cleanup"], observed["reason"], (observed["probe_identity"] or "").startswith("um-probe-")),
       (False, "unknown", "read_after_create_not_match", True))
 
+# ------------------------------------------------------------------ read-only cleanup recovery for one stored MikroTik test peer
+cleanup_identity = "um-probe-0123456789abcdef"
+captured_cleanup = []
+with patch.object(provisioning_host, "read_identity", return_value=IDENTITY), \
+        patch.object(remote_runner, "run_action", side_effect=lambda dto: captured_cleanup.append(dto) or RemoteActionResult(
+            action_id=dto.action_id, outcome=Outcome.SUCCEEDED, observed={"status": "absent", "write_attempted": False})):
+    assert legacy_remote.dispatch_probe_cleanup_check(node(61), cleanup_identity) == "absent"
+cleanup_dto = captured_cleanup[-1]
+clean_router = FakeRouteros()
+result = child_probe(cleanup_dto, patch("librouteros.connect", return_value=clean_router))
+check("cleanup check is exact and read-only when peer absent",
+      (result.observed, result.write_attempted, clean_router.peers),
+      ({"status": "absent", "write_attempted": False}, False, {}))
+present_router = FakeRouteros()
+present_router.peers["*9"] = {"interface": "wg0", "comment": cleanup_identity,
+                               "public-key": "stored-key", "allowed-address": "192.0.2.9/32"}
+result = child_probe(cleanup_dto, patch("librouteros.connect", return_value=present_router))
+check("cleanup check preserves a still-present peer and reports it",
+      (result.observed, result.write_attempted, list(present_router.peers)),
+      ({"status": "present", "write_attempted": False}, False, ["*9"]))
+
 # ------------------------------------------------------------------ parent verify
 with SessionLocal() as db:
     db.get(mp.ProvisioningRuntimeState, 1).gate_mode = "shadow"

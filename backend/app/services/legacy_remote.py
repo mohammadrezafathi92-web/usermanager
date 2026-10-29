@@ -183,3 +183,36 @@ def dispatch_probe(node) -> dict:
         return {"ready": False, "reason": result.error_code or result.outcome.value,
                 "cleanup": "unknown" if result.is_unknown else "clean", "probe_identity": None}
     return dict(result.observed, endpoint_fingerprint=binding["endpoint_fingerprint"])
+
+
+def dispatch_probe_cleanup_check(node, probe_identity: str) -> str:
+    """Prove absence of one stored MikroTik bootstrap peer, read-only."""
+    import re
+    if (backend_of(node) != "mikrotik_wg" or not isinstance(probe_identity, str) or
+            not re.fullmatch(r"um-probe-[0-9a-f]{16}", probe_identity)):
+        raise GateViolation("probe_cleanup_identity_invalid")
+    with node_gate.writer_passage(node) as passage:
+        if not isinstance(passage, node_gate.EnforcedPassage):
+            raise GateViolation("gate_not_enforced")
+        owner = _owner_snapshot(passage)
+        public = endpoint(node)
+        binding = dict(installation_uuid=owner["installation_uuid"], ownership_epoch=owner["ownership_epoch"],
+                       gate_mode_epoch=owner["gate_mode_epoch"], node_id=node.id, backend="mikrotik_wg",
+                       endpoint_fingerprint=rules.endpoint_fingerprint({"n_" + k: v for k, v in public.items()}),
+                       phase="probe_cleanup")
+        dto = RemoteActionDTO(action_type=ActionType.CONTRACT_PROBE_CLEANUP_CHECK, node_id=node.id,
+                              backend="mikrotik_wg", node_config=dict(public),
+                              node_secrets={name: getattr(node, name, None) for name in SECRETS["mikrotik"]},
+                              params={"probe_identity": probe_identity},
+                              timeouts={"hard_deadline": HARD_DEADLINE_SECONDS},
+                              fencing={"installation_uuid": owner["installation_uuid"], "binding": binding,
+                                       "expected_parent_pid": os.getpid()})
+        from . import remote_runner
+        result = remote_runner.run_action(dto)
+    observed = result.observed if isinstance(result.observed, dict) else {}
+    from .remote_action import Outcome
+    if (result.outcome != Outcome.SUCCEEDED or result.write_attempted or
+            observed.get("write_attempted") is not False or
+            observed.get("status") not in ("absent", "present", "ambiguous")):
+        raise MikrotikError("بررسی فقط‌خواندنی اتصال آزمایشی کامل نشد")
+    return observed["status"]

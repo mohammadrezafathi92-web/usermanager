@@ -149,10 +149,10 @@ register_writer_site(_BLOCKS, "mt_push", (A.MT_PUSH_RADIUS, A.MT_PUSH_PPTP, A.MT
                       "push_ikev2_config"})
 register_writer_site(_BLOCKS, "xray_rebuild", (A.XRAY_REBUILD_CLIENTS,), {"add_client"})
 
-# Action types that have no call site in today's code because the thing
-# they do does not exist yet (the design adds it): the WireGuard address
-# reconciliation job and the per-node contract probe.
-ACTIONS_WITHOUT_LEGACY_SITE = frozenset({A.WG_RECONCILE_INTERFACE_ADDRESS, A.CONTRACT_PROBE})
+# Actions without a legacy writer site: read-only contract/cleanup probes and
+# the gated WireGuard address reconciliation entry point.
+ACTIONS_WITHOUT_LEGACY_SITE = frozenset({A.WG_RECONCILE_INTERFACE_ADDRESS, A.CONTRACT_PROBE,
+                                         A.CONTRACT_PROBE_CLEANUP_CHECK})
 
 # Blocks whose writes are an adapter's (the unpaid-service cancellation's two
 # steps: adapter_mikrotik_wg_refund.stop_and_measure / remove_stopped, writing

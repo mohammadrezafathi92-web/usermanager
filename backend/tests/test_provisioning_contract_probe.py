@@ -245,6 +245,13 @@ result = child_probe(cleanup_dto, patch("librouteros.connect", return_value=pres
 check("cleanup check preserves a still-present peer and reports it",
       (result.observed, result.write_attempted, list(present_router.peers)),
       ({"status": "present", "write_attempted": False}, False, ["*9"]))
+elsewhere_router = FakeRouteros()
+elsewhere_router.peers["*10"] = {"interface": "wireguard2", "comment": cleanup_identity,
+                                  "public-key": "stored-key", "allowed-address": "192.0.2.10/32"}
+result = child_probe(cleanup_dto, patch("librouteros.connect", return_value=elsewhere_router))
+check("cleanup check finds the exact peer even if moved to another interface",
+      (result.observed, result.write_attempted, list(elsewhere_router.peers)),
+      ({"status": "present", "write_attempted": False}, False, ["*10"]))
 
 # ------------------------------------------------------------------ parent verify
 with SessionLocal() as db:

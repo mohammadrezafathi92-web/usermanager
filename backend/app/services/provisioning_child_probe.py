@@ -321,7 +321,11 @@ def _check_mikrotik_probe_cleanup(dto, binding, holds, legacy, ChildDatabase, re
                     raise legacy.LegacyGuardUnavailable("probe_cleanup_interface_invalid")
                 client = legacy._client(guard, "mikrotik", config, dto.node_secrets)
                 with client:
-                    peers = client.list_peers(interface)
+                    # Search the whole node, not only the currently configured
+                    # interface: an operator may have moved the exact probe peer
+                    # since cleanup became uncertain. Absence must be global to
+                    # this MikroTik before we release the retry block.
+                    peers = client.list_peers()
                 if not isinstance(peers, list) or len(peers) >= 10000:
                     status = "ambiguous"
                 else:

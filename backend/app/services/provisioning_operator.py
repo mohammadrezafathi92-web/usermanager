@@ -38,6 +38,7 @@ from .provisioning_host import HostIdentityUnavailable, read_identity
 
 logger = logging.getLogger(__name__)
 FORK_CONFIRMATION = "این یک نصب مستقل جدید است و نصب اصلی جدا ادامه می‌دهد"
+MANUAL_XRAY_ABANDON_CONFIRMATION = "I understand this records an unverified manual Xray removal"
 _OPERATION_FIELDS = ("id", "operation_type", "state", "tenant_scope_key", "actor_kind", "actor_id", "approval_uuid",
                      "approval_execution_version", "target_user_id", "result_user_id", "result_purchase_id",
                      "error_code", "attempts", "next_retry_at", "forward_deadline", "created_at", "completed_at",
@@ -132,6 +133,68 @@ def force_step(session_factory, admin_id: int, operation_id: int, step_id: int, 
         db.commit()
     logger.info("provisioning step %s of operation %s forced abandoned by admin %s", step_id, operation_id, admin_id)
     return dict(operation_id=operation_id, step_id=step_id, forced=True)
+
+
+def abandon_unknown_xray_delete(session_factory, admin_id: int, operation_id: int, step_id: int,
+                                reason: str, confirmation: str, acknowledged: bool) -> dict:
+    """Record an admin-attested manual Xray deletion after an unknown write.
+
+    This is deliberately narrower than force_step: only a delete_purchase
+    step for Xray on 3X-UI, still marked remote_result_unknown, can be
+    abandoned. It does NOT claim remote absence. The durable step remains as
+    an audit row and the ordinary deletion worker must finish the remaining
+    steps and finalization.
+    """
+    reason = _reason(reason)
+    if any(type(value) is not int or value < 1 for value in (admin_id, operation_id, step_id)):
+        raise HTTPException(422, "manual_xray_abandon_identity_invalid")
+    if confirmation != MANUAL_XRAY_ABANDON_CONFIRMATION or acknowledged is not True:
+        raise HTTPException(422, "manual_xray_abandon_confirmation_required")
+    from . import provisioning_approval_exec as approval_exec, remote_runner
+
+    owner = f"op:{operation_id}:{secrets.randbits(64) + 1}"
+    lease = None
+    with session_factory() as db:
+        resource_leases.begin_business(db)
+        db.execute(select(mp.ProvisioningRuntimeState.id).where(mp.ProvisioningRuntimeState.id == 1)
+                   .with_for_update(read=True)).all()
+        approval_exec.lock_for(db, operation_id)
+        try:
+            lease = resource_leases.acquire(db, f"provisioning_op:{operation_id}", owner, ttl=60)
+        except resource_leases.LeaseBusy:
+            raise HTTPException(409, "provisioning_operation_busy") from None
+        resource_leases.revalidate(db, (lease,))
+        operation = transitions._operation(db, operation_id)
+        steps = db.execute(select(mp.ProvisioningStep).where(mp.ProvisioningStep.operation_id == operation_id)
+                           .order_by(mp.ProvisioningStep.step_order).with_for_update()
+                           .execution_options(populate_existing=True)).scalars().all()
+        step = next((row for row in steps if row.id == step_id), None)
+        if step is not None and step.state == "removed" and step.remote_outcome == "abandoned":
+            resource_leases.release(db, lease)
+            db.commit()
+            return {"operation_id": operation_id, "step_id": step_id, "abandoned": True}
+        if operation.operation_type != "delete_purchase" or operation.state != "provisioning":
+            raise HTTPException(409, "manual_xray_abandon_operation_invalid")
+        if step is None or (step.direction, step.backend, step.protocol, step.state, step.error_code,
+                            step.remote_outcome, bool(step.remote_attempted)) != (
+                "remove", "threexui", "xray", "remote_calling", "remote_result_unknown", None, True):
+            raise HTTPException(409, "manual_xray_abandon_step_invalid")
+        if not step.xr_email or step.xr_panel_inbound_id is None:
+            raise HTTPException(409, "manual_xray_abandon_identity_missing")
+        if any(row.id != step.id and row.state == "remote_calling" for row in steps):
+            raise HTTPException(409, "provisioning_remote_step_in_flight")
+        if remote_runner.live_count():
+            raise HTTPException(409, "remote_runner_alive")
+
+        now = dt.datetime.utcnow()
+        transitions._write_step(db, step, "removed", remote_outcome="abandoned", forced_by_admin_id=admin_id,
+                                force_reason=reason, forced_at=now, next_retry_at=None, error_code=None)
+        transitions._write_operation(db, operation, "provisioning", error_code=None, next_retry_at=None)
+        resource_leases.release(db, lease)
+        db.commit()
+    logger.warning("provisioning step %s of operation %s manually abandoned by admin %s",
+                   step_id, operation_id, admin_id)
+    return {"operation_id": operation_id, "step_id": step_id, "abandoned": True}
 
 
 # ------------------------------------------------------------------ installation (10.10)

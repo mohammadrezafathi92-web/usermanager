@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Workflow, RefreshCw } from "lucide-react";
 import {
   fetchProvisioningStatus, fetchProvisioningOperation, retryProvisioningOperation, forceProvisioningStep,
+  manuallyAbandonUnknownXrayDelete,
   fetchProvisioningOrphans, fetchApprovalRecoveries, decideApprovalRecovery,
 } from "../api/client.js";
 import { formatDateTime } from "../utils.js";
@@ -51,6 +52,18 @@ export default function ProvisioningCard({ t, language }) {
     setError("");
     call(reason.trim())
       .then(() => { load(); if (operation) show(operation.id); })
+      .catch(fail)
+      .finally(() => setBusy(false));
+  };
+
+  const manualAbandon = (currentOperation, step) => {
+    const reason = window.prompt(t("provisioning.reasonPrompt"));
+    if (!reason || !reason.trim()) return;
+    if (!window.confirm(t("provisioning.manualXrayAbandonConfirm"))) return;
+    setBusy(true);
+    setError("");
+    manuallyAbandonUnknownXrayDelete(currentOperation.id, step.id, reason.trim())
+      .then(() => { load(); show(currentOperation.id); })
       .catch(fail)
       .finally(() => setBusy(false));
   };
@@ -132,8 +145,21 @@ export default function ProvisioningCard({ t, language }) {
                     {t("provisioning.force")}
                   </button>
                 )}
+                {operation.operation_type === "delete_purchase" && step.backend === "threexui" &&
+                  step.protocol === "xray" && step.state === "remote_calling" &&
+                  step.error_code === "remote_result_unknown" && (
+                  <button type="button" className="btn-danger" disabled={busy}
+                    onClick={() => manualAbandon(operation, step)}>
+                    {t("provisioning.manualXrayAbandon")}
+                  </button>
+                )}
               </div>
             ))}
+            {operation.steps.some((step) => operation.operation_type === "delete_purchase" &&
+              step.backend === "threexui" && step.protocol === "xray" && step.state === "remote_calling" &&
+              step.error_code === "remote_result_unknown") && (
+              <p className="text-xs text-amber-600 mt-2">{t("provisioning.manualXrayAbandonHelp")}</p>
+            )}
             {operation.state === "cleanup_required" && (
               <button type="button" className="btn-primary" disabled={busy}
                 onClick={() => act((reason) => retryProvisioningOperation(operation.id, reason))}>

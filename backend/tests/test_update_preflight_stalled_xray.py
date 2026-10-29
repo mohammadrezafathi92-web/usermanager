@@ -17,7 +17,8 @@ helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
 
 with tempfile.TemporaryDirectory(prefix="um-update-stalled-xray-") as directory:
-    engine = create_engine("sqlite:///" + str(Path(directory) / "panel.db"))
+    panel_url = "sqlite:///" + str(Path(directory) / "panel.db")
+    engine = create_engine(panel_url)
     with engine.begin() as db:
         db.execute(text("""
             CREATE TABLE provisioning_operations (
@@ -48,15 +49,19 @@ with tempfile.TemporaryDirectory(prefix="um-update-stalled-xray-") as directory:
         """))
         db.execute(text("INSERT INTO resource_locks VALUES ('provisioning_op:182',NULL,0,NULL,NULL,0)"))
 
-    hold = helper._acquire_operation_hold(engine, 182)
+    # The updater deliberately opens SQLite snapshots read-only; the bounded
+    # lease has its own narrowly-scoped write-capable connection.
+    read_engine = helper.configured_engine(panel_url)
+    lease_engine = helper.configured_lease_engine(panel_url)
+    hold = helper._acquire_operation_hold(lease_engine, 182)
     assert hold["operation_id"] == 182 and hold["fencing_epoch"] == 1
-    with engine.connect() as db:
+    with read_engine.connect() as db:
         helper._validate_operation_hold(db, hold)
-    snapshot = helper.runtime_snapshot(engine, operation_hold=hold)
+    snapshot = helper.runtime_snapshot(read_engine, operation_hold=hold)
     assert snapshot["provisioning_runtime_state"] is None
 
     try:
-        helper._acquire_operation_hold(engine, 182)
+        helper._acquire_operation_hold(lease_engine, 182)
         raise AssertionError("a second deployment must not steal the live operation hold")
     except RuntimeError as exc:
         assert "busy" in str(exc)
@@ -64,16 +69,16 @@ with tempfile.TemporaryDirectory(prefix="um-update-stalled-xray-") as directory:
     with engine.begin() as db:
         db.execute(text("INSERT INTO provisioning_operations VALUES (183,'purchase','provisioning')"))
     try:
-        helper.runtime_snapshot(engine, operation_hold=hold)
+        helper.runtime_snapshot(read_engine, operation_hold=hold)
         raise AssertionError("unrelated unfinished operations must still block updates")
     except RuntimeError as exc:
         assert "unfinished durable operations" in str(exc)
     with engine.begin() as db:
         db.execute(text("DELETE FROM provisioning_operations WHERE id=183"))
 
-    helper._release_operation_hold(engine, hold)
+    helper._release_operation_hold(lease_engine, hold)
     try:
-        helper.runtime_snapshot(engine, operation_hold=hold)
+        helper.runtime_snapshot(read_engine, operation_hold=hold)
         raise AssertionError("snapshot must reject a released hold")
     except RuntimeError as exc:
         assert "not live" in str(exc)
@@ -89,7 +94,9 @@ with tempfile.TemporaryDirectory(prefix="um-update-stalled-xray-") as directory:
     import app.config
     panel_url = "sqlite:///" + str(Path(directory) / "panel.db")
     with patch.object(app.config.settings, "database_url", panel_url), patch.object(
-        helper, "configured_engine", side_effect=lambda _: create_engine(panel_url)
+        helper, "configured_engine", return_value=read_engine
+    ), patch.object(
+        helper, "configured_lease_engine", return_value=lease_engine
     ), patch.dict(os.environ, {
         "BACKUP_DIR": str(Path(directory) / "backups"),
         "BOT_DB_PATH": str(bot_db),
@@ -101,18 +108,20 @@ with tempfile.TemporaryDirectory(prefix="um-update-stalled-xray-") as directory:
         helper.verify_backup(backup)
         with create_engine("sqlite:///" + str(backup / "bot.db")).connect() as db:
             assert db.execute(text("SELECT value FROM backup_proof")).scalar_one() == "kept"
-        with engine.connect() as db:
+        with read_engine.connect() as db:
             helper._validate_operation_hold(db, manifest["operation_hold"])
-        helper._release_operation_hold(engine, manifest["operation_hold"])
+        helper._release_operation_hold(lease_engine, manifest["operation_hold"])
 
     with engine.begin() as db:
         db.execute(text("UPDATE provisioning_steps SET protocol='openvpn' WHERE id=470"))
     try:
-        helper._acquire_operation_hold(engine, 182)
+        helper._acquire_operation_hold(lease_engine, 182)
         raise AssertionError("non-Xray unresolved steps must not be eligible")
     except RuntimeError as exc:
         assert "approved Xray delete" in str(exc)
 
+    read_engine.dispose()
+    lease_engine.dispose()
     engine.dispose()
 
 print("safe updater stalled Xray lease: exact-state, fencing, rejection and release PASS")

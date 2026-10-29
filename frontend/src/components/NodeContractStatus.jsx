@@ -11,10 +11,11 @@ const reasons = {
   read_before_not_a_complete_answer: "response", read_not_exist_unstable: "response",
   delete_not_exist_unstable: "response", read_failed: "response",
   delete_unverified: "cleanup", read_after_delete_not_absent: "cleanup",
+  probe_cleanup_verified_absent: "cleanupVerifiedAbsent",
   create_failed: "create", verification_failed: "generic",
 };
 
-export default function NodeContractStatus({ status, canVerify = false, onVerify, busy = false }) {
+export default function NodeContractStatus({ status, canVerify = false, onVerify, onInspectCleanup, busy = false }) {
   const { t } = useLanguage();
   let state = states.has(status?.state) ? status.state : "unavailable";
   if (state === "ready" && status?.ready !== true) state = "unavailable";
@@ -29,7 +30,15 @@ export default function NodeContractStatus({ status, canVerify = false, onVerify
         </div>
         {!ready && !blocked && reasons[status?.reason] && <p className="text-gray-700 dark:text-gray-200">{t(`nodes.contract.reason.${reasons[status.reason]}`)}</p>}
         {!ready && <p className="text-gray-700 dark:text-gray-200">{t(blocked ? "nodes.contract.cleanupHelp" : "nodes.contract.notReadyHelp")}</p>}
+        {blocked && status?.probe_identity && <code dir="ltr" className="block text-xs text-gray-600 dark:text-gray-300">{status.probe_identity}</code>}
+        {blocked && status?.cleanup_inspection === "present" && <p className="text-amber-700 dark:text-amber-300">{t("nodes.contract.cleanupPresent")}</p>}
+        {blocked && status?.cleanup_inspection === "ambiguous" && <p className="text-amber-700 dark:text-amber-300">{t("nodes.contract.cleanupAmbiguous")}</p>}
       </div>
+      {canVerify && blocked && status?.cleanup_recovery_available === true && onInspectCleanup && (
+        <button type="button" className="btn-secondary min-h-[44px]" disabled={working} onClick={onInspectCleanup}>
+          {t(working ? "nodes.contract.inspectingCleanup" : "nodes.contract.inspectCleanup")}
+        </button>
+      )}
       {canVerify && status?.retry_allowed === true && !blocked && onVerify && (
         <button type="button" className="btn-secondary min-h-[44px]" disabled={working} onClick={onVerify}>
           {t(working ? "nodes.contract.verifying" : "nodes.contract.retry")}

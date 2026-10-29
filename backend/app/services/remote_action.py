@@ -74,6 +74,7 @@ class ActionType(str, enum.Enum):
     WG_REFUND_STOP = "wg_refund_stop"
     WG_REFUND_REMOVE = "wg_refund_remove"
     CONTRACT_PROBE = "contract_probe"
+    CONTRACT_PROBE_CLEANUP_CHECK = "contract_probe_cleanup_check"
     # Runner self-test - no node, no network. Used by the runner's own
     # health check and by the tests.
     SELFTEST_ECHO = "selftest_echo"

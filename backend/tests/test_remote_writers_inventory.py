@@ -193,7 +193,7 @@ check("the three MikroTik writer methods without any caller are exactly the decl
 
 print("--- A. every real action type is accounted for ---")
 real_actions = {a for a in ActionType if not a.value.startswith("selftest_")}
-check("each real action_type has a legacy site, is an adapter-backed block, or is one of the two that have none",
+check("each real action_type has a legacy site, is an adapter-backed block, or is one of the probe/reconcile actions",
       sorted(a.value for a in real_actions - rw.action_types_in_use() - rw.ACTIONS_WITHOUT_LEGACY_SITE
              - set(rw.ADAPTER_BLOCK_ACTIONS.values())), [])
 check("the adapter-backed blocks exist and map to their own runner actions",
@@ -203,7 +203,7 @@ check("the adapter-backed blocks exist and map to their own runner actions",
       {"wg_refund_stop": (True, True), "wg_refund_remove": (True, True)})
 check("no action is both 'in use' and 'without a legacy site'",
       sorted(a.value for a in rw.action_types_in_use() & rw.ACTIONS_WITHOUT_LEGACY_SITE), [])
-check("25 real action types, 4 self-test ones", (len(real_actions), len(set(ActionType) - real_actions)), (25, 4))
+check("26 real action types, 4 self-test ones", (len(real_actions), len(set(ActionType) - real_actions)), (26, 4))
 
 print("--- A. the registration API is type-safe ---")
 E = rw.WriterRegistryError
@@ -332,7 +332,7 @@ check("legacy writers are gated; private guarded infrastructure has no live dura
        # reset and the live-runner count (no remote write).
        "app.services.provisioning_operator": ["gate_locks", "node_gate", "remote_runner"],
        # The 5.10 contract probe's runner child entry.
-       "app.services.provisioning_child_probe": ["remote_action.Outcome", "remote_action.RemoteActionResult"]})
+       "app.services.provisioning_child_probe": ["remote_action.ActionType", "remote_action.Outcome", "remote_action.RemoteActionResult"]})
 check("every real action type is registered",
       sorted(a.value for a in ActionType if not a.value.startswith("selftest_") and a not in ACTIONS), [])
 

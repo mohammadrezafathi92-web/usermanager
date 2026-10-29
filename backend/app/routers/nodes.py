@@ -197,6 +197,23 @@ def verify_node(node_id: int, db: Session = Depends(get_db), admin: models.Admin
         return node_contract_status.verify_locked(db, node, admin.id)
 
 
+@router.post("/{node_id}/verify-probe-cleanup", response_model=schemas.NodeOut)
+def verify_probe_cleanup(
+    node_id: int,
+    db: Session = Depends(get_db),
+    admin: models.AdminUser = Depends(get_current_admin),
+    _confirm=Depends(require_confirm_password),
+):
+    """Manually inspect the exact stored MikroTik test peer, without deleting it."""
+    if hierarchy.is_seller(admin):
+        raise HTTPException(403, "فروشنده‌ها اجازه بررسی سرور را ندارند")
+    node = _get_owned_node(db, node_id, admin)
+    with node_contract_status.save_lock(db, node.id):
+        node = node_contract_status.refresh_locked(db, node_id)
+        node = _get_owned_node(db, node_id, admin)
+        return node_contract_status.verify_probe_cleanup_locked(db, node, admin.id)
+
+
 @router.delete("/{node_id}")
 def delete_node(node_id: int, db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin), _confirm=Depends(require_confirm_password)):
     node = db.get(models.Node, node_id)

@@ -28,7 +28,7 @@ REASONS = frozenset({
     "ownership_or_lock_unavailable", "wireguard_interface_missing", "server_version_unreadable",
     "read_before_not_absent", "read_before_not_a_complete_answer", "create_failed",
     "read_after_create_not_match", "delete_unverified", "read_after_delete_not_absent",
-    "read_not_exist_unstable", "delete_not_exist_unstable", "read_failed",
+    "read_not_exist_unstable", "delete_not_exist_unstable", "read_failed", "probe_cleanup_verified_absent",
 })
 
 
@@ -85,6 +85,7 @@ def describe(db, node):
     reason = reason if reason in REASONS else "verification_failed" if reason else None
     result = dict(state="not_checked", ready=False, backend=None, reason="not_checked",
                   cleanup=stored.get("cleanup") if stored.get("cleanup") in ("clean", "unknown") else None,
+                  cleanup_inspection=stored.get("cleanup_inspection") if stored.get("cleanup_inspection") in ("absent", "present", "ambiguous") else None,
                   checked_at=stored.get("checked_at"), retry_allowed=True)
     try:
         backend = legacy_remote.backend_of(node)
@@ -94,7 +95,14 @@ def describe(db, node):
         runtime = db.get(mp.ProvisioningRuntimeState, 1)
         # Unknown cleanup takes precedence even after settings/mode changes.
         if stored.get("state") in ("cleanup_unknown", "verifying"):
-            return dict(result, state="cleanup_unknown", reason="probe_cleanup_unknown" if stored.get("state") == "cleanup_unknown" else "verification_interrupted", retry_allowed=False)
+            identity = stored.get("probe_identity")
+            recovery = (stored.get("state") == "cleanup_unknown" and backend == "mikrotik_wg" and
+                        isinstance(identity, str) and re.fullmatch(r"um-probe-[0-9a-f]{16}", identity) is not None and
+                        node.contract_check_fingerprint == fingerprint(node))
+            return dict(result, state="cleanup_unknown",
+                        reason="probe_cleanup_unknown" if stored.get("state") == "cleanup_unknown" else "verification_interrupted",
+                        retry_allowed=False,
+                        probe_identity=identity if recovery else None, cleanup_recovery_available=recovery)
         if runtime is None or runtime.gate_mode != "enforced":
             return dict(result, state="gate_not_enforced", reason="gate_not_enforced", retry_allowed=False)
         row = db.get(mp.ProvisioningNodeContract, (node.id, backend))
@@ -192,3 +200,32 @@ def verify_locked(db, node, actor_id):
     db.commit()
     db.refresh(fresh)
     return attach(db, fresh)
+
+
+def verify_probe_cleanup_locked(db, node, actor_id):
+    """Read-only inspect exact stored MikroTik test peer; unlock only on absence."""
+    stored = _stored(node)
+    identity = stored.get("probe_identity")
+    if (stored.get("state") != "cleanup_unknown" or legacy_remote.backend_of(node) != "mikrotik_wg" or
+            not isinstance(identity, str) or not re.fullmatch(r"um-probe-[0-9a-f]{16}", identity) or
+            node.contract_check_fingerprint != fingerprint(node)):
+        raise HTTPException(409, "probe_cleanup_recovery_unavailable")
+    try:
+        result = legacy_remote.dispatch_probe_cleanup_check(node, identity)
+    except GateViolation:
+        raise HTTPException(409, "probe_cleanup_inspection_unavailable") from None
+    except Exception:
+        raise HTTPException(503, "probe_cleanup_inspection_unavailable") from None
+    if result == "absent":
+        _write(node, "failed", "probe_cleanup_verified_absent", "clean")
+        value = _stored(node)
+        value.update(cleanup_inspection="absent", cleanup_inspected_by=actor_id)
+        node.contract_check_json = json.dumps(value, separators=(",", ":"))
+    else:
+        value = dict(stored)
+        value.update(cleanup_inspection=result, cleanup_inspected_by=actor_id,
+                     checked_at=dt.datetime.utcnow().isoformat() + "Z")
+        node.contract_check_json = json.dumps(value, separators=(",", ":"))
+    db.commit()
+    db.refresh(node)
+    return attach(db, node)

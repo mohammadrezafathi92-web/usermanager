@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import threading
 import uuid
@@ -249,7 +250,8 @@ PROBES = {"mikrotik": _probe_mikrotik, "softether": _probe_softether}
 
 
 def run(dto):
-    """Registered runner entry for ActionType.CONTRACT_PROBE."""
+    """Registered runner entry for contract probes and cleanup checks."""
+    from .remote_action import ActionType
     from . import provisioning_child_legacy as legacy
     from .provisioning_child_database import ChildDatabase
     from .provisioning_child_entry import _holds as held
@@ -263,6 +265,8 @@ def run(dto):
     if not trusted_url:
         raise legacy.LegacyGuardUnavailable("probe_configuration_missing")
     binding = legacy.LegacyBinding(**dto.fencing["binding"])
+    if dto.action_type == ActionType.CONTRACT_PROBE_CLEANUP_CHECK:
+        return _check_mikrotik_probe_cleanup(dto, binding, holds, legacy, ChildDatabase, read_identity, authority)
     if binding.phase != "probe" or (binding.node_id, binding.backend) != (dto.node_id, dto.backend):
         raise legacy.LegacyGuardUnavailable("probe_binding_invalid")
     kind = "mikrotik" if binding.backend == "mikrotik_wg" else "softether" if binding.backend == "softether" else "xray"
@@ -294,5 +298,40 @@ def run(dto):
             observed["reason"] = observed["reason"] or "probe_cleanup_unknown"
         return RemoteActionResult(action_id=dto.action_id, outcome=Outcome.SUCCEEDED, write_attempted=True,
                                   observed=observed)
+    finally:
+        database.dispose()
+
+
+def _check_mikrotik_probe_cleanup(dto, binding, holds, legacy, ChildDatabase, read_identity, authority):
+    """Read one stored random probe comment under runner locks; never write."""
+    from .remote_action import ActionType, Outcome, RemoteActionResult
+    identity = dto.params.get("probe_identity") if isinstance(dto.params, dict) else None
+    if (dto.action_type != ActionType.CONTRACT_PROBE_CLEANUP_CHECK or binding.phase != "probe_cleanup" or
+            (binding.node_id, binding.backend) != (dto.node_id, dto.backend) or
+            binding.backend != "mikrotik_wg" or not isinstance(identity, str) or
+            not re.fullmatch(r"um-probe-[0-9a-f]{16}", identity)):
+        raise legacy.LegacyGuardUnavailable("probe_cleanup_binding_invalid")
+    database = ChildDatabase(os.environ["DATABASE_URL"].strip())
+    try:
+        with legacy.LegacyChildGuard(database, binding, read_identity(), holds[2], holds[3]) as guard:
+            with authority._scope(guard, allow_writes=False):
+                config = dto.node_config
+                interface = config.get("mt_wireguard_interface") if isinstance(config, dict) else None
+                if not isinstance(interface, str) or not interface:
+                    raise legacy.LegacyGuardUnavailable("probe_cleanup_interface_invalid")
+                client = legacy._client(guard, "mikrotik", config, dto.node_secrets)
+                with client:
+                    # Search the whole node, not only the currently configured
+                    # interface: an operator may have moved the exact probe peer
+                    # since cleanup became uncertain. Absence must be global to
+                    # this MikroTik before we release the retry block.
+                    peers = client.list_peers()
+                if not isinstance(peers, list) or len(peers) >= 10000:
+                    status = "ambiguous"
+                else:
+                    matches = [peer for peer in peers if isinstance(peer, dict) and peer.get("comment") == identity]
+                    status = "absent" if not matches else "present" if len(matches) == 1 else "ambiguous"
+        return RemoteActionResult(action_id=dto.action_id, outcome=Outcome.SUCCEEDED, write_attempted=False,
+                                  observed={"status": status, "write_attempted": False})
     finally:
         database.dispose()

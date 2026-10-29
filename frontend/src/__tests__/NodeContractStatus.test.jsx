@@ -29,10 +29,18 @@ describe("node contract status", () => {
     });
     it(`cleanup uncertainty blocks retry, including malicious retry flag (${language})`, () => {
       const onVerify = vi.fn();
-      show({ state: "cleanup_unknown", ready: false, retry_allowed: true }, { canVerify: true, onVerify }, language);
-      expect(screen.queryByRole("button")).toBeNull();
+      const onInspectCleanup = vi.fn();
+      show({ state: "cleanup_unknown", ready: false, retry_allowed: true, cleanup_recovery_available: true,
+        probe_identity: "um-probe-0123456789abcdef" }, { canVerify: true, onVerify, onInspectCleanup }, language);
+      expect(screen.getByRole("button").textContent).toContain(language === "fa" ? "فقط‌خواندنی" : "read only");
       expect(screen.getByRole("status").textContent).toContain(language === "fa" ? "پاک‌سازی" : "cleanup");
       expect(onVerify).not.toHaveBeenCalled();
+      expect(onInspectCleanup).not.toHaveBeenCalled();
+    });
+    it(`does not offer cleanup inspection without an eligible identity (${language})`, () => {
+      show({ state: "cleanup_unknown", ready: false, cleanup_recovery_available: false },
+        { canVerify: true, onVerify: vi.fn(), onInspectCleanup: vi.fn() }, language);
+      expect(screen.queryByRole("button")).toBeNull();
     });
     it(`unknown state never appears ready or prints raw diagnostic content (${language})`, () => {
       show({ state: "unexpected", ready: true, reason: "password=secret https://user:pass@host/" }, {}, language);

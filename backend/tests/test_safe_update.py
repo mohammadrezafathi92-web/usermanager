@@ -118,8 +118,9 @@ if cmd=='backup':
   op=os.environ['UM_UPDATE_STALLED_XRAY_DELETE_ID']; manifest['operation_hold']={'operation_id':int(op),'lease_owner':f'op:{op}:987654321','fencing_epoch':4}
  print(json.dumps(manifest))
 elif cmd=='snapshot': print('{"changed":true}' if os.environ.get('TEST_RUNTIME_DRIFT')=='yes' and Path(os.environ['TEST_RESTART_MARKER']).exists() else '{}')
-elif cmd=='compare':
+elif cmd in ('compare','compare-after-restart'):
  if json.loads(Path(sys.argv[2]).read_text())!=json.loads(Path(sys.argv[3]).read_text()): sys.exit(1)
+ print('RUNTIME_UNCHANGED')
 elif cmd=='release-operation-hold': print('OPERATION_HOLD_RELEASED')
 elif cmd=='validate-operation-hold': print('OPERATION_HOLD_VALID')
 '''

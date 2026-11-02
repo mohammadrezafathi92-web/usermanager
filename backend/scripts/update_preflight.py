@@ -283,11 +283,18 @@ def create_backup(tag: str) -> dict:
             panel = "panel.sql"
         else:
             raise RuntimeError("unsupported database")
-        sqlite_backup(Path(os.environ.get("BOT_DB_PATH", "/app/data/bot_data.db")), folder / "bot.db")
+        # A fresh install has no bot database until a bot first runs: record
+        # it as absent instead of failing. One that exists must back up cleanly.
+        bot_source = Path(os.environ.get("BOT_DB_PATH", "/app/data/bot_data.db"))
+        members = [panel, "runtime.json"]
+        if bot_source.exists():
+            sqlite_backup(bot_source, folder / "bot.db")
+            members.insert(1, "bot.db")
         (folder / "runtime.json").write_text(json.dumps(state, sort_keys=True))
         files = {name: {"sha256": digest(folder / name), "size": (folder / name).stat().st_size}
-                 for name in (panel, "bot.db", "runtime.json")}
+                 for name in members}
         manifest = {"directory": str(folder), "files": files,
+                    "bot_database": "backed_up" if "bot.db" in files else "absent",
                     "panel_validation": "sqlite_integrity" if panel.endswith(".db") else "dump_exit_status_and_sha256_not_restore_test"}
         if operation_hold is not None:
             manifest["operation_hold"] = operation_hold
@@ -351,6 +358,36 @@ def verify_backup(folder: Path) -> None:
                 db.close()
 
 
+def compare_strict(before: dict, after: dict) -> None:
+    if before != after:
+        raise RuntimeError("runtime settings changed")
+
+
+def compare_after_restart(before_path: Path, after_path: Path) -> str:
+    """The backend restart may legitimately change exactly one thing: outside
+    'enforced', a clean shutdown releases provisioning ownership
+    (provisioning_host_lifecycle.shutdown_release: owner_state active or
+    draining -> released, ownership_epoch + 1). Everything else - every mode,
+    epoch and flag - must be identical. Returns 'unchanged' or
+    'ownership_released'; raises on any other difference."""
+    before = json.loads(before_path.read_text())
+    after = json.loads(after_path.read_text())
+    if before == after:
+        return "unchanged"
+    old = (before.get("provisioning_runtime_state") or {})
+    new = (after.get("provisioning_runtime_state") or {})
+    released = (old.get("owner_state") in ("active", "draining") and new.get("owner_state") == "released"
+                and old.get("gate_mode") != "enforced"
+                and isinstance(old.get("ownership_epoch"), int)
+                and new.get("ownership_epoch") == old["ownership_epoch"] + 1)
+    if not released:
+        raise RuntimeError("runtime settings changed")
+    expected = dict(before, provisioning_runtime_state=dict(old, owner_state="released",
+                                                             ownership_epoch=old["ownership_epoch"] + 1))
+    compare_strict(expected, after)
+    return "ownership_released"
+
+
 def main() -> None:
     command = sys.argv[1]
     if command == "backup":
@@ -372,9 +409,13 @@ def main() -> None:
         verify_backup(Path(sys.argv[2]))
         print("BACKUP_VERIFIED")
     elif command == "compare":
-        if json.loads(Path(sys.argv[2]).read_text()) != json.loads(Path(sys.argv[3]).read_text()):
-            raise RuntimeError("runtime settings changed")
+        compare_strict(json.loads(Path(sys.argv[2]).read_text()), json.loads(Path(sys.argv[3]).read_text()))
         print("RUNTIME_UNCHANGED")
+    elif command == "compare-after-restart":
+        if compare_after_restart(Path(sys.argv[2]), Path(sys.argv[3])) == "ownership_released":
+            print("RUNTIME_UNCHANGED; OWNERSHIP_RELEASED_BY_RESTART")
+        else:
+            print("RUNTIME_UNCHANGED")
     else:
         raise ValueError("unknown action")
 

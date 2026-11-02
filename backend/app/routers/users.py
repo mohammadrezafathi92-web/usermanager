@@ -544,7 +544,7 @@ def create_user(
         factory = provisioning_requests.session_factory_for(db)
         db.rollback()
         operation = provisioning_durable.run(factory, request, actor_kind="admin", actor_id=admin.id)
-        db.expire_all()
+        provisioning_durable.fresh_view(db)
         return db.get(models.User, operation.result_user_id)
     if provisioning_durable.username_claimed(db, payload.username):
         raise HTTPException(400, "این نام کاربری قبلا ثبت شده است")
@@ -1039,7 +1039,7 @@ def _durable_panel_renewal(db, admin, user, purchase, package, *, add_gb=0, add_
     factory = provisioning_requests.session_factory_for(db)
     db.rollback()
     provisioning_durable.run(factory, request, actor_kind="admin", actor_id=admin.id)
-    db.expire_all()
+    provisioning_durable.fresh_view(db)
     return db.get(models.Purchase, purchase.id)
 
 
@@ -1144,6 +1144,7 @@ def _manual_connection(db, admin, user, node, protocol, purchase_id, legacy, *, 
         factory = provisioning_requests.session_factory_for(db)
         db.rollback()
         operation = provisioning_durable.run(factory, request, actor_kind="admin", actor_id=admin.id)
+        provisioning_durable.fresh_view(db)
         return provisioning_requests.created_connections(db, operation.id)[0]
     with _connection_purchase(db, user, purchase_id):
         return legacy()
@@ -1319,7 +1320,7 @@ def apply_package(
         factory = provisioning_requests.session_factory_for(db)
         db.rollback()
         provisioning_durable.run(factory, request, actor_kind="admin", actor_id=admin.id)
-        db.expire_all()
+        provisioning_durable.fresh_view(db)
         return db.get(models.User, user.id)
     reseller_debit = admin_billing.charge_for_package(db, admin, package, units=1)
     # Same refund-on-failure guarantee as create_user's package path above -

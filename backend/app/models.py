@@ -87,6 +87,9 @@ class AdminUser(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(64), unique=True, index=True, nullable=False)
+    # Human name shown next to the login username (owner request
+    # 2026-11-02): separate from `username`, which stays the login.
+    display_name = Column(String(128), nullable=True)
     hashed_password = Column(String(255), nullable=False)
     created_at = Column(DateTime, default=now)
 

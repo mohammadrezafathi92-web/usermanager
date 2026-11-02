@@ -1940,6 +1940,7 @@ class TutorialOut(TutorialBase):
 class AdminCreate(BaseModel):
     username: str
     password: str
+    display_name: Optional[str] = Field(None, max_length=128)
     permissions: List[str] = []  # subset of permissions.PERMISSION_CHOICES keys
     login_slug: Optional[str] = None
     telegram_id: Optional[int] = None
@@ -1999,6 +2000,7 @@ class AdminReparentRequest(BaseModel):
 
 class AdminUpdate(BaseModel):
     password: Optional[str] = None  # if set, resets the password
+    display_name: Optional[str] = Field(None, max_length=128)
     permissions: Optional[List[str]] = None
     login_slug: Optional[str] = None
     # Set (absolute value, not a delta) by a superadmin to top up this
@@ -2028,6 +2030,7 @@ class AdminUpdate(BaseModel):
 class AdminOut(BaseModel):
     id: int
     username: str
+    display_name: Optional[str] = None
     is_superadmin: bool
     permissions: List[str] = []
     login_slug: Optional[str] = None

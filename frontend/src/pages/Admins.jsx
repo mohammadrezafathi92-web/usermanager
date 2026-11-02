@@ -49,6 +49,7 @@ function generatePassword() {
 
 const emptyForm = {
   username: "",
+  display_name: "",
   password: "",
   permissions: [],
   login_slug: "",
@@ -92,6 +93,7 @@ export default function Admins() {
       : items.filter(
           (a) =>
             (a.username || "").toLowerCase().includes(q) ||
+            (a.display_name || "").toLowerCase().includes(q) ||
             (a.parent_admin_username || "").toLowerCase().includes(q)
         );
     return sortRows(base, sortBy, sortDir, (a, key) => {
@@ -220,6 +222,7 @@ export default function Admins() {
     setEditingRole(admin.role || (admin.is_superadmin ? "superadmin" : "seller"));
     setForm({
       username: admin.username,
+      display_name: admin.display_name || "",
       password: "",
       permissions: admin.permissions || [],
       login_slug: admin.login_slug || "",
@@ -305,6 +308,7 @@ export default function Admins() {
     try {
       if (editingId) {
         const payload = {
+          display_name: form.display_name,
           permissions: form.permissions,
           login_slug: form.login_slug || null,
           telegram_id: form.telegram_id === "" ? null : Number(form.telegram_id),
@@ -320,6 +324,7 @@ export default function Admins() {
       } else {
         await createAdmin({
           username: form.username,
+          display_name: form.display_name || null,
           password: form.password,
           permissions: form.permissions,
           login_slug: form.login_slug || null,
@@ -509,7 +514,10 @@ export default function Admins() {
             <tbody>
               {filteredItems.map((a) => (
                 <tr key={a.id}>
-                  <td className="font-medium text-gray-800">{a.username}</td>
+                  <td className="font-medium text-gray-800">
+                    <div dir="ltr" className="text-start">{a.username}</div>
+                    {a.display_name && <div className="text-xs text-gray-500 font-normal">{a.display_name}</div>}
+                  </td>
                   <td>
                     {a.is_superadmin ? (
                       <span className="badge-info flex items-center gap-1 w-fit">
@@ -610,6 +618,7 @@ export default function Admins() {
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <div className="font-medium text-gray-800 truncate">{a.username}</div>
+                  {a.display_name && <div className="text-xs text-gray-500 truncate">{a.display_name}</div>}
                   <div className="mt-1">
                     {a.is_superadmin ? (
                       <span className="badge-info flex items-center gap-1 w-fit">
@@ -718,7 +727,7 @@ export default function Admins() {
                 <option value="">{t("admins.allAdminsIncludingMain")}</option>
                 {items.map((a) => (
                   <option key={a.id} value={a.id}>
-                    {a.username}
+                    {a.display_name ? `${a.display_name} (${a.username})` : a.username}
                   </option>
                 ))}
               </select>
@@ -783,6 +792,11 @@ export default function Admins() {
 
       <Modal open={open} onClose={() => setOpen(false)} title={editingId ? t("admins.editModal") : t("admins.newModal")} width="max-w-lg">
         <form onSubmit={submit} className="space-y-4">
+          <div>
+            <label htmlFor="admin-display-name" className="block text-sm text-gray-600 mb-1">{t("admins.fieldDisplayName")}</label>
+            <input id="admin-display-name" className="input" maxLength={128} value={form.display_name}
+              onChange={(e) => set("display_name", e.target.value)} placeholder={t("admins.displayNamePlaceholder")} />
+          </div>
           {!editingId && (
             <div>
               <label className="block text-sm text-gray-600 mb-1">{t("admins.fieldUsername")}</label>

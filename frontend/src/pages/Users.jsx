@@ -74,6 +74,15 @@ const AVATAR_TONES = [
   "from-violet-400 to-violet-600",
   "from-cyan-400 to-cyan-600",
 ];
+// What the logged-in account is charged for one unit of a package: the
+// server's my_cost (own cooperation price > per-GB rate > package
+// cooperation price > price). Falls back to the old guess only when an
+// older backend did not send it.
+export function packageCostFor(pkg) {
+  if (pkg && pkg.my_cost_source) return pkg.my_cost;
+  return pkg?.cooperation_price != null ? pkg.cooperation_price : pkg?.price;
+}
+
 function UserAvatar({ username, online }) {
   let hash = 0;
   for (let i = 0; i < (username || "").length; i++) hash = (hash * 31 + username.charCodeAt(i)) >>> 0;
@@ -1148,7 +1157,7 @@ export default function Users() {
                 {!isSuperadmin && (() => {
                   const pkg = packages.find((p) => String(p.id) === String(form.package_id));
                   if (!pkg) return null;
-                  const cost = pkg.cooperation_price != null ? pkg.cooperation_price : pkg.price;
+                  const cost = packageCostFor(pkg);
                   return (
                     <div className="text-amber-600 mt-1">
                       {t("users.packageCostDeduction", { cost: new Intl.NumberFormat("fa-IR").format(cost || 0) })}
@@ -1309,7 +1318,7 @@ export default function Users() {
                   {!isSuperadmin && (() => {
                     const pkg = packages.find((p) => String(p.id) === String(bulkCreateForm.package_id));
                     if (!pkg) return null;
-                    const unitCost = pkg.cooperation_price != null ? pkg.cooperation_price : pkg.price;
+                    const unitCost = packageCostFor(pkg);
                     const count = Number(bulkCreateForm.count) || 0;
                     return (
                       <div className="text-amber-600 mt-1">

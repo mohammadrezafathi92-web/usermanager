@@ -49,6 +49,12 @@ const emptyForm = {
   connections: [],
 };
 
+// A seller's own cost for a package (server my_cost); null = unknown.
+function sellerCost(p) {
+  if (p && p.my_cost_source) return p.my_cost;
+  return p?.cooperation_price ?? null;
+}
+
 function formatFileSize(bytes) {
   if (!bytes) return "0 KB";
   const kb = bytes / 1024;
@@ -460,6 +466,9 @@ export default function Packages() {
                       <div className="flex items-center gap-2">
                         <div>
                           <div className={p.my_price != null ? "text-gray-400 line-through text-xs" : ""}>{formatToman(p.price)}</div>
+                          {sellerCost(p) != null && (
+                            <div className="text-xs text-gray-400">{t("packages.cooperationLabel", { price: formatToman(sellerCost(p)) })}</div>
+                          )}
                           {p.my_price != null && (
                             <div className="text-brand-600 font-medium flex items-center gap-1">
                               <Tag size={12} /> {formatToman(p.my_price)}
@@ -493,9 +502,9 @@ export default function Packages() {
                             </button>
                           )}
                         </div>
-                        {p.cooperation_price != null && priceDraft !== "" && Number(priceDraft) < p.cooperation_price && (
+                        {sellerCost(p) != null && priceDraft !== "" && Number(priceDraft) < sellerCost(p) && (
                           <div className="text-xs mt-1 text-red-600 dark:text-red-400 font-medium" dir="rtl">
-                            {t("packages.priceBelowCost", { floor: formatToman(p.cooperation_price) })}
+                            {t("packages.priceBelowCost", { floor: formatToman(sellerCost(p)) })}
                           </div>
                         )}
                         {priceError && <div className="text-xs mt-1 text-red-600 dark:text-red-400" dir="rtl">{priceError}</div>}
@@ -625,6 +634,9 @@ export default function Packages() {
                   {editingPriceId !== p.id ? (
                     <div className="flex items-center gap-1 text-xs">
                       <span className={p.my_price != null ? "text-gray-400 line-through" : "text-gray-600"}>{formatToman(p.price)}</span>
+                      {sellerCost(p) != null && (
+                        <span className="text-gray-400">({t("packages.cooperationLabel", { price: formatToman(sellerCost(p)) })})</span>
+                      )}
                       {p.my_price != null && (
                         <span className="text-brand-600 font-medium flex items-center gap-1">
                           <Tag size={12} /> {formatToman(p.my_price)}
@@ -653,9 +665,9 @@ export default function Packages() {
                           </button>
                         )}
                       </div>
-                      {p.cooperation_price != null && priceDraft !== "" && Number(priceDraft) < p.cooperation_price && (
+                      {sellerCost(p) != null && priceDraft !== "" && Number(priceDraft) < sellerCost(p) && (
                         <div className="text-xs mt-1 text-red-600 dark:text-red-400 font-medium" dir="rtl">
-                          {t("packages.priceBelowCost", { floor: formatToman(p.cooperation_price) })}
+                          {t("packages.priceBelowCost", { floor: formatToman(sellerCost(p)) })}
                         </div>
                       )}
                       {priceError && <div className="text-xs mt-1 text-red-600 dark:text-red-400" dir="rtl">{priceError}</div>}

@@ -113,6 +113,20 @@ def _out(pkg: models.Package, my_price: int | None = None) -> models.Package:
     return pkg
 
 
+def _my_cost(admin: models.AdminUser, pkg: models.Package) -> tuple[int | None, str]:
+    """What admin_billing charges THIS caller for one unit of the package,
+    and the rule that decided it - so the panel shows the real deduction
+    (an own cooperation price, a per-GB rate ...) instead of the sale price."""
+    if admin.is_superadmin:
+        return 0, "superadmin"
+    if admin.billing_mode == "usage":
+        return 0, "usage_billing"
+    try:
+        return admin_billing.price_source(admin, pkg)
+    except HTTPException:            # per-GB rate on an unlimited package: not sellable this way
+        return None, "unpriceable"
+
+
 def _get_scoped_package(db: Session, package_id: int, admin: models.AdminUser) -> models.Package:
     """Fetches a package AND checks it's in this admin's hierarchy scope -
     404s (not 403) for an out-of-scope package, same pattern as
@@ -266,7 +280,12 @@ def list_packages(db: Session = Depends(get_db), admin: models.AdminUser = Depen
             row.package_id: row.price
             for row in db.query(models.PackageSellerPrice).filter(models.PackageSellerPrice.seller_admin_id == admin.id).all()
         }
-    return [_out(p, my_prices.get(p.id)) for p in pkgs]
+    out = []
+    for p in pkgs:
+        _out(p, my_prices.get(p.id))
+        p.my_cost, p.my_cost_source = _my_cost(admin, p)
+        out.append(p)
+    return out
 
 
 def _check_group_in_scope(db: Session, admin: models.AdminUser, group_id) -> None:

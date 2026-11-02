@@ -1073,6 +1073,12 @@ class PackageOut(PackageBase):
     # since only Sellers layer a resale price on top of someone else's
     # package.
     my_price: Optional[int] = None
+    # What the CALLER is charged for one unit (admin_billing.price_source:
+    # own price > per-GB rate > cooperation price > price; 0 for a
+    # superadmin or usage billing; None = cannot be priced). Only set by
+    # list_packages.
+    my_cost: Optional[int] = None
+    my_cost_source: Optional[str] = None
 
 
 class SellerPackagePriceUpdate(BaseModel):

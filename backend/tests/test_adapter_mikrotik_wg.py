@@ -217,7 +217,16 @@ check("an unrelated network -> permanent conflict, nothing written",
       (raises_code(lambda: fix(r, "wg0", "10.66.66.0/24"), AdapterPermanentError), r.writes()),
       ("wg_interface_address_conflict", []))
 r = FakeRouter(addresses=["10.66.66.1/24", "10.99.0.1/24"])
-check("more than one address -> permanent conflict, nothing written",
+check("more than one address, one of them IS the subnet -> in sync, nothing written",
+      (fix(r, "wg0", "10.66.66.0/24"), r.writes()), ("in_sync", []))
+r = FakeRouter(addresses=["192.168.0.1/19", "172.20.20.1/24"])     # node com, 2026-11-03
+check("a second, unrelated address next to the node's own -> in sync, nothing written",
+      (fix(r, "wg0", "192.168.0.0/19"), r.writes()), ("in_sync", []))
+r = FakeRouter(addresses=["10.66.0.1/16", "10.99.0.1/24"])
+check("more than one address, one WIDER than the subnet -> router_wider, nothing written",
+      (fix(r, "wg0", "10.66.66.0/24"), r.writes()), ("router_wider", []))
+r = FakeRouter(addresses=["10.66.66.1/25", "10.99.0.1/24"])
+check("more than one address and none covers the subnet -> permanent conflict, nothing written (never repaired)",
       (raises_code(lambda: fix(r, "wg0", "10.66.66.0/24"), AdapterPermanentError), r.writes()),
       ("wg_interface_address_conflict", []))
 r = FakeRouter(addresses=["not-an-address"])

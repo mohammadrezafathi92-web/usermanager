@@ -4,6 +4,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import Layout from "../components/Layout.jsx";
 import Modal from "../components/Modal.jsx";
 import MoneyInput from "../components/MoneyInput.jsx";
+import AdminPackagePrices from "../components/AdminPackagePrices.jsx";
 import JalaliDateInput from "../components/JalaliDateInput.jsx";
 import Topbar from "../components/Topbar.jsx";
 import StatCard from "../components/StatCard.jsx";
@@ -1292,6 +1293,8 @@ export default function Accounting() {
                     </button>
                   </>
                 )}
+
+                {moneyFor.billing_mode !== "usage" && <AdminPackagePrices adminId={moneyFor.id} t={t} />}
 
                 <div>
                   <div className="section-title mb-2">{t("accounting.changeHistory")}</div>

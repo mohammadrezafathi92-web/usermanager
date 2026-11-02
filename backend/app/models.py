@@ -776,6 +776,25 @@ class AdminNodeAccess(Base):
     node = relationship("Node", back_populates="admin_access")
 
 
+class AdminPackagePrice(Base):
+    """ONE account's own cooperation price for ONE package (owner decision
+    2026-11-02). Most specific rule in services/admin_billing.unit_price:
+    own price > per-GB rate > Package.cooperation_price > Package.price.
+    A renewal with a package costs the same. Set only from above
+    (superadmin -> any admin/seller, level-2 Admin -> its own Sellers on its
+    own packages); see admin_billing.set_package_price."""
+
+    __tablename__ = "admin_package_prices"
+    __table_args__ = (UniqueConstraint("admin_id", "package_id", name="uq_admin_package_price"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    package_id = Column(Integer, ForeignKey("packages.id", ondelete="CASCADE"), nullable=False, index=True)
+    cooperation_price = Column(BigInteger, nullable=False)  # tomans; 0 = free
+    set_by_admin_id = Column(Integer, nullable=True)
+    updated_at = Column(DateTime, default=now, onupdate=now, nullable=False)
+
+
 class User(Base):
     """An end customer. Quota is shared across ALL of their connections,
     regardless of protocol (WireGuard/OpenVPN/L2TP via MikroTik, or Xray)."""
@@ -1642,6 +1661,9 @@ class Package(Base):
     group_id = Column(Integer, ForeignKey("package_groups.id", ondelete="SET NULL"),
                       nullable=True, index=True)
     group = relationship("PackageGroup", foreign_keys=[group_id])
+    # Per-account cooperation prices (AdminPackagePrice). Deleted with the
+    # package: SQLite here does not enforce the FK's ON DELETE CASCADE.
+    admin_prices = relationship("AdminPackagePrice", cascade="all, delete-orphan")
     # Whether this Admin's own level-3 Sellers can see/use this package -
     # in the WEB PANEL (create-user / renew-quick-action dropdowns, and the
     # Packages.jsx list itself, checked in routers/packages.py's

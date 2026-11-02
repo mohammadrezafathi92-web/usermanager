@@ -17,7 +17,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..deps import require_admin_or_above, require_superadmin, require_confirm_password
 from ..security import hash_password
-from ..services import hierarchy, accounting, telegram_ids, wallet_identity, wallet_accounts
+from ..services import hierarchy, accounting, telegram_ids, wallet_identity, wallet_accounts, admin_billing
 from ..permissions import PERMISSION_CHOICES, PERMISSION_GROUPS, parse_permissions, format_permissions, effective_permissions
 
 router = APIRouter(prefix="/api/admins", tags=["admins"], dependencies=[Depends(require_admin_or_above)])
@@ -982,3 +982,31 @@ def delete_impact(
         ],
         "balance": admin.balance or 0,
     }
+
+
+@router.get("/{admin_id}/package-prices")
+def list_package_prices(admin_id: int, db: Session = Depends(get_db),
+                        current: models.AdminUser = Depends(require_admin_or_above)):
+    """Every package this admin/seller can use: the price it pays, which
+    rule decided it (own_price / per_gb_rate / package_cooperation /
+    package_price) and its own price if one is set."""
+    admin = db.get(models.AdminUser, admin_id)
+    if not admin or admin.is_superadmin:
+        raise HTTPException(404, "ادمین پیدا نشد")
+    _scope_or_403(current, admin)
+    return admin_billing.package_price_rows(db, admin)
+
+
+@router.put("/{admin_id}/package-prices/{package_id}")
+def set_package_price(admin_id: int, package_id: int, payload: schemas.AdminPackagePriceSet,
+                      db: Session = Depends(get_db), current: models.AdminUser = Depends(require_admin_or_above)):
+    """Set (cooperation_price) or clear (null) this account's own price for
+    one package. Permission and the no-loss floor live in
+    admin_billing.set_package_price."""
+    admin = db.get(models.AdminUser, admin_id)
+    package = db.get(models.Package, package_id)
+    if not admin or not package:
+        raise HTTPException(404, "ادمین یا بسته پیدا نشد")
+    _scope_or_403(current, admin)
+    admin_billing.set_package_price(db, current, admin, package, payload.cooperation_price)
+    return next(r for r in admin_billing.package_price_rows(db, admin) if r["package_id"] == package_id)

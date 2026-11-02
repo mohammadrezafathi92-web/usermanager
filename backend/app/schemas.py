@@ -1,7 +1,7 @@
 import datetime as dt
 from typing import Optional, List
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 from .models import NodeType, ConnectionType, UserStatus
 
@@ -2237,3 +2237,10 @@ class LegacyGroupConvertRequest(BaseModel):
     quota_gb: float = 0  # 0 = unlimited
     expire_days: Optional[int] = None  # None = never expires
     name: Optional[str] = None  # display name for the service
+
+
+class AdminPackagePriceSet(BaseModel):
+    """One account's own cooperation price for one package; null clears it.
+    Strict: a bool, float or string is refused, never coerced."""
+    model_config = ConfigDict(extra="forbid")
+    cooperation_price: Optional[StrictInt] = Field(...)

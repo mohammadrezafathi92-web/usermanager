@@ -439,6 +439,9 @@ export const fetchAdminLoginLogs = (params) => client.get("/admins/login-logs", 
 // (themself + their Sellers) is allowed to see/use.
 export const fetchAvailableNodesForGrant = () => client.get("/admins/available-nodes");
 export const setAdminNodes = (id, nodeIds) => client.put(`/admins/${id}/nodes`, { node_ids: nodeIds });
+export const fetchAdminPackagePrices = (id) => client.get(`/admins/${id}/package-prices`);
+export const setAdminPackagePrice = (id, packageId, cooperationPrice) =>
+  client.put(`/admins/${id}/package-prices/${packageId}`, { cooperation_price: cooperationPrice });
 
 // Superadmin-only: set an admin's ROLE and its PARENT independently.
 // Passing role = undefined leaves the role untouched and moves the account

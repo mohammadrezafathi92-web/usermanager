@@ -211,6 +211,22 @@ def _resolve_wallet(session_factory, request):
                                               owner_admin_id=user.owner_admin_id)
 
 
+def fresh_view(db) -> None:
+    """End the request session's transaction after run() so its next read
+    sees what the durable machine committed in its own sessions.
+
+    run() works in sessions of its own. The request session is rolled back
+    before it, but anything that touches an expired ORM object (even
+    `actor_id=admin.id` in the call itself) begins a new transaction - and
+    on MariaDB (REPEATABLE READ) that transaction's snapshot predates
+    T_final, so db.get() of the user just created returned None and the
+    panel showed an error for a user that WAS created (2026-11-03).
+    expire_all() only drops the identity map; it does not end the snapshot.
+    Nothing is pending on the request session here: callers rolled it back
+    before run()."""
+    db.rollback()
+
+
 def run(session_factory, request, *, actor_kind="system", actor_id=None, budget=None, approval=None):
     """Run one durable operation from the request thread (see module doc).
     `approval`: provisioning_approval_exec.ApprovalExecution of a receipt

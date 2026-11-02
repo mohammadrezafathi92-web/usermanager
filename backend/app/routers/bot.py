@@ -308,7 +308,7 @@ def _run_request(db: Session, request, **actor):
     factory = provisioning_requests.session_factory_for(db)
     db.rollback()
     operation = provisioning_durable.run(factory, request, **actor)
-    db.expire_all()
+    provisioning_durable.fresh_view(db)
     return operation
 
 
@@ -360,7 +360,7 @@ def _durable_approval(db: Session, principal, payload, operation_type: str, *, p
     db.rollback()
     operation = provisioning_durable.run(factory, request, actor_kind="bot", actor_id=principal.key_id,
                                          approval=execution)
-    db.expire_all()
+    provisioning_durable.fresh_view(db)
     return operation
 
 
@@ -1539,6 +1539,7 @@ def add_connection(
         factory = provisioning_requests.session_factory_for(db)
         db.rollback()
         operation = provisioning_durable.run(factory, request, actor_kind="bot")
+        provisioning_durable.fresh_view(db)
         return _connection_info(provisioning_requests.created_connections(db, operation.id)[0])
     conn = user_ops.provision_connection(
         db, user, node, spec.protocol, spec.flow or "",
@@ -1855,7 +1856,7 @@ def reset_usage(
         factory = provisioning_requests.session_factory_for(db)
         db.rollback()
         provisioning_durable.run(factory, request, actor_kind="bot")
-        db.expire_all()
+        provisioning_durable.fresh_view(db)
         return _user_response(db.get(models.User, user.id))
     user_ops.renew_purchase(db, user.purchases[0], reset_usage=True)
     return _user_response(user)

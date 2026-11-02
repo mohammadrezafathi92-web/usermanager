@@ -173,7 +173,8 @@ for attempt in $(seq 1 60); do
 done
 $healthy || die "backend health failed; no automatic rollback or DB restore"
 docker compose exec -T "${hold_env[@]}" backend python - snapshot < "$backup_dir/helper.py" > "$backup_dir/after_restart.json"
-python3 "$backup_dir/helper.py" compare "$backup_dir/runtime.json" "$backup_dir/after_restart.json"
+restart_check=$(python3 "$backup_dir/helper.py" compare-after-restart "$backup_dir/runtime.json" "$backup_dir/after_restart.json")
+echo "$restart_check"
 stage frontend
 docker compose up -d --no-build --no-deps frontend
 healthy=false
@@ -192,6 +193,9 @@ if [[ -n $operation_hold_id ]]; then
     echo "OPERATION_HOLD_PENDING_ADMIN=$operation_hold_id (one-hour DB-clock lease)"
 fi
 echo "UPDATE_OK commit=$target; modes preserved; license-server untouched"
+if [[ $restart_check == *OWNERSHIP_RELEASED_BY_RESTART* ]]; then
+    echo "NOTE: the restart released provisioning ownership (gate not enforced); claim it again in the panel before enabling the gate"
+fi
 echo "Backups and rollback references: $backup_dir"
 }
 # Parse the whole function before git fast-forwards this script on disk.

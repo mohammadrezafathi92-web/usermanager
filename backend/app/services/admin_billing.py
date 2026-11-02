@@ -15,7 +15,8 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
+from sqlalchemy.orm.exc import UnmappedInstanceError
 
 from .. import models
 from . import accounting
@@ -29,8 +30,9 @@ def unit_price(admin: models.AdminUser, package: models.Package) -> int:
     - and the half that drifts is the refund, so an admin would be charged
     one number and given back another.
 
-    A per-GB rate on the account (AdminUser.wholesale_price_per_gb) wins
-    when it is set. That is the point of the rate: the Admin builds and
+    An own price for this exact package (AdminPackagePrice, set from
+    above) wins over everything. Otherwise a per-GB rate on the account
+    (AdminUser.wholesale_price_per_gb) wins when it is set. That is the point of the rate: the Admin builds and
     prices their own packages, so Package.cooperation_price is a number
     they choose for themselves, and using it to decide what they owe the
     superadmin meant the credit system metered nothing. quota_gb x rate is
@@ -42,9 +44,42 @@ def unit_price(admin: models.AdminUser, package: models.Package) -> int:
     hole this closes. The superadmin can still allow it deliberately by
     clearing that admin's rate.
     """
+    return price_source(admin, package)[0]
+
+
+PRICE_SOURCES = ("own_price", "per_gb_rate", "package_cooperation", "package_price")
+
+
+def _own_price(admin: models.AdminUser, package: models.Package) -> Optional[int]:
+    admin_id, package_id = getattr(admin, "id", None), getattr(package, "id", None)
+    if admin_id is None or package_id is None:
+        return None
+    session = None
+    for obj in (admin, package):
+        try:
+            session = object_session(obj)
+        except UnmappedInstanceError:   # a plain stand-in object (tests, previews): no own price
+            session = None
+        if session is not None:
+            break
+    if session is None:
+        return None
+    row = session.query(models.AdminPackagePrice).filter_by(admin_id=admin_id, package_id=package_id).one_or_none()
+    return None if row is None else int(row.cooperation_price)
+
+
+def price_source(admin: models.AdminUser, package: models.Package) -> tuple[int, str]:
+    """(unit price, which rule decided it) - see unit_price. The rule name
+    is what the panel shows next to the number, so an own price and a
+    per-GB rate can never be mistaken for one another."""
+    own = _own_price(admin, package)
+    if own is not None:
+        return own, "own_price"
     rate = int(getattr(admin, "wholesale_price_per_gb", 0) or 0)
     if rate <= 0:
-        return package.cooperation_price if package.cooperation_price is not None else (package.price or 0)
+        if package.cooperation_price is not None:
+            return package.cooperation_price, "package_cooperation"
+        return package.price or 0, "package_price"
 
     quota_gb = float(package.quota_gb or 0)
     if quota_gb <= 0:
@@ -53,7 +88,7 @@ def unit_price(admin: models.AdminUser, package: models.Package) -> int:
             f"برای «{admin.username}» نرخ گیگی ({rate:,} تومان) تعیین شده و بسته‌ی نامحدود "
             f"«{package.name}» با آن قابل محاسبه نیست - یا حجم بسته را مشخص کنید یا نرخ گیگی این ادمین را بردارید",
         )
-    return round(quota_gb * rate)
+    return round(quota_gb * rate), "per_gb_rate"
 
 
 def minimum_cooperation_price(admin: models.AdminUser, quota_gb: float) -> Optional[int]:
@@ -333,3 +368,59 @@ def refund_for_package(db: Session, admin: models.AdminUser, package: models.Pac
         note=f"بازگشت اعتبار {units} پکیج ساخته‌نشده",
     )
     db.commit()
+
+
+def set_package_price(db: Session, actor: models.AdminUser, target: models.AdminUser,
+                      package: models.Package, value: Optional[int]) -> Optional[int]:
+    """Set (or clear with None) `target`'s own cooperation price for
+    `package`. Prices come from above only: a superadmin for any admin or
+    seller, on a package that account can use; a level-2 Admin for its own
+    Sellers, on its own packages, never below what that package costs the
+    Admin itself. Caller-visible errors are HTTPException; commits."""
+    from . import hierarchy
+    if hierarchy.is_seller(actor):
+        raise HTTPException(403, "فروشنده نمی‌تواند قیمت همکاری تعیین کند")
+    if target.is_superadmin:
+        raise HTTPException(400, "برای ادمین اصلی قیمت همکاری تعیین نمی‌شود")
+    if not actor.is_superadmin:
+        if not (hierarchy.is_seller(target) and target.parent_admin_id == actor.id):
+            raise HTTPException(403, "فقط برای فروشنده‌های خودتان می‌توانید قیمت تعیین کنید")
+        if package.owner_admin_id != actor.id:
+            raise HTTPException(403, "فقط برای بسته‌های خودتان می‌توانید قیمت تعیین کنید")
+    elif package.owner_admin_id not in hierarchy.accessible_package_owner_ids(target):
+        raise HTTPException(403, "این حساب به این بسته دسترسی ندارد")
+    if value is not None:
+        if type(value) is not int or value < 0:
+            raise HTTPException(400, "قیمت همکاری باید عدد صحیح نامنفی باشد")
+        if not actor.is_superadmin:
+            floor = unit_price(actor, package)
+            if value < floor:
+                raise HTTPException(400, f"قیمت فروشنده نمی‌تواند کمتر از هزینه‌ی خودتان ({floor:,} تومان) باشد")
+    row = db.query(models.AdminPackagePrice).filter_by(admin_id=target.id, package_id=package.id).one_or_none()
+    if value is None:
+        if row is not None:
+            db.delete(row)
+    elif row is None:
+        db.add(models.AdminPackagePrice(admin_id=target.id, package_id=package.id,
+                                        cooperation_price=value, set_by_admin_id=actor.id))
+    else:
+        row.cooperation_price, row.set_by_admin_id = value, actor.id
+    db.commit()
+    return value
+
+
+def package_price_rows(db: Session, target: models.AdminUser) -> list[dict]:
+    """Every package `target` can use, with the price it pays, the rule
+    that decided it, and its own price if one is set."""
+    from . import hierarchy
+    allowed = hierarchy.accessible_package_owner_ids(target)
+    rows = []
+    for package in db.query(models.Package).filter(hierarchy.owner_id_in_clause(models.Package.owner_admin_id, allowed)
+                                                   ).order_by(models.Package.id):
+        try:
+            price, source = price_source(target, package)
+        except HTTPException:
+            price, source = None, "unpriceable"
+        rows.append({"package_id": package.id, "package_name": package.name, "quota_gb": package.quota_gb,
+                     "price": price, "source": source, "own_price": _own_price(target, package)})
+    return rows

@@ -731,6 +731,10 @@ def _set_connection_enabled(db: Session, connection: models.Connection, enabled:
         return
     if enabled and license_guard.current().cut_services:
         return
+    if enabled and getattr(connection, "admin_disabled", False):
+        # An administrator switched this service off by hand: only that
+        # same switch (routers/users.py update_connection) reopens it.
+        return
     # Whether or not the feature is on now: a pending cancellation owns
     # its service's stop/delete; nothing re-enables (or toggles) it.
     from .reseller_refund_block import purchase_pending
@@ -1080,7 +1084,7 @@ def _reconcile_connection_enabled_state(db: Session, now: dt.datetime) -> int:
 
     purchase_rows = (
         db.query(models.Connection.id, models.Purchase.quota_bytes, models.Purchase.used_bytes,
-                  models.Purchase.expire_at, models.Connection.enabled)
+                  models.Purchase.expire_at, models.Connection.enabled, models.Connection.admin_disabled)
         .join(models.Purchase, models.Connection.purchase_id == models.Purchase.id)
         .filter(models.Connection.type.in_((models.ConnectionType.wireguard, models.ConnectionType.xray, models.ConnectionType.softether)))
         .filter(models.Connection.session_limited.is_(False))
@@ -1088,16 +1092,16 @@ def _reconcile_connection_enabled_state(db: Session, now: dt.datetime) -> int:
         .all()
     )
     mismatched_ids = []
-    for conn_id, quota, used, expire_at, enabled in purchase_rows:
+    for conn_id, quota, used, expire_at, enabled, admin_disabled in purchase_rows:
         exceeded = bool(quota) and (used or 0) >= quota
         expired = expire_at is not None and expire_at < now
-        should_be_active = not (exceeded or expired)
+        should_be_active = not (exceeded or expired or admin_disabled)
         if enabled != should_be_active:
             mismatched_ids.append((conn_id, should_be_active))
 
     legacy_rows = (
         db.query(models.Connection.id, models.User.total_quota_bytes, models.User.used_bytes,
-                  models.User.expire_at, models.Connection.enabled)
+                  models.User.expire_at, models.Connection.enabled, models.Connection.admin_disabled)
         .join(models.User, models.Connection.user_id == models.User.id)
         .filter(models.Connection.purchase_id.is_(None))
         .filter(models.Connection.type.in_((models.ConnectionType.wireguard, models.ConnectionType.xray, models.ConnectionType.softether)))
@@ -1105,10 +1109,10 @@ def _reconcile_connection_enabled_state(db: Session, now: dt.datetime) -> int:
         .filter(models.User.status != models.UserStatus.disabled)
         .all()
     )
-    for conn_id, quota, used, expire_at, enabled in legacy_rows:
+    for conn_id, quota, used, expire_at, enabled, admin_disabled in legacy_rows:
         exceeded = bool(quota) and (used or 0) >= quota
         expired = expire_at is not None and expire_at < now
-        should_be_active = not (exceeded or expired)
+        should_be_active = not (exceeded or expired or admin_disabled)
         if enabled != should_be_active:
             mismatched_ids.append((conn_id, should_be_active))
 

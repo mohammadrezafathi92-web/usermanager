@@ -1615,6 +1615,41 @@ def convert_legacy_group(
     return purchase
 
 
+def _manual_switch_allowed(conn: models.Connection) -> bool:
+    """Whether the service may actually be on right now (quota, expiry,
+    account/service status) - an administrator's enable never opens a
+    service that is exhausted, expired or disabled for another reason."""
+    now = dt.datetime.utcnow()
+    owner = conn.purchase if conn.purchase_id else conn.user
+    if owner is None or owner.status == models.UserStatus.disabled:
+        return False
+    if conn.user is not None and conn.user.status == models.UserStatus.disabled:
+        return False
+    quota = owner.quota_bytes if conn.purchase_id else owner.total_quota_bytes
+    exceeded = bool(quota) and (owner.used_bytes or 0) >= quota
+    expired = owner.expire_at is not None and owner.expire_at < now
+    return not (exceeded or expired)
+
+
+def _apply_manual_switch(db: Session, conn: models.Connection, wanted: bool) -> None:
+    """The panel's per-service switch (2026-11-03): pushed to the node,
+    not just written to the database. A disable is recorded as the
+    administrator's intent first, so the poll keeps retrying it if the
+    node cannot be reached now (and the answer is 502, never a silent
+    success); an enable clears the intent and reopens the service only
+    if it is otherwise allowed to be on."""
+    from ..services.quota_manager import _set_connection_enabled
+    from ..services.reseller_refund_block import purchase_pending
+    conn.admin_disabled = not wanted
+    if conn.license_suspended or (conn.purchase_id and purchase_pending(db, conn.purchase_id)):
+        return        # licensing / a pending cancellation owns the remote state; the intent is kept
+    target = wanted and _manual_switch_allowed(conn)
+    _set_connection_enabled(db, conn, enabled=target)
+    if conn.enabled != target:
+        db.commit()   # keep the intent; the poll retries the node
+        raise HTTPException(502, "سرور در دسترس نبود - تغییر روی سرور اعمال نشد؛ در چرخه‌ی بعدی دوباره تلاش می‌شود")
+
+
 @router.put("/{user_id}/connections/{connection_id}", response_model=schemas.ConnectionOut)
 def update_connection(
     user_id: int,
@@ -1670,8 +1705,11 @@ def update_connection(
         except user_ops.MikrotikError as exc:
             raise HTTPException(400, str(exc))
 
+    wanted = data.pop("enabled", None)
     for k, v in data.items():
         setattr(conn, k, v)
+    if wanted is not None:
+        _apply_manual_switch(db, conn, bool(wanted))
     db.commit()
     db.refresh(conn)
     out = schemas.ConnectionOut.model_validate(conn)

@@ -80,6 +80,15 @@ def _classify_peers(peers, identity):
     return ReadResult(ReadState.PRESENT_MATCH, handle=peer.get(".id"))
 
 
+class _Several(Exception):
+    """The interface has more than one address and one of them already
+    covers the subnet: return its verdict, write nothing."""
+
+    def __init__(self, verdict: str):
+        super().__init__(verdict)
+        self.verdict = verdict
+
+
 def ensure_interface_address_exact_or_wider(mt, interface: str, desired_subnet: str) -> str:
     """Makes the router's address on `interface` cover `desired_subnet`.
 
@@ -87,15 +96,34 @@ def ensure_interface_address_exact_or_wider(mt, interface: str, desired_subnet: 
     router == desired                -> nothing                      (in_sync)
     router narrower than desired     -> replace with desired         (repaired)
     router WIDER than desired        -> nothing, never narrowed      (router_wider)
-    unrelated network / several rows -> AdapterPermanentError, nothing changed
+    several rows, one equal/wider    -> nothing; other rows untouched (in_sync / router_wider)
+    unrelated network / several rows
+      none of which covers desired   -> AdapterPermanentError, nothing changed
     """
     desired = ipaddress.ip_network(desired_subnet, strict=False)
     desired_address = f"{desired.network_address + 1}/{desired.prefixlen}"
 
+    def covering(rows):
+        """An interface may carry other, unrelated addresses (node com has a
+        second /24 next to its client subnet, 2026-11-03). One row that is
+        the subnet or wider is enough; nothing is ever changed on such an
+        interface."""
+        networks = []
+        for row in rows:
+            try:
+                networks.append(ipaddress.ip_interface(row.get("address")).network)
+            except ValueError:
+                raise AdapterPermanentError("wg_interface_address_conflict", "unparseable interface address") from None
+        if desired in networks:
+            return ADDRESS_IN_SYNC
+        if any(n.version == desired.version and desired.subnet_of(n) for n in networks):
+            return ADDRESS_ROUTER_WIDER
+        raise AdapterPermanentError("wg_interface_address_conflict", "no interface address covers the subnet")
+
     def current():
         rows = mt.list_interface_addresses(interface)
         if len(rows) > 1:
-            raise AdapterPermanentError("wg_interface_address_conflict", "interface has more than one address")
+            raise _Several(covering(rows))
         if not rows:
             return None
         try:
@@ -104,7 +132,10 @@ def ensure_interface_address_exact_or_wider(mt, interface: str, desired_subnet: 
             raise AdapterPermanentError("wg_interface_address_conflict", "unparseable interface address") from None
 
     try:
-        network = current()
+        try:
+            network = current()
+        except _Several as several:
+            return several.verdict
         if network is None:
             mt.ensure_interface_address(interface, desired_address)
             return ADDRESS_ADDED
@@ -112,7 +143,10 @@ def ensure_interface_address_exact_or_wider(mt, interface: str, desired_subnet: 
             return ADDRESS_IN_SYNC
         if network.version == desired.version and network.subnet_of(desired):
             # Look again right before replacing: only widen what is still narrower.
-            again = current()
+            try:
+                again = current()
+            except _Several as several:
+                return several.verdict
             if again is None or (again != desired and again.subnet_of(desired)):
                 mt.set_interface_address(interface, desired_address)
                 return ADDRESS_REPAIRED

@@ -30,6 +30,12 @@ def _validate_permissions(perms: list[str]) -> str:
     return format_permissions(set(perms))
 
 
+def _clean_display_name(value):
+    """A display name is optional free text; blank clears it."""
+    value = (value or "").strip()
+    return value[:128] or None
+
+
 def _scope_or_403(current: models.AdminUser, target: models.AdminUser) -> None:
     """A superadmin may touch any level-2 Admin or level-3 Seller. A
     level-2 Admin may only touch their OWN Sellers (target.parent_admin_id
@@ -51,6 +57,7 @@ def _out(db: Session, admin: models.AdminUser) -> schemas.AdminOut:
     return schemas.AdminOut(
         id=admin.id,
         username=admin.username,
+        display_name=admin.display_name,
         is_superadmin=admin.is_superadmin,
         # Effective permissions (from the group if assigned, else the
         # admin's own checkboxes) - what actually governs their access.
@@ -456,6 +463,7 @@ def create_admin(
         parent_admin_id=parent_admin_id,
         permissions=_validate_permissions(payload.permissions),
         login_slug=slug,
+        display_name=_clean_display_name(payload.display_name),
         telegram_id=payload.telegram_id,
         group_id=group_id,
         billing_mode=billing_mode,
@@ -527,6 +535,8 @@ def update_admin(
         admin.hashed_password = hash_password(payload.password)
     if payload.permissions is not None:
         admin.permissions = _validate_permissions(payload.permissions)
+    if payload.display_name is not None:
+        admin.display_name = _clean_display_name(payload.display_name)
     if payload.login_slug is not None:
         slug = payload.login_slug.strip() or None
         if slug:

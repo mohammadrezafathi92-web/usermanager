@@ -1209,6 +1209,10 @@ class Connection(Base):
     node_id = Column(Integer, ForeignKey("nodes.id"), nullable=False, index=True)
     type = Column(Enum(ConnectionType), nullable=False)
     enabled = Column(Boolean, default=True)
+    # The administrator's own "disable this service" switch (panel). While
+    # set, no automatic path - poll reconcile, renewal, account enable -
+    # turns the connection back on; only the same switch does.
+    admin_disabled = Column(Boolean, nullable=False, default=False)
     # Licence suspension is NOT the administrator's enabled intent and
     # never changes quota, expiry, session-cap state or ownership. Marked
     # before remote stop so a crash/unknown result can safely be retried.

@@ -118,6 +118,11 @@ def tick(session_factory, operation_id, identity, tokens, *, installation_uuid, 
             result = _public(operation, "manual_recovery_required")
             db.commit()
             return result
+        if deletion.complete_superseded(db, operation):
+            operation = transitions._operation(db, operation_id)
+            result = _public(operation, "completed")
+            db.commit()
+            return result
         if operation.next_retry_at is not None and operation.next_retry_at > now:
             result = _public(operation, "waiting")
             db.commit()

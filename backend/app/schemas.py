@@ -2230,6 +2230,8 @@ class BotPurchaseInfo(BaseModel):
     quota_bytes: int = 0  # 0 == unlimited
     used_bytes: int = 0
     expire_at: Optional[dt.datetime] = None
+    # Days that start at the first connection (expire_at is still None).
+    expire_days_after_first_use: Optional[int] = None
     status: UserStatus
     reserved_quota_bytes: Optional[int] = None
     reserved_duration_days: Optional[int] = None

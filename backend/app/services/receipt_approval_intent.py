@@ -300,7 +300,13 @@ def _loyalty_quota_binding(db: Session, target: Target, package, has_connections
     user = db.get(models.User, target.user_id)
     existing = db.query(models.Purchase).filter(models.Purchase.user_id == target.user_id).order_by(
         models.Purchase.id).all()
-    if target.shape == "purchase":
+    if target.shape == "existing_user":
+        # This sale always creates a Purchase (build_manifest), so T_final
+        # resolves over existing + the new one (quota_rewards.destination):
+        # the new service only when it is the customer's first, else no
+        # single finite destination. Resolving over the services BEFORE the
+        # sale named an old one that T_final never grants - a required
+        # effect missing, the sale compensated (production, 2026-11-09).
         return PURCHASE_REF if not existing and quota_bytes > 0 else None
     from .quota_rewards import resolve_quota_reward_target
     found = resolve_quota_reward_target(existing, user.total_quota_bytes if user else 0)

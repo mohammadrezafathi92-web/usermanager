@@ -110,6 +110,31 @@ def request_digest(request) -> str:
     return hashlib.sha256(json.dumps(request.dict(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+DELETE_KINDS = ("delete_connection", "delete_purchase", "delete_user")
+OPEN_DELETE_STATES = ("prepared", "provisioning", "remote_complete", "cleanup_required")
+
+
+def _refuse_overlapping_deletion(db, operation, resource_kind, user_id, connection_ids) -> None:
+    """One deletion per resource at a time (production, 2026-11-07): a
+    double-tapped bot "delete" made two delete_user operations for the same
+    customer 1.5 s apart. The first completed; the second could never finish
+    and later pointed at a NEW customer that SQLite gave the same user id.
+    Checked under the customer identity lease, after the scope is locked."""
+    open_ops = select(mp.ProvisioningOperation.id).where(
+        mp.ProvisioningOperation.id != operation.id,
+        mp.ProvisioningOperation.operation_type.in_(DELETE_KINDS),
+        mp.ProvisioningOperation.state.in_(OPEN_DELETE_STATES))
+    same_user = open_ops.where(mp.ProvisioningOperation.target_user_id == user_id,
+                               mp.ProvisioningOperation.operation_type == "delete_user")
+    if db.execute(same_user.limit(1)).first() is not None or (resource_kind == "user" and db.execute(
+            open_ops.where(mp.ProvisioningOperation.target_user_id == user_id).limit(1)).first() is not None):
+        raise HTTPException(409, "provisioning_deletion_in_progress")
+    if connection_ids and db.execute(open_ops.join(
+            mp.ProvisioningStep, mp.ProvisioningStep.operation_id == mp.ProvisioningOperation.id).where(
+            mp.ProvisioningStep.connection_id.in_(connection_ids)).limit(1)).first() is not None:
+        raise HTTPException(409, "provisioning_deletion_in_progress")
+
+
 def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_kind="system", actor_id=None):
     if not isinstance(request, DeleteRequest) or not isinstance(identity, HostIdentity) or (
             actor_kind not in mp.ACTOR_KINDS or actor_id is not None and (type(actor_id) is not int or actor_id <= 0)):
@@ -163,6 +188,7 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
     user, connections, fresh_purchases, fresh_customer = _scope(db, request, lock=True, user_id=uid)
     if (user.id, tuple(row.id for row in connections), fresh_purchases, fresh_customer) != (uid, selected, purchases, customer):
         raise HTTPException(409, "provisioning_deletion_scope_changed")
+    _refuse_overlapping_deletion(db, operation, request.resource_kind, uid, selected)
     nodes = {}
     for node_id in sorted({row.node_id for row in connections}):
         node = db.execute(select(models.Node).where(models.Node.id == node_id).with_for_update()

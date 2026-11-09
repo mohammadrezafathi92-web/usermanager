@@ -100,6 +100,81 @@ def _complete_duplicate_purchase(db, operation, intent):
     return True
 
 
+def complete_superseded(db, operation) -> bool:
+    """Close a deletion another, identical deletion already completed.
+
+    Two deletions of the same scope (a double tap before the in-progress
+    refusal existed) leave the slower one unable to finish: its rows are
+    gone, and on SQLite their ids are later given to OTHER customers' rows.
+    Proven duplicate only - every condition below, else False and nothing
+    changes:
+      * a completed operation of the same type, target, tenant and actor
+        with byte-identical intent (same connection fingerprints);
+      * that operation removed every connection with absence proof;
+      * no row now matches any of this intent's connection fingerprints
+        (an id reused by another customer has a different fingerprint);
+      * the target user/purchase row, if one exists under that id, was
+        created after the completed deletion (an id reused, not the target);
+      * no payment reservation.
+    Completes this operation DB-only: no row is deleted, no remote call."""
+    if operation.state not in ("prepared", "provisioning", "remote_complete") or operation.approval_uuid is not None:
+        return False
+    try:
+        intent = json.loads(operation.intent)
+        kind, ident, expected = intent["resource_kind"], intent["resource_id"], intent["connection_fingerprints"]
+        if kind not in ("connection", "purchase", "user") or type(ident) is not int or not isinstance(expected, dict):
+            return False
+        expected_ids = {int(key) for key in expected}
+    except (ValueError, TypeError, KeyError):
+        return False
+    peers = db.execute(select(mp.ProvisioningOperation).where(
+        mp.ProvisioningOperation.id != operation.id,
+        mp.ProvisioningOperation.operation_type == operation.operation_type,
+        mp.ProvisioningOperation.target_user_id == operation.target_user_id,
+        mp.ProvisioningOperation.tenant_scope_key == operation.tenant_scope_key,
+        mp.ProvisioningOperation.actor_kind == operation.actor_kind,
+        mp.ProvisioningOperation.state == "completed",
+        mp.ProvisioningOperation.intent == operation.intent,
+    ).order_by(mp.ProvisioningOperation.id)).scalars().all()
+    peer = next((p for p in peers if p.intent == operation.intent and p.actor_id == operation.actor_id
+                 and p.completed_at is not None), None)
+    if peer is None:
+        return False
+    peer_steps = {s.connection_id: s for s in db.execute(select(mp.ProvisioningStep).where(
+        mp.ProvisioningStep.operation_id == peer.id)).scalars()}
+    if set(peer_steps) != expected_ids or any(s.direction != "remove" or s.state != "removed" or (
+            s.backend != "radius_ppp" and not _forced(s) and (
+                not s.remote_attempted or s.remote_outcome not in ("verified_absent", "delete_idempotently_absent")))
+            for s in peer_steps.values()):
+        return False
+    own_steps = db.execute(select(mp.ProvisioningStep).where(
+        mp.ProvisioningStep.operation_id == operation.id).with_for_update()).scalars().all()
+    if {s.connection_id for s in own_steps} != expected_ids:
+        return False
+    for cid in expected_ids:
+        row = db.execute(select(models.Connection).where(models.Connection.id == cid)
+            .execution_options(populate_existing=True)).scalar_one_or_none()
+        if row is None:
+            continue
+        node = db.get(models.Node, row.node_id)
+        if node is None or _fingerprint(row, node) == expected[str(cid)]:
+            return False          # the very connection still exists: not a duplicate
+    model = {"user": models.User, "purchase": models.Purchase}.get(kind)
+    if model is not None:
+        current = db.execute(select(model).where(model.id == ident)
+            .execution_options(populate_existing=True)).scalar_one_or_none()
+        if current is not None and not (current.created_at is not None and current.created_at > peer.completed_at):
+            return False          # the target itself still exists
+    if db.execute(select(mp.PaymentReservation.id).where(
+            mp.PaymentReservation.operation_id == operation.id)).first():
+        return False
+    transitions._write_operation(db, operation, "completed", username_claim=None,
+        completed_at=dt.datetime.utcnow(), result_user_id=None, next_retry_at=None)
+    logger.warning("deletion %s closed as a duplicate of completed deletion %s; nothing deleted, no remote call",
+                   operation.id, peer.id)
+    return True
+
+
 def finish(db, operation_id, version, leases):
     # Runtime read precedes resource rows and operation locks.
     wallet_service.writer_phase(db)

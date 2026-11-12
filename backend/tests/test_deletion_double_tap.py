@@ -138,12 +138,9 @@ def scenario(engine):
         db.commit()
     # SQLite hands the freed ids to the next customer (forced on MariaDB).
     with Factory() as db:
-        newcomer = wallet_accounts.create_user_with_wallet(db, username="newcomer")
-        db.flush()
-        if newcomer.id != uid:
-            db.rollback()
-            newcomer = wallet_accounts.create_user_with_wallet(db, username="newcomer")
-            newcomer.id = uid
+        # Insert with the freed id directly: re-keying a flushed user would
+        # orphan its wallet account (MariaDB enforces that FK).
+        newcomer = wallet_accounts.create_user_with_wallet(db, id=uid, username="newcomer")
         newcomer.created_at = dt.datetime.utcnow() + dt.timedelta(seconds=5)
         db.flush()
         conn = models.Connection(id=cid, user_id=uid, node_id=nid, type=models.ConnectionType.wireguard, enabled=True,

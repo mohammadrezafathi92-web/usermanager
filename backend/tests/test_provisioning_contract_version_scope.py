@@ -59,7 +59,8 @@ REFUND_HELPERS = ("StoppedUsage", "stop_and_measure", "remove_stopped", "stop_ca
 # Update ONLY together with a review of which deployed contracts this
 # invalidates (see the module docstring).
 PINNED = {
-    "mikrotik_wg": "4323bda8fa65dee12b9efb2d7802bb1bf3cdfed0",
+    # bca417: #190 accepts a wider interface address (nodes re-verified).
+    "mikrotik_wg": "bca41709d4e6d5d233e4cc933be9d3f4955a2e1b",
     "softether": "0d948da339a557561f547c93676a929ba93fe0ca",
     "xray_ssh": "fb6bab0b9202b4924251bd73262dfe9689b9f244",
     "threexui": "fb6bab0b9202b4924251bd73262dfe9689b9f244",

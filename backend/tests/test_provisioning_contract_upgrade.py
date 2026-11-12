@@ -8,7 +8,8 @@ change, so app.services.provisioning_contract_upgrade recovers EXACTLY the
 rows that the reviewed global c22 digest -> per-backend switch invalidated,
 and the reviewed older 42d digest for installations that skipped c22:
 
-  * only while each backend's real current version == TARGET_VERSIONS[backend],
+  * only while each backend's real current version == TARGET_VERSIONS[backend]
+    (simulated below: #190 later moved mikrotik_wg, disabling its recovery),
     only rows whose stored
     adapter_version == SOURCE_VERSION, state 'invalidated', reason
     'adapter_version_changed', backend in (mikrotik_wg, threexui, softether),
@@ -670,8 +671,25 @@ def run_databases(directory):
     else:
         print("SKIP  real MariaDB execution (MARIADB_TEST_URL not set, not in CI)")
 
-for source in (C22_SOURCE, LEGACY_SOURCE):
-    run_source(source)
+# The recovery is pinned to the reviewed per-backend versions and disables
+# itself for any backend whose contract code moved later (#190 moved
+# mikrotik_wg; those nodes were re-verified). Exercise it as the reviewed
+# release saw it: every version reader returns the reviewed target.
+_real_adapter_version = contract_rules.adapter_version
+check("the recovery stays disabled for every backend whose contract code moved since review",
+      lambda: sorted(b for b in up.TARGET_VERSIONS if _real_adapter_version(b) == up.TARGET_VERSIONS[b]),
+      ["softether", "threexui"])
+
+
+def _reviewed_adapter_version(backend, root=None):
+    reviewed = up.TARGET_VERSIONS if up is not None and root is None else {}
+    return reviewed.get(backend) or _real_adapter_version(backend, root)
+
+
+with patch.object(contract_rules, "adapter_version", _reviewed_adapter_version), \
+        patch.object(contracts, "adapter_version", _reviewed_adapter_version):
+    for source in (C22_SOURCE, LEGACY_SOURCE):
+        run_source(source)
 
 check("no network", _no_network.attempts, [])
 if failures:

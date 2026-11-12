@@ -332,7 +332,12 @@ def prepare(db, request, *, identity, ownership_epoch, installation_uuid, actor_
                 intent.package.name, intent.package.quota_bytes, intent.package.duration_days,
                 intent.package.max_concurrent_sessions):
             raise HTTPException(409, "provisioning_package_changed")
-    if intent.package and request.operation_type in ("create_user", "purchase"):
+    # one_time_per_user limits CUSTOMERS buying through a bot; an admin or
+    # seller in the panel may always grant it (owner rule, 2026-09-09, see
+    # test_one_time_per_user_package). A panel-created user without a
+    # Telegram id also has no identity to claim at all - that made every
+    # panel "free trial" fail with one_time_claim_identity_invalid.
+    if intent.package and request.operation_type in ("create_user", "purchase") and actor_kind != "admin":
         provisioning_claims.reserve(db, operation.id, intent.package.id, telegram_id=intent.user.telegram_id)
     for slot_key, (node, backend) in sorted(nodes.items(), key=lambda entry: (entry[1][0].id, entry[0])):
         fresh = final._locked(db, models.Node, node.id)

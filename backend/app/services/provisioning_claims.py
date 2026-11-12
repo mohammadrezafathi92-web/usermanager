@@ -123,6 +123,8 @@ def bind_purchase(db, operation_id, purchase_id):
         .order_by(mp.OneTimePackageClaim.id).with_for_update().execution_options(populate_existing=True)).scalars().all()
     if not rows:
         package = db.get(models.Package, purchase.package_id)
+        if operation.actor_kind == "admin":
+            return []         # the panel grants one-time packages without a claim (provisioning_preparation)
         if package is None or package.one_time_per_user:
             raise HTTPException(409, "one_time_claim_missing")
         return []

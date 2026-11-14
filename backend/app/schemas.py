@@ -517,6 +517,15 @@ class UserUpdate(BaseModel):
     notes: Optional[str] = None
     total_quota_bytes: Optional[int] = None
     expire_at: Optional[dt.datetime] = None
+
+    @field_validator("expire_at")
+    @classmethod
+    def _expire_at_naive_utc(cls, value):
+        # The panel posts toISOString() ("...Z"); stored dates are naive UTC.
+        # Comparing the two raised TypeError (500 on every seller edit).
+        if value is not None and value.tzinfo is not None:
+            value = value.astimezone(dt.timezone.utc).replace(tzinfo=None)
+        return value
     expire_days_after_first_use: Optional[int] = None
     # If provided, clear_expire_days_trigger=True clears
     # expire_days_after_first_use (used when the admin switches back to a

@@ -139,6 +139,23 @@ check("the slack is small enough to be invisible", _QUOTA_ROUNDING_SLACK_BYTES <
 check("re-sending the date-only form value is a (harmless) reduction",
       refuse(reseller, {"expire_at": dt.datetime(2026, 10, 1, 0, 0)}, u), None)
 
+print("\n--- the panel posts toISOString() (timezone-aware) dates ---")
+from app import schemas  # noqa: E402
+
+
+def form(**kw):
+    return schemas.UserUpdate(**kw).model_dump(exclude_unset=True)
+
+
+check("an aware earlier date is a reduction, not a 500",
+      refuse(reseller, form(full_name="x", expire_at="2026-09-20T08:00:00.000Z"), u), None)
+check("an aware later date is still refused",
+      refuse(reseller, form(expire_at="2027-01-01T00:00:00.000Z"), u), 400)
+check("an offset date is compared in UTC (13:00+03:30 = 09:30 UTC < 12:00)",
+      refuse(reseller, form(expire_at="2026-10-01T13:00:00+03:30"), u), None)
+check("the parsed date is naive UTC", form(expire_at="2026-10-01T13:00:00+03:30")["expire_at"],
+      dt.datetime(2026, 10, 1, 9, 30))
+
 print("\n--- the superadmin is exempt from all of it ---")
 check("unlimited quota", refuse(superadmin, {"total_quota_bytes": 0}, u), None)
 check("no expiry", refuse(superadmin, {"expire_at": None}, u), None)
